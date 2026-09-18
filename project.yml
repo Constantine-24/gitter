@@ -34,6 +34,8 @@ targets:
       properties:
         CFBundleName: Gitter
         CFBundleDisplayName: Gitter
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
         NSHumanReadableCopyright: ""
         LSApplicationCategoryType: public.app-category.developer-tools

@@ -28,6 +28,7 @@ final class RepositoryStore {
     }
 
     let backend: any GitBackend
+    private let gitPath: String
 
     private var watcher: RepositoryWatcher?
     private var refreshTask: Task<Void, Never>?
@@ -38,8 +39,18 @@ final class RepositoryStore {
 
     private static let lastRepositoryPathKey = "lastRepositoryPath"
 
-    init(backend: any GitBackend = CLIGitBackend()) {
+    init(backend: any GitBackend = CLIGitBackend(), gitPath: String = "/usr/bin/git") {
         self.backend = backend
+        self.gitPath = gitPath
+    }
+
+    // MARK: - Git availability
+
+    /// Surfaces a missing `git` as an error banner at launch, before anything tries to run a
+    /// command and fails with a less helpful "failed to launch" message per request.
+    func checkGitAvailability() async {
+        guard await !CLIGitBackend.isGitAvailable(at: gitPath) else { return }
+        lastError = "Git was not found at \(gitPath). Install the Xcode Command Line Tools."
     }
 
     // MARK: - Opening
@@ -129,7 +140,11 @@ final class RepositoryStore {
             snapshot = newSnapshot
             lastError = nil
 
-            if case .commit(let sha) = selection, !newSnapshot.commits.contains(where: { $0.sha == sha }) {
+            // Keep a commit selection even when the commit isn't in the loaded window (the
+            // log is capped): the row simply isn't highlighted. Only an empty repository has
+            // no commit the selection could ever refer to. A changed root is handled by
+            // `open()`, which resets the selection itself.
+            if newSnapshot.commits.isEmpty {
                 selection = .workingCopy
             }
         } catch {

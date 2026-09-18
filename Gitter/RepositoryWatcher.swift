@@ -2,8 +2,12 @@ import CoreServices
 import Foundation
 
 /// Watches a repository root (including `.git/`) for filesystem changes and calls `onChange`
-/// on the main actor, after filtering out noise (lockfiles, the index stat cache, and loose
-/// object writes).
+/// on the main actor, after filtering out noise (lockfiles and loose object writes).
+///
+/// `.git/index` is deliberately *not* filtered: `git add`/`reset`/`rm --cached` touch only
+/// the index, and ignoring it made staging invisible to the live refresh. Our own reads
+/// can't feed the loop back, because `ProcessRunner` sets `GIT_OPTIONAL_LOCKS=0`, which
+/// stops `status`/`diff` from rewriting the index's stat cache.
 ///
 /// `@unchecked Sendable`: the FSEventStream callback fires on `queue` (a private serial
 /// queue), but it only ever reads immutable `let` properties captured by value and hops to
@@ -98,7 +102,7 @@ final class RepositoryWatcher: @unchecked Sendable {
             guard let raw = CFArrayGetValueAtIndex(cfArray, index) else { continue }
             let cfString = unsafeBitCast(raw, to: CFString.self)
             let path = cfString as String
-            if path.hasSuffix(".lock") || path.hasSuffix("/.git/index") || path.contains("/.git/objects/") {
+            if path.hasSuffix(".lock") || path.contains("/.git/objects/") {
                 continue
             }
             relevant = true

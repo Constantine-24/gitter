@@ -7,6 +7,9 @@ struct GitterApp: App {
     @State private var store = RepositoryStore()
 
     init() {
+        // Capture the initial @State instance so the AppDelegate hook (a static closure,
+        // since AppDelegate is created by the adaptor and can't be handed the store) can
+        // forward "Open Recent"/Finder opens to the same store the scene uses.
         let store = store
         AppDelegate.onOpenURL = { url in store.open(url) }
     }
@@ -15,7 +18,12 @@ struct GitterApp: App {
         WindowGroup {
             MainWindow()
                 .environment(store)
-                .onAppear { store.reopenLastRepository() }
+                .onAppear {
+                    Task {
+                        await store.checkGitAvailability()
+                        store.reopenLastRepository()
+                    }
+                }
         }
         .defaultSize(width: 1200, height: 760)
         .commands {
