@@ -25,4 +25,15 @@ import Testing
             _ = try await runner.run("/nonexistent/git", [], cwd: URL(fileURLWithPath: "/"))
         }
     }
+
+    @Test func allowedExitCodesReturnsStdoutInsteadOfThrowing() async throws {
+        let runner = ProcessRunner()
+        // `git diff --no-index` exits 1 when the compared paths differ, which is expected
+        // usage, not a failure; allowedExitCodes lets callers treat that as success.
+        let out = try await runner.run(
+            "/usr/bin/git", ["rev-parse", "HEAD"], cwd: URL(fileURLWithPath: "/"),
+            allowedExitCodes: [128]
+        )
+        #expect(out.isEmpty)
+    }
 }

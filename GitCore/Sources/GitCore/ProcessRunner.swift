@@ -7,7 +7,9 @@ import Foundation
 public struct ProcessRunner: Sendable {
     public init() {}
 
-    public func run(_ executable: String, _ arguments: [String], cwd: URL) async throws -> Data {
+    public func run(
+        _ executable: String, _ arguments: [String], cwd: URL, allowedExitCodes: Set<Int32> = []
+    ) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: executable)
@@ -37,7 +39,7 @@ public struct ProcessRunner: Sendable {
                 stderr.fileHandleForReading.readabilityHandler = nil
                 outData.append(stdout.fileHandleForReading.readDataToEndOfFile())
                 errData.append(stderr.fileHandleForReading.readDataToEndOfFile())
-                if proc.terminationStatus == 0 {
+                if proc.terminationStatus == 0 || allowedExitCodes.contains(proc.terminationStatus) {
                     continuation.resume(returning: outData.value)
                 } else {
                     let message = String(decoding: errData.value, as: UTF8.self)
