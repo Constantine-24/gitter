@@ -44,4 +44,20 @@ import Testing
         )
         #expect(String(decoding: out, as: UTF8.self).contains("+++ "))
     }
+
+    /// Regression guard for the pipe-draining race: the old implementation nil'd the
+    /// readability handlers and then called `readDataToEndOfFile()` on the same descriptors
+    /// from the termination handler, so a handler still running could append its chunk after
+    /// the tail had already been appended, corrupting the order of large outputs.
+    @Test func largeStdoutIsCapturedInOrder() async throws {
+        let runner = ProcessRunner()
+        let out = try await runner.run(
+            "/bin/sh",
+            ["-c", "i=0; while [ $i -lt 40000 ]; do echo line$i; i=$((i+1)); done"],
+            cwd: URL(fileURLWithPath: "/")
+        )
+        let lines = String(decoding: out, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: true)
+        #expect(lines.count == 40000)
+        #expect(lines == (0..<40000).map { "line\($0)"[...] })
+    }
 }
