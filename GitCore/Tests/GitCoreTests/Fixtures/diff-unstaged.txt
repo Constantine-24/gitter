@@ -1,0 +1,16 @@
+diff --git a/a.txt b/a.txt
+index ffca945..bdf9a72 100644
+--- a/a.txt
++++ b/a.txt
+@@ -2,3 +2,4 @@ a
+ b
+ c
+ feature line
++wc change
+diff --git a/staged.txt b/staged.txt
+index 19d9cc8..614dd47 100644
+--- a/staged.txt
++++ b/staged.txt
+@@ -1 +1,2 @@
+ staged
++more

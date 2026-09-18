@@ -1,0 +1,19 @@
+diff --git a/keep.txt b/renamed.txt
+similarity index 100%
+rename from keep.txt
+rename to renamed.txt
+diff --git a/src/one.txt b/src/one.txt
+deleted file mode 100644
+index 33b54f0..0000000
+--- a/src/one.txt
++++ /dev/null
+@@ -1,2 +0,0 @@
+-x
+-main line
+diff --git a/staged.txt b/staged.txt
+new file mode 100644
+index 0000000..19d9cc8
+--- /dev/null
++++ b/staged.txt
+@@ -0,0 +1 @@
++staged

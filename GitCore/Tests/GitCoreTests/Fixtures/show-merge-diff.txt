@@ -1,0 +1,7 @@
+diff --git a/src/one.txt b/src/one.txt
+index 587be6b..33b54f0 100644
+--- a/src/one.txt
++++ b/src/one.txt
+@@ -1 +1,2 @@
+ x
++main line
