@@ -106,4 +106,36 @@ import Testing
         let status = StatusParser.parse(Data())
         #expect(status == WorkingCopyStatus.empty)
     }
+
+    @Test func pathsWithSpacesArePreserved() throws {
+        let sha = "ffca945b9a727a3f7ffa5ec7f76b278a8dd6530d"
+        let text =
+            "1 .M N... 100644 100644 100644 \(sha) \(sha) dir/my file.txt\0"
+            + "2 R. N... 100644 100644 100644 \(sha) \(sha) R100 new name.txt\0"
+            + "old name.txt\0"
+        let status = StatusParser.parse(Data(text.utf8))
+
+        let ordinary = try #require(status.files.first { $0.path == "dir/my file.txt" })
+        #expect(ordinary.unstaged == .modified)
+
+        let renamed = try #require(status.files.first { $0.path == "new name.txt" })
+        #expect(renamed.staged == .renamed)
+        #expect(renamed.originalPath == "old name.txt")
+    }
+
+    @Test func trailingRenameRecordWithoutOriginalPathIsSkipped() {
+        let sha = "ffca945b9a727a3f7ffa5ec7f76b278a8dd6530d"
+        let text = "2 R. N... 100644 100644 100644 \(sha) \(sha) R100 renamed.txt\0"
+        let status = StatusParser.parse(Data(text.utf8))
+        #expect(status.files.isEmpty)
+    }
+
+    @Test func malformedRecordWithTooFewFieldsIsSkipped() throws {
+        let text = "1 .M too few fields\0? untracked.txt\0"
+        let status = StatusParser.parse(Data(text.utf8))
+        #expect(status.files.count == 1)
+        let file = try #require(status.files.first)
+        #expect(file.path == "untracked.txt")
+        #expect(file.isUntracked == true)
+    }
 }
