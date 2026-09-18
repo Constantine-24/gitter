@@ -13,15 +13,19 @@ struct DiffView: View {
         if diffs.isEmpty {
             placeholder
         } else {
-            ScrollView([.vertical, .horizontal]) {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(diffs) { diff in
-                        fileSection(diff)
+            // The stack's width is driven by the viewport rather than by measuring every line,
+            // so rows stay lazy; individual long lines still overflow and scroll horizontally.
+            GeometryReader { proxy in
+                ScrollView([.vertical, .horizontal]) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(diffs) { diff in
+                            fileSection(diff)
+                        }
                     }
+                    .frame(minWidth: proxy.size.width, alignment: .leading)
                 }
-                .fixedSize(horizontal: true, vertical: false)
+                .background(Color(nsColor: .textBackgroundColor))
             }
-            .background(Color(nsColor: .textBackgroundColor))
         }
     }
 

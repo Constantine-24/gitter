@@ -4,12 +4,12 @@ import SwiftUI
 /// One line of the commit table: either the synthetic working-copy row or a commit.
 enum CommitRow: Identifiable, Hashable {
     case workingCopy(changeCount: Int)
-    case commit(Commit, GraphRow?)
+    case commit(Commit, GraphRow?, hasIncomingEdge: Bool)
 
     var id: Selection {
         switch self {
         case .workingCopy: .workingCopy
-        case .commit(let commit, _): .commit(commit.sha)
+        case .commit(let commit, _, _): .commit(commit.sha)
         }
     }
 }
@@ -19,16 +19,31 @@ struct CommitListView: View {
 
     var body: some View {
         let rows = rows()
+        ScrollViewReader { proxy in
+            table(rows)
+                .onChange(of: store.selection) { _, newValue in
+                    withAnimation { proxy.scrollTo(newValue, anchor: .center) }
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func table(_ rows: [CommitRow]) -> some View {
         Table(rows, selection: selectionBinding) {
             TableColumn("") { row in
                 switch row {
                 case .workingCopy:
-                    CommitGraphCell(row: nil, isMerge: false)
-                case .commit(let commit, let graphRow):
-                    CommitGraphCell(row: graphRow, isMerge: commit.isMerge)
+                    CommitGraphCell(row: nil, isMerge: false, width: graphWidth)
+                case .commit(let commit, let graphRow, let hasIncomingEdge):
+                    CommitGraphCell(
+                        row: graphRow,
+                        isMerge: commit.isMerge,
+                        hasIncomingEdge: hasIncomingEdge,
+                        width: graphWidth
+                    )
                 }
             }
-            .width(graphWidth)
+            .width(graphWidth + CommitGraphCell.cellHorizontalPadding)
 
             TableColumn("Summary") { row in
                 switch row {
@@ -43,7 +58,7 @@ struct CommitListView: View {
                                 .background(.quaternary, in: Capsule())
                         }
                     }
-                case .commit(let commit, _):
+                case .commit(let commit, _, _):
                     HStack(spacing: 4) {
                         ForEach(Array(commit.refs.enumerated()), id: \.offset) { _, ref in
                             RefCapsule(ref: ref)
@@ -55,14 +70,14 @@ struct CommitListView: View {
             .width(min: 180, ideal: 420)
 
             TableColumn("Author") { row in
-                if case .commit(let commit, _) = row {
+                if case .commit(let commit, _, _) = row {
                     Text(commit.authorName).lineLimit(1)
                 }
             }
             .width(min: 90, ideal: 120)
 
             TableColumn("Date") { row in
-                if case .commit(let commit, _) = row {
+                if case .commit(let commit, _, _) = row {
                     Text(commit.authorDate.formatted(.relative(presentation: .named)))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -71,7 +86,7 @@ struct CommitListView: View {
             .width(min: 90, ideal: 130)
 
             TableColumn("SHA") { row in
-                if case .commit(let commit, _) = row {
+                if case .commit(let commit, _, _) = row {
                     Text(commit.shortSha)
                         .font(.system(.body, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -83,7 +98,7 @@ struct CommitListView: View {
     }
 
     private var graphWidth: CGFloat {
-        CommitGraphCell.columnWidth(for: store.snapshot?.graph ?? [])
+        CommitGraphCell.contentWidth(for: store.snapshot?.graph ?? [])
     }
 
     private var selectionBinding: Binding<Selection?> {
@@ -105,8 +120,16 @@ struct CommitListView: View {
         }
         var graphBySha: [String: GraphRow] = [:]
         for row in snapshot.graph { graphBySha[row.sha] = row }
+        var previous: GraphRow?
         for commit in snapshot.commits {
-            result.append(.commit(commit, graphBySha[commit.sha]))
+            let graphRow = graphBySha[commit.sha]
+            let hasIncomingEdge = if let graphRow, let previous {
+                previous.edges.contains { !$0.fromAbove && $0.toLane == graphRow.lane }
+            } else {
+                false
+            }
+            result.append(.commit(commit, graphRow, hasIncomingEdge: hasIncomingEdge))
+            previous = graphRow
         }
         return result
     }

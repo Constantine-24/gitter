@@ -7,9 +7,19 @@ struct CommitGraphCell: View {
     /// `nil` for the synthetic Working Copy row, which draws a dotted node in lane 0.
     let row: GraphRow?
     let isMerge: Bool
+    /// True when the row above routes an edge into this row's lane. That edge stops at the
+    /// previous row's bottom edge, so this row draws the other half, down into the node.
+    var hasIncomingEdge: Bool = false
+    /// Width of the drawing area, shared by every row so lanes line up (see `contentWidth`).
+    let width: CGFloat
 
     static let laneWidth: CGFloat = 14
     static let rowHeight: CGFloat = 24
+    /// The vertical padding `Table` puts around a cell's content, cancelled out so the
+    /// graph canvas spans the whole row and edges join up between rows.
+    static let cellPadding: CGFloat = 2
+    /// Slack added to the column so the table's horizontal cell inset can't clip the canvas.
+    static let cellHorizontalPadding: CGFloat = 20
 
     static let palette: [Color] = [
         .blue, .green, .orange, .purple, .pink, .teal, .indigo, .red,
@@ -19,8 +29,8 @@ struct CommitGraphCell: View {
         palette[((lane % palette.count) + palette.count) % palette.count]
     }
 
-    /// Column width for a set of graph rows: the widest row's lane count.
-    static func columnWidth(for rows: [GraphRow]) -> CGFloat {
+    /// Drawing width for a set of graph rows: enough for the widest row's lane count.
+    static func contentWidth(for rows: [GraphRow]) -> CGFloat {
         let lanes = rows.map(\.laneCount).max() ?? 1
         return max(24, CGFloat(lanes) * laneWidth + 8)
     }
@@ -33,7 +43,10 @@ struct CommitGraphCell: View {
             }
             draw(row, in: &context, size: size)
         }
-        .frame(height: Self.rowHeight)
+        .frame(width: width)
+        .frame(minHeight: Self.rowHeight)
+        .frame(maxHeight: .infinity)
+        .padding(.vertical, -Self.cellPadding)
         .accessibilityHidden(true)
     }
 
@@ -86,6 +99,14 @@ struct CommitGraphCell: View {
 
         let center = CGPoint(x: x(row.lane), y: centerY)
         let color = Self.color(forLane: row.lane)
+
+        if hasIncomingEdge {
+            var stub = Path()
+            stub.move(to: CGPoint(x: center.x, y: 0))
+            stub.addLine(to: center)
+            context.stroke(stub, with: .color(color), lineWidth: 1.5)
+        }
+
         if isMerge {
             let ring = Path(ellipseIn: CGRect(x: center.x - 5, y: center.y - 5, width: 10, height: 10))
             context.stroke(ring, with: .color(color), lineWidth: 2)
