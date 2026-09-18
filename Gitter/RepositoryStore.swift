@@ -245,6 +245,11 @@ final class RepositoryStore {
 
     // MARK: - Errors
 
+    /// Clears the currently displayed error (the banner's dismiss button).
+    func dismissError() {
+        lastError = nil
+    }
+
     private static func describe(_ error: Error) -> String {
         if let gitError = error as? GitError {
             switch gitError {
