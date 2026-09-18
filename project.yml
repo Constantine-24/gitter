@@ -1,0 +1,52 @@
+name: Gitter
+options:
+  bundleIdPrefix: dev.penzin
+  deploymentTarget:
+    macOS: "26.0"
+  xcodeVersion: "27.0"
+  createIntermediateGroups: true
+packages:
+  GitCore:
+    path: GitCore
+targets:
+  Gitter:
+    type: application
+    platform: macOS
+    sources:
+      - path: Gitter
+    dependencies:
+      - package: GitCore
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        GENERATE_INFOPLIST_FILE: NO
+    info:
+      path: Gitter/Info.plist
+      properties:
+        CFBundleName: Gitter
+        CFBundleDisplayName: Gitter
+        LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
+        NSHumanReadableCopyright: ""
+        LSApplicationCategoryType: public.app-category.developer-tools
+    entitlements:
+      path: Gitter/Gitter.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+schemes:
+  Gitter:
+    build:
+      targets:
+        Gitter: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - package: GitCore/GitCoreTests
