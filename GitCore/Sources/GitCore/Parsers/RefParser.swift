@@ -34,7 +34,12 @@ public enum RefParser {
                 )
             } else if refname.hasPrefix(remoteBranchPrefix) {
                 let name = String(refname.dropFirst(remoteBranchPrefix.count))
-                guard !name.isEmpty, !name.hasSuffix("/HEAD") else { continue }
+                guard !name.isEmpty else { continue }
+                // name is "R/X"; skip only when X (everything after the remote's own
+                // first path component) is exactly "HEAD", not merely ending in "/HEAD".
+                guard let slashIndex = name.firstIndex(of: "/") else { continue }
+                let branchPart = name[name.index(after: slashIndex)...]
+                guard branchPart != "HEAD" else { continue }
                 remoteBranches.append(
                     Branch(name: name, sha: sha, isHead: headMarker == "*", upstream: nil)
                 )

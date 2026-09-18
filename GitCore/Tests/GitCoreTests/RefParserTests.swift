@@ -67,4 +67,13 @@ import Testing
         let collection = RefParser.parse(data)
         #expect(collection.localBranches.map(\.name) == ["feature", "main", "topic"])
     }
+
+    @Test func nestedRemoteBranchNamedHeadIsKeptButSymbolicRemoteHeadIsSkipped() {
+        let line = "refs/remotes/origin/release/HEAD\0deadbeef\0\0\0commit\n"
+            + "refs/remotes/origin/HEAD\0cafebabe\0\0\0commit\n"
+        let data = Data(line.utf8)
+        let collection = RefParser.parse(data)
+        #expect(collection.remoteBranches.map(\.name) == ["origin/release/HEAD"])
+        #expect(!collection.remoteBranches.contains { $0.name == "origin/HEAD" })
+    }
 }
