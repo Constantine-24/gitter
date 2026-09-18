@@ -24,7 +24,8 @@ public struct CLIGitBackend: GitBackend {
 
     // MARK: - Format strings (must match the parsers' doc comments verbatim)
 
-    private static let refFormat = "%(refname)%00%(objectname)%00%(HEAD)%00%(upstream:short)%00%(objecttype)"
+    private static let refFormat =
+        "%(refname)%00%(objectname)%00%(HEAD)%00%(upstream:short)%00%(objecttype)%00%(*objectname)"
     private static let logFormat = "%H%x00%P%x00%an%x00%ae%x00%aI%x00%s%x00%D"
 
     // MARK: - GitBackend

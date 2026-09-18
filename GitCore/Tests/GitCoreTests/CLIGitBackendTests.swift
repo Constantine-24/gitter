@@ -186,4 +186,22 @@ import Testing
             _ = try await backend.workingCopyDiff(at: dir, path: "f.txt", staged: false)
         }
     }
+
+    @Test func annotatedTagSnapshotUsesPeeledCommitSha() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("a.txt", "one\n")
+        try await repo.commitAll("first")
+        try await repo.git(["tag", "-a", "v1", "-m", "msg"])
+
+        let head = try await repo.revParse("HEAD")
+        let tagObject = try await repo.revParse("refs/tags/v1")
+
+        let snapshot = try await CLIGitBackend().snapshot(at: repo.root)
+        let v1 = try #require(snapshot.refs.tags.first { $0.name == "v1" })
+        #expect(v1.isAnnotated == true)
+        #expect(v1.sha == head)
+        // Guards the peeling itself: the tag object has its own, different sha.
+        #expect(tagObject != head)
+    }
 }

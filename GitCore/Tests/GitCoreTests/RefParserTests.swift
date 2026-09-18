@@ -76,4 +76,28 @@ import Testing
         #expect(collection.remoteBranches.map(\.name) == ["origin/release/HEAD"])
         #expect(!collection.remoteBranches.contains { $0.name == "origin/HEAD" })
     }
+
+    @Test func annotatedTagUsesPeeledCommitSha() {
+        // 6-field line: refname, objectname (the tag object), HEAD, upstream, objecttype,
+        // *objectname (the commit the tag peels to).
+        let line = "refs/tags/v2\0aaaaaaa1\0\0\0tag\0bbbbbbb2\n"
+        let collection = RefParser.parse(Data(line.utf8))
+        let v2 = collection.tags.first { $0.name == "v2" }
+        #expect(v2?.sha == "bbbbbbb2")
+        #expect(v2?.isAnnotated == true)
+    }
+
+    @Test func lightweightTagWithEmptyPeeledFieldKeepsObjectname() {
+        let line = "refs/tags/v3\0ccccccc3\0\0\0commit\0\n"
+        let collection = RefParser.parse(Data(line.utf8))
+        let v3 = collection.tags.first { $0.name == "v3" }
+        #expect(v3?.sha == "ccccccc3")
+        #expect(v3?.isAnnotated == false)
+    }
+
+    @Test func branchWithEmptyPeeledFieldKeepsObjectname() {
+        let line = "refs/heads/main\0ddddddd4\0*\0\0commit\0\n"
+        let collection = RefParser.parse(Data(line.utf8))
+        #expect(collection.localBranches.first?.sha == "ddddddd4")
+    }
 }
