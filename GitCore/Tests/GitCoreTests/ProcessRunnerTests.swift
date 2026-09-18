@@ -28,12 +28,20 @@ import Testing
 
     @Test func allowedExitCodesReturnsStdoutInsteadOfThrowing() async throws {
         let runner = ProcessRunner()
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitter-processrunner-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("f.txt")
+        try "line1\n".write(to: file, atomically: true, encoding: .utf8)
+
         // `git diff --no-index` exits 1 when the compared paths differ, which is expected
-        // usage, not a failure; allowedExitCodes lets callers treat that as success.
+        // usage, not a failure; allowedExitCodes lets callers treat that as success and
+        // still get the diff it wrote to stdout.
         let out = try await runner.run(
-            "/usr/bin/git", ["rev-parse", "HEAD"], cwd: URL(fileURLWithPath: "/"),
-            allowedExitCodes: [128]
+            "/usr/bin/git", ["diff", "--no-index", "/dev/null", file.path], cwd: dir,
+            allowedExitCodes: [1]
         )
-        #expect(out.isEmpty)
+        #expect(String(decoding: out, as: UTF8.self).contains("+++ "))
     }
 }

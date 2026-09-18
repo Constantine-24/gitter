@@ -152,4 +152,38 @@ import Testing
         let available = await CLIGitBackend.isGitAvailable(at: "/nonexistent/git")
         #expect(!available)
     }
+
+    @Test func commitFilesHandlesNonASCIIRenamedPath() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        let backend = CLIGitBackend()
+
+        try repo.write("orig.txt", "content\n")
+        try await repo.commitAll("add orig")
+
+        try await repo.git(["mv", "orig.txt", "é.txt"])
+        try await repo.git(["commit", "-q", "-m", "rename to non-ascii"])
+        let sha = try await repo.headSha()
+
+        let files = try await backend.commitFiles(at: repo.root, sha: sha)
+
+        let renamed = files.first { $0.path == "é.txt" }
+        #expect(renamed != nil)
+        #expect(renamed?.staged == .renamed)
+        #expect(renamed?.originalPath == "orig.txt")
+    }
+
+    @Test func workingCopyDiffOnNonRepositoryThrows() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitter-test-nonrepo-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try "hello\n".write(to: dir.appendingPathComponent("f.txt"), atomically: true, encoding: .utf8)
+
+        let backend = CLIGitBackend()
+
+        await #expect(throws: GitError.self) {
+            _ = try await backend.workingCopyDiff(at: dir, path: "f.txt", staged: false)
+        }
+    }
 }

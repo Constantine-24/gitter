@@ -64,7 +64,7 @@ public struct CLIGitBackend: GitBackend {
 
     public func commitFiles(at root: URL, sha: String) async throws -> [FileStatus] {
         let data = try await diffTree(
-            at: root, arguments: ["--no-commit-id", "--name-status", "-r", "-M"], sha: sha
+            at: root, arguments: ["--no-commit-id", "--name-status", "-z", "-r", "-M"], sha: sha
         )
         return parseNameStatus(data)
     }
@@ -95,11 +95,15 @@ public struct CLIGitBackend: GitBackend {
     }
 
     /// Whether `path` is tracked in the index (as opposed to untracked/new).
+    ///
+    /// `ls-files --error-unmatch` exits 1 specifically when the path isn't in the index;
+    /// any other failure (e.g. `root` isn't a git repository at all) must propagate rather
+    /// than being silently treated as "untracked".
     private func isTracked(_ path: String, at root: URL) async throws -> Bool {
         do {
             _ = try await run(["ls-files", "--error-unmatch", "--", path], cwd: root)
             return true
-        } catch is GitError {
+        } catch GitError.commandFailed(exitCode: 1, stderr: _) {
             return false
         }
     }
@@ -117,23 +121,33 @@ public struct CLIGitBackend: GitBackend {
         }
     }
 
-    /// Parses `diff-tree --name-status` output: lines `X\tpath` or `R100\told\tnew` /
-    /// `C100\told\tnew`, terminated by `\n` (no `-z` here).
+    /// Parses `diff-tree -z --name-status` output: a flat NUL-separated token stream, one
+    /// record per file — `X\0path\0` for ordinary entries, `R<score>\0old\0new\0` for
+    /// renames/copies. `-z` avoids git quoting non-ASCII paths as octal escapes (which it
+    /// does under `LC_ALL=C` without `-z`), keeping paths byte-identical to what
+    /// `StatusParser` (which also uses `-z`) produces.
     private func parseNameStatus(_ data: Data) -> [FileStatus] {
         let text = String(decoding: data, as: UTF8.self)
-        var files: [FileStatus] = []
+        let fields = text.split(separator: "\u{0}", omittingEmptySubsequences: true).map(String.init)
 
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
-            guard let statusField = fields.first, let kindChar = statusField.first else { continue }
+        var files: [FileStatus] = []
+        var index = 0
+        while index < fields.count {
+            let statusField = fields[index]
+            index += 1
+            guard let kindChar = statusField.first else { continue }
             let staged = ChangeKind.from(porcelain: kindChar)
 
-            if (kindChar == "R" || kindChar == "C"), fields.count >= 3 {
-                let originalPath = String(fields[1])
-                let path = String(fields[2])
+            if kindChar == "R" || kindChar == "C" {
+                guard index + 1 < fields.count else { break }
+                let originalPath = fields[index]
+                let path = fields[index + 1]
+                index += 2
                 files.append(FileStatus(path: path, originalPath: originalPath, staged: staged, unstaged: nil))
-            } else if fields.count >= 2 {
-                let path = String(fields[1])
+            } else {
+                guard index < fields.count else { break }
+                let path = fields[index]
+                index += 1
                 files.append(FileStatus(path: path, originalPath: nil, staged: staged, unstaged: nil))
             }
         }
