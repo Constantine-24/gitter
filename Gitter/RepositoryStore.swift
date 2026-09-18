@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GitCore
 import Observation
@@ -71,6 +72,7 @@ final class RepositoryStore {
 
         root = standardized
         UserDefaults.standard.set(standardized.path, forKey: Self.lastRepositoryPathKey)
+        NSDocumentController.shared.noteNewRecentDocumentURL(standardized)
 
         watcher = RepositoryWatcher(path: standardized.path) { [weak self] in
             self?.scheduleRefresh()

@@ -3,7 +3,13 @@ import SwiftUI
 
 @main
 struct GitterApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = RepositoryStore()
+
+    init() {
+        let store = store
+        AppDelegate.onOpenURL = { url in store.open(url) }
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -22,6 +28,19 @@ struct GitterApp: App {
                     .keyboardShortcut("r")
                     .disabled(store.root == nil)
             }
+        }
+    }
+}
+
+/// Forwards "Open Recent" selections (and other Finder/system open requests) to the store.
+/// The App struct owns the store, so this delegate holds a closure set from `GitterApp.init`.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    @MainActor static var onOpenURL: ((URL) -> Void)?
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.first else { return }
+        MainActor.assumeIsolated {
+            AppDelegate.onOpenURL?(url)
         }
     }
 }
