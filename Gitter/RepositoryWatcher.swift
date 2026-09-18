@@ -2,13 +2,17 @@ import CoreServices
 import Foundation
 
 /// Watches a repository root (including `.git/`) for filesystem changes and calls `onChange`
-/// on the main actor, after filtering out noise (lockfiles and loose-object writes).
+/// on the main actor, after filtering out noise (lockfiles, the index stat cache, and loose
+/// object writes).
 ///
 /// `@unchecked Sendable`: the FSEventStream callback fires on `queue` (a private serial
 /// queue), but it only ever reads immutable `let` properties captured by value and hops to
 /// the main actor before touching anything else. All other mutation (`start`/`stop`) happens
-/// on the thread that created the watcher (in practice, the main actor). There is no shared
-/// mutable state accessed from multiple threads without synchronization.
+/// on the thread that created the watcher (in practice, the main actor). The stream itself
+/// holds a retained (`passRetained`) reference to `self` for its whole lifetime, released only
+/// from the stream's own `release` callback once `FSEventStreamRelease` deallocates it, so the
+/// object the callback dereferences is guaranteed to be alive for as long as the stream can
+/// still invoke it.
 final class RepositoryWatcher: @unchecked Sendable {
     private var stream: FSEventStreamRef?
     private let queue = DispatchQueue(label: "dev.penzin.Gitter.RepositoryWatcher")
@@ -17,16 +21,31 @@ final class RepositoryWatcher: @unchecked Sendable {
     init(path: String, onChange: @escaping @MainActor @Sendable () -> Void) {
         self.onChange = onChange
 
+        // `info` is a +1 (passRetained) reference: the C stream effectively co-owns this
+        // object until it is invalidated/released, which drives the matching `release`
+        // callback below. Without this, a callback already queued or running could
+        // dereference a deallocated `self` (the lifetime race this retain closes).
+        let info = Unmanaged.passRetained(self).toOpaque()
         var context = FSEventStreamContext(
             version: 0,
-            info: nil,
+            info: info,
             retain: nil,
-            release: nil,
+            release: { info in
+                guard let info else { return }
+                Unmanaged<RepositoryWatcher>.fromOpaque(info).release()
+            },
             copyDescription: nil
         )
-        context.info = Unmanaged.passUnretained(self).toOpaque()
 
-        let flags = UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer)
+        // `kFSEventStreamCreateFlagUseCFTypes` makes `eventPaths` a genuine `CFArrayRef` of
+        // `CFStringRef`s in the callback; without it, `eventPaths` is a `char **` and bit-
+        // casting it to `CFArray` (as an earlier version of this file did) is undefined
+        // behavior. See Apple's FSEvents documentation for `FSEventStreamCallback`.
+        let flags = UInt32(
+            kFSEventStreamCreateFlagFileEvents
+                | kFSEventStreamCreateFlagNoDefer
+                | kFSEventStreamCreateFlagUseCFTypes
+        )
         guard let created = FSEventStreamCreate(
             kCFAllocatorDefault,
             RepositoryWatcher.callback,
@@ -36,6 +55,9 @@ final class RepositoryWatcher: @unchecked Sendable {
             0.2,
             flags
         ) else {
+            // No stream was created, so the `release` callback above will never run.
+            // Balance the `passRetained` above ourselves to avoid leaking `self` forever.
+            Unmanaged<RepositoryWatcher>.fromOpaque(info).release()
             return
         }
 
@@ -46,10 +68,16 @@ final class RepositoryWatcher: @unchecked Sendable {
 
     func stop() {
         guard let stream else { return }
+        // Clear `self.stream` before touching the C API: `FSEventStreamRelease` below can
+        // synchronously drop the stream's retain count to zero and invoke the `release`
+        // context callback, which releases the extra reference this class was keeping itself
+        // alive with. If that was the last reference, `deinit` runs re-entrantly and calls
+        // `stop()` again; with `self.stream` already `nil`, that re-entrant call is a no-op
+        // instead of double-stopping/invalidating/releasing an already-torn-down stream.
+        self.stream = nil
         FSEventStreamStop(stream)
         FSEventStreamInvalidate(stream)
         FSEventStreamRelease(stream)
-        self.stream = nil
     }
 
     deinit {
@@ -62,13 +90,15 @@ final class RepositoryWatcher: @unchecked Sendable {
         guard let clientCallBackInfo else { return }
         let watcher = Unmanaged<RepositoryWatcher>.fromOpaque(clientCallBackInfo).takeUnretainedValue()
 
+        // Valid only because `kFSEventStreamCreateFlagUseCFTypes` was passed at creation time,
+        // which makes `eventPaths` a `CFArray` of `CFString` rather than a `char **`.
         let cfArray = unsafeBitCast(eventPaths, to: CFArray.self)
         var relevant = false
         for index in 0..<numEvents {
             guard let raw = CFArrayGetValueAtIndex(cfArray, index) else { continue }
             let cfString = unsafeBitCast(raw, to: CFString.self)
             let path = cfString as String
-            if path.hasSuffix(".lock") || path.contains("/.git/objects/") {
+            if path.hasSuffix(".lock") || path.hasSuffix("/.git/index") || path.contains("/.git/objects/") {
                 continue
             }
             relevant = true

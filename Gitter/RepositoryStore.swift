@@ -18,12 +18,20 @@ final class RepositoryStore {
     var selectedPath: String?
     private(set) var detailFiles: [FileStatus] = []
     private(set) var diff: [FileDiff] = []
-    var stagedView = false
+    var stagedView = false {
+        didSet {
+            guard stagedView != oldValue else { return }
+            guard selection == .workingCopy, selectedPath != nil else { return }
+            loadDiff()
+        }
+    }
 
     let backend: any GitBackend
 
     private var watcher: RepositoryWatcher?
     private var refreshTask: Task<Void, Never>?
+    private var detailTask: Task<Void, Never>?
+    private var diffTask: Task<Void, Never>?
     private var isRefreshing = false
     private var needsAnotherRefresh = false
 
@@ -45,6 +53,21 @@ final class RepositoryStore {
 
         watcher?.stop()
         watcher = nil
+
+        refreshTask?.cancel()
+        detailTask?.cancel()
+        diffTask?.cancel()
+        isRefreshing = false
+        needsAnotherRefresh = false
+
+        // Reset all repository-derived state so nothing from the previous repository lingers
+        // on screen (or gets raced against) while the new repository's first snapshot loads.
+        snapshot = nil
+        detailFiles = []
+        diff = []
+        selection = .workingCopy
+        selectedPath = nil
+        lastError = nil
 
         root = standardized
         UserDefaults.standard.set(standardized.path, forKey: Self.lastRepositoryPathKey)
@@ -98,6 +121,9 @@ final class RepositoryStore {
 
         do {
             let newSnapshot = try await backend.snapshot(at: root)
+            // The repository may have been switched (via `open`) while this snapshot was in
+            // flight; a snapshot for the old root must never overwrite state for the new one.
+            guard self.root == root else { return }
             snapshot = newSnapshot
             lastError = nil
 
@@ -105,10 +131,11 @@ final class RepositoryStore {
                 selection = .workingCopy
             }
         } catch {
+            guard self.root == root else { return }
             lastError = Self.describe(error)
         }
 
-        await reloadDetail()
+        loadDetail()
     }
 
     // MARK: - Selection
@@ -116,58 +143,103 @@ final class RepositoryStore {
     func select(_ newSelection: Selection) {
         selection = newSelection
         diff = []
-        Task { await reloadDetail() }
+        loadDetail()
     }
 
     func selectPath(_ path: String?) {
         selectedPath = path
-        Task { await reloadDiff() }
+        loadDiff()
     }
 
     // MARK: - Detail loading
 
-    private func reloadDetail() async {
-        guard let root, let snapshot else {
+    /// Cancels any in-flight detail load and starts a fresh one for the current
+    /// `root`/`selection`. Only the most recently started task is allowed to write
+    /// `detailFiles`/`selectedPath`/`lastError`: every earlier one is cancelled, and this one
+    /// re-checks that `selection` hasn't changed again before it lands.
+    private func loadDetail() {
+        detailTask?.cancel()
+
+        guard let root, snapshot != nil else {
             detailFiles = []
-            diff = []
+            loadDiff()
             return
         }
 
-        switch selection {
-        case .workingCopy:
-            detailFiles = snapshot.status.files
-        case .commit(let sha):
-            do {
-                detailFiles = try await backend.commitFiles(at: root, sha: sha)
-            } catch {
-                lastError = Self.describe(error)
-                detailFiles = []
+        let capturedSelection = selection
+
+        detailTask = Task {
+            var files: [FileStatus] = []
+            var loadError: Error?
+
+            switch capturedSelection {
+            case .workingCopy:
+                files = self.snapshot?.status.files ?? []
+            case .commit(let sha):
+                do {
+                    files = try await self.backend.commitFiles(at: root, sha: sha)
+                } catch {
+                    loadError = error
+                }
             }
-        }
 
-        if let selectedPath, !detailFiles.contains(where: { $0.path == selectedPath }) {
-            self.selectedPath = nil
-        }
+            guard !Task.isCancelled, self.selection == capturedSelection else { return }
 
-        await reloadDiff()
+            if let loadError {
+                self.lastError = Self.describe(loadError)
+                self.detailFiles = []
+            } else {
+                self.detailFiles = files
+            }
+
+            if let selectedPath = self.selectedPath, !self.detailFiles.contains(where: { $0.path == selectedPath }) {
+                self.selectedPath = nil
+            }
+
+            self.loadDiff()
+        }
     }
 
-    private func reloadDiff() async {
+    private func loadDiff() {
+        diffTask?.cancel()
+
         guard let root, let selectedPath else {
             diff = []
             return
         }
 
-        do {
-            switch selection {
-            case .workingCopy:
-                diff = try await backend.workingCopyDiff(at: root, path: selectedPath, staged: stagedView)
-            case .commit(let sha):
-                diff = try await backend.commitDiff(at: root, sha: sha, path: selectedPath)
+        let capturedSelection = selection
+        let capturedPath = selectedPath
+        let capturedStagedView = stagedView
+
+        diffTask = Task {
+            var result: [FileDiff] = []
+            var loadError: Error?
+
+            do {
+                switch capturedSelection {
+                case .workingCopy:
+                    result = try await self.backend.workingCopyDiff(
+                        at: root, path: capturedPath, staged: capturedStagedView
+                    )
+                case .commit(let sha):
+                    result = try await self.backend.commitDiff(at: root, sha: sha, path: capturedPath)
+                }
+            } catch {
+                loadError = error
             }
-        } catch {
-            lastError = Self.describe(error)
-            diff = []
+
+            guard !Task.isCancelled,
+                  self.selection == capturedSelection,
+                  self.selectedPath == capturedPath
+            else { return }
+
+            if let loadError {
+                self.lastError = Self.describe(loadError)
+                self.diff = []
+            } else {
+                self.diff = result
+            }
         }
     }
 
@@ -176,8 +248,9 @@ final class RepositoryStore {
     private static func describe(_ error: Error) -> String {
         if let gitError = error as? GitError {
             switch gitError {
-            case .commandFailed(_, let stderr):
-                return stderr
+            case .commandFailed(let exitCode, let stderr):
+                let trimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? "git exited with code \(exitCode)" : stderr
             case .launchFailed(let path):
                 return "Failed to launch: \(path)"
             }
