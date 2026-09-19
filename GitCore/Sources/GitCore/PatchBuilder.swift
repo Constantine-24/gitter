@@ -8,6 +8,19 @@ public enum PatchDirection: Sendable, Hashable {
     case unstage
 }
 
+/// A unified diff ready for `git apply --cached [--reverse]`.
+public struct Patch: Sendable, Hashable {
+    public let text: String
+    /// True when some emitted hunk carries no context line at all. `git apply` refuses such a
+    /// hunk unless it is also given `--unidiff-zero`.
+    public let needsUnidiffZero: Bool
+
+    public init(text: String, needsUnidiffZero: Bool) {
+        self.text = text
+        self.needsUnidiffZero = needsUnidiffZero
+    }
+}
+
 /// Builds a unified diff that stages or unstages a chosen subset of a file's changed lines.
 ///
 /// Pure: it never touches git or the file system, it only rewrites a parsed `FileDiff`.
@@ -25,15 +38,48 @@ public enum PatchBuilder {
         }
     }
 
+    /// Whether the selection covers the entire change of a file that is being created or
+    /// removed, rather than a part of it.
+    ///
+    /// Such a selection cannot go through a patch: the header is always a plain modification,
+    /// so applying it would leave an empty blob in the index instead of adding or removing the
+    /// entry. Callers must route these to the file-level commands (`git add`, `git rm
+    /// --cached` / `git restore --staged`) instead; `patch` returns nil for them.
+    public static func isWholeFileChange(
+        file: FileDiff, hunkIDs: Set<Hunk.ID>, lineIDs: Set<DiffLine.ID>?,
+        direction: PatchDirection
+    ) -> Bool {
+        switch (direction, file.kind) {
+        case (.stage, .deleted), (.unstage, .added): break
+        default: return false
+        }
+        guard !file.hunks.isEmpty else { return false }
+        for hunk in file.hunks {
+            guard hunkIDs.contains(hunk.id) else { return false }
+            guard let lineIDs else { continue }
+            for line in hunk.lines where line.kind == .added || line.kind == .removed {
+                guard lineIDs.contains(line.id) else { return false }
+            }
+        }
+        return true
+    }
+
     /// The patch for the hunks in `hunkIDs`, restricted to the changed lines in `lineIDs`.
     ///
     /// `lineIDs == nil` selects every changed line of those hunks (hunk-level staging).
-    /// Returns nil when no chosen hunk has a changed line left.
+    /// Returns nil when no chosen hunk has a changed line left, or when the selection is a
+    /// whole-file change (see `isWholeFileChange`).
     public static func patch(
         file: FileDiff, hunkIDs: Set<Hunk.ID>, lineIDs: Set<DiffLine.ID>?,
         direction: PatchDirection
-    ) -> String? {
+    ) -> Patch? {
+        guard
+            !isWholeFileChange(
+                file: file, hunkIDs: hunkIDs, lineIDs: lineIDs, direction: direction)
+        else { return nil }
+
         var body = ""
+        var needsUnidiffZero = false
         // Net line-count change contributed by the hunks emitted so far. Omitted hunks change
         // nothing, so they do not count.
         var delta = 0
@@ -43,10 +89,11 @@ public enum PatchBuilder {
                     hunk: hunk, lineIDs: lineIDs, direction: direction, delta: delta)
             else { continue }
             body += rendered.text
+            needsUnidiffZero = needsUnidiffZero || !rendered.hasContext
             delta += rendered.newCount - rendered.oldCount
         }
         guard !body.isEmpty, let path = file.newPath ?? file.oldPath else { return nil }
-        return fileHeader(for: path) + body
+        return Patch(text: fileHeader(for: path) + body, needsUnidiffZero: needsUnidiffZero)
     }
 
     // MARK: - Hunks
@@ -55,75 +102,69 @@ public enum PatchBuilder {
         let text: String
         let oldCount: Int
         let newCount: Int
+        let hasContext: Bool
     }
 
-    private enum Disposition { case keep, toContext, drop }
+    enum Disposition { case keep, toContext, drop }
 
-    private static func disposition(
-        of kind: DiffLineKind, selected: Bool, direction: PatchDirection
-    ) -> Disposition {
-        if selected { return .keep }
-        switch (kind, direction) {
+    /// What becomes of a changed line the user did not select.
+    static func dispositionOfUnselected(isAdded: Bool, direction: PatchDirection) -> Disposition {
+        switch (isAdded, direction) {
         // An unselected `+` stays out of the index when staging, and stays in it when
         // unstaging — where the reverse-applied patch must still match it as context.
-        case (.added, .stage): return .drop
-        case (.added, .unstage): return .toContext
+        case (true, .stage): return .drop
+        case (true, .unstage): return .toContext
         // Mirrored: an unselected `-` is still in the index when staging, and was already
         // gone from it when unstaging.
-        case (.removed, .stage): return .toContext
-        case (.removed, .unstage): return .drop
-        default: return .keep
+        case (false, .stage): return .toContext
+        case (false, .unstage): return .drop
         }
     }
 
     private static func render(
         hunk: Hunk, lineIDs: Set<DiffLine.ID>?, direction: PatchDirection, delta: Int
     ) -> RenderedHunk? {
-        var lines: [String] = []
+        var emitted: [EmittedLine] = []
         var oldCount = 0
         var newCount = 0
         var hasChange = false
-        // Whether the nearest preceding non-marker line survived; a `\ No newline` marker
-        // annotates that line and shares its fate.
-        var precedingLineSurvived = true
 
         for line in hunk.lines {
-            switch line.kind {
-            case .context:
-                lines.append(" " + line.text)
-                oldCount += 1
-                newCount += 1
-                precedingLineSurvived = true
-            case .noNewline:
-                if precedingLineSurvived { lines.append("\\ " + line.text) }
-            case .added, .removed:
+            // Markers are not copied; they are re-derived from the emitted lines below.
+            guard line.kind != .noNewline else { continue }
+            var kind = EmittedLine.Kind.context
+            if line.kind != .context {
                 let selected = lineIDs.map { $0.contains(line.id) } ?? true
-                switch disposition(of: line.kind, selected: selected, direction: direction) {
+                let action =
+                    selected
+                    ? Disposition.keep
+                    : dispositionOfUnselected(isAdded: line.kind == .added, direction: direction)
+                switch action {
                 case .keep:
-                    lines.append((line.kind == .added ? "+" : "-") + line.text)
-                    if line.kind == .added { newCount += 1 } else { oldCount += 1 }
+                    kind = line.kind == .added ? .added : .removed
                     hasChange = true
-                    precedingLineSurvived = true
                 case .toContext:
-                    lines.append(" " + line.text)
-                    oldCount += 1
-                    newCount += 1
-                    precedingLineSurvived = true
+                    kind = .context
                 case .drop:
-                    precedingLineSurvived = false
+                    continue
                 }
             }
+            if kind != .added { oldCount += 1 }
+            if kind != .removed { newCount += 1 }
+            emitted.append(EmittedLine(kind: kind, text: line.text, sourceID: line.id))
         }
 
         guard hasChange else { return nil }
 
+        let markers = noNewlineMarkers(in: hunk)
+        let lines = withMarkers(emitted, markedIDs: markers.ids, marker: markers.text)
         let (oldStart, newStart) = starts(
             hunk: hunk, oldCount: oldCount, newCount: newCount, direction: direction, delta: delta)
         let header = "@@ -\(oldStart),\(oldCount) +\(newStart),\(newCount) @@"
             + sectionHeading(hunk.header)
         return RenderedHunk(
             text: ([header] + lines).map { $0 + "\n" }.joined(), oldCount: oldCount,
-            newCount: newCount)
+            newCount: newCount, hasContext: lines.contains { $0.first == " " })
     }
 
     /// Recomputes the hunk's start lines.
@@ -160,52 +201,5 @@ public enum PatchBuilder {
             let second = header.range(of: "@@", range: first.upperBound..<header.endIndex)
         else { return "" }
         return String(header[second.upperBound...])
-    }
-
-    // MARK: - File header
-
-    /// Always a plain modification: `git apply --cached` patches the index entry, so mode
-    /// lines for an addition or a deletion would be wrong for a partial selection.
-    private static func fileHeader(for path: String) -> String {
-        let old = quote(prefix: "a/", path: path)
-        let new = quote(prefix: "b/", path: path)
-        // git appends a TAB when the rendered name contains a space, so the name stays
-        // unambiguous on the `---`/`+++` lines.
-        let oldTab = old.contains(" ") ? "\t" : ""
-        let newTab = new.contains(" ") ? "\t" : ""
-        return "diff --git \(old) \(new)\n--- \(old)\(oldTab)\n+++ \(new)\(newTab)\n"
-    }
-
-    /// git's `quote_c_style`: the prefix and the path are quoted together inside one pair of
-    /// double quotes as soon as any byte needs escaping.
-    private static func quote(prefix: String, path: String) -> String {
-        let bytes = Array((prefix + path).utf8)
-        guard bytes.contains(where: needsEscape) else { return prefix + path }
-        var out = "\""
-        for byte in bytes {
-            switch byte {
-            case 0x07: out += "\\a"
-            case 0x08: out += "\\b"
-            case 0x09: out += "\\t"
-            case 0x0A: out += "\\n"
-            case 0x0B: out += "\\v"
-            case 0x0C: out += "\\f"
-            case 0x0D: out += "\\r"
-            case 0x22: out += "\\\""
-            case 0x5C: out += "\\\\"
-            default:
-                if needsEscape(byte) {
-                    let octal = String(byte, radix: 8)
-                    out += "\\" + String(repeating: "0", count: 3 - octal.count) + octal
-                } else {
-                    out.append(Character(UnicodeScalar(byte)))
-                }
-            }
-        }
-        return out + "\""
-    }
-
-    private static func needsEscape(_ byte: UInt8) -> Bool {
-        byte < 0x20 || byte >= 0x7F || byte == 0x22 || byte == 0x5C
     }
 }

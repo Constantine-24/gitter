@@ -23,6 +23,20 @@ import Testing
 
     static func allHunks(_ file: FileDiff) -> Set<Hunk.ID> { Set(file.hunks.map(\.id)) }
 
+    /// Every hunk of `file`, with `lineIDs` defaulting to "all changed lines".
+    static func build(
+        _ file: FileDiff, _ direction: PatchDirection, _ lineIDs: Set<DiffLine.ID>? = nil
+    ) -> Patch? {
+        PatchBuilder.patch(
+            file: file, hunkIDs: allHunks(file), lineIDs: lineIDs, direction: direction)
+    }
+
+    static func text(
+        _ file: FileDiff, _ direction: PatchDirection, _ lineIDs: Set<DiffLine.ID>? = nil
+    ) -> String? {
+        build(file, direction, lineIDs)?.text
+    }
+
     // MARK: - Fixtures
 
     static let additionFixture = """
@@ -106,20 +120,6 @@ import Testing
          twentytwo
         """
 
-    static let noNewlineFixture = """
-        diff --git a/c.txt b/c.txt
-        index 1111111..2222222 100644
-        --- a/c.txt
-        +++ b/c.txt
-        @@ -1,2 +1,3 @@
-         keep
-        -old
-        \\ No newline at end of file
-        +one
-        +two
-        \\ No newline at end of file
-        """
-
     static let addedFileFixture = """
         diff --git a/new.txt b/new.txt
         new file mode 100644
@@ -144,13 +144,24 @@ import Testing
         -g3
         """
 
+    /// Both sides of this hunk can collapse to zero, unlike a hunk that carries context.
+    static let contextlessFixture = """
+        diff --git a/e.txt b/e.txt
+        index 1111111..2222222 100644
+        --- a/e.txt
+        +++ b/e.txt
+        @@ -5,2 +5,2 @@
+        -a
+        -b
+        +A
+        +B
+        """
+
     // MARK: - 1. Whole hunk, stage
 
     @Test func wholeHunkStageReproducesTheHunk() throws {
         let file = try Self.file(Self.additionFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file), lineIDs: nil, direction: .stage)
-        #expect(patch == """
+        #expect(Self.text(file, .stage) == """
             diff --git a/a.txt b/a.txt
             --- a/a.txt
             +++ b/a.txt
@@ -169,10 +180,7 @@ import Testing
 
     @Test func oneOfTwoAddedLinesStaged() throws {
         let file = try Self.file(Self.additionFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file),
-            lineIDs: Self.changedIDs(file, "alpha"), direction: .stage)
-        #expect(patch == """
+        #expect(Self.text(file, .stage, Self.changedIDs(file, "alpha")) == """
             diff --git a/a.txt b/a.txt
             --- a/a.txt
             +++ b/a.txt
@@ -190,10 +198,7 @@ import Testing
 
     @Test func oneOfTwoRemovedLinesStaged() throws {
         let file = try Self.file(Self.removalFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file),
-            lineIDs: Self.changedIDs(file, "alpha"), direction: .stage)
-        #expect(patch == """
+        #expect(Self.text(file, .stage, Self.changedIDs(file, "alpha")) == """
             diff --git a/a.txt b/a.txt
             --- a/a.txt
             +++ b/a.txt
@@ -211,10 +216,7 @@ import Testing
 
     @Test func oneOfTwoAddedLinesUnstaged() throws {
         let file = try Self.file(Self.additionFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file),
-            lineIDs: Self.changedIDs(file, "alpha"), direction: .unstage)
-        #expect(patch == """
+        #expect(Self.text(file, .unstage, Self.changedIDs(file, "alpha")) == """
             diff --git a/a.txt b/a.txt
             --- a/a.txt
             +++ b/a.txt
@@ -231,10 +233,7 @@ import Testing
 
     @Test func oneOfTwoRemovedLinesUnstaged() throws {
         let file = try Self.file(Self.removalFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file),
-            lineIDs: Self.changedIDs(file, "alpha"), direction: .unstage)
-        #expect(patch == """
+        #expect(Self.text(file, .unstage, Self.changedIDs(file, "alpha")) == """
             diff --git a/a.txt b/a.txt
             --- a/a.txt
             +++ b/a.txt
@@ -251,10 +250,7 @@ import Testing
 
     @Test func mixedReplacePartialStage() throws {
         let file = try Self.file(Self.replaceFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file),
-            lineIDs: Self.changedIDs(file, "a", "A"), direction: .stage)
-        #expect(patch == """
+        #expect(Self.text(file, .stage, Self.changedIDs(file, "a", "A")) == """
             diff --git a/a.txt b/a.txt
             --- a/a.txt
             +++ b/a.txt
@@ -270,10 +266,7 @@ import Testing
 
     @Test func mixedReplacePartialUnstage() throws {
         let file = try Self.file(Self.replaceFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file),
-            lineIDs: Self.changedIDs(file, "a", "A"), direction: .unstage)
-        #expect(patch == """
+        #expect(Self.text(file, .unstage, Self.changedIDs(file, "a", "A")) == """
             diff --git a/a.txt b/a.txt
             --- a/a.txt
             +++ b/a.txt
@@ -291,10 +284,7 @@ import Testing
 
     @Test func secondHunkStartReflectsDeltaWhenStaging() throws {
         let file = try Self.file(Self.twoHunkFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file),
-            lineIDs: Self.changedIDs(file, "x", "z"), direction: .stage)
-        #expect(patch == """
+        #expect(Self.text(file, .stage, Self.changedIDs(file, "x", "z")) == """
             diff --git a/b.txt b/b.txt
             --- a/b.txt
             +++ b/b.txt
@@ -314,10 +304,7 @@ import Testing
 
     @Test func secondHunkStartReflectsDeltaWhenUnstaging() throws {
         let file = try Self.file(Self.twoHunkFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file),
-            lineIDs: Self.changedIDs(file, "x", "z"), direction: .unstage)
-        #expect(patch == """
+        #expect(Self.text(file, .unstage, Self.changedIDs(file, "x", "z")) == """
             diff --git a/b.txt b/b.txt
             --- a/b.txt
             +++ b/b.txt
@@ -340,10 +327,7 @@ import Testing
 
     @Test func hunkWithNothingSelectedIsOmittedAndContributesNoDelta() throws {
         let file = try Self.file(Self.twoHunkFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file),
-            lineIDs: Self.changedIDs(file, "z"), direction: .stage)
-        #expect(patch == """
+        #expect(Self.text(file, .stage, Self.changedIDs(file, "z")) == """
             diff --git a/b.txt b/b.txt
             --- a/b.txt
             +++ b/b.txt
@@ -358,23 +342,87 @@ import Testing
 
     @Test func nothingSelectedAtAllReturnsNil() throws {
         let file = try Self.file(Self.twoHunkFixture)
-        #expect(
-            PatchBuilder.patch(
-                file: file, hunkIDs: Self.allHunks(file), lineIDs: [], direction: .stage) == nil)
-        #expect(
-            PatchBuilder.patch(file: file, hunkIDs: [], lineIDs: nil, direction: .stage) == nil)
+        #expect(Self.build(file, .stage, []) == nil)
+        #expect(PatchBuilder.patch(file: file, hunkIDs: [], lineIDs: nil, direction: .stage) == nil)
     }
 
     // MARK: - 8. No-newline markers
+    //
+    // A marker after line L claims L is the last line of every side L occupies. Rewriting can
+    // falsify that, and git then joins two lines without complaining, so the builder
+    // re-derives markers rather than copying them. The table below walks
+    // {old side lacks a newline} × {new side lacks a newline} × direction × selection.
+    // Every expected patch here was applied to a scratch index with
+    // `git apply --cached [--reverse]` and the resulting blob compared byte for byte.
 
-    @Test func noNewlineMarkersSurviveAWholeHunk() throws {
-        let file = try Self.file(Self.noNewlineFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file), lineIDs: nil, direction: .stage)
-        #expect(patch == """
-            diff --git a/c.txt b/c.txt
-            --- a/c.txt
-            +++ b/c.txt
+    /// old side `keep\nold`, new side `keep\none\ntwo`; neither ends with a newline.
+    static let bothNoEOLFixture = """
+        diff --git a/c.txt b/c.txt
+        index 1111111..2222222 100644
+        --- a/c.txt
+        +++ b/c.txt
+        @@ -1,2 +1,3 @@
+         keep
+        -old
+        \\ No newline at end of file
+        +one
+        +two
+        \\ No newline at end of file
+        """
+
+    /// old side `keep\nold` (no newline), new side `keep\none\ntwo\n`.
+    static let oldNoEOLFixture = """
+        diff --git a/c.txt b/c.txt
+        index 1111111..2222222 100644
+        --- a/c.txt
+        +++ b/c.txt
+        @@ -1,2 +1,3 @@
+         keep
+        -old
+        \\ No newline at end of file
+        +one
+        +two
+        """
+
+    /// old side `keep\nold\n`, new side `keep\none\ntwo` (no newline).
+    static let newNoEOLFixture = """
+        diff --git a/c.txt b/c.txt
+        index 1111111..2222222 100644
+        --- a/c.txt
+        +++ b/c.txt
+        @@ -1,2 +1,3 @@
+         keep
+        -old
+        +one
+        +two
+        \\ No newline at end of file
+        """
+
+    /// The marker sits on a trailing context line: both sides really end there.
+    static let contextNoEOLFixture = """
+        diff --git a/c.txt b/c.txt
+        index 1111111..2222222 100644
+        --- a/c.txt
+        +++ b/c.txt
+        @@ -1,2 +1,3 @@
+         a
+        +b
+         tail
+        \\ No newline at end of file
+        """
+
+    static let cHeader = """
+        diff --git a/c.txt b/c.txt
+        --- a/c.txt
+        +++ b/c.txt
+        """
+
+    // --- both sides lack a newline ---
+
+    @Test func bothNoEOLWholeHunkStageIsUnchanged() throws {
+        let file = try Self.file(Self.bothNoEOLFixture)
+        #expect(Self.text(file, .stage) == Self.cHeader + """
+
             @@ -1,2 +1,3 @@
              keep
             -old
@@ -386,15 +434,41 @@ import Testing
             """)
     }
 
-    @Test func noNewlineMarkerIsDroppedWithItsAddedLine() throws {
-        let file = try Self.file(Self.noNewlineFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file),
-            lineIDs: Self.changedIDs(file, "old", "one"), direction: .stage)
-        #expect(patch == """
-            diff --git a/c.txt b/c.txt
-            --- a/c.txt
-            +++ b/c.txt
+    /// The converted `-old` still ends the old side, but no longer ends the new side, so it is
+    /// split back into `-old` / marker / `+old`. Applying this gives `keep\nold\none\ntwo`;
+    /// keeping the marker on a context line would silently yield `keep\noldone\ntwo`.
+    @Test func bothNoEOLStagingOnlyAdditionsSplitsTheConvertedLine() throws {
+        let file = try Self.file(Self.bothNoEOLFixture)
+        #expect(Self.text(file, .stage, Self.changedIDs(file, "one", "two")) == Self.cHeader + """
+
+            @@ -1,2 +1,4 @@
+             keep
+            -old
+            \\ No newline at end of file
+            +old
+            +one
+            +two
+            \\ No newline at end of file
+
+            """)
+    }
+
+    @Test func bothNoEOLStagingOnlyTheRemovalKeepsItsMarker() throws {
+        let file = try Self.file(Self.bothNoEOLFixture)
+        #expect(Self.text(file, .stage, Self.changedIDs(file, "old")) == Self.cHeader + """
+
+            @@ -1,2 +1,1 @@
+             keep
+            -old
+            \\ No newline at end of file
+
+            """)
+    }
+
+    @Test func bothNoEOLStagingTheRemovalAndOneAddition() throws {
+        let file = try Self.file(Self.bothNoEOLFixture)
+        #expect(Self.text(file, .stage, Self.changedIDs(file, "old", "one")) == Self.cHeader + """
+
             @@ -1,2 +1,2 @@
              keep
             -old
@@ -404,18 +478,13 @@ import Testing
             """)
     }
 
-    @Test func noNewlineMarkerSurvivesARemovedLineTurnedIntoContext() throws {
-        let file = try Self.file(Self.noNewlineFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file),
-            lineIDs: Self.changedIDs(file, "one", "two"), direction: .stage)
-        #expect(patch == """
-            diff --git a/c.txt b/c.txt
-            --- a/c.txt
-            +++ b/c.txt
-            @@ -1,2 +1,4 @@
+    @Test func bothNoEOLWholeHunkUnstageIsUnchanged() throws {
+        let file = try Self.file(Self.bothNoEOLFixture)
+        #expect(Self.text(file, .unstage) == Self.cHeader + """
+
+            @@ -1,2 +1,3 @@
              keep
-             old
+            -old
             \\ No newline at end of file
             +one
             +two
@@ -424,19 +493,132 @@ import Testing
             """)
     }
 
-    @Test func noNewlineMarkerIsDroppedWithItsRemovedLineWhenUnstaging() throws {
-        let file = try Self.file(Self.noNewlineFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file),
-            lineIDs: Self.changedIDs(file, "one"), direction: .unstage)
-        #expect(patch == """
-            diff --git a/c.txt b/c.txt
-            --- a/c.txt
-            +++ b/c.txt
+    /// `-old` keeps its `-`, but the unselected additions become context after it, so it no
+    /// longer ends the old side and its marker must go. The marker on the now-final `two`
+    /// binds to both sides, which is true: both end there.
+    @Test func bothNoEOLUnstagingOnlyTheRemovalMovesTheMarker() throws {
+        let file = try Self.file(Self.bothNoEOLFixture)
+        #expect(Self.text(file, .unstage, Self.changedIDs(file, "old")) == Self.cHeader + """
+
+            @@ -1,4 +1,3 @@
+             keep
+            -old
+             one
+             two
+            \\ No newline at end of file
+
+            """)
+    }
+
+    @Test func bothNoEOLUnstagingOneAdditionDropsTheRemovalsMarker() throws {
+        let file = try Self.file(Self.bothNoEOLFixture)
+        #expect(Self.text(file, .unstage, Self.changedIDs(file, "one")) == Self.cHeader + """
+
             @@ -1,2 +1,3 @@
              keep
             +one
              two
+            \\ No newline at end of file
+
+            """)
+    }
+
+    @Test func bothNoEOLUnstagingBothAdditions() throws {
+        let file = try Self.file(Self.bothNoEOLFixture)
+        #expect(Self.text(file, .unstage, Self.changedIDs(file, "one", "two")) == Self.cHeader + """
+
+            @@ -1,1 +1,3 @@
+             keep
+            +one
+            +two
+            \\ No newline at end of file
+
+            """)
+    }
+
+    // --- only the old side lacks a newline ---
+
+    @Test func oldNoEOLStagingOnlyAdditionsSplitsButAddsNoTrailingMarker() throws {
+        let file = try Self.file(Self.oldNoEOLFixture)
+        #expect(Self.text(file, .stage, Self.changedIDs(file, "one", "two")) == Self.cHeader + """
+
+            @@ -1,2 +1,4 @@
+             keep
+            -old
+            \\ No newline at end of file
+            +old
+            +one
+            +two
+
+            """)
+    }
+
+    @Test func oldNoEOLUnstagingOnlyTheRemovalDropsEveryMarker() throws {
+        let file = try Self.file(Self.oldNoEOLFixture)
+        #expect(Self.text(file, .unstage, Self.changedIDs(file, "old")) == Self.cHeader + """
+
+            @@ -1,4 +1,3 @@
+             keep
+            -old
+             one
+             two
+
+            """)
+    }
+
+    // --- only the new side lacks a newline ---
+
+    /// Mirror of `bothNoEOLStagingOnlyAdditionsSplitsTheConvertedLine`: here the old side does
+    /// end with a newline, so the converted line stays plain context and is not split.
+    @Test func newNoEOLStagingOnlyAdditionsLeavesTheConvertedLineAlone() throws {
+        let file = try Self.file(Self.newNoEOLFixture)
+        #expect(Self.text(file, .stage, Self.changedIDs(file, "one", "two")) == Self.cHeader + """
+
+            @@ -1,2 +1,4 @@
+             keep
+             old
+            +one
+            +two
+            \\ No newline at end of file
+
+            """)
+    }
+
+    @Test func newNoEOLStagingOnlyTheRemovalEmitsNoMarker() throws {
+        let file = try Self.file(Self.newNoEOLFixture)
+        #expect(Self.text(file, .stage, Self.changedIDs(file, "old")) == Self.cHeader + """
+
+            @@ -1,2 +1,1 @@
+             keep
+            -old
+
+            """)
+    }
+
+    @Test func newNoEOLUnstagingOnlyTheRemoval() throws {
+        let file = try Self.file(Self.newNoEOLFixture)
+        #expect(Self.text(file, .unstage, Self.changedIDs(file, "old")) == Self.cHeader + """
+
+            @@ -1,4 +1,3 @@
+             keep
+            -old
+             one
+             two
+            \\ No newline at end of file
+
+            """)
+    }
+
+    // --- marker on a trailing context line ---
+
+    @Test func markerOnATrailingContextLineIsKept() throws {
+        let file = try Self.file(Self.contextNoEOLFixture)
+        #expect(Self.text(file, .stage) == Self.cHeader + """
+
+            @@ -1,2 +1,3 @@
+             a
+            +b
+             tail
             \\ No newline at end of file
 
             """)
@@ -449,7 +631,7 @@ import Testing
         let chosen = Set([file.hunks[0].id, file.hunks[2].id])
         let patch = PatchBuilder.patch(
             file: file, hunkIDs: chosen, lineIDs: nil, direction: .stage)
-        #expect(patch == """
+        #expect(patch?.text == """
             diff --git a/d.txt b/d.txt
             --- a/d.txt
             +++ b/d.txt
@@ -469,29 +651,10 @@ import Testing
 
     // MARK: - 10. Added and deleted files get a modification header
 
-    @Test func addedFileUnstagesAsAModification() throws {
-        let file = try Self.file(Self.addedFileFixture)
-        #expect(file.kind == .added)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file), lineIDs: nil, direction: .unstage)
-        #expect(patch == """
-            diff --git a/new.txt b/new.txt
-            --- a/new.txt
-            +++ b/new.txt
-            @@ -0,0 +1,3 @@
-            +n1
-            +n2
-            +n3
-
-            """)
-    }
-
     @Test func addedFilePartialUnstageKeepsTheRestAsContext() throws {
         let file = try Self.file(Self.addedFileFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file),
-            lineIDs: Self.changedIDs(file, "n1", "n2"), direction: .unstage)
-        #expect(patch == """
+        #expect(file.kind == .added)
+        #expect(Self.text(file, .unstage, Self.changedIDs(file, "n1", "n2")) == """
             diff --git a/new.txt b/new.txt
             --- a/new.txt
             +++ b/new.txt
@@ -503,76 +666,10 @@ import Testing
             """)
     }
 
-    // MARK: - Zero-count edges in a contextless hunk
-
-    /// Both sides of this hunk can collapse to zero, unlike a hunk that carries context.
-    static let contextlessFixture = """
-        diff --git a/e.txt b/e.txt
-        index 1111111..2222222 100644
-        --- a/e.txt
-        +++ b/e.txt
-        @@ -5,2 +5,2 @@
-        -a
-        -b
-        +A
-        +B
-        """
-
-    @Test func newCountFallingToZeroBacksTheNewStartUp() throws {
-        let file = try Self.file(Self.contextlessFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file),
-            lineIDs: Self.changedIDs(file, "a", "b"), direction: .stage)
-        #expect(patch == """
-            diff --git a/e.txt b/e.txt
-            --- a/e.txt
-            +++ b/e.txt
-            @@ -5,2 +4,0 @@
-            -a
-            -b
-
-            """)
-    }
-
-    @Test func oldCountFallingToZeroBacksTheOldStartUp() throws {
-        let file = try Self.file(Self.contextlessFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file),
-            lineIDs: Self.changedIDs(file, "A", "B"), direction: .unstage)
-        #expect(patch == """
-            diff --git a/e.txt b/e.txt
-            --- a/e.txt
-            +++ b/e.txt
-            @@ -4,0 +5,2 @@
-            +A
-            +B
-
-            """)
-    }
-
-    @Test func deletedFileStagesAsAModification() throws {
-        let file = try Self.file(Self.deletedFileFixture)
-        #expect(file.kind == .deleted)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file), lineIDs: nil, direction: .stage)
-        #expect(patch == """
-            diff --git a/gone.txt b/gone.txt
-            --- a/gone.txt
-            +++ b/gone.txt
-            @@ -1,3 +0,0 @@
-            -g1
-            -g2
-            -g3
-
-            """)
-    }
-
     @Test func deletedFilePartialStageGetsANonZeroNewSide() throws {
         let file = try Self.file(Self.deletedFileFixture)
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file),
-            lineIDs: Self.changedIDs(file, "g1"), direction: .stage)
-        #expect(patch == """
+        #expect(file.kind == .deleted)
+        #expect(Self.text(file, .stage, Self.changedIDs(file, "g1")) == """
             diff --git a/gone.txt b/gone.txt
             --- a/gone.txt
             +++ b/gone.txt
@@ -582,6 +679,66 @@ import Testing
              g3
 
             """)
+    }
+
+    // MARK: - Whole-file selections are refused
+
+    @Test func wholeDeletedFileStageIsRefused() throws {
+        let file = try Self.file(Self.deletedFileFixture)
+        #expect(
+            PatchBuilder.isWholeFileChange(
+                file: file, hunkIDs: Self.allHunks(file), lineIDs: nil, direction: .stage))
+        #expect(Self.build(file, .stage) == nil)
+        // Same when the lines are listed one by one instead of implied by `nil`.
+        let every = Self.changedIDs(file, "g1", "g2", "g3")
+        #expect(
+            PatchBuilder.isWholeFileChange(
+                file: file, hunkIDs: Self.allHunks(file), lineIDs: every, direction: .stage))
+        #expect(Self.build(file, .stage, every) == nil)
+    }
+
+    @Test func wholeAddedFileUnstageIsRefused() throws {
+        let file = try Self.file(Self.addedFileFixture)
+        #expect(
+            PatchBuilder.isWholeFileChange(
+                file: file, hunkIDs: Self.allHunks(file), lineIDs: nil, direction: .unstage))
+        #expect(Self.build(file, .unstage) == nil)
+    }
+
+    @Test func partialAndModifiedSelectionsAreNotWholeFileChanges() throws {
+        let deleted = try Self.file(Self.deletedFileFixture)
+        #expect(
+            PatchBuilder.isWholeFileChange(
+                file: deleted, hunkIDs: Self.allHunks(deleted),
+                lineIDs: Self.changedIDs(deleted, "g1"), direction: .stage) == false)
+        #expect(Self.build(deleted, .stage, Self.changedIDs(deleted, "g1")) != nil)
+
+        let added = try Self.file(Self.addedFileFixture)
+        #expect(
+            PatchBuilder.isWholeFileChange(
+                file: added, hunkIDs: Self.allHunks(added),
+                lineIDs: Self.changedIDs(added, "n1"), direction: .unstage) == false)
+
+        // A fully selected *modification* is an ordinary patch, not a whole-file change.
+        let modified = try Self.file(Self.additionFixture)
+        #expect(
+            PatchBuilder.isWholeFileChange(
+                file: modified, hunkIDs: Self.allHunks(modified), lineIDs: nil,
+                direction: .stage) == false)
+        #expect(Self.build(modified, .stage) != nil)
+
+        // Wrong direction for the kind: a deleted file is never unstaged through a patch.
+        #expect(
+            PatchBuilder.isWholeFileChange(
+                file: deleted, hunkIDs: Self.allHunks(deleted), lineIDs: nil,
+                direction: .unstage) == false)
+
+        // Not every hunk chosen.
+        let three = try Self.file(Self.threeHunkFixture)
+        #expect(
+            PatchBuilder.isWholeFileChange(
+                file: three, hunkIDs: [three.hunks[0].id], lineIDs: nil, direction: .stage)
+                == false)
     }
 
     // MARK: - 11. Eligibility
@@ -625,9 +782,7 @@ import Testing
 
     @Test func pathWithASpaceGetsATrailingTab() throws {
         let file = try Self.file(Self.additionFixture, path: "my file.txt")
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file), lineIDs: nil, direction: .stage)
-        #expect(patch == """
+        #expect(Self.text(file, .stage) == """
             diff --git a/my file.txt b/my file.txt
             --- a/my file.txt\t
             +++ b/my file.txt\t
@@ -644,10 +799,8 @@ import Testing
 
     @Test func nonASCIIPathIsCQuoted() throws {
         let file = try Self.file(Self.additionFixture, path: "é.txt")
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file), lineIDs: nil, direction: .stage)
-        let head = try #require(patch?.split(separator: "\n").prefix(3).joined(separator: "\n"))
-        #expect(head == """
+        let head = try #require(Self.text(file, .stage)?.split(separator: "\n").prefix(3))
+        #expect(head.joined(separator: "\n") == """
             diff --git "a/\\303\\251.txt" "b/\\303\\251.txt"
             --- "a/\\303\\251.txt"
             +++ "b/\\303\\251.txt"
@@ -656,13 +809,59 @@ import Testing
 
     @Test func quotedPathWithASpaceGetsBothQuotesAndTab() throws {
         let file = try Self.file(Self.additionFixture, path: "q \"z\" w.txt")
-        let patch = PatchBuilder.patch(
-            file: file, hunkIDs: Self.allHunks(file), lineIDs: nil, direction: .stage)
-        let head = try #require(patch?.split(separator: "\n").prefix(3).joined(separator: "\n"))
-        #expect(head == """
+        let head = try #require(Self.text(file, .stage)?.split(separator: "\n").prefix(3))
+        #expect(head.joined(separator: "\n") == """
             diff --git "a/q \\\"z\\\" w.txt" "b/q \\\"z\\\" w.txt"
             --- "a/q \\\"z\\\" w.txt"\t
             +++ "b/q \\\"z\\\" w.txt"\t
             """)
+    }
+
+    // MARK: - Zero-count edges in a contextless hunk
+
+    @Test func newCountFallingToZeroBacksTheNewStartUp() throws {
+        let file = try Self.file(Self.contextlessFixture)
+        #expect(Self.text(file, .stage, Self.changedIDs(file, "a", "b")) == """
+            diff --git a/e.txt b/e.txt
+            --- a/e.txt
+            +++ b/e.txt
+            @@ -5,2 +4,0 @@
+            -a
+            -b
+
+            """)
+    }
+
+    @Test func oldCountFallingToZeroBacksTheOldStartUp() throws {
+        let file = try Self.file(Self.contextlessFixture)
+        #expect(Self.text(file, .unstage, Self.changedIDs(file, "A", "B")) == """
+            diff --git a/e.txt b/e.txt
+            --- a/e.txt
+            +++ b/e.txt
+            @@ -4,0 +5,2 @@
+            +A
+            +B
+
+            """)
+    }
+
+    // MARK: - needsUnidiffZero
+
+    @Test func contextlessHunkNeedsUnidiffZero() throws {
+        let file = try Self.file(Self.contextlessFixture)
+        #expect(Self.build(file, .stage)?.needsUnidiffZero == true)
+        #expect(Self.build(file, .unstage)?.needsUnidiffZero == true)
+    }
+
+    @Test func hunksWithContextDoNotNeedUnidiffZero() throws {
+        let file = try Self.file(Self.additionFixture)
+        #expect(Self.build(file, .stage)?.needsUnidiffZero == false)
+        let twoHunks = try Self.file(Self.twoHunkFixture)
+        #expect(Self.build(twoHunks, .unstage)?.needsUnidiffZero == false)
+        // The added-file hunk has no context either.
+        let added = try Self.file(Self.addedFileFixture)
+        #expect(
+            Self.build(added, .unstage, Self.changedIDs(added, "n1", "n2"))?.needsUnidiffZero
+                == false)
     }
 }
