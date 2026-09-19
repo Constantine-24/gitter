@@ -35,6 +35,19 @@ struct TestRepo {
         try await git(["commit", "-q", "-m", message])
     }
 
+    /// The exact bytes the index holds for `path` (`git show :<path>`), which is what a
+    /// patch applied with `--cached` produces. Byte-exact on purpose: a wrong no-newline
+    /// marker corrupts the index by joining two lines, which only shows up in the raw bytes.
+    func indexContent(of path: String) async throws -> Data {
+        try await git(["show", ":" + path])
+    }
+
+    /// Whether `path` has an entry in the index at all.
+    func isInIndex(_ path: String) async throws -> Bool {
+        let out = try await git(["ls-files", "--", path])
+        return !out.isEmpty
+    }
+
     func headSha() async throws -> String {
         let out = try await git(["rev-parse", "HEAD"])
         return String(decoding: out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)

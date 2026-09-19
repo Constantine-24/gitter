@@ -41,6 +41,23 @@ extension CLIGitBackend: GitWorkingCopyBackend {
         }
     }
 
+    public func applyToIndex(patch: Patch, reverse: Bool, at root: URL) async throws {
+        // Outside the repository on purpose: a patch file inside the worktree would itself
+        // show up as an untracked change while it exists.
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitter-patch-\(UUID().uuidString).diff")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try patch.text.write(to: file, atomically: true, encoding: .utf8)
+
+        var arguments = ["apply", "--cached", "--whitespace=nowarn"]
+        if patch.needsUnidiffZero { arguments.append("--unidiff-zero") }
+        if reverse { arguments.append("--reverse") }
+        // No `--` before the file: it is the patch `git apply` reads, not a pathspec, and
+        // `--` would make git treat the rest as paths to restrict the patch to.
+        arguments.append(file.path)
+        _ = try await run(arguments, cwd: root)
+    }
+
     /// Whether `root` has at least one commit reachable from HEAD.
     ///
     /// `rev-parse --verify -q HEAD` exits 1 with empty stdout when there are none; exit 0
