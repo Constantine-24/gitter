@@ -15,6 +15,7 @@ final class RepositoryStore {
     private(set) var snapshot: RepoSnapshot?
     private(set) var isLoading = false
     private(set) var lastError: String?
+    private(set) var gitMissing = false
     var selection: Selection = .workingCopy
     var selectedPath: String?
     private(set) var detailFiles: [FileStatus] = []
@@ -50,15 +51,20 @@ final class RepositoryStore {
     /// command and fails with a less helpful "failed to launch" message per request.
     func checkGitAvailability() async {
         guard await !CLIGitBackend.isGitAvailable(at: gitPath) else { return }
+        gitMissing = true
         lastError = "Git was not found at \(gitPath). Install the Xcode Command Line Tools."
     }
 
     // MARK: - Opening
 
     func open(_ url: URL) {
+        // Once git itself is confirmed missing, no repository can be opened; keep the banner
+        // up instead of letting a reopen quietly clear it.
+        guard !gitMissing else { return }
+
         let standardized = url.standardizedFileURL
-        let gitPath = standardized.appending(path: ".git")
-        guard FileManager.default.fileExists(atPath: gitPath.path) else {
+        let dotGit = standardized.appending(path: ".git")
+        guard FileManager.default.fileExists(atPath: dotGit.path) else {
             lastError = "Not a Git repository: \(standardized.path)"
             return
         }
@@ -203,8 +209,20 @@ final class RepositoryStore {
             guard !Task.isCancelled, self.selection == capturedSelection else { return }
 
             if let loadError {
-                self.lastError = Self.describe(loadError)
-                self.detailFiles = []
+                switch capturedSelection {
+                case .commit:
+                    // The selected commit no longer exists (e.g. its branch was rebased or
+                    // force-pushed away). Fall back to the working copy instead of leaving the
+                    // detail pane stuck on a dead selection; the working copy reload never calls
+                    // `commitFiles`, so this cannot loop.
+                    self.selection = .workingCopy
+                    self.lastError = "That commit is no longer in the repository."
+                    self.loadDetail()
+                    return
+                case .workingCopy:
+                    self.lastError = Self.describe(loadError)
+                    self.detailFiles = []
+                }
             } else {
                 self.detailFiles = files
             }
