@@ -14,7 +14,9 @@ final class RepositoryStore {
     private(set) var root: URL?
     private(set) var snapshot: RepoSnapshot?
     private(set) var isLoading = false
-    private(set) var lastError: String?
+    /// Internal rather than `private(set)`: the staging extension lives in another file and
+    /// reports mutation failures through it.
+    var lastError: String?
     private(set) var gitMissing = false
     var selection: Selection = .workingCopy
     var selectedPath: String?
@@ -28,19 +30,33 @@ final class RepositoryStore {
         }
     }
 
-    let backend: any GitBackend
+    /// True while a stage/unstage/commit is running; mutations are serialized behind it and
+    /// the UI disables its controls. Internal rather than `private(set)` because the staging
+    /// extension, which owns every mutation, is in another file.
+    var isMutating = false
+
+    /// The commit message being written. Stored properties cannot live in an extension, so it
+    /// is declared here even though everything that drives it is in `RepositoryStore+Staging`.
+    let draft = CommitDraft()
+
+    let backend: any GitBackend & GitWorkingCopyBackend
     private let gitPath: String
 
     private var watcher: RepositoryWatcher?
     private var refreshTask: Task<Void, Never>?
     private var detailTask: Task<Void, Never>?
     private var diffTask: Task<Void, Never>?
-    private var isRefreshing = false
-    private var needsAnotherRefresh = false
+    /// The most recently scheduled snapshot load; new ones chain behind it. See `refresh()`.
+    private var lastRefresh: Task<Void, Never>?
+    /// True while a chained load exists that has not begun reading git yet.
+    private var refreshIsQueued = false
 
     private static let lastRepositoryPathKey = "lastRepositoryPath"
 
-    init(backend: any GitBackend = CLIGitBackend(), gitPath: String = "/usr/bin/git") {
+    init(
+        backend: any GitBackend & GitWorkingCopyBackend = CLIGitBackend(),
+        gitPath: String = "/usr/bin/git"
+    ) {
         self.backend = backend
         self.gitPath = gitPath
     }
@@ -95,8 +111,9 @@ final class RepositoryStore {
         refreshTask?.cancel()
         detailTask?.cancel()
         diffTask?.cancel()
-        isRefreshing = false
-        needsAnotherRefresh = false
+        // `lastRefresh` is deliberately left in place: a load still in flight for the old root
+        // writes nothing (it re-checks `root` before it lands), and keeping the chain intact
+        // keeps this repository's first load from overlapping it.
 
         // Reset all repository-derived state so nothing from the previous repository lingers
         // on screen (or gets raced against) while the new repository's first snapshot loads.
@@ -106,6 +123,10 @@ final class RepositoryStore {
         selection = .workingCopy
         selectedPath = nil
         lastError = nil
+        // A half-written message belongs to the repository it was written for, and a mutation
+        // in flight can only be for the old one.
+        draft.reset()
+        isMutating = false
 
         root = standardized
         UserDefaults.standard.set(standardized.path, forKey: Self.lastRepositoryPathKey)
@@ -140,23 +161,38 @@ final class RepositoryStore {
 
     // MARK: - Refresh
 
+    /// Loads a fresh snapshot, returning only once a load that *started after this call* has
+    /// finished. `mutate` depends on that: a load already in flight may have read git before
+    /// the mutation landed, so sharing it could hand back a pre-mutation snapshot.
+    ///
+    /// Loads never overlap — each is chained behind the previous one. A load that is chained
+    /// but has not begun reading git yet is shared by every further caller, which is the
+    /// coalescing the file-system watcher needs (many events, one reload).
     func refresh() async {
-        guard let root else { return }
+        guard root != nil else { return }
+        await chainedRefresh().value
+    }
 
-        if isRefreshing {
-            needsAnotherRefresh = true
-            return
+    private func chainedRefresh() -> Task<Void, Never> {
+        if refreshIsQueued, let queued = lastRefresh { return queued }
+        let previous = lastRefresh
+        refreshIsQueued = true
+        let run = Task { @MainActor [weak self] in
+            await previous?.value
+            guard let self else { return }
+            // Reading git starts now, so anything that happens from here on is invisible to
+            // this load and later callers have to chain behind it instead of sharing it.
+            refreshIsQueued = false
+            await loadSnapshot()
         }
-        isRefreshing = true
+        lastRefresh = run
+        return run
+    }
+
+    private func loadSnapshot() async {
+        guard let root else { return }
         isLoading = true
-        defer {
-            isLoading = false
-            isRefreshing = false
-            if needsAnotherRefresh {
-                needsAnotherRefresh = false
-                Task { await self.refresh() }
-            }
-        }
+        defer { isLoading = false }
 
         do {
             let newSnapshot = try await backend.snapshot(at: root)
@@ -307,7 +343,9 @@ final class RepositoryStore {
         lastError = nil
     }
 
-    private static func describe(_ error: Error) -> String {
+    /// Internal rather than private: the staging extension, in another file, phrases its
+    /// mutation failures with the same rules.
+    static func describe(_ error: Error) -> String {
         if let gitError = error as? GitError {
             switch gitError {
             case .commandFailed(let exitCode, let stderr):
