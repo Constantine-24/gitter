@@ -8,41 +8,40 @@ struct DetailView: View {
     @Environment(RepositoryStore.self) private var store
 
     var body: some View {
-        switch store.selection {
-        case .workingCopy:
-            VSplitView {
-                VStack(alignment: .leading, spacing: 0) {
-                    // The composer is sized by its content; every remaining point of the pane
-                    // goes to the file list.
-                    WorkingCopyFileList()
-                        .frame(minHeight: 120)
-                        .layoutPriority(1)
-                    Divider()
-                    CommitComposerView()
-                }
-                // The split opens at half the pane each (`VSplitView` ignores `idealHeight`
-                // for a child this flexible); the minimum keeps a few file rows and the whole
-                // commit box visible however far the divider is dragged up.
-                .frame(minHeight: 280)
-
-                diff.frame(minHeight: 140)
-            }
-        case .commit(let sha):
-            VSplitView {
-                VStack(alignment: .leading, spacing: 0) {
-                    commitHeader(sha)
-                    Divider()
-                    commitFileList
-                }
+        // One split view for both selections: switching to a commit and back replaces its
+        // top half, not the split itself, so the divider stays where the user put it.
+        VSplitView {
+            top
+            DiffView(diffs: store.diff, hasSelection: store.selectedPath != nil)
                 .frame(minHeight: 140)
-
-                diff.frame(minHeight: 140)
-            }
         }
     }
 
-    private var diff: some View {
-        DiffView(diffs: store.diff, hasSelection: store.selectedPath != nil)
+    @ViewBuilder
+    private var top: some View {
+        switch store.selection {
+        case .workingCopy:
+            VStack(alignment: .leading, spacing: 0) {
+                // The composer is sized by its content; every remaining point of the top half
+                // goes to the file list.
+                WorkingCopyFileList()
+                    .frame(minHeight: 120)
+                    .layoutPriority(1)
+                Divider()
+                CommitComposerView()
+            }
+            // The split opens at half the pane each (`VSplitView` ignores `idealHeight` for a
+            // child this flexible); the minimum keeps a few file rows and the whole commit box
+            // visible however far the divider is dragged up.
+            .frame(minHeight: 280)
+        case .commit(let sha):
+            VStack(alignment: .leading, spacing: 0) {
+                commitHeader(sha)
+                Divider()
+                commitFileList
+            }
+            .frame(minHeight: 140)
+        }
     }
 
     // MARK: - Header

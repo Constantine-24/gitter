@@ -32,10 +32,20 @@ struct WorkingCopyFileList: View {
         .listStyle(.inset)
         // Staging the selected file moves it to the other section, which deletes the row the
         // selection points at. Both lists are watched because either can be the one the
-        // selected path just left.
-        .onChange(of: store.stagedFiles) { followSelection() }
+        // selected path just left; `initial` covers coming back from a commit, where a path
+        // selected earlier can be on the other side from whatever `stagedView` still says.
+        .onChange(of: store.stagedFiles, initial: true) { followSelection() }
         .onChange(of: store.unstagedFiles) { followSelection() }
         .onKeyPress(.space) { toggleSelected() }
+        // An empty menu: this is here for `primaryAction`, which is the list's own
+        // double-click (and Return) handler, rather than a tap gesture racing the selection.
+        .contextMenu(forSelectionType: String.self) { _ in
+        } primaryAction: { keys in
+            guard let key = keys.first, let row = RowKey.parse(key) else { return }
+            let files = row.staged ? store.stagedFiles : store.unstagedFiles
+            guard let file = files.first(where: { $0.path == row.path }) else { return }
+            toggle(file, staged: row.staged)
+        }
     }
 
     // MARK: - Sections and rows
@@ -70,11 +80,28 @@ struct WorkingCopyFileList: View {
         }
     }
 
-    /// One row's identity. A file changed on both sides is the *same* `FileStatus` in both
-    /// sections, and `FileStatus.id` is its path — so identifying rows by the file itself
-    /// makes the list's two entries collide and the second one renders as the first
-    /// (an unstaged row drawn with the staged row's minus button). The side is part of the
-    /// identity here, as it is in the selection.
+    /// A row's key: the side it is on plus the file's path.
+    ///
+    /// A file changed on both sides is the *same* `FileStatus` in both sections and
+    /// `FileStatus.id` is its path, so the path alone makes the list's two entries collide
+    /// and the second one renders as the first (an unstaged row drawn with the staged row's
+    /// minus button). Built and taken apart in one place, since the row tag, the selection
+    /// binding and the double-click action all have to agree on the format.
+    private enum RowKey {
+        static func make(_ path: String, staged: Bool) -> String {
+            "\(staged ? "S" : "U"):\(path)"
+        }
+
+        /// A path may itself contain a colon, so only the first one separates the side.
+        static func parse(_ key: String) -> (path: String, staged: Bool)? {
+            guard let separator = key.firstIndex(of: ":"), separator != key.startIndex else {
+                return nil
+            }
+            return (String(key[key.index(after: separator)...]), key.first == "S")
+        }
+    }
+
+    /// One row, identified by its `RowKey`.
     private struct Row: Identifiable {
         let id: String
         let file: FileStatus
@@ -82,7 +109,7 @@ struct WorkingCopyFileList: View {
     }
 
     private func rows(_ files: [FileStatus], staged: Bool) -> [Row] {
-        files.map { Row(id: Self.id(of: $0, staged: staged), file: $0, staged: staged) }
+        files.map { Row(id: RowKey.make($0.path, staged: staged), file: $0, staged: staged) }
     }
 
     private func row(_ file: FileStatus, staged: Bool) -> some View {
@@ -103,20 +130,16 @@ struct WorkingCopyFileList: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
-        .tag(Self.id(of: file, staged: staged))
+        // Full width first, so the empty space to the right of a short path still belongs to
+        // the row: clicking and double-clicking it hit the file, not the list's background.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(.rect)
-        // Simultaneous so the list's own click-to-select still runs: the first click selects
-        // the row, the second stages or unstages it.
-        .simultaneousGesture(TapGesture(count: 2).onEnded { toggle(file, staged: staged) })
+        .tag(RowKey.make(file.path, staged: staged))
     }
 
     private func label(for file: FileStatus) -> String {
         guard let originalPath = file.originalPath else { return file.path }
         return "\(originalPath) → \(file.path)"
-    }
-
-    private static func id(of file: FileStatus, staged: Bool) -> String {
-        "\(staged ? "S" : "U"):\(file.path)"
     }
 
     // MARK: - Acting on a row
@@ -146,15 +169,20 @@ struct WorkingCopyFileList: View {
     private var rowSelection: Binding<String?> {
         Binding(
             get: {
-                store.selectedPath.map { "\(store.stagedView ? "S" : "U"):\($0)" }
+                store.selectedPath.map { RowKey.make($0, staged: store.stagedView) }
             },
             set: { newValue in
-                guard let newValue, let separator = newValue.firstIndex(of: ":") else {
+                guard let newValue else {
+                    // The list also writes nil when the selected *row* is removed, which is
+                    // precisely what staging the selected file does — a moment before
+                    // `followSelection` can move the selection to the other section. Keeping
+                    // the path here makes that a follow rather than a loss; a deselect of a
+                    // file that is no longer on either side still clears it.
+                    if let path = store.selectedPath, isKnown(path) { return }
                     store.selectPath(nil)
                     return
                 }
-                let staged = newValue[newValue.startIndex] == "S"
-                let path = String(newValue[newValue.index(after: separator)...])
+                guard let (path, staged) = RowKey.parse(newValue) else { return }
 
                 if path == store.selectedPath {
                     // Only the side changed. `stagedView`'s `didSet` reloads the diff by
@@ -169,7 +197,17 @@ struct WorkingCopyFileList: View {
         )
     }
 
-    /// Keeps the selected file selected across a refresh that moved it between the sections.
+    private func isKnown(_ path: String) -> Bool {
+        store.stagedFiles.contains { $0.path == path }
+            || store.unstagedFiles.contains { $0.path == path }
+    }
+
+    /// Puts `stagedView` on the side that actually has the selected file.
+    ///
+    /// Runs after every refresh that moved a file between the sections, and once when the
+    /// list appears — coming back from a commit, `selectedPath` survives while `stagedView`
+    /// may still name the side the file is not on, which would leave the key pointing at a
+    /// row that does not exist: nothing highlighted and an empty diff.
     ///
     /// Lives here rather than in the store because it is about which *row* stays highlighted:
     /// the store already drops a path that vanished from the status entirely.
