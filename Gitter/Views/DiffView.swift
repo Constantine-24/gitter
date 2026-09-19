@@ -19,12 +19,13 @@ struct DiffView: View {
             placeholder
         } else {
             // The stack's width is driven by the viewport rather than by measuring every line,
-            // so rows stay lazy; individual long lines still overflow and scroll horizontally.
+            // so rows stay lazy. A line longer than the pane is drawn past its edge and clipped
+            // there: measuring one would mean measuring all of them.
             GeometryReader { proxy in
                 ScrollView([.vertical, .horizontal]) {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(diffs) { diff in
-                            fileSection(diff)
+                            fileSection(diff, viewportWidth: proxy.size.width)
                         }
                     }
                     .frame(minWidth: proxy.size.width, alignment: .leading)
@@ -34,7 +35,6 @@ struct DiffView: View {
             // Every reload renumbers the lines, so a selection made against the previous parse
             // would now point at whatever happens to sit at those indices.
             .onChange(of: diffs, initial: true) { resetSelection() }
-            .onExitCommand { selection.clearAll() }
         }
     }
 
@@ -54,14 +54,13 @@ struct DiffView: View {
     }
 
     @ViewBuilder
-    private func fileSection(_ diff: FileDiff) -> some View {
+    private func fileSection(_ diff: FileDiff, viewportWidth: CGFloat) -> some View {
         Text(diff.displayPath)
             .font(.system(.caption, design: .monospaced).weight(.semibold))
             .lineLimit(1)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary)
+            .pinnedToViewport(viewportWidth, background: .quaternary)
 
         if diff.isBinary {
             Text("Binary file")
@@ -79,8 +78,22 @@ struct DiffView: View {
             // the hunk, and it is what decides whether this diff is interactive at all.
             let canStage = store.canPartiallyStage(diff)
             ForEach(diff.hunks) { hunk in
-                DiffHunkView(file: diff, hunk: hunk, canStage: canStage, selection: $selection)
+                DiffHunkView(
+                    file: diff, hunk: hunk, canStage: canStage, viewportWidth: viewportWidth,
+                    selection: $selection)
             }
         }
+    }
+}
+
+extension View {
+    /// Holds a header row to the width of the diff pane, so whatever sits at its trailing edge
+    /// — the stage buttons — cannot be pushed out of sight by a long line in the file.
+    ///
+    /// Clamped rather than set, so before the first layout pass (width 0) the row just fills
+    /// its container.
+    func pinnedToViewport(_ width: CGFloat, background: some ShapeStyle) -> some View {
+        frame(maxWidth: width > 0 ? width : .infinity, alignment: .leading)
+            .background(background)
     }
 }

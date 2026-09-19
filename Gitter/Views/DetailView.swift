@@ -30,10 +30,13 @@ struct DetailView: View {
                 Divider()
                 CommitComposerView()
             }
-            // The split opens at half the pane each (`VSplitView` ignores `idealHeight` for a
-            // child this flexible); the minimum keeps a few file rows and the whole commit box
-            // visible however far the divider is dragged up.
-            .frame(minHeight: 280)
+            // The file list is as greedy as any `List`, and left alone it takes about three
+            // quarters of the pane — mostly empty rows — while the diff, which is where
+            // staging actually happens, gets a handful of lines. `VSplitView` places its
+            // divider by the children's limits, so capping this one is what hands the rest to
+            // the diff. `layoutPriority` on the diff was tried first and moved nothing.
+            // The minimum keeps a few file rows and the whole commit box visible.
+            .frame(minHeight: 280, maxHeight: 460)
         case .commit(let sha):
             VStack(alignment: .leading, spacing: 0) {
                 commitHeader(sha)

@@ -17,32 +17,55 @@ struct DiffLineSelection: Equatable {
         let line: DiffLine.ID
     }
 
+    /// Keyed by `Hunk.ID` within ONE `FileDiff`; the diff pane shows a single file at a time,
+    /// so a hunk id is unique here. (If it ever shows several, key by `(FileDiff.ID, Hunk.ID)`.)
     private(set) var selected: [Hunk.ID: Set<DiffLine.ID>] = [:]
     private var anchor: Anchor?
+    /// What the last `extend` from the current anchor put in. Dragging the range back has to
+    /// take those lines out again, while leaving alone whatever was picked before it.
+    private var lastExtension: Set<DiffLine.ID> = []
 
     func ids(for hunk: Hunk) -> Set<DiffLine.ID> {
         selected[hunk.id] ?? []
     }
 
-    /// Adds or removes one line, and makes it the anchor for a following shift-click.
+    /// Adds or removes one line.
+    ///
+    /// Selecting moves the anchor here, so the next shift-click measures from this line.
+    /// Deselecting does not: the user is taking a line out of a range, not starting a new one —
+    /// unless the line being deselected *is* the anchor, which then has nothing left to mean.
     mutating func toggle(_ line: DiffLine, in hunk: Hunk) {
         guard Self.isSelectable(line) else { return }
         var ids = ids(for: hunk)
-        if ids.contains(line.id) {
-            ids.remove(line.id)
-        } else {
+        let selecting = !ids.contains(line.id)
+        if selecting {
             ids.insert(line.id)
+        } else {
+            ids.remove(line.id)
         }
         store(ids, for: hunk)
-        anchor = Anchor(hunk: hunk.id, line: line.id)
+
+        // Any hand-picked line ends the range the last shift-click drew: from here on a
+        // shift-click builds a fresh one and has nothing of its own to take back.
+        lastExtension = []
+        let here = Anchor(hunk: hunk.id, line: line.id)
+        if selecting {
+            anchor = here
+        } else if anchor == here {
+            anchor = nil
+        }
     }
 
     /// Selects every changed line between the anchor and `line`, inclusive.
     ///
     /// The range runs over positions in `hunk.lines`, so context lines caught in the middle are
     /// simply skipped rather than cutting the range short. Without a usable anchor — none yet,
-    /// or one in a different hunk — this is just a click. The anchor is left where it was, so
-    /// a second shift-click re-measures from the same line instead of from the last one.
+    /// or one in a different hunk — this is just a click.
+    ///
+    /// Shift-clicking again *replaces* the range rather than growing the selection: the lines
+    /// the previous extend added are taken out first, so a shorter range really is shorter.
+    /// Lines picked by hand before the extend are untouched, and the anchor stays where it is,
+    /// so every shift-click measures from the same line.
     mutating func extend(to line: DiffLine, in hunk: Hunk) {
         guard Self.isSelectable(line) else { return }
         guard let anchor, anchor.hunk == hunk.id,
@@ -53,21 +76,30 @@ struct DiffLineSelection: Equatable {
             return
         }
 
-        var ids = self.ids(for: hunk)
+        var range: Set<DiffLine.ID> = []
         for index in min(from, to)...max(from, to) where Self.isSelectable(hunk.lines[index]) {
-            ids.insert(hunk.lines[index].id)
+            range.insert(hunk.lines[index].id)
         }
+
+        var ids = self.ids(for: hunk)
+        ids.subtract(lastExtension)
+        ids.formUnion(range)  // always contains the anchor, so subtracting cannot lose it
         store(ids, for: hunk)
+        lastExtension = range
     }
 
     mutating func clear(_ hunk: Hunk) {
         selected[hunk.id] = nil
-        if anchor?.hunk == hunk.id { anchor = nil }
+        if anchor?.hunk == hunk.id {
+            anchor = nil
+            lastExtension = []
+        }
     }
 
     mutating func clearAll() {
         selected.removeAll()
         anchor = nil
+        lastExtension = []
     }
 
     /// Keeps an emptied hunk out of the dictionary, so `selected` is empty exactly when

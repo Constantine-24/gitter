@@ -14,6 +14,8 @@ struct DiffHunkView: View {
     /// untracked, binary and renamed files: then the hunk renders as the read-only diff it was
     /// before — no buttons, no gutter clicks, no hover.
     let canStage: Bool
+    /// How wide the diff pane is, so the header can be held to it. See `header`.
+    let viewportWidth: CGFloat
     @Binding var selection: DiffLineSelection
 
     @Environment(RepositoryStore.self) private var store
@@ -49,6 +51,11 @@ struct DiffHunkView: View {
 
     // MARK: - Header
 
+    /// The `@@` line, with the buttons at the trailing edge of the *viewport*.
+    ///
+    /// Clamped to the pane's width rather than filling whatever the lazy stack turns out to be,
+    /// so the buttons cannot be pushed out of sight by a long line in the file. See the note on
+    /// `pinnedToViewport`.
     private func header(selectedCount: Int) -> some View {
         HStack(spacing: 8) {
             Text(hunk.header)
@@ -60,14 +67,11 @@ struct DiffHunkView: View {
                 Spacer(minLength: 12)
                 buttons(selectedCount: selectedCount)
                     .controlSize(.small)
-                    // Mutations are serialized in the store; the disabled state is what says so.
-                    .disabled(store.isMutating)
             }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 2)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quinary)
+        .pinnedToViewport(viewportWidth, background: .quinary)
     }
 
     private func buttons(selectedCount: Int) -> some View {
@@ -76,10 +80,15 @@ struct DiffHunkView: View {
                 Button(store.stagedView ? "Unstage Hunk" : "Stage Hunk") {
                     store.applyHunk(hunk, in: file)
                 }
+                // Mutations are serialized in the store; the disabled state is what says so.
+                .disabled(store.isMutating)
             } else {
                 Button(lineButtonTitle(selectedCount)) {
                     store.applyLines(selection.ids(for: hunk), of: hunk, in: file)
                 }
+                .disabled(store.isMutating)
+                // Clearing writes nothing to git, so a mutation in flight is no reason to
+                // refuse it — dropping a selection is exactly what a user does while waiting.
                 Button("Clear") { selection.clear(hunk) }
                     .buttonStyle(.borderless)
             }
