@@ -14,9 +14,7 @@ final class RepositoryStore {
     private(set) var root: URL?
     private(set) var snapshot: RepoSnapshot?
     private(set) var isLoading = false
-    /// Internal rather than `private(set)`: the staging extension lives in another file and
-    /// reports mutation failures through it.
-    var lastError: String?
+    private(set) var lastError: String?
     private(set) var gitMissing = false
     var selection: Selection = .workingCopy
     var selectedPath: String?
@@ -31,13 +29,23 @@ final class RepositoryStore {
     }
 
     /// True while a stage/unstage/commit is running; mutations are serialized behind it and
-    /// the UI disables its controls. Internal rather than `private(set)` because the staging
-    /// extension, which owns every mutation, is in another file.
-    var isMutating = false
+    /// the UI disables its controls. Claimed and released through `beginMutation()` /
+    /// `finishMutation(generation:failure:)`, since the staging extension is in another file.
+    private(set) var isMutating = false
 
     /// The commit message being written. Stored properties cannot live in an extension, so it
     /// is declared here even though everything that drives it is in `RepositoryStore+Staging`.
     let draft = CommitDraft()
+
+    /// Bumped by every `open()`. Anything loaded or run asynchronously captures it and drops
+    /// its result if it no longer matches: comparing `root` is not enough, because reopening
+    /// the *same* repository mid-flight leaves the root equal while everything on screen has
+    /// been reset.
+    private(set) var generation = 0
+
+    /// True while `lastError` holds a message a mutation put there. Such a message outlives
+    /// the reloads the mutation itself provokes; see `loadSnapshot()`.
+    private var errorIsSticky = false
 
     let backend: any GitBackend & GitWorkingCopyBackend
     private let gitPath: String
@@ -123,10 +131,14 @@ final class RepositoryStore {
         selection = .workingCopy
         selectedPath = nil
         lastError = nil
+        errorIsSticky = false
         // A half-written message belongs to the repository it was written for, and a mutation
         // in flight can only be for the old one.
         draft.reset()
         isMutating = false
+        // Everything in flight for the previous repository — including a reopen of this very
+        // path — is now stale and will drop its result.
+        generation += 1
 
         root = standardized
         UserDefaults.standard.set(standardized.path, forKey: Self.lastRepositoryPathKey)
@@ -167,7 +179,9 @@ final class RepositoryStore {
     ///
     /// Loads never overlap — each is chained behind the previous one. A load that is chained
     /// but has not begun reading git yet is shared by every further caller, which is the
-    /// coalescing the file-system watcher needs (many events, one reload).
+    /// coalescing the file-system watcher needs (many events, one reload). The flip side of
+    /// that chaining: nothing reachable from inside a chained load may `await refresh()`, as
+    /// it would then be waiting on itself forever.
     func refresh() async {
         guard root != nil else { return }
         await chainedRefresh().value
@@ -191,16 +205,23 @@ final class RepositoryStore {
 
     private func loadSnapshot() async {
         guard let root else { return }
+        let capturedGeneration = generation
         isLoading = true
         defer { isLoading = false }
 
         do {
             let newSnapshot = try await backend.snapshot(at: root)
             // The repository may have been switched (via `open`) while this snapshot was in
-            // flight; a snapshot for the old root must never overwrite state for the new one.
-            guard self.root == root else { return }
+            // flight; a snapshot from before that must never overwrite the new state.
+            guard generation == capturedGeneration else { return }
             snapshot = newSnapshot
-            lastError = nil
+            // A mutation's own failure outranks the reload it provokes. git writes inside
+            // `.git` before it fails — a rejected commit has already written COMMIT_EDITMSG —
+            // so the watcher fires and this successful snapshot would otherwise erase the
+            // hook's output a fraction of a second after the user saw it.
+            if !errorIsSticky {
+                lastError = nil
+            }
 
             // Keep a commit selection even when the commit isn't in the loaded window (the
             // log is capped): the row simply isn't highlighted. Only an empty repository has
@@ -210,8 +231,11 @@ final class RepositoryStore {
                 selection = .workingCopy
             }
         } catch {
-            guard self.root == root else { return }
+            guard generation == capturedGeneration else { return }
+            // A failed load is newer, real information about the repository, so it replaces
+            // even a mutation's message — and stops being protected from the next reload.
             lastError = Self.describe(error)
+            errorIsSticky = false
         }
 
         loadDetail()
@@ -246,6 +270,7 @@ final class RepositoryStore {
         }
 
         let capturedSelection = selection
+        let capturedGeneration = generation
 
         detailTask = Task {
             var files: [FileStatus] = []
@@ -262,9 +287,13 @@ final class RepositoryStore {
                 }
             }
 
-            guard !Task.isCancelled, self.selection == capturedSelection else { return }
+            guard !Task.isCancelled,
+                self.generation == capturedGeneration,
+                self.selection == capturedSelection
+            else { return }
 
             if let loadError {
+                self.errorIsSticky = false
                 switch capturedSelection {
                 case .commit:
                     // The selected commit no longer exists (e.g. its branch was rebased or
@@ -304,6 +333,7 @@ final class RepositoryStore {
         let capturedSelection = selection
         let capturedPath = selectedPath
         let capturedStagedView = stagedView
+        let capturedGeneration = generation
 
         diffTask = Task {
             var result: [FileDiff] = []
@@ -323,12 +353,14 @@ final class RepositoryStore {
             }
 
             guard !Task.isCancelled,
+                  self.generation == capturedGeneration,
                   self.selection == capturedSelection,
                   self.selectedPath == capturedPath
             else { return }
 
             if let loadError {
                 self.lastError = Self.describe(loadError)
+                self.errorIsSticky = false
                 self.diff = []
             } else {
                 self.diff = result
@@ -341,11 +373,43 @@ final class RepositoryStore {
     /// Clears the currently displayed error (the banner's dismiss button).
     func dismissError() {
         lastError = nil
+        errorIsSticky = false
     }
 
-    /// Internal rather than private: the staging extension, in another file, phrases its
-    /// mutation failures with the same rules.
-    static func describe(_ error: Error) -> String {
+    // MARK: - Mutation bookkeeping
+
+    /// Claims the store for one git write, returning the generation to hand back to
+    /// `finishMutation`, or nil when it cannot be claimed: no repository, or a mutation is
+    /// already running (mutations are serialized, which is also what disables the buttons).
+    ///
+    /// This pair exists so the setters of `isMutating` and `lastError` can stay private while
+    /// the staging API lives in another file, where `private(set)` would not reach.
+    func beginMutation() -> Int? {
+        guard root != nil, !isMutating else { return nil }
+        isMutating = true
+        // A new attempt supersedes the last one's message: it has been read or ignored by
+        // now, and nothing should keep protecting it from the reloads that follow.
+        if errorIsSticky {
+            lastError = nil
+            errorIsSticky = false
+        }
+        return generation
+    }
+
+    /// Releases the claim `beginMutation()` made, showing `failure` in the banner if there was
+    /// one. A stale generation means `open()` has already reset everything this would write.
+    func finishMutation(generation: Int, failure: Error?) {
+        guard self.generation == generation else { return }
+        if let failure {
+            lastError = Self.describe(failure)
+            // Protected from the reloads this mutation set off — its own, and the
+            // watcher-driven one that git's writes inside `.git` trigger in parallel.
+            errorIsSticky = true
+        }
+        isMutating = false
+    }
+
+    private static func describe(_ error: Error) -> String {
         if let gitError = error as? GitError {
             switch gitError {
             case .commandFailed(let exitCode, let stderr):

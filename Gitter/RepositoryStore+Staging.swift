@@ -152,9 +152,12 @@ extension RepositoryStore {
     func setAmend(_ on: Bool) {
         draft.amend = on
         guard on, draft.subject.isEmpty, draft.body.isEmpty, let root else { return }
+        let generation = self.generation
         Task {
-            guard let message = try? await backend.headMessage(at: root), self.root == root
-            else { return }
+            guard let message = try? await backend.headMessage(at: root) else { return }
+            // Amending may have been switched off again, or another repository opened, while
+            // `git log` ran: HEAD's message belongs to neither of those drafts.
+            guard draft.amend, self.generation == generation else { return }
             draft.prefill(from: message)
         }
     }
@@ -166,15 +169,15 @@ extension RepositoryStore {
     /// Mutations are serialized: while one runs, every entry point here is a no-op, which is
     /// also what disables the buttons. The reload is unconditional — after a failure the
     /// working copy may still have moved (a patch that applied halfway cannot happen, but a
-    /// hook can change files) — and it is awaited before the banner is written, because a
-    /// successful snapshot clears `lastError` and would otherwise wipe the message it is
-    /// meant to show.
+    /// hook can change files) — and the banner goes up after it, so the message the user ends
+    /// up reading is the one that belongs to the state now on screen. `finishMutation` also
+    /// marks it as the mutation's own, which is what keeps the watcher-driven reload racing
+    /// this one from erasing it.
     private func mutate(
         _ work: @escaping @MainActor (any GitBackend & GitWorkingCopyBackend, URL) async throws ->
             Void
     ) {
-        guard let root, !isMutating else { return }
-        isMutating = true
+        guard let root, let generation = beginMutation() else { return }
 
         Task { @MainActor in
             var failure: Error?
@@ -185,12 +188,7 @@ extension RepositoryStore {
             }
 
             await refresh()
-
-            // The repository may have been switched while this ran; `open()` has already reset
-            // the state this would write, and an error about the old repository is not news.
-            guard self.root == root else { return }
-            if let failure { lastError = Self.describe(failure) }
-            isMutating = false
+            finishMutation(generation: generation, failure: failure)
         }
     }
 }
