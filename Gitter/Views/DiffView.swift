@@ -36,12 +36,23 @@ struct DiffView: View {
         }
     }
 
+    /// A conflicted file gets its own text: git describes one with `diff --cc`, which the
+    /// parser does not match, so the pane comes up empty for a file that plainly does have
+    /// changes — and "No Changes" there would read as an invitation to commit it.
     private var placeholder: some View {
         ContentUnavailableView(
-            hasSelection ? "No Changes" : "No File Selected",
-            systemImage: "doc.text.magnifyingglass"
+            placeholderTitle,
+            systemImage: store.selectedFileIsUnmerged
+                ? "exclamationmark.triangle" : "doc.text.magnifyingglass"
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var placeholderTitle: String {
+        if store.selectedFileIsUnmerged {
+            return "Conflicted file — resolve it in your editor, then stage it."
+        }
+        return hasSelection ? "No Changes" : "No File Selected"
     }
 
     private func resetSelection() {

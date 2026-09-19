@@ -244,14 +244,22 @@ import Testing
         try await repo.commitAll("root")
         try repo.write(name, "a\nB\nc\nd\nE\nf\n")
         let before = worktreeSnapshot(repo)
-        let file = try await loadDiff(repo, name)
+
+        // Take the path from git's own status rather than the literal, the way the app does:
+        // status → diff → patch → apply then hangs together as one chain, and a parser that
+        // mangled an awkward path would break it here instead of being papered over.
+        let status = try await CLIGitBackend().snapshot(at: repo.root).status
+        let path = try #require(status.files.first?.path)
+        #expect(path == name)
+
+        let file = try await loadDiff(repo, path)
 
         try await applySelection(
             repo, file, direction: .stage, lines: changedLineIDs(file, "b", "B"))
 
-        let staged = try await changedLines(repo, name, staged: true)
+        let staged = try await changedLines(repo, path, staged: true)
         #expect(staged == ["-b", "+B"])
-        #expect(try await indexText(repo, name) == "a\nB\nc\nd\ne\nf\n")
+        #expect(try await indexText(repo, path) == "a\nB\nc\nd\ne\nf\n")
         assertWorktreeUnchanged(repo, since: before)
     }
 

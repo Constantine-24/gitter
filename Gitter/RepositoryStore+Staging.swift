@@ -12,10 +12,9 @@ extension RepositoryStore {
 
     /// Files with an index-side change. A file changed on both sides appears in both lists.
     ///
-    /// An unmerged file counts as staged (`staged == .unmerged`) even though its index entry is
-    /// a conflict rather than a change. That is deliberate: with it counted, `commitButtonTitle`
-    /// never falls through to "Commit All Tracked" mid-merge, and so `git commit -a` — which
-    /// would commit the conflict markers verbatim — is never what the button does.
+    /// An unmerged file counts as staged (`staged == .unmerged`) although its index entry is a
+    /// conflict, not a change: counted, it keeps `commitButtonTitle` off "Commit All Tracked"
+    /// mid-merge, where `git commit -a` would commit the conflict markers verbatim.
     var stagedFiles: [FileStatus] {
         snapshot?.status.files.filter { $0.staged != nil } ?? []
     }
@@ -27,27 +26,34 @@ extension RepositoryStore {
 
     /// True while at least one file is conflicted, i.e. a merge is in progress.
     ///
-    /// Unstaging during a merge destroys state that cannot be reconstructed from the worktree:
-    /// `git reset` deletes `MERGE_HEAD`, which ends the merge silently while the conflict
-    /// markers stay in the files, and `git restore --staged` on a conflicted path collapses its
-    /// three index stages into one. Both leave a repository that looks unremarkable and holds
-    /// marker text ready to be committed.
+    /// Unstaging during a merge destroys state the worktree cannot reconstruct: `git reset`
+    /// deletes `MERGE_HEAD`, ending the merge silently while the markers stay in the files, and
+    /// `git restore --staged` collapses a conflicted path's three index stages into one.
     var hasUnmergedFiles: Bool {
         snapshot?.status.files.contains(where: isUnmerged) ?? false
     }
 
-    /// Whether `file` is one side of an unresolved conflict. `git status` reports both sides as
-    /// `U`, but either alone is enough to mean "do not unstage this".
+    /// Whether `file` is one side of an unresolved conflict (`git status` reports both as `U`,
+    /// but either alone means "do not unstage this").
     func isUnmerged(_ file: FileStatus) -> Bool {
         file.staged == .unmerged || file.unstaged == .unmerged
     }
 
-    /// Which way hunk- and line-level operations run: the staged view shows what is already in
-    /// the index, so acting on it takes changes out again.
-    ///
-    /// Derived from `diffIsStaged`, not `stagedView`: the patch is built from the diff that is
-    /// on screen, and for the moment between clicking the other side and its `git diff`
-    /// landing, that is still the previous side's parse.
+    /// The status of the working copy's selected file, if that is what the pane is showing.
+    private var selectedWorkingCopyFile: FileStatus? {
+        guard selection == .workingCopy, let selectedPath else { return nil }
+        return snapshot?.status.files.first { $0.path == selectedPath }
+    }
+
+    /// Its diff is `diff --cc` output, which the parser does not match, so the pane comes up
+    /// empty and has to explain itself rather than claim there is nothing to see.
+    var selectedFileIsUnmerged: Bool {
+        selectedWorkingCopyFile.map(isUnmerged) ?? false
+    }
+
+    /// Which way hunk- and line-level operations run: the staged side shows what is already in
+    /// the index, so acting on it takes changes out again. Derived from `diffIsStaged` rather
+    /// than `stagedView`, because the patch is built from the diff that is actually loaded.
     var patchDirection: PatchDirection {
         diffIsStaged ? .unstage : .stage
     }
@@ -74,11 +80,10 @@ extension RepositoryStore {
     /// Beyond what the patch builder supports, the app excludes untracked files (nothing to
     /// patch against) and unmerged ones (their "diff" is a conflict, not a change).
     func canPartiallyStage(_ file: FileDiff) -> Bool {
-        guard selection == .workingCopy,
-            PatchBuilder.supportsPartial(file, direction: patchDirection),
-            let status = snapshot?.status.files.first(where: { $0.path == selectedPath })
+        guard PatchBuilder.supportsPartial(file, direction: patchDirection),
+            let status = selectedWorkingCopyFile
         else { return false }
-        return !status.isUntracked && status.staged != .unmerged && status.unstaged != .unmerged
+        return !status.isUntracked && !isUnmerged(status)
     }
 
     // MARK: - File-level staging
@@ -91,8 +96,7 @@ extension RepositoryStore {
     }
 
     func unstage(_ file: FileStatus) {
-        // Defence in depth behind the disabled button: the debug hooks call straight in, and
-        // `git restore --staged` on a conflicted path would throw its three stages away.
+        // Defence in depth behind the disabled button (the debug hooks call straight in).
         guard !isUnmerged(file) else { return }
         // A staged rename occupies two index entries — the new path and the one it came from —
         // and restoring only one of them would leave half a rename staged.
@@ -106,8 +110,7 @@ extension RepositoryStore {
     }
 
     func unstageAll() {
-        // Same defence, for the whole-index command: `git reset` would remove `MERGE_HEAD` and
-        // end the merge without saying so.
+        // Same defence: `git reset` would remove `MERGE_HEAD` and end the merge silently.
         guard !hasUnmergedFiles else { return }
         mutate { backend, root in try await backend.unstageAll(at: root) }
     }
@@ -170,10 +173,9 @@ extension RepositoryStore {
             _ = try await backend.commit(
                 message: message, amend: amend, allTracked: allTracked, at: root)
         } onSuccess: { [self] in
-            // Only reached when git accepted the commit — a rejection (hook, signing, nothing
-            // to commit) throws and leaves the draft exactly as the user typed it — and only
-            // while this is still the repository that was committed to: a commit that finishes
-            // after the user opened another one must not wipe *that* repository's draft.
+            // Only when git accepted the commit (a rejection — hook, signing, nothing to
+            // commit — throws, leaving the draft as typed), and only while this is still the
+            // repository it was committed to; see `mutate`.
             draft.reset()
             select(.workingCopy)
         }
@@ -210,9 +212,9 @@ extension RepositoryStore {
     /// this one from erasing it.
     ///
     /// `onSuccess` is for side effects on the store's own state (the draft, the selection). It
-    /// runs only when git accepted the write *and* the generation it was started under is still
-    /// current — the same test `finishMutation` applies — because a mutation that finishes
-    /// after the user opened another repository would otherwise reset the new one's state.
+    /// runs only when git accepted the write *and* the generation it started under is still
+    /// current — the same test `finishMutation` applies — since a mutation finishing after the
+    /// user opened another repository would otherwise reset the new one's state.
     private func mutate(
         _ work: @escaping @MainActor (any GitBackend & GitWorkingCopyBackend, URL) async throws ->
             Void,
