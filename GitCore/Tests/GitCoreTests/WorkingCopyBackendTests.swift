@@ -2,34 +2,6 @@ import Foundation
 import Testing
 @testable import GitCore
 
-/// Reads every regular file under `repo.root` except anything inside `.git`, keyed by path
-/// relative to the root. Used to prove stage/unstage operations never touch the worktree.
-///
-/// Uses the string-path enumerator (`enumerator(atPath:)`), which yields paths already
-/// relative to the root, rather than the URL-based enumerator: the latter's URLs are resolved
-/// through symlinks (e.g. `/var` → `/private/var` for the system temp directory on macOS),
-/// which would never match `repo.root.path` and silently made every snapshot empty.
-private func worktreeSnapshot(_ repo: TestRepo) -> [String: Data] {
-    var result: [String: Data] = [:]
-    let fm = FileManager.default
-    guard let enumerator = fm.enumerator(atPath: repo.root.path) else { return result }
-
-    for case let relativePath as String in enumerator {
-        if relativePath == ".git" {
-            enumerator.skipDescendants()
-            continue
-        }
-        if relativePath.hasPrefix(".git/") { continue }
-        let url = repo.root.appendingPathComponent(relativePath)
-        var isDirectory: ObjCBool = false
-        guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else { continue }
-        if let data = try? Data(contentsOf: url) {
-            result[relativePath] = data
-        }
-    }
-    return result
-}
-
 @Suite struct WorkingCopyBackendTests {
     private func status(_ repo: TestRepo) async throws -> WorkingCopyStatus {
         try await CLIGitBackend().snapshot(at: repo.root).status
@@ -50,7 +22,7 @@ private func worktreeSnapshot(_ repo: TestRepo) -> [String: Data] {
 
         try await backend.stage(paths: ["a.txt"], at: repo.root)
 
-        #expect(worktreeSnapshot(repo) == before)
+        assertWorktreeUnchanged(repo, since: before)
         let file = fileStatus(try await status(repo), "a.txt")
         #expect(file?.staged == .modified)
         #expect(file?.unstaged == nil)
@@ -67,7 +39,7 @@ private func worktreeSnapshot(_ repo: TestRepo) -> [String: Data] {
 
         try await backend.stage(paths: ["new.txt"], at: repo.root)
 
-        #expect(worktreeSnapshot(repo) == before)
+        assertWorktreeUnchanged(repo, since: before)
         let file = fileStatus(try await status(repo), "new.txt")
         #expect(file?.staged == .added)
         #expect(file?.unstaged == nil)
@@ -86,7 +58,7 @@ private func worktreeSnapshot(_ repo: TestRepo) -> [String: Data] {
 
         try await backend.unstage(paths: ["a.txt", "new.txt"], at: repo.root)
 
-        #expect(worktreeSnapshot(repo) == before)
+        assertWorktreeUnchanged(repo, since: before)
         let statusAfter = try await status(repo)
         let a = fileStatus(statusAfter, "a.txt")
         #expect(a?.staged == nil)
@@ -110,7 +82,7 @@ private func worktreeSnapshot(_ repo: TestRepo) -> [String: Data] {
 
         try await backend.stageAll(at: repo.root)
 
-        #expect(worktreeSnapshot(repo) == before)
+        assertWorktreeUnchanged(repo, since: before)
         let statusAfter = try await status(repo)
         #expect(fileStatus(statusAfter, "a.txt")?.staged == .modified)
         #expect(fileStatus(statusAfter, "b.txt")?.staged == .deleted)
@@ -130,7 +102,7 @@ private func worktreeSnapshot(_ repo: TestRepo) -> [String: Data] {
 
         try await backend.unstageAll(at: repo.root)
 
-        #expect(worktreeSnapshot(repo) == before)
+        assertWorktreeUnchanged(repo, since: before)
         let statusAfter = try await status(repo)
         #expect(statusAfter.files.allSatisfy { $0.staged == nil })
         #expect(fileStatus(statusAfter, "a.txt")?.unstaged == .modified)
@@ -147,7 +119,7 @@ private func worktreeSnapshot(_ repo: TestRepo) -> [String: Data] {
 
         try await backend.unstage(paths: ["a.txt"], at: repo.root)
 
-        #expect(worktreeSnapshot(repo) == before)
+        assertWorktreeUnchanged(repo, since: before)
         let statusAfter = try await status(repo)
         let file = fileStatus(statusAfter, "a.txt")
         #expect(file?.staged == nil)
@@ -165,7 +137,7 @@ private func worktreeSnapshot(_ repo: TestRepo) -> [String: Data] {
 
         try await backend.unstage(paths: ["a.txt", "nope.txt"], at: repo.root)
 
-        #expect(worktreeSnapshot(repo) == before)
+        assertWorktreeUnchanged(repo, since: before)
         let statusAfter = try await status(repo)
         let file = fileStatus(statusAfter, "a.txt")
         #expect(file?.staged == nil)
@@ -184,7 +156,7 @@ private func worktreeSnapshot(_ repo: TestRepo) -> [String: Data] {
 
         try await backend.unstageAll(at: repo.root)
 
-        #expect(worktreeSnapshot(repo) == before)
+        assertWorktreeUnchanged(repo, since: before)
         let statusAfter = try await status(repo)
         #expect(statusAfter.files.allSatisfy { $0.staged == nil })
         #expect(fileStatus(statusAfter, "a.txt")?.unstaged == .untracked)
@@ -197,11 +169,12 @@ private func worktreeSnapshot(_ repo: TestRepo) -> [String: Data] {
         let repo = try await TestRepo.makeEmpty()
         defer { repo.cleanUp() }
         let backend = CLIGitBackend()
-        let before = worktreeSnapshot(repo)
 
         try await backend.unstageAll(at: repo.root)
 
-        #expect(worktreeSnapshot(repo) == before)
+        // The worktree is genuinely empty here, so `assertWorktreeUnchanged` (which refuses an
+        // empty baseline) does not apply; assert emptiness directly instead.
+        #expect(worktreeSnapshot(repo).isEmpty)
         let statusAfter = try await status(repo)
         #expect(statusAfter.files.isEmpty)
     }
@@ -219,13 +192,13 @@ private func worktreeSnapshot(_ repo: TestRepo) -> [String: Data] {
         try await backend.stage(paths: [name], at: repo.root)
         let afterStage = try await status(repo)
         #expect(fileStatus(afterStage, name)?.staged == .added)
-        #expect(worktreeSnapshot(repo) == before)
+        assertWorktreeUnchanged(repo, since: before)
 
         try await backend.unstage(paths: [name], at: repo.root)
         let afterUnstage = try await status(repo)
         #expect(fileStatus(afterUnstage, name)?.staged == nil)
         #expect(fileStatus(afterUnstage, name)?.unstaged == .untracked)
-        #expect(worktreeSnapshot(repo) == before)
+        assertWorktreeUnchanged(repo, since: before)
     }
 
     @Test func worktreeSnapshotRecursesIntoNestedDirectories() async throws {
