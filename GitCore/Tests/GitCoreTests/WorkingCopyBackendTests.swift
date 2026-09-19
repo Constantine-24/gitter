@@ -4,23 +4,25 @@ import Testing
 
 /// Reads every regular file under `repo.root` except anything inside `.git`, keyed by path
 /// relative to the root. Used to prove stage/unstage operations never touch the worktree.
+///
+/// Uses the string-path enumerator (`enumerator(atPath:)`), which yields paths already
+/// relative to the root, rather than the URL-based enumerator: the latter's URLs are resolved
+/// through symlinks (e.g. `/var` → `/private/var` for the system temp directory on macOS),
+/// which would never match `repo.root.path` and silently made every snapshot empty.
 private func worktreeSnapshot(_ repo: TestRepo) -> [String: Data] {
     var result: [String: Data] = [:]
     let fm = FileManager.default
-    guard let enumerator = fm.enumerator(at: repo.root, includingPropertiesForKeys: [.isDirectoryKey]) else {
-        return result
-    }
+    guard let enumerator = fm.enumerator(atPath: repo.root.path) else { return result }
 
-    let rootPath = repo.root.path
-    for case let url as URL in enumerator {
-        if url.lastPathComponent == ".git" {
+    for case let relativePath as String in enumerator {
+        if relativePath == ".git" {
             enumerator.skipDescendants()
             continue
         }
-        let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-        if isDirectory { continue }
-        guard url.path.hasPrefix(rootPath) else { continue }
-        let relativePath = String(url.path.dropFirst(rootPath.count + 1))
+        if relativePath.hasPrefix(".git/") { continue }
+        let url = repo.root.appendingPathComponent(relativePath)
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else { continue }
         if let data = try? Data(contentsOf: url) {
             result[relativePath] = data
         }
@@ -153,6 +155,24 @@ private func worktreeSnapshot(_ repo: TestRepo) -> [String: Data] {
         #expect(FileManager.default.fileExists(atPath: repo.root.appendingPathComponent("a.txt").path))
     }
 
+    @Test func unstageInRepoWithNoCommitsIgnoresUnmatchedPaths() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("a.txt", "content\n")
+        try await repo.git(["add", "a.txt"])
+        let backend = CLIGitBackend()
+        let before = worktreeSnapshot(repo)
+
+        try await backend.unstage(paths: ["a.txt", "nope.txt"], at: repo.root)
+
+        #expect(worktreeSnapshot(repo) == before)
+        let statusAfter = try await status(repo)
+        let file = fileStatus(statusAfter, "a.txt")
+        #expect(file?.staged == nil)
+        #expect(file?.unstaged == .untracked)
+        #expect(FileManager.default.fileExists(atPath: repo.root.appendingPathComponent("a.txt").path))
+    }
+
     @Test func unstageAllInRepoWithNoCommitsLeavesFilesUntrackedAndOnDisk() async throws {
         let repo = try await TestRepo.makeEmpty()
         defer { repo.cleanUp() }
@@ -206,6 +226,25 @@ private func worktreeSnapshot(_ repo: TestRepo) -> [String: Data] {
         #expect(fileStatus(afterUnstage, name)?.staged == nil)
         #expect(fileStatus(afterUnstage, name)?.unstaged == .untracked)
         #expect(worktreeSnapshot(repo) == before)
+    }
+
+    @Test func worktreeSnapshotRecursesIntoNestedDirectories() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("seed.txt", "seed\n")
+        try await repo.commitAll("root")
+        let nestedPath = "dir/sub/nested é.txt"
+        try repo.write(nestedPath, "nested content\n")
+        let backend = CLIGitBackend()
+        let before = worktreeSnapshot(repo)
+        #expect(before[nestedPath] == Data("nested content\n".utf8))
+
+        try await backend.stage(paths: [nestedPath], at: repo.root)
+        try await backend.unstage(paths: [nestedPath], at: repo.root)
+
+        let after = worktreeSnapshot(repo)
+        #expect(after[nestedPath] == before[nestedPath])
+        #expect(after == before)
     }
 
     @Test func emptyPathsReturnsWithoutRunningGitEvenOutsideARepo() async throws {

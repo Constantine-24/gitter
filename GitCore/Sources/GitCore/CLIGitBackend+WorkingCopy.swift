@@ -13,7 +13,13 @@ extension CLIGitBackend: GitWorkingCopyBackend {
         if try await hasCommits(at: root) {
             _ = try await run(["restore", "--staged", "--"] + paths, cwd: root)
         } else {
-            _ = try await run(["rm", "--cached", "-q", "--"] + paths, cwd: root)
+            // `--ignore-unmatch`: without commits, a caller may pass a mix of paths that are
+            // and aren't in the index (e.g. after another change already removed one). Without
+            // this flag `git rm` fails outright on the first unmatched path and leaves every
+            // path — matched or not — still staged. `unstageAll`'s `rm --cached -r -- .` fallback
+            // doesn't need it: `.` either matches something or the empty-index case is handled
+            // separately below.
+            _ = try await run(["rm", "--cached", "-q", "--ignore-unmatch", "--"] + paths, cwd: root)
         }
     }
 
