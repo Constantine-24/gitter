@@ -20,10 +20,13 @@ next.
 
 ## Safety
 
-Nothing in the app modifies or deletes a file in your working tree. Staging only ever
-changes the index (`git apply --cached`, `git add`, `git reset`), never the files on
-disk — verified by tests that `shasum` every worktree file before and after each
-staging operation and require the bytes to be identical.
+Gitter's own operations never modify or delete a file in your working tree: staging and
+unstaging change only the index (`git apply --cached`, `git add`, `git reset`), and
+committing writes only to the repository. Hooks you have configured run exactly as they
+would from the command line, so a pre-commit hook that rewrites files (an auto-formatter,
+say) will still do so — that rewrite is your hook acting, not Gitter. The staging claim is
+verified by tests that `shasum` every worktree file before and after each staging
+operation and require the bytes to be identical.
 
 ## Design decisions
 
