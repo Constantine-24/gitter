@@ -1,46 +1,59 @@
 import GitCore
 import SwiftUI
 
-/// Right-hand pane: the file list for the current selection above, the diff of
-/// the selected file below.
+/// Right-hand pane. For the working copy: the staged/unstaged file list and the commit box
+/// above, the diff of the selected file below. For a commit: its header and file list above,
+/// the diff below.
 struct DetailView: View {
     @Environment(RepositoryStore.self) private var store
 
     var body: some View {
-        VSplitView {
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                fileList
-            }
-            .frame(minHeight: 140)
+        switch store.selection {
+        case .workingCopy:
+            VSplitView {
+                VStack(alignment: .leading, spacing: 0) {
+                    // The composer is sized by its content; every remaining point of the pane
+                    // goes to the file list.
+                    WorkingCopyFileList()
+                        .frame(minHeight: 120)
+                        .layoutPriority(1)
+                    Divider()
+                    CommitComposerView()
+                }
+                // The split opens at half the pane each (`VSplitView` ignores `idealHeight`
+                // for a child this flexible); the minimum keeps a few file rows and the whole
+                // commit box visible however far the divider is dragged up.
+                .frame(minHeight: 280)
 
-            DiffView(diffs: store.diff, hasSelection: store.selectedPath != nil)
+                diff.frame(minHeight: 140)
+            }
+        case .commit(let sha):
+            VSplitView {
+                VStack(alignment: .leading, spacing: 0) {
+                    commitHeader(sha)
+                    Divider()
+                    commitFileList
+                }
                 .frame(minHeight: 140)
+
+                diff.frame(minHeight: 140)
+            }
         }
+    }
+
+    private var diff: some View {
+        DiffView(diffs: store.diff, hasSelection: store.selectedPath != nil)
     }
 
     // MARK: - Header
 
     @ViewBuilder
-    private var header: some View {
-        switch store.selection {
-        case .workingCopy:
-            @Bindable var bindableStore = store
-            Picker("", selection: $bindableStore.stagedView) {
-                Text("Unstaged").tag(false)
-                Text("Staged").tag(true)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(8)
-        case .commit(let sha):
-            if let commit = store.snapshot?.commits.first(where: { $0.sha == sha }) {
-                commitHeader(commit)
-            } else {
-                Text(sha).font(.system(.body, design: .monospaced)).padding(8)
-            }
+    private func commitHeader(_ sha: String) -> some View {
+        if let commit = store.snapshot?.commits.first(where: { $0.sha == sha }) {
+            commitHeader(commit)
+        } else {
+            Text(sha).font(.system(.body, design: .monospaced)).padding(8)
         }
-        Divider()
     }
 
     private func commitHeader(_ commit: Commit) -> some View {
@@ -68,20 +81,10 @@ struct DetailView: View {
 
     // MARK: - File list
 
-    private var files: [FileStatus] {
-        switch store.selection {
-        case .workingCopy:
-            let all = store.snapshot?.status.files ?? []
-            return all.filter { store.stagedView ? $0.staged != nil : ($0.unstaged != nil) }
-        case .commit:
-            return store.detailFiles
-        }
-    }
-
-    private var fileList: some View {
-        List(files, selection: pathBinding) { file in
+    private var commitFileList: some View {
+        List(store.detailFiles, selection: pathBinding) { file in
             HStack(spacing: 6) {
-                ChangeBadge(kind: kind(of: file))
+                ChangeBadge(kind: file.staged)
                 Text(file.path)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -90,17 +93,10 @@ struct DetailView: View {
         }
         .listStyle(.inset)
         .overlay {
-            if files.isEmpty {
+            if store.detailFiles.isEmpty {
                 ContentUnavailableView("No Files", systemImage: "doc")
             }
         }
-    }
-
-    private func kind(of file: FileStatus) -> ChangeKind? {
-        if case .workingCopy = store.selection, !store.stagedView {
-            return file.unstaged
-        }
-        return file.staged
     }
 
     private var pathBinding: Binding<String?> {
