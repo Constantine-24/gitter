@@ -22,6 +22,9 @@ struct GitterApp: App {
                     Task {
                         await store.checkGitAvailability()
                         store.reopenLastRepository()
+                        #if DEBUG
+                            DebugLaunchHooks.run(store: store)
+                        #endif
                     }
                 }
         }
