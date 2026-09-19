@@ -14,6 +14,12 @@ struct TestRepo {
         try await repo.git(["init", "-q", "-b", "main"])
         try await repo.git(["config", "user.email", "t@t"])
         try await repo.git(["config", "user.name", "Tester"])
+        // Isolate commit tests from the developer's global config: a global
+        // `commit.gpgsign=true` would make every commit try to sign (and hang or fail waiting
+        // on a passphrase), and a global `core.hooksPath` would run hooks from outside this
+        // repo instead of the ones a test writes under `.git/hooks`.
+        try await repo.git(["config", "commit.gpgsign", "false"])
+        try await repo.git(["config", "core.hooksPath", ".git/hooks"])
         return repo
     }
 
@@ -28,6 +34,15 @@ struct TestRepo {
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true
         )
         try contents.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Writes `contents` to `relativePath` (typically under `.git/hooks`) and marks it
+    /// executable, as a hook needs to be for git to run it.
+    func writeExecutable(_ relativePath: String, _ contents: String) throws {
+        try write(relativePath, contents)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: root.appendingPathComponent(relativePath).path
+        )
     }
 
     func commitAll(_ message: String) async throws {

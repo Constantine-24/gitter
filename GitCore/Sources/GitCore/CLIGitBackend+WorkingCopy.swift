@@ -58,6 +58,44 @@ extension CLIGitBackend: GitWorkingCopyBackend {
         _ = try await run(arguments, cwd: root)
     }
 
+    public func commit(message: String, amend: Bool, allTracked: Bool, at root: URL) async throws -> String {
+        guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw GitError.emptyCommitMessage
+        }
+
+        // Outside the repository on purpose, same as `applyToIndex`'s patch file: a message
+        // file inside the worktree would itself show up as an untracked change while it exists.
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitter-commit-message-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try message.write(to: file, atomically: true, encoding: .utf8)
+
+        var arguments = ["commit", "-q"]
+        if allTracked { arguments.append("-a") }
+        if amend { arguments.append("--amend") }
+        arguments += ["-F", file.path]
+        _ = try await run(arguments, cwd: root)
+
+        let sha = try await run(["rev-parse", "HEAD"], cwd: root)
+        return String(decoding: sha, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public func headMessage(at root: URL) async throws -> String {
+        guard try await hasCommits(at: root) else { return "" }
+        let data = try await run(["log", "-1", "--format=%B"], cwd: root)
+        return trimmingTrailingWhitespaceAndNewlines(String(decoding: data, as: UTF8.self))
+    }
+
+    /// Trims only trailing whitespace and newline characters, leaving the rest of `string`
+    /// (including any leading whitespace) untouched.
+    private func trimmingTrailingWhitespaceAndNewlines(_ string: String) -> String {
+        var result = Substring(string)
+        while let last = result.last, last.isWhitespace {
+            result.removeLast()
+        }
+        return String(result)
+    }
+
     /// Whether `root` has at least one commit reachable from HEAD.
     ///
     /// `rev-parse --verify -q HEAD` exits 1 with empty stdout when there are none; exit 0

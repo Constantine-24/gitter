@@ -315,6 +315,8 @@ final class RepositoryStore {
                 return trimmed.isEmpty ? "git exited with code \(exitCode)" : stderr
             case .launchFailed(let path):
                 return "Failed to launch: \(path)"
+            case .emptyCommitMessage:
+                return "Enter a commit message."
             }
         }
         return error.localizedDescription

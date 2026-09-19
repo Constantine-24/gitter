@@ -6,4 +6,7 @@ public enum GitError: Error, Sendable, Equatable {
     case commandFailed(exitCode: Int32, stderr: String)
     /// The executable could not be launched at all.
     case launchFailed(String)
+    /// `commit(message:...)` was called with a message that is empty or contains only
+    /// whitespace. Thrown before git runs at all.
+    case emptyCommitMessage
 }
