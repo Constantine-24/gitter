@@ -47,20 +47,40 @@ final class RepositoryStore {
 
     // MARK: - Git availability
 
+    /// The banner text shown while `git` can't be found. Kept in one place so
+    /// `checkGitAvailability()` can recognize it as "still showing the git-missing banner"
+    /// before clearing it, without duplicating the literal string.
+    private static func gitMissingMessage(at gitPath: String) -> String {
+        "Git was not found at \(gitPath). Install the Xcode Command Line Tools."
+    }
+
     /// Surfaces a missing `git` as an error banner at launch, before anything tries to run a
-    /// command and fails with a less helpful "failed to launch" message per request.
+    /// command and fails with a less helpful "failed to launch" message per request. Also
+    /// re-checkable later: if git was missing and has since become available, this clears the
+    /// banner (but only if it's still showing the git-missing message, not some other error).
     func checkGitAvailability() async {
-        guard await !CLIGitBackend.isGitAvailable(at: gitPath) else { return }
-        gitMissing = true
-        lastError = "Git was not found at \(gitPath). Install the Xcode Command Line Tools."
+        let available = await CLIGitBackend.isGitAvailable(at: gitPath)
+        gitMissing = !available
+        let message = Self.gitMissingMessage(at: gitPath)
+        if available {
+            if lastError == message {
+                lastError = nil
+            }
+        } else {
+            lastError = message
+        }
     }
 
     // MARK: - Opening
 
     func open(_ url: URL) {
-        // Once git itself is confirmed missing, no repository can be opened; keep the banner
-        // up instead of letting a reopen quietly clear it.
-        guard !gitMissing else { return }
+        // Once git itself is confirmed missing, no repository can be opened. Keep the banner
+        // up instead of letting a reopen quietly clear it — and if the user dismissed it since,
+        // put it back so "Open Repository…" doesn't silently do nothing.
+        guard !gitMissing else {
+            lastError = Self.gitMissingMessage(at: gitPath)
+            return
+        }
 
         let standardized = url.standardizedFileURL
         let dotGit = standardized.appending(path: ".git")
@@ -220,6 +240,8 @@ final class RepositoryStore {
                     self.loadDetail()
                     return
                 case .workingCopy:
+                    // Unreachable today (the working-copy branch above never throws); kept so
+                    // this switch stays exhaustive if that ever changes.
                     self.lastError = Self.describe(loadError)
                     self.detailFiles = []
                 }
