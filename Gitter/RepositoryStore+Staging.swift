@@ -44,8 +44,12 @@ extension RepositoryStore {
 
     /// Which way hunk- and line-level operations run: the staged view shows what is already in
     /// the index, so acting on it takes changes out again.
+    ///
+    /// Derived from `diffIsStaged`, not `stagedView`: the patch is built from the diff that is
+    /// on screen, and for the moment between clicking the other side and its `git diff`
+    /// landing, that is still the previous side's parse.
     var patchDirection: PatchDirection {
-        stagedView ? .unstage : .stage
+        diffIsStaged ? .unstage : .stage
     }
 
     var commitButtonTitle: String {
@@ -162,11 +166,14 @@ extension RepositoryStore {
         // When there is nothing to commit at all, git says so and that becomes the banner.
         let allTracked = stagedFiles.isEmpty && !amend
 
-        mutate { [self] backend, root in
+        mutate { backend, root in
             _ = try await backend.commit(
                 message: message, amend: amend, allTracked: allTracked, at: root)
-            // Only reached when git accepted the commit; a rejection (hook, signing, nothing
-            // to commit) throws and leaves the draft exactly as the user typed it.
+        } onSuccess: { [self] in
+            // Only reached when git accepted the commit — a rejection (hook, signing, nothing
+            // to commit) throws and leaves the draft exactly as the user typed it — and only
+            // while this is still the repository that was committed to: a commit that finishes
+            // after the user opened another one must not wipe *that* repository's draft.
             draft.reset()
             select(.workingCopy)
         }
@@ -201,9 +208,15 @@ extension RepositoryStore {
     /// up reading is the one that belongs to the state now on screen. `finishMutation` also
     /// marks it as the mutation's own, which is what keeps the watcher-driven reload racing
     /// this one from erasing it.
+    ///
+    /// `onSuccess` is for side effects on the store's own state (the draft, the selection). It
+    /// runs only when git accepted the write *and* the generation it was started under is still
+    /// current — the same test `finishMutation` applies — because a mutation that finishes
+    /// after the user opened another repository would otherwise reset the new one's state.
     private func mutate(
         _ work: @escaping @MainActor (any GitBackend & GitWorkingCopyBackend, URL) async throws ->
-            Void
+            Void,
+        onSuccess: (@MainActor () -> Void)? = nil
     ) {
         guard let root, let generation = beginMutation() else { return }
 
@@ -216,6 +229,7 @@ extension RepositoryStore {
             }
 
             await refresh()
+            if failure == nil, self.generation == generation { onSuccess?() }
             finishMutation(generation: generation, failure: failure)
         }
     }

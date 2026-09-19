@@ -75,7 +75,9 @@ struct DiffHunkView: View {
     private func buttons(selectedCount: Int) -> some View {
         HStack(spacing: 6) {
             if selectedCount == 0 {
-                Button(store.stagedView ? "Unstage Hunk" : "Stage Hunk") {
+                // `diffIsStaged`, not `stagedView`: the label has to describe the diff these
+                // buttons act on, which for a moment after a side change is still the old one.
+                Button(store.diffIsStaged ? "Unstage Hunk" : "Stage Hunk") {
                     store.applyHunk(hunk, in: file)
                 }
                 // Mutations are serialized in the store; the disabled state is what says so.
@@ -94,7 +96,7 @@ struct DiffHunkView: View {
     }
 
     private func lineButtonTitle(_ count: Int) -> String {
-        let verb = store.stagedView ? "Unstage" : "Stage"
+        let verb = store.diffIsStaged ? "Unstage" : "Stage"
         return "\(verb) \(count) \(count == 1 ? "Line" : "Lines")"
     }
 }

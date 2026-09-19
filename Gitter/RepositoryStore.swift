@@ -20,6 +20,11 @@ final class RepositoryStore {
     var selectedPath: String?
     private(set) var detailFiles: [FileStatus] = []
     private(set) var diff: [FileDiff] = []
+    /// Which side the loaded `diff` came from. `stagedView` flips the instant the user picks a
+    /// row, while the matching `git diff` is still running, so for the time in between the two
+    /// disagree. Anything that has to describe the diff actually on screen — the hunk buttons'
+    /// labels, the direction their patch is applied in — reads this instead of `stagedView`.
+    private(set) var diffIsStaged = false
     var stagedView = false {
         didSet {
             guard stagedView != oldValue else { return }
@@ -89,6 +94,9 @@ final class RepositoryStore {
         if available {
             if lastError == message {
                 lastError = nil
+                // `open()` made this message sticky; with it gone, nothing is being protected
+                // from the next reload any more.
+                errorIsSticky = false
             }
         } else {
             lastError = message
@@ -103,6 +111,9 @@ final class RepositoryStore {
         // put it back so "Open Repository…" doesn't silently do nothing.
         guard !gitMissing else {
             lastError = Self.gitMissingMessage(at: gitPath)
+            // Sticky, like a mutation's own message: a repository may already be open, and its
+            // watcher-driven reload succeeds and would clear this a fraction of a second later.
+            errorIsSticky = true
             return
         }
 
@@ -110,6 +121,7 @@ final class RepositoryStore {
         let dotGit = standardized.appending(path: ".git")
         guard FileManager.default.fileExists(atPath: dotGit.path) else {
             lastError = "Not a Git repository: \(standardized.path)"
+            errorIsSticky = true
             return
         }
 
@@ -127,7 +139,7 @@ final class RepositoryStore {
         // on screen (or gets raced against) while the new repository's first snapshot loads.
         snapshot = nil
         detailFiles = []
-        diff = []
+        setDiff([], staged: stagedView)
         selection = .workingCopy
         selectedPath = nil
         lastError = nil
@@ -135,6 +147,9 @@ final class RepositoryStore {
         // A half-written message belongs to the repository it was written for, and a mutation
         // in flight can only be for the old one.
         draft.reset()
+        // Released here and not left to the mutation itself: the generation below makes its
+        // `finishMutation` stale, and a stale one returns early — so without this the flag
+        // would stay set for the new repository and every button would stay disabled.
         isMutating = false
         // Everything in flight for the previous repository — including a reopen of this very
         // path — is now stale and will drop its result.
@@ -245,7 +260,7 @@ final class RepositoryStore {
 
     func select(_ newSelection: Selection) {
         selection = newSelection
-        diff = []
+        setDiff([], staged: stagedView)
         loadDetail()
     }
 
@@ -326,7 +341,7 @@ final class RepositoryStore {
         diffTask?.cancel()
 
         guard let root, let selectedPath else {
-            diff = []
+            setDiff([], staged: stagedView)
             return
         }
 
@@ -361,11 +376,17 @@ final class RepositoryStore {
             if let loadError {
                 self.lastError = Self.describe(loadError)
                 self.errorIsSticky = false
-                self.diff = []
+                self.setDiff([], staged: capturedStagedView)
             } else {
-                self.diff = result
+                self.setDiff(result, staged: capturedStagedView)
             }
         }
+    }
+
+    /// The one place `diff` is written, so `diffIsStaged` can never drift from it.
+    private func setDiff(_ newDiff: [FileDiff], staged: Bool) {
+        diff = newDiff
+        diffIsStaged = staged
     }
 
     // MARK: - Errors
