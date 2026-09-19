@@ -11,6 +11,11 @@ extension RepositoryStore {
     // MARK: - Derived state for the UI
 
     /// Files with an index-side change. A file changed on both sides appears in both lists.
+    ///
+    /// An unmerged file counts as staged (`staged == .unmerged`) even though its index entry is
+    /// a conflict rather than a change. That is deliberate: with it counted, `commitButtonTitle`
+    /// never falls through to "Commit All Tracked" mid-merge, and so `git commit -a` — which
+    /// would commit the conflict markers verbatim — is never what the button does.
     var stagedFiles: [FileStatus] {
         snapshot?.status.files.filter { $0.staged != nil } ?? []
     }
@@ -18,6 +23,23 @@ extension RepositoryStore {
     /// Files with a worktree-side change, including untracked ones (`unstaged == .untracked`).
     var unstagedFiles: [FileStatus] {
         snapshot?.status.files.filter { $0.unstaged != nil } ?? []
+    }
+
+    /// True while at least one file is conflicted, i.e. a merge is in progress.
+    ///
+    /// Unstaging during a merge destroys state that cannot be reconstructed from the worktree:
+    /// `git reset` deletes `MERGE_HEAD`, which ends the merge silently while the conflict
+    /// markers stay in the files, and `git restore --staged` on a conflicted path collapses its
+    /// three index stages into one. Both leave a repository that looks unremarkable and holds
+    /// marker text ready to be committed.
+    var hasUnmergedFiles: Bool {
+        snapshot?.status.files.contains(where: isUnmerged) ?? false
+    }
+
+    /// Whether `file` is one side of an unresolved conflict. `git status` reports both sides as
+    /// `U`, but either alone is enough to mean "do not unstage this".
+    func isUnmerged(_ file: FileStatus) -> Bool {
+        file.staged == .unmerged || file.unstaged == .unmerged
     }
 
     /// Which way hunk- and line-level operations run: the staged view shows what is already in
@@ -65,6 +87,9 @@ extension RepositoryStore {
     }
 
     func unstage(_ file: FileStatus) {
+        // Defence in depth behind the disabled button: the debug hooks call straight in, and
+        // `git restore --staged` on a conflicted path would throw its three stages away.
+        guard !isUnmerged(file) else { return }
         // A staged rename occupies two index entries — the new path and the one it came from —
         // and restoring only one of them would leave half a rename staged.
         var paths = [file.path]
@@ -77,6 +102,9 @@ extension RepositoryStore {
     }
 
     func unstageAll() {
+        // Same defence, for the whole-index command: `git reset` would remove `MERGE_HEAD` and
+        // end the merge without saying so.
+        guard !hasUnmergedFiles else { return }
         mutate { backend, root in try await backend.unstageAll(at: root) }
     }
 

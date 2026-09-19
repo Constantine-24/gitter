@@ -22,6 +22,9 @@ struct DetailView: View {
         switch store.selection {
         case .workingCopy:
             VStack(alignment: .leading, spacing: 0) {
+                // Why half the list's buttons are disabled. Sits above the list rather than
+                // inside it so the list itself stays a plain `List` of sections.
+                if store.hasUnmergedFiles { mergeNote }
                 // The composer is sized by its content; every remaining point of the top half
                 // goes to the file list.
                 WorkingCopyFileList()
@@ -45,6 +48,16 @@ struct DetailView: View {
             }
             .frame(minHeight: 140)
         }
+    }
+
+    private var mergeNote: some View {
+        Text("Merge in progress — resolve conflicts in your editor, then stage the files.")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
     }
 
     // MARK: - Header

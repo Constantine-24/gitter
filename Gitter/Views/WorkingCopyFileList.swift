@@ -18,6 +18,8 @@ struct WorkingCopyFileList: View {
                 files: store.stagedFiles,
                 actionTitle: "Unstage All",
                 placeholder: "Nothing staged",
+                // `git reset` would drop `MERGE_HEAD` and end the merge behind the user's back.
+                actionDisabled: store.hasUnmergedFiles,
                 action: { store.unstageAll() }
             )
             section(
@@ -56,6 +58,7 @@ struct WorkingCopyFileList: View {
         files: [FileStatus],
         actionTitle: String,
         placeholder: String,
+        actionDisabled: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Section {
@@ -75,7 +78,7 @@ struct WorkingCopyFileList: View {
                 Spacer()
                 Button(actionTitle, action: action)
                     .buttonStyle(.borderless)
-                    .disabled(files.isEmpty || store.isMutating)
+                    .disabled(files.isEmpty || store.isMutating || actionDisabled)
             }
         }
     }
@@ -113,15 +116,16 @@ struct WorkingCopyFileList: View {
     }
 
     private func row(_ file: FileStatus, staged: Bool) -> some View {
-        HStack(spacing: 6) {
+        let blocked = isBlocked(file, staged: staged)
+        return HStack(spacing: 6) {
             Button {
                 toggle(file, staged: staged)
             } label: {
                 Image(systemName: staged ? "minus.circle" : "plus.circle")
             }
             .buttonStyle(.borderless)
-            .disabled(store.isMutating)
-            .help(staged ? "Unstage" : "Stage")
+            .disabled(store.isMutating || blocked)
+            .help(blocked ? "Resolve the conflict, then stage the file" : (staged ? "Unstage" : "Stage"))
             .accessibilityLabel(staged ? "Unstage \(file.path)" : "Stage \(file.path)")
 
             ChangeBadge(kind: staged ? file.staged : file.unstaged)
@@ -144,8 +148,16 @@ struct WorkingCopyFileList: View {
 
     // MARK: - Acting on a row
 
+    /// Whether this row's button moves the file in a direction that would destroy conflict
+    /// state. Only the staged side is blocked: staging an unmerged file with "+" is how a
+    /// resolution is recorded, which is exactly what the user should be able to do here.
+    private func isBlocked(_ file: FileStatus, staged: Bool) -> Bool {
+        staged && store.isUnmerged(file)
+    }
+
     private func toggle(_ file: FileStatus, staged: Bool) {
-        guard !store.isMutating else { return }
+        // Also the double-click and space-bar path, which reach the row without its button.
+        guard !store.isMutating, !isBlocked(file, staged: staged) else { return }
         if staged {
             store.unstage(file)
         } else {
