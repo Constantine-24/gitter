@@ -79,7 +79,8 @@ public struct CLIGitBackend: GitBackend {
 
     // MARK: - Helpers
 
-    private func run(_ arguments: [String], cwd: URL, allowedExitCodes: Set<Int32> = []) async throws -> Data {
+    // Internal (not private) so CLIGitBackend+WorkingCopy.swift can share this helper.
+    func run(_ arguments: [String], cwd: URL, allowedExitCodes: Set<Int32> = []) async throws -> Data {
         try await runner.run(gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes)
     }
 

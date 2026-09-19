@@ -20,6 +20,7 @@ public struct ProcessRunner: Sendable {
             env["GIT_TERMINAL_PROMPT"] = "0"
             env["LC_ALL"] = "C"
             env["GIT_OPTIONAL_LOCKS"] = "0"
+            env["GIT_EDITOR"] = "true"
             process.environment = env
 
             let stdout = Pipe()
