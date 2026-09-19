@@ -36,9 +36,11 @@ import Testing
         try await repo.git(["add", "a.txt"])
         let backend = CLIGitBackend()
         let message = "Subject line\n\nFirst body paragraph.\nSecond body line.\n\nThird paragraph."
+        let before = worktreeSnapshot(repo)
 
         _ = try await backend.commit(message: message, amend: false, allTracked: false, at: repo.root)
 
+        assertWorktreeUnchanged(repo, since: before)
         let stored = try await backend.headMessage(at: repo.root)
         #expect(stored == message)
     }
@@ -192,9 +194,11 @@ import Testing
         try await repo.git(["add", "a.txt"])
         let backend = CLIGitBackend()
         let message = "A subject\n\nA body paragraph explaining the change."
+        let before = worktreeSnapshot(repo)
 
         _ = try await backend.commit(message: message, amend: false, allTracked: false, at: repo.root)
 
+        assertWorktreeUnchanged(repo, since: before)
         #expect((try await backend.headMessage(at: repo.root)) == message)
     }
 
@@ -203,8 +207,11 @@ import Testing
         defer { repo.cleanUp() }
         try repo.write("a.txt", "one\n")
         let backend = CLIGitBackend()
+        let before = worktreeSnapshot(repo)
 
         #expect((try await backend.headMessage(at: repo.root)) == "")
+
+        assertWorktreeUnchanged(repo, since: before)
     }
 
     @Test func emptyMessageThrowsBeforeRunningGitAndLeavesStagedChangeStaged() async throws {
@@ -244,9 +251,11 @@ import Testing
         try await repo.git(["add", "a.txt"])
         let backend = CLIGitBackend()
         let message = "Subject\n\nBody line one\n# looks like a comment\nBody line two"
+        let before = worktreeSnapshot(repo)
 
         _ = try await backend.commit(message: message, amend: false, allTracked: false, at: repo.root)
 
+        assertWorktreeUnchanged(repo, since: before)
         #expect((try await backend.headMessage(at: repo.root)) == message)
     }
 
@@ -259,9 +268,49 @@ import Testing
         try await repo.git(["add", "a.txt"])
         let backend = CLIGitBackend()
         let message = "héllo 世界 🚀\n\nbody with ünïcödé"
+        let before = worktreeSnapshot(repo)
 
         _ = try await backend.commit(message: message, amend: false, allTracked: false, at: repo.root)
 
+        assertWorktreeUnchanged(repo, since: before)
+        #expect((try await backend.headMessage(at: repo.root)) == message)
+    }
+
+    @Test func amendInARepoWithNoCommitsThrowsAndLeavesIndexUnchanged() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("a.txt", "one\n")
+        try await repo.git(["add", "a.txt"])
+        let backend = CLIGitBackend()
+        let before = worktreeSnapshot(repo)
+
+        await #expect {
+            _ = try await backend.commit(message: "amend with nothing to amend", amend: true, allTracked: false, at: repo.root)
+        } throws: { error in
+            guard case let GitError.commandFailed(_, stderr) = error else { return false }
+            return stderr.contains("nothing to amend")
+        }
+
+        assertWorktreeUnchanged(repo, since: before)
+        #expect(try await repo.isInIndex("a.txt"))
+        let status = try await CLIGitBackend().snapshot(at: repo.root).status
+        #expect(status.files.first { $0.path == "a.txt" }?.staged == .added)
+    }
+
+    @Test func messageStartingWithADashCommitsAndReadsBackVerbatim() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("a.txt", "one\n")
+        try await repo.commitAll("root")
+        try repo.write("a.txt", "one\ntwo\n")
+        try await repo.git(["add", "a.txt"])
+        let backend = CLIGitBackend()
+        let message = "-not-a-flag\n\nbody"
+        let before = worktreeSnapshot(repo)
+
+        _ = try await backend.commit(message: message, amend: false, allTracked: false, at: repo.root)
+
+        assertWorktreeUnchanged(repo, since: before)
         #expect((try await backend.headMessage(at: repo.root)) == message)
     }
 }
