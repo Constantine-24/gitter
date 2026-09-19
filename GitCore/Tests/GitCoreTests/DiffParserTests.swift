@@ -155,4 +155,72 @@ import Testing
     @Test func emptyInputProducesEmptyArray() {
         #expect(DiffParser.parse(Data()).isEmpty)
     }
+
+    // MARK: - Path rendering on the `---`/`+++` lines
+    //
+    // git terminates those names with a TAB as soon as the rendered name contains a space,
+    // and escapes every non-ASCII byte as three octal digits under the default
+    // `core.quotepath`. Both were parsed literally before, so a path with a space came back
+    // with a trailing tab and `é` came back as the six characters `\303\251` — names that
+    // match nothing in the index when a built patch is applied to it.
+
+    @Test func unquotedPathWithASpaceDropsGitsSeparatingTab() throws {
+        let text = """
+            diff --git a/my file.txt b/my file.txt
+            index 1234567..89abcde 100644
+            --- a/my file.txt\t
+            +++ b/my file.txt\t
+            @@ -1 +1 @@
+            -a
+            +b
+            """
+        let file = try #require(DiffParser.parse(Data(text.utf8)).first)
+        #expect(file.oldPath == "my file.txt")
+        #expect(file.newPath == "my file.txt")
+    }
+
+    @Test func quotedPathIsUnescapedToItsRealName() throws {
+        let text = """
+            diff --git "a/donn\\303\\251es/mon fichier.txt" "b/donn\\303\\251es/mon fichier.txt"
+            index 1234567..89abcde 100644
+            --- "a/donn\\303\\251es/mon fichier.txt"\t
+            +++ "b/donn\\303\\251es/mon fichier.txt"\t
+            @@ -1 +1 @@
+            -a
+            +b
+            """
+        let file = try #require(DiffParser.parse(Data(text.utf8)).first)
+        #expect(file.oldPath == "données/mon fichier.txt")
+        #expect(file.newPath == "données/mon fichier.txt")
+    }
+
+    @Test func quotedPathDecodesTheOtherCEscapes() throws {
+        let text = """
+            diff --git "a/we\\"ird\\\\name\\ttab.txt" "b/we\\"ird\\\\name\\ttab.txt"
+            index 1234567..89abcde 100644
+            --- "a/we\\"ird\\\\name\\ttab.txt"
+            +++ "b/we\\"ird\\\\name\\ttab.txt"
+            @@ -1 +1 @@
+            -a
+            +b
+            """
+        let file = try #require(DiffParser.parse(Data(text.utf8)).first)
+        #expect(file.newPath == "we\"ird\\name\ttab.txt")
+    }
+
+    @Test func devNullStillMarksTheMissingSide() throws {
+        let text = """
+            diff --git a/new file.txt b/new file.txt
+            new file mode 100644
+            index 0000000..89abcde
+            --- /dev/null
+            +++ b/new file.txt\t
+            @@ -0,0 +1 @@
+            +a
+            """
+        let file = try #require(DiffParser.parse(Data(text.utf8)).first)
+        #expect(file.oldPath == nil)
+        #expect(file.newPath == "new file.txt")
+        #expect(file.kind == .added)
+    }
 }

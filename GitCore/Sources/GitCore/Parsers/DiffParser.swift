@@ -141,50 +141,6 @@ public enum DiffParser {
         return files
     }
 
-    // MARK: - Header parsing
-
-    private struct DiffGitHeader {
-        let oldPath: String
-        let newPath: String
-    }
-
-    private static func parseDiffGitHeader(_ line: String) -> DiffGitHeader? {
-        if let match = line.wholeMatch(of: /^diff --git a\/(.*) b\/(.*)$/) {
-            return DiffGitHeader(
-                oldPath: unquoteIfNeeded(String(match.1)),
-                newPath: unquoteIfNeeded(String(match.2))
-            )
-        }
-        if let match = line.wholeMatch(of: /^diff --git "(.*)" "(.*)"$/) {
-            var old = unquoteIfNeeded("\"\(match.1)\"")
-            var new = unquoteIfNeeded("\"\(match.2)\"")
-            if old.hasPrefix("a/") { old = String(old.dropFirst(2)) }
-            if new.hasPrefix("b/") { new = String(new.dropFirst(2)) }
-            return DiffGitHeader(oldPath: old, newPath: new)
-        }
-        return nil
-    }
-
-    private static func parseUnifiedPath(_ line: String, markerLength: Int, prefix: String) -> String? {
-        let rest = String(line.dropFirst(markerLength))
-        if rest == "/dev/null" { return nil }
-        var path = unquoteIfNeeded(rest)
-        if path.hasPrefix(prefix) {
-            path = String(path.dropFirst(prefix.count))
-        }
-        return path
-    }
-
-    private static func unquoteIfNeeded(_ string: String) -> String {
-        guard string.count >= 2, string.hasPrefix("\""), string.hasSuffix("\"") else { return string }
-        var inner = String(string.dropFirst().dropLast())
-        inner = inner.replacingOccurrences(of: "\\\"", with: "\"")
-        inner = inner.replacingOccurrences(of: "\\t", with: "\t")
-        inner = inner.replacingOccurrences(of: "\\n", with: "\n")
-        inner = inner.replacingOccurrences(of: "\\\\", with: "\\")
-        return inner
-    }
-
     // MARK: - Hunk header parsing
 
     private struct HunkStart {
