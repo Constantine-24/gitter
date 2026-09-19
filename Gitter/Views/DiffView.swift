@@ -18,20 +18,18 @@ struct DiffView: View {
         if diffs.isEmpty {
             placeholder
         } else {
-            // The stack's width is driven by the viewport rather than by measuring every line,
-            // so rows stay lazy. A line longer than the pane is drawn past its edge and clipped
-            // there: measuring one would mean measuring all of them.
-            GeometryReader { proxy in
-                ScrollView([.vertical, .horizontal]) {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(diffs) { diff in
-                            fileSection(diff, viewportWidth: proxy.size.width)
-                        }
+            // Vertical only: a long line now wraps to the row's width and grows the row taller
+            // instead of running past the pane's edge, so there is nothing left to scroll
+            // sideways to. That also means the stack never needs a width wider than the pane
+            // itself — no GeometryReader is needed to measure and pin it.
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(diffs) { diff in
+                        fileSection(diff)
                     }
-                    .frame(minWidth: proxy.size.width, alignment: .leading)
                 }
-                .background(Color(nsColor: .textBackgroundColor))
             }
+            .background(Color(nsColor: .textBackgroundColor))
             // Every reload renumbers the lines, so a selection made against the previous parse
             // would now point at whatever happens to sit at those indices.
             .onChange(of: diffs, initial: true) { resetSelection() }
@@ -54,13 +52,13 @@ struct DiffView: View {
     }
 
     @ViewBuilder
-    private func fileSection(_ diff: FileDiff, viewportWidth: CGFloat) -> some View {
+    private func fileSection(_ diff: FileDiff) -> some View {
         Text(diff.displayPath)
             .font(.system(.caption, design: .monospaced).weight(.semibold))
             .lineLimit(1)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .pinnedToViewport(viewportWidth, background: .quaternary)
+            .headerRow(background: .quaternary)
 
         if diff.isBinary {
             Text("Binary file")
@@ -78,22 +76,22 @@ struct DiffView: View {
             // the hunk, and it is what decides whether this diff is interactive at all.
             let canStage = store.canPartiallyStage(diff)
             ForEach(diff.hunks) { hunk in
-                DiffHunkView(
-                    file: diff, hunk: hunk, canStage: canStage, viewportWidth: viewportWidth,
-                    selection: $selection)
+                DiffHunkView(file: diff, hunk: hunk, canStage: canStage, selection: $selection)
             }
         }
     }
 }
 
 extension View {
-    /// Holds a header row to the width of the diff pane, so whatever sits at its trailing edge
-    /// — the stage buttons — cannot be pushed out of sight by a long line in the file.
+    /// Fills a header row to the width of the diff pane, so whatever sits at its trailing edge
+    /// — the stage buttons — has the full pane to lay out in.
     ///
-    /// Clamped rather than set, so before the first layout pass (width 0) the row just fills
-    /// its container.
-    func pinnedToViewport(_ width: CGFloat, background: some ShapeStyle) -> some View {
-        frame(maxWidth: width > 0 ? width : .infinity, alignment: .leading)
+    /// Used to be clamped to a measured viewport width, back when the pane could scroll
+    /// sideways and a header's natural width could run wider than the pane. Now that long
+    /// lines wrap instead, the pane is never wider than its container, so a plain `.infinity`
+    /// frame does the same job without measuring anything.
+    func headerRow(background: some ShapeStyle) -> some View {
+        frame(maxWidth: .infinity, alignment: .leading)
             .background(background)
     }
 }

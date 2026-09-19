@@ -14,8 +14,6 @@ struct DiffHunkView: View {
     /// untracked, binary and renamed files: then the hunk renders as the read-only diff it was
     /// before — no buttons, no gutter clicks, no hover.
     let canStage: Bool
-    /// How wide the diff pane is, so the header can be held to it. See `header`.
-    let viewportWidth: CGFloat
     @Binding var selection: DiffLineSelection
 
     @Environment(RepositoryStore.self) private var store
@@ -51,11 +49,11 @@ struct DiffHunkView: View {
 
     // MARK: - Header
 
-    /// The `@@` line, with the buttons at the trailing edge of the *viewport*.
+    /// The `@@` line, with the buttons at the trailing edge of the row.
     ///
-    /// Clamped to the pane's width rather than filling whatever the lazy stack turns out to be,
-    /// so the buttons cannot be pushed out of sight by a long line in the file. See the note on
-    /// `pinnedToViewport`.
+    /// Filled to the pane's width so the buttons sit at its trailing edge rather than right
+    /// after the header text. The header text itself stays single-line: hunk headers are short
+    /// in practice, and it is only the *body* lines that wrap now.
     private func header(selectedCount: Int) -> some View {
         HStack(spacing: 8) {
             Text(hunk.header)
@@ -71,7 +69,7 @@ struct DiffHunkView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 2)
-        .pinnedToViewport(viewportWidth, background: .quinary)
+        .headerRow(background: .quinary)
     }
 
     private func buttons(selectedCount: Int) -> some View {
@@ -113,7 +111,9 @@ private struct DiffLineRow: View {
     @State private var isHovering = false
 
     var body: some View {
-        HStack(spacing: 0) {
+        // Top-aligned so a line that wraps to several visual rows still keeps its line numbers
+        // and +/- marker level with the *first* one, not centred across the whole wrapped height.
+        HStack(alignment: .top, spacing: 0) {
             gutter
             Text(line.text.isEmpty ? " " : line.text)
                 .font(.system(.body, design: .monospaced))
@@ -124,8 +124,10 @@ private struct DiffLineRow: View {
                 // Stays selectable: the click gesture is on the gutter only, so dragging over
                 // the text still selects it for copying.
                 .textSelection(.enabled)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+                // Wraps to the row's width and grows vertically instead of running past the
+                // pane's edge and getting clipped there — the pane no longer scrolls sideways.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 6)
                 .padding(.trailing, 12)
         }
@@ -138,7 +140,10 @@ private struct DiffLineRow: View {
     /// reports the flags as they are right now, which inside the handler is the click's own.
     @ViewBuilder
     private var gutter: some View {
-        let content = HStack(spacing: 0) {
+        // Top-aligned so the numbers and marker — each one line tall — sit on the wrapped
+        // text's first visual line rather than centring against the selection bar, which
+        // (being a plain flexible Rectangle) stretches to the row's full wrapped height.
+        let content = HStack(alignment: .top, spacing: 0) {
             number(line.oldNumber)
             number(line.newNumber)
             Rectangle()
