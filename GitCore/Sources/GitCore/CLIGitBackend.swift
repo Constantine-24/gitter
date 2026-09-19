@@ -45,17 +45,22 @@ public struct CLIGitBackend: GitBackend {
 
     public func workingCopyDiff(at root: URL, path: String, staged: Bool) async throws -> [FileDiff] {
         if staged {
-            let data = try await run(["diff", "--cached", "--no-color", "-U3", "-M", "--", path], cwd: root)
+            let data = try await run(
+                ["diff", "--cached", "--no-color", "-U3", "-M", "--", literalPathspec(path)], cwd: root)
             return DiffParser.parse(data)
         }
 
         if try await isTracked(path, at: root) {
-            let data = try await run(["diff", "--no-color", "-U3", "--", path], cwd: root)
+            let data = try await run(
+                ["diff", "--no-color", "-U3", "--", literalPathspec(path)], cwd: root)
             return DiffParser.parse(data)
         }
 
         // Untracked file: diff the whole file against /dev/null. This exits 1 when there is
         // any content (i.e. almost always), which is expected, not a failure.
+        //
+        // No `:(literal)` here: `--no-index` compares two *files* given by name, not
+        // pathspecs, so the prefix would become part of the name git tries to open.
         let data = try await run(
             ["diff", "--no-color", "-U3", "--no-index", "--", "/dev/null", path],
             cwd: root, allowedExitCodes: [1]
@@ -72,7 +77,7 @@ public struct CLIGitBackend: GitBackend {
 
     public func commitDiff(at root: URL, sha: String, path: String?) async throws -> [FileDiff] {
         let arguments = ["--no-commit-id", "-p", "-U3", "-M", "-r"]
-        let trailing = path.map { ["--", $0] } ?? []
+        let trailing = path.map { ["--", literalPathspec($0)] } ?? []
         let data = try await diffTree(at: root, arguments: arguments, sha: sha, trailing: trailing)
         return DiffParser.parse(data)
     }
@@ -82,6 +87,24 @@ public struct CLIGitBackend: GitBackend {
     // Internal (not private) so CLIGitBackend+WorkingCopy.swift can share this helper.
     func run(_ arguments: [String], cwd: URL, allowedExitCodes: Set<Int32> = []) async throws -> Data {
         try await runner.run(gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes)
+    }
+
+    /// Turns a path into a pathspec that means exactly that one path.
+    ///
+    /// Everything git takes after `--` is a *pathspec*, not a file name: it is glob-matched,
+    /// so a file really named `a*.txt` also selects `a b.txt`, `notes[1].txt` also selects
+    /// `notes1.txt`, and a leading `:` is read as pathspec magic (`:colon.txt` is rejected
+    /// outright). Every path here comes from git's own status or from a row the user clicked,
+    /// so it is always a literal name and never a pattern the user typed. `:(literal)` is
+    /// git's own way of saying so.
+    ///
+    /// Not for `git apply`'s patch file or for `diff --no-index`: those arguments are
+    /// filenames, not pathspecs, and the prefix would be taken as part of the name.
+    ///
+    /// Internal (not private) for the same reason as `run`: `CLIGitBackend+WorkingCopy.swift`
+    /// is the other half of this type and needs it too.
+    func literalPathspec(_ path: String) -> String {
+        ":(literal)" + path
     }
 
     private func commitLog(at root: URL) async throws -> [Commit] {
@@ -103,7 +126,7 @@ public struct CLIGitBackend: GitBackend {
     /// than being silently treated as "untracked".
     private func isTracked(_ path: String, at root: URL) async throws -> Bool {
         do {
-            _ = try await run(["ls-files", "--error-unmatch", "--", path], cwd: root)
+            _ = try await run(["ls-files", "--error-unmatch", "--", literalPathspec(path)], cwd: root)
             return true
         } catch GitError.commandFailed(exitCode: 1, stderr: _) {
             return false

@@ -5,13 +5,13 @@ import Foundation
 extension CLIGitBackend: GitWorkingCopyBackend {
     public func stage(paths: [String], at root: URL) async throws {
         guard !paths.isEmpty else { return }
-        _ = try await run(["add", "--"] + paths, cwd: root)
+        _ = try await run(["add", "--"] + paths.map(literalPathspec), cwd: root)
     }
 
     public func unstage(paths: [String], at root: URL) async throws {
         guard !paths.isEmpty else { return }
         if try await hasCommits(at: root) {
-            _ = try await run(["restore", "--staged", "--"] + paths, cwd: root)
+            _ = try await run(["restore", "--staged", "--"] + paths.map(literalPathspec), cwd: root)
         } else {
             // `--ignore-unmatch`: without commits, a caller may pass a mix of paths that are
             // and aren't in the index (e.g. after another change already removed one). Without
@@ -19,7 +19,9 @@ extension CLIGitBackend: GitWorkingCopyBackend {
             // path — matched or not — still staged. `unstageAll`'s `rm --cached -r -- .` fallback
             // doesn't need it: `.` either matches something or the empty-index case is handled
             // separately below.
-            _ = try await run(["rm", "--cached", "-q", "--ignore-unmatch", "--"] + paths, cwd: root)
+            _ = try await run(
+                ["rm", "--cached", "-q", "--ignore-unmatch", "--"] + paths.map(literalPathspec),
+                cwd: root)
         }
     }
 
@@ -34,6 +36,9 @@ extension CLIGitBackend: GitWorkingCopyBackend {
         }
 
         do {
+            // The `.` is a real pathspec — "everything below the repository root" — not a file
+            // name, so it deliberately stays unprefixed: `:(literal).` would mean a file
+            // called `.` instead.
             _ = try await run(["rm", "--cached", "-r", "-q", "--", "."], cwd: root)
         } catch let GitError.commandFailed(_, stderr) where stderr.contains("did not match any files") {
             // Nothing is staged yet in a repository with no commits: there is nothing to
