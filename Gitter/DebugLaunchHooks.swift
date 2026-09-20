@@ -21,7 +21,8 @@
     ///   GITTER_DEBUG_OPEN=<path>            then open that path, as "Open Repository…" does
     ///   GITTER_DEBUG_APPEARANCE=light|dark  force the window's appearance
     ///
-    /// `DebugLaunchHooks+Events` adds the ones that click and type.
+    /// `DebugLaunchHooks+Events` adds the ones that click and type;
+    /// `DebugLaunchHooks+Branches` the ones that run branch actions and open their sheets.
     @MainActor
     enum DebugLaunchHooks {
 
@@ -44,9 +45,10 @@
             let window = env["GITTER_DEBUG_WINDOW"]
             let openPath = env["GITTER_DEBUG_OPEN"]
             let appearance = env["GITTER_DEBUG_APPEARANCE"]
+            let branchAction = branchActionSpec
             guard
                 path != nil || commit != nil || window != nil || openPath != nil
-                    || appearance != nil || wantsEvents
+                    || appearance != nil || branchAction != nil || wantsEvents
             else { return }
 
             pendingLineIDs = lineIDs()
@@ -78,6 +80,13 @@
                 if let openPath {
                     store.open(URL(fileURLWithPath: openPath))
                     try? await Task.sleep(for: .milliseconds(500))
+                }
+                // After any `GITTER_DEBUG_OPEN`, so the actions run against the repository the
+                // script meant, and before the clicks, so a sheet one of them opens is on
+                // screen for them (and for a screenshot).
+                if let branchAction {
+                    guard await wait({ store.snapshot != nil }) else { return }
+                    await runBranchActions(branchAction, store: store)
                 }
                 // Last, so a click lands on a list that has finished loading its rows.
                 if wantsEvents { await runEvents() }
@@ -135,7 +144,9 @@
         /// Polls `condition` for up to ten seconds. Loading is spread over several independent
         /// tasks in the store with nothing to await from outside, so polling is the honest
         /// way to say "once it is on screen".
-        private static func wait(_ condition: @MainActor () -> Bool) async -> Bool {
+        // internal (not private): used by DebugLaunchHooks+Branches.swift, which waits the same
+        // way for each step's mutation to finish
+        static func wait(_ condition: @MainActor () -> Bool) async -> Bool {
             for _ in 0..<100 {
                 if condition() { return true }
                 try? await Task.sleep(for: .milliseconds(100))

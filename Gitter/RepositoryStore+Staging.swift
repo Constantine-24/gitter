@@ -109,22 +109,37 @@ extension RepositoryStore {
     /// user opened another repository would otherwise reset the new one's state.
     // internal (not private): used by RepositoryStore+Commit.swift's `commit()`
     func mutate(
-        _ work: @escaping @MainActor (any GitBackend & GitWorkingCopyBackend, URL) async throws ->
-            Void,
+        _ work: @escaping @MainActor (Backend, URL) async throws -> Void,
         onSuccess: (@MainActor () -> Void)? = nil
+    ) {
+        mutate(result: work) { (_: Void) in onSuccess?() }
+    }
+
+    /// `mutate`, for a command that answers something the store then has to act on — a merge's
+    /// outcome, a delete git refused and reported on instead of doing.
+    ///
+    /// Identical in every other respect, and deliberately the same code path rather than a
+    /// parallel one: the serialization, the unconditional reload, the generation check and the
+    /// sticky banner are exactly what a branch operation needs too. `onSuccess` is not optional
+    /// here because a caller that ignores the answer wants the plain `mutate` above.
+    // internal (not private): used by RepositoryStore+Branches.swift and +BranchSheets.swift
+    func mutate<Result>(
+        result work: @escaping @MainActor (Backend, URL) async throws -> Result,
+        onSuccess: @escaping @MainActor (Result) -> Void
     ) {
         guard let root, let generation = beginMutation() else { return }
 
         Task { @MainActor in
             var failure: Error?
+            var result: Result?
             do {
-                try await work(backend, root)
+                result = try await work(backend, root)
             } catch {
                 failure = error
             }
 
             await refresh()
-            if failure == nil, self.generation == generation { onSuccess?() }
+            if let result, failure == nil, self.generation == generation { onSuccess(result) }
             finishMutation(generation: generation, failure: failure)
         }
     }

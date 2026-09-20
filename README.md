@@ -79,6 +79,10 @@ Gitter/                   macOS app (SwiftUI)
   GitterApp.swift            App entry point, commands, Open Recent
   RepositoryStore.swift      @Observable @MainActor store: snapshot + selection state
   RepositoryStore+Staging.swift  Staging, commit and amend actions on the store
+  RepositoryStore+Branches.swift Switch, track, detach, create, rename, merge
+  RepositoryStore+BranchSheets.swift  Opening the sheets, delete, abort, name validation
+  RepositoryStore+BranchState.swift   HEAD, refs and what is allowed right now
+  BranchSheet.swift          Which confirmation or form the store wants on screen
   CommitDraft.swift          The commit message + amend toggle being edited
   RepositoryWatcher.swift    FSEvents-based debounced refresh trigger
   DebugLaunchHooks.swift     Debug-only launch hooks for screenshot verification (see below)
@@ -109,6 +113,27 @@ never be put on screen from a script, and a focus bug can never be reproduced.
 | `GITTER_DEBUG_KEYS=space,return,cmd+return` | then press those keys (`space`, `return`, `tab`, `escape`, `up`, `down`, with `cmd+`/`shift+`/`opt+`/`ctrl+`) |
 | `GITTER_DEBUG_TYPE=text` | then type that text into whatever has focus |
 | `GITTER_DEBUG_DUMP_RESPONDER=1` | print the first-responder chain, the window geometry and whether the window is key to stderr, after every click and key; a count instead of `1` repeats the final dump that many times, 200 ms apart, which is how you tell "never focused" from "focused, then lost it" |
+| `GITTER_DEBUG_BRANCH_ACTION=<step>[;<step>…]` | run branch actions and open their sheets (see below) — the sidebar's context menus are AppKit menus that in-process clicks cannot open |
+
+The branch steps run in order, each waiting for the mutation the one before it started:
+
+| step | effect |
+|---|---|
+| `switch:<branch>` / `track:<remote>/<branch>` / `detach:<rev>` | move HEAD, through the same guards the menus use |
+| `create:<name>[:<start>]` / `createswitch:<name>[:<start>]` | create a branch, optionally switching to it |
+| `rename:<old>:<new>` | rename a branch |
+| `delete:<branch>` | `git branch -d`; an unmerged branch opens the confirmation instead |
+| `forcedelete:<branch>` | `git branch -D`, as the confirmation's button does |
+| `merge:<branch>:<ff\|noff\|squash>` | merge in that mode, remembering it |
+| `abort` | open the abort confirmation and answer it |
+| `confirmleave` | answer the "leaving a detached HEAD" confirmation a previous step opened |
+| `sheet:new` / `sheet:rename:<b>` / `sheet:merge:<b>` / `sheet:delete:<b>` / `sheet:abort` | open a sheet without acting |
+
+After every step one line goes to stderr, which is what a shell asserts on:
+
+```
+BRANCH_ACTION result: <sheet or nil> | notice: <…> | error: <…>
+```
 
 The click and key variables wait for the window to actually become key first, and activate
 the app, because an inactive window draws its selection in the unemphasized grey whatever

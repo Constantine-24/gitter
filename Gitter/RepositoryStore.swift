@@ -43,6 +43,19 @@ final class RepositoryStore {
     /// is declared here even though everything that drives it is in `RepositoryStore+Staging`.
     let draft = CommitDraft()
 
+    /// Which confirmation or form is on screen. The one piece of store state views are meant to
+    /// write: a `.sheet(item:)` binding puts nil back on dismissal. Opening one still goes
+    /// through `+BranchSheets`, so the store decides which question gets asked.
+    var activeSheet: BranchSheet?
+
+    /// A short, non-error message about something that just succeeded ("Fast-forwarded to
+    /// feature."). Unlike `lastError` it is never sticky and clears itself after a few seconds.
+    private(set) var notice: String?
+
+    /// The auto-clear for `notice`. Bookkeeping only; views must not touch it.
+    // internal (not private): used by +Branches.swift's `showNotice(_:)`
+    var noticeTask: Task<Void, Never>?
+
     /// Bumped by every `open()`. Anything loaded or run asynchronously captures it and drops
     /// its result if it no longer matches: comparing `root` is not enough, because reopening
     /// the *same* repository mid-flight leaves the root equal while everything on screen has
@@ -54,7 +67,11 @@ final class RepositoryStore {
     // Direct writes stay in this file; see `clearSticky()` / `clearErrorUnlessSticky()` below.
     private var errorIsSticky = false
 
-    let backend: any GitBackend & GitWorkingCopyBackend
+    /// Everything the store can ask git to do: reads, index and commit writes, and branch,
+    /// checkout and merge writes. Three protocols so a fake can implement any one on its own.
+    typealias Backend = any GitBackend & GitWorkingCopyBackend & GitBranchBackend
+
+    let backend: Backend
     // internal (not private): used by +Opening.swift's `checkGitAvailability()`
     let gitPath: String
 
@@ -76,7 +93,7 @@ final class RepositoryStore {
     static let lastRepositoryPathKey = "lastRepositoryPath"
 
     init(
-        backend: any GitBackend & GitWorkingCopyBackend = CLIGitBackend(),
+        backend: Backend = CLIGitBackend(),
         gitPath: String = "/usr/bin/git"
     ) {
         self.backend = backend
@@ -124,6 +141,11 @@ final class RepositoryStore {
         selectedPath = nil
         lastError = nil
         errorIsSticky = false
+        // A question asked about the previous repository ("delete this unmerged branch?") must
+        // never be answered against this one, and its notice is about a repository nobody is
+        // looking at any more.
+        activeSheet = nil
+        dismissNotice()
         // A half-written message belongs to the repository it was written for, and a mutation
         // in flight can only be for the old one.
         draft.reset()
@@ -181,6 +203,12 @@ final class RepositoryStore {
     /// internal (not private(set) write): used by +Detail.swift
     func setDetailFiles(_ files: [FileStatus]) {
         detailFiles = files
+    }
+
+    /// internal (not private(set) write): used by +Branches.swift's `showNotice(_:)`/
+    /// `dismissNotice()`, which own the auto-clear timing.
+    func setNotice(_ message: String?) {
+        notice = message
     }
 
     /// internal (not private(set) write): used by +Refresh.swift, +Detail.swift, +Errors.swift
