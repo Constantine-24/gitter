@@ -29,8 +29,28 @@ public enum BranchOperationError: Error, Sendable, Equatable {
     /// A branch of that name is already there. Creating, renaming or copying onto it would
     /// overwrite the other branch, so git refuses and so does Gitter.
     case branchExists(String)
-    /// The current branch cannot be deleted. (Raised by a later task in this milestone.)
+    /// The current branch cannot be deleted — either because Gitter checked `symbolic-ref
+    /// --short -q HEAD` before running git at all, or because git itself refused with "cannot
+    /// delete branch '<name>' used by worktree at '<path>'" (verified on git 2.54). That one
+    /// message covers two shapes Gitter treats the same way: the branch is current in *this*
+    /// worktree, or it is checked out in a *linked* worktree elsewhere. Either way deleting it
+    /// would either move HEAD out from under the checkout or corrupt the other worktree, so
+    /// both are refused identically.
     case cannotDeleteCurrent(String)
+    /// No local branch of that name exists — git said `branch '<name>' not found` (verified on
+    /// git 2.54) to a `branch -d`/`-D` for a name that was never created, or already deleted by
+    /// someone else since Gitter last listed branches.
+    case noSuchBranch(String)
+}
+
+/// What `deleteBranch` did. `.notFullyMerged` is not a failure: git refused a *plain* `-d` and
+/// changed nothing, so the branch is exactly where it was, and the UI now has what it needs to
+/// ask "delete anyway?" — the count of commits that would become unreachable from anywhere
+/// else, and the tip sha a user could recreate the branch from if they change their mind after
+/// a force delete.
+public enum BranchDeletion: Sendable, Hashable {
+    case deleted
+    case notFullyMerged(uniqueCommits: Int, tip: String)
 }
 
 /// Branch-level operations: naming, creating, switching, detaching, tracking and renaming.
@@ -130,4 +150,58 @@ public protocol GitBranchBackend: Sendable {
     /// `git branch -m --end-of-options <old> <new>`. Renaming the current branch is fine: HEAD
     /// follows it and the worktree is untouched. Throws `.branchExists` when `new` is taken.
     func renameBranch(_ old: String, to new: String, at root: URL) async throws
+
+    /// `git branch -d --end-of-options <name>`, or `-D` when `force`. One of only three actions
+    /// in Gitter that can lose work — the other two are aborting an operation and undoing a
+    /// pending squash — so the contract is deliberately narrow:
+    ///
+    /// - The **current branch is always refused**, force or not, and detected twice: before git
+    ///   ever runs (`symbolic-ref --short -q HEAD` compared against `name`, so nothing is even
+    ///   attempted), and again by reading git's own refusal (see `.cannotDeleteCurrent`), which
+    ///   is what also catches a branch checked out in a *linked* worktree — a case Gitter has no
+    ///   cheap way to detect up front without listing every worktree.
+    /// - **Without `force`,** a branch git considers not fully merged is left exactly as it
+    ///   found it — nothing is thrown, nothing changes — and the result carries
+    ///   `.notFullyMerged(uniqueCommits:tip:)`: `uniqueCommits` from `commitsOnlyOn(branch:)`
+    ///   and `tip` from `rev-parse --verify refs/heads/<name>`, both captured before this call
+    ///   does anything destructive (which, on this path, is nothing at all).
+    /// - **With `force`,** the branch is deleted outright. The commit at its former tip is not
+    ///   lost: git keeps the object (verified — `cat-file -e <tip>` still succeeds right after),
+    ///   so a user who sees the warning's tip sha can recreate the branch with
+    ///   `git branch <name> <tip>`.
+    ///
+    /// A name that does not exist throws `.noSuchBranch`; an invalid one throws `.invalidName`
+    /// before git runs, same as every other method here.
+    func deleteBranch(_ name: String, force: Bool, at root: URL) async throws -> BranchDeletion
+
+    /// How many commits are reachable from `name` and from **no other ref** — what the "Delete"
+    /// warning shows as "N commits exist only on this branch".
+    ///
+    /// `git rev-list --count refs/heads/<name> --not --exclude=refs/heads/<name> --all`.
+    /// Verified on git 2.54, precisely:
+    ///
+    /// - **"No other ref" means any other local branch, any remote-tracking ref
+    ///   (`refs/remotes/…`), any tag, or the stash** — `refs/stash` is a real, single ref under
+    ///   `refs/` and `--all` picks it up like any other, so a branch whose only unmerged commit
+    ///   is also the parent of a stash entry counts as 0, not 1. It does **not** mean a
+    ///   reflog entry: a commit some *other* ref's history once passed through but no longer
+    ///   points at (e.g. after `git branch -f other main`) still counts as unique here, because
+    ///   `--all` expands live ref tips only, never reflogs.
+    /// - **This is a different question from what `git branch -d` itself asks**, and the two can
+    ///   disagree in one direction, not the other. `-d` compares the branch against its
+    ///   `@{upstream}` if one is set, otherwise against HEAD — a single ref. So `-d` can *refuse*
+    ///   a branch this method reports as 0 (merged into some other branch, just not into HEAD or
+    ///   upstream — tested). The reverse cannot happen: whenever `-d` succeeds, the ref it
+    ///   compared against (HEAD or upstream) is itself always part of `--all`'s reachable set
+    ///   (git's own docs: `--all` "pretend[s] as if … HEAD" is listed, even detached, even with
+    ///   no branch pointing at it — verified), so every commit `-d` judged "merged" is provably
+    ///   already counted as reachable elsewhere too. **When git refuses a plain delete but this
+    ///   returns 0, the count is still the truth** — "0 commits exist only here" — it just means
+    ///   git's narrower HEAD/upstream rule doesn't yet agree, not that the warning is wrong.
+    /// - **Calling this for the branch HEAD is currently on always returns 0**, whatever its
+    ///   real merge status, because `--all`'s HEAD-inclusion makes a branch trivially reachable
+    ///   from itself once it *is* HEAD. `deleteBranch` never hits this — it refuses the current
+    ///   branch before calling here — but no other caller should read 0 for the current branch
+    ///   as "safe to delete".
+    func commitsOnlyOn(branch: String, at root: URL) async throws -> Int
 }

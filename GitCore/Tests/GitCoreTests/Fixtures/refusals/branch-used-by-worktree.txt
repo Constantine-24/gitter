@@ -1,0 +1,1 @@
+error: cannot delete branch 'linked-branch' used by worktree at '/Users/tester/gitter-test/linked-branch-wt'

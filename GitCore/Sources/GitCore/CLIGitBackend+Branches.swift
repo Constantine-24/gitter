@@ -80,7 +80,10 @@ extension CLIGitBackend: GitBranchBackend {
     /// `BranchRefusalParser` returns nil for anything it does not recognise, and then git's own
     /// `GitError.commandFailed` — exit code and stderr intact — is rethrown unchanged. Nothing
     /// is ever swallowed.
-    private func runBranchCommand(_ arguments: [String], at root: URL) async throws {
+    ///
+    /// Not `private`: `CLIGitBackend+BranchDelete.swift` shares this and `requireName` below,
+    /// since Swift's `private` only reaches extensions in the *same file*.
+    func runBranchCommand(_ arguments: [String], at root: URL) async throws {
         do {
             _ = try await run(arguments, cwd: root)
         } catch let error as GitError {
@@ -130,7 +133,8 @@ extension CLIGitBackend: GitBranchBackend {
         name.hasPrefix("refs/") || name.hasPrefix("heads/") || name.contains("@{") || name == "@"
     }
 
-    private func requireName(_ name: String) throws {
+    // Not `private` — see `runBranchCommand`'s doc comment.
+    func requireName(_ name: String) throws {
         guard isPlausibleName(name) else { throw BranchOperationError.invalidName(name) }
     }
 

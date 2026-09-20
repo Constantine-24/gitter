@@ -61,6 +61,17 @@ public enum BranchRefusalParser {
             if let name = quotedName(in: line, after: "fatal: ", before: " is not a valid branch name") {
                 return .invalidName(name)
             }
+            // Same wording for "the current branch, in this worktree" and "checked out in a
+            // linked worktree elsewhere" — git 2.54 does not distinguish them, and neither does
+            // Gitter: both make the delete unsafe the same way. Checked before `noSuchBranch`
+            // only because it happens to read better here; the two patterns cannot both match
+            // one line (their required suffixes differ), so the order does not matter.
+            if let name = quotedName(in: line, after: "cannot delete branch ", before: " used by worktree at") {
+                return .cannotDeleteCurrent(name)
+            }
+            if let name = quotedName(in: line, after: "error: branch ", before: " not found") {
+                return .noSuchBranch(name)
+            }
         }
         return nil
     }

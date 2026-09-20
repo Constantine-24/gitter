@@ -1,0 +1,1 @@
+error: branch 'nosuch-branch' not found

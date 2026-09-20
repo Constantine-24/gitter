@@ -97,6 +97,18 @@ import Testing
         #expect(try Self.parseFixture(fixture) == .invalidName("x y"))
     }
 
+    // MARK: - delete refusals
+
+    /// Same wording, and the same `BranchOperationError` case, whether the branch is current in
+    /// this worktree or checked out in a linked one — git 2.54 does not distinguish them.
+    @Test func deletingABranchUsedByAWorktree() throws {
+        #expect(try Self.parseFixture("branch-used-by-worktree") == .cannotDeleteCurrent("linked-branch"))
+    }
+
+    @Test func deletingANonexistentBranch() throws {
+        #expect(try Self.parseFixture("branch-not-found") == .noSuchBranch("nosuch-branch"))
+    }
+
     // MARK: - anything else
 
     @Test func unrecognisedStderrIsNil() throws {
