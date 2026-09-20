@@ -20,8 +20,10 @@ extension RepositoryStore {
     func unstage(_ file: FileStatus) {
         // Defence in depth behind the disabled button (the debug hooks call straight in).
         // See `operationInProgress` for why the whole operation is off limits and not only
-        // its conflicts.
-        guard operationInProgress == nil, !isUnmerged(file) else { return }
+        // its conflicts, and `RepositoryOperation.blocksUnstaging` for why a pending squash
+        // is included too, despite this specific command (`git restore --staged`) leaving it
+        // untouched: the same gate also covers `unstageAll()`, where it would not.
+        guard operationInProgress?.blocksUnstaging != true, !isUnmerged(file) else { return }
         // A staged rename occupies two index entries — the new path and the one it came from —
         // and restoring only one of them would leave half a rename staged.
         var paths = [file.path]
@@ -36,8 +38,10 @@ extension RepositoryStore {
     func unstageAll() {
         // Same defence: `git reset` removes `MERGE_HEAD`/`CHERRY_PICK_HEAD`/`REVERT_HEAD` and
         // ends the operation silently — including after the last conflict has been staged,
-        // which is exactly when nothing is unmerged any more.
-        guard operationInProgress == nil else { return }
+        // which is exactly when nothing is unmerged any more. It does the same to a pending
+        // squash's `SQUASH_MSG`, which is the case this gate exists to catch: see
+        // `RepositoryOperation.blocksUnstaging`.
+        guard operationInProgress?.blocksUnstaging != true else { return }
         mutate { backend, root in try await backend.unstageAll(at: root) }
     }
 

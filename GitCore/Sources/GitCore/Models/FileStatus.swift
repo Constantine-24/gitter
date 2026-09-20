@@ -62,8 +62,45 @@ public struct FileStatus: Sendable, Hashable, Identifiable {
 /// `rebase-apply/` directory: git refuses `git rebase --abort` while an `am` is running
 /// ("It looks like 'git am' is in progress"), so advice that named a rebase would be a dead
 /// end.
+///
+/// `squash` is a `git merge --squash` that has staged its combined changes but not yet been
+/// committed. Unlike the other five it has no pseudo-ref of its own (`git status` calls it
+/// ordinary staged content), so it is found by `.git/SQUASH_MSG` instead — and checked *last*,
+/// after all the others: a leftover `SQUASH_MSG` from an earlier, never-committed squash can in
+/// principle sit next to a real merge/cherry-pick/revert/rebase/am, and the operation the user
+/// is actually in the middle of has to win. (Reproducing that exact combination through git
+/// commands alone turns out not to be possible — starting a second merge while a squash is
+/// still staged is refused, "Your local changes... would be overwritten by merge" — so the test
+/// for it fabricates the leftover file by hand; see `squashLeftoverDoesNotMaskARealMerge`.)
 public enum RepositoryOperation: Sendable, Hashable {
-    case merge, cherryPick, revert, rebase, applyingPatches
+    case merge, cherryPick, revert, rebase, applyingPatches, squash
+
+    /// Whether unstaging while this operation is in progress can silently damage or end it —
+    /// what `RepositoryStore`'s "Unstage All" and per-file unstage gates key on.
+    ///
+    /// True for the first five: plain `git reset` (what "Unstage All" runs) deletes their
+    /// pseudo-ref outright, ending the operation with nothing on screen to say so, and on a
+    /// still-conflicted file it also collapses the index's three merge stages into one —
+    /// unrecoverable.
+    ///
+    /// `squash` looks safe at first glance, and two of the three commands "unstage" can run
+    /// during it really are: verified in a scratch repo, `git restore --staged <path>` (the
+    /// per-file unstage, even given *every* staged path at once) and `git apply --cached -R`
+    /// (hunk/line unstage) both leave `.git/SQUASH_MSG` untouched. But "Unstage All" does not
+    /// use either of those — it runs plain `git reset -q` — and *that*, verified the same way,
+    /// deletes `SQUASH_MSG` even though the worktree keeps every line unstaged rather than
+    /// discarded. That is a real loss, not a cosmetic one: with `SQUASH_MSG` present, plain
+    /// `git commit` opens pre-filled with "Squashed commit of the following:" plus the
+    /// squashed commits' own messages (verified); with it gone, there is nothing to prefill.
+    /// Since this one property gates both the safe commands and the destructive one, the
+    /// destructive one decides it — contrary to this milestone's design doc, which expected
+    /// `git reset -q` to leave `SQUASH_MSG` alone and marked that expectation itself as
+    /// something to verify before relying on it.
+    public var blocksUnstaging: Bool {
+        switch self {
+        case .merge, .cherryPick, .revert, .rebase, .applyingPatches, .squash: return true
+        }
+    }
 }
 
 public struct WorkingCopyStatus: Sendable, Hashable {

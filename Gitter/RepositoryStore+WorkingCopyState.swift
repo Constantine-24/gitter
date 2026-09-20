@@ -21,13 +21,15 @@ extension RepositoryStore {
         snapshot?.status.files.filter { $0.unstaged != nil } ?? []
     }
 
-    /// The merge, cherry-pick, revert, rebase or `git am` the repository is part-way through.
+    /// The merge, cherry-pick, revert, rebase, `git am` or pending squash the repository is
+    /// part-way through.
     ///
-    /// This, not the presence of conflicts, is what unstaging is gated on. Resolving and
-    /// staging the last conflicted file leaves no unmerged entry behind while the operation is
-    /// still open, and `git reset` there deletes `MERGE_HEAD` (or `CHERRY_PICK_HEAD`, or
-    /// `REVERT_HEAD`): the operation ends silently and the next commit is an ordinary
-    /// one-parent commit, with nothing on screen to say so.
+    /// `RepositoryOperation.blocksUnstaging`, not the presence of conflicts, is what unstaging
+    /// is gated on. Resolving and staging the last conflicted file leaves no unmerged entry
+    /// behind while the operation is still open, and `git reset` there deletes `MERGE_HEAD`
+    /// (or `CHERRY_PICK_HEAD`, `REVERT_HEAD`, or, for a pending squash, `SQUASH_MSG`): the
+    /// operation ends silently and the next commit is an ordinary one-parent commit (or, for a
+    /// squash, an ordinary commit with no pre-filled message), with nothing on screen to say so.
     ///
     /// The per-file commands are gated on the same state rather than on each file's own, which
     /// is deliberately broader than the harm `git restore --staged` does to any one file:
@@ -110,20 +112,24 @@ extension RepositoryStore {
         return !status.isUntracked && !isUnmerged(status)
     }
 
-    /// Whether this hunk- or line-selection is barred because an operation is in progress.
+    /// Whether this hunk- or line-selection is barred because unstaging it would damage the
+    /// operation in progress.
     ///
     /// Only one selection is: the one that covers the entire change of a file being *added*,
     /// on the staged side. `apply` cannot send that through a patch, so it falls back to the
     /// file-level `git restore --staged` — the same command the row's "−" is disabled for, and
-    /// on a file the merge itself added, it takes the whole index entry away. A merge that
+    /// gated the same way (`blocksUnstaging`), since it is the very same call. A merge that
     /// adds a file is exactly where this is reachable.
     ///
-    /// Everything smaller stays allowed: reverse-applying a patch to the index was checked
-    /// against a live merge and leaves `MERGE_HEAD` alone.
+    /// Everything smaller stays allowed: reverse-applying a patch to the index (`git apply
+    /// --cached -R`) was checked against a live merge and leaves `MERGE_HEAD` alone, and
+    /// against a pending squash and leaves `SQUASH_MSG` alone too.
     func operationBlocksApplying(_ file: FileDiff, hunkIDs: Set<Hunk.ID>, lineIDs: Set<DiffLine.ID>?)
         -> Bool
     {
-        guard operationInProgress != nil, patchDirection == .unstage else { return false }
+        guard operationInProgress?.blocksUnstaging == true, patchDirection == .unstage else {
+            return false
+        }
         return PatchBuilder.isWholeFileChange(
             file: file, hunkIDs: hunkIDs, lineIDs: lineIDs, direction: .unstage)
     }

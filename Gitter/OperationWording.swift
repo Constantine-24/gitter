@@ -3,13 +3,15 @@ import GitCore
 /// What the UI says about an operation the repository is part-way through.
 ///
 /// Kept out of `GitCore`, which has no opinion about wording, and out of the views that need
-/// it, which would otherwise have to agree on five strings each by hand.
+/// it, which would otherwise have to agree on six strings each by hand.
 ///
 /// Every message names a way *forward* and a way out, because the app offers neither an abort
 /// nor a `--continue` button: the only honest advice for those is a terminal. A merge,
 /// cherry-pick and revert are finished by committing. A rebase is only advanced by it — the
 /// commit lands and `git rebase --continue` then moves on to the next one. `git am` is not
-/// advanced by it at all: `git am --continue` does the commit itself.
+/// advanced by it at all: `git am --continue` does the commit itself. A pending squash is
+/// finished by committing too; its way out is `git reset --merge`, which undoes it and removes
+/// `SQUASH_MSG` (see the design doc's evidence table).
 extension RepositoryOperation {
 
     /// Sentence-initial: every use of it starts a line.
@@ -20,6 +22,7 @@ extension RepositoryOperation {
         case .revert: "Revert"
         case .rebase: "Rebase"
         case .applyingPatches: "Patch application"
+        case .squash: "Squash"
         }
     }
 
@@ -35,6 +38,7 @@ extension RepositoryOperation {
         case .cherryPick: "Commit Cherry-Pick"
         case .revert: "Commit Revert"
         case .rebase, .applyingPatches: "Commit"
+        case .squash: "Commit Squash"
         }
     }
 
@@ -42,12 +46,15 @@ extension RepositoryOperation {
     ///
     /// The two halves are the two states the gate covers: conflicts still to resolve, and
     /// everything resolved but the operation still open — the case where nothing is unmerged
-    /// and the old gate let go.
+    /// and the old gate let go. A conflicting `--squash` behaves exactly like a conflicting
+    /// merge here (verified: no `MERGE_HEAD`, but an unmerged entry in the status same as any
+    /// other conflict), so it takes the same conflicts wording rather than its own "pending"
+    /// phrasing, which only fits the no-conflicts case.
     func note(hasConflicts: Bool) -> String {
         let lead = "\(noun) in progress"
         let finish =
             switch self {
-            case .merge, .cherryPick, .revert: "commit."
+            case .merge, .cherryPick, .revert, .squash: "commit."
             case .rebase: "commit, then run `git rebase --continue` in a terminal."
             case .applyingPatches: "run `git am --continue` in a terminal."
             }
@@ -59,6 +66,8 @@ extension RepositoryOperation {
             return "\(lead) — commit to complete it."
         case .rebase, .applyingPatches:
             return "\(lead) — \(finish)"
+        case .squash:
+            return "Squash pending — commit to finish."
         }
     }
 
@@ -76,6 +85,8 @@ extension RepositoryOperation {
         case .rebase: "Commit the resolution, or run `git rebase --abort` in a terminal."
         case .applyingPatches:
             "Run `git am --continue` to carry on, or `git am --abort`, in a terminal."
+        case .squash:
+            "Commit to finish it, or run `git reset --merge` in a terminal to undo the squash."
         }
     }
 }

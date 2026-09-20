@@ -1,6 +1,7 @@
 import Foundation
 
-/// Detecting a merge, cherry-pick, revert, rebase or `git am` that is part-way through.
+/// Detecting a merge, cherry-pick, revert, rebase, `git am` or pending squash that is part-way
+/// through.
 ///
 /// `git status --porcelain=v2` does not report any of them, so this is asked separately and
 /// folded into `WorkingCopyStatus` by `snapshot(at:)`.
@@ -20,8 +21,10 @@ extension CLIGitBackend {
     /// actually *resolves*, where a stat would accept a truncated or half-written leftover,
     /// and it keeps working under ref backends that do not store refs as loose files. Each
     /// call is a few milliseconds, and the common answer — "none" — needs all of them anyway.
+    /// `SQUASH_MSG` has no pseudo-ref to verify that way, so it rides along in the one
+    /// `--git-path` call instead — see `gitPaths`.
     func operationInProgress(at root: URL) async throws -> RepositoryOperation? {
-        async let sequencerPaths = rebaseState(at: root)
+        async let paths = gitPaths(at: root)
         async let merge = hasPseudoRef("MERGE_HEAD", at: root)
         async let cherryPick = hasPseudoRef("CHERRY_PICK_HEAD", at: root)
         async let revert = hasPseudoRef("REVERT_HEAD", at: root)
@@ -31,7 +34,8 @@ extension CLIGitBackend {
         // commit sets `MERGE_HEAD` while `rebase-merge/` is still there (there is a test for
         // exactly that), and reporting such a state as a plain merge would tell the user to
         // run `git merge --abort`, which is not the way out of a rebase.
-        switch try await sequencerPaths {
+        let resolved = try await paths
+        switch resolved.rebase {
         case .applyingPatches: return .applyingPatches
         case .rebase: return .rebase
         case .none: break
@@ -39,6 +43,9 @@ extension CLIGitBackend {
         if try await merge { return .merge }
         if try await cherryPick { return .cherryPick }
         if try await revert { return .revert }
+        // Checked last, after every real operation: see `RepositoryOperation.squash`'s doc
+        // comment for why a leftover `SQUASH_MSG` must never shadow one of those.
+        if resolved.hasSquashMsg { return .squash }
         return nil
     }
 
@@ -52,26 +59,35 @@ extension CLIGitBackend {
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// What the sequencer directories say, in one `rev-parse` call.
+    /// What the sequencer directories — and a pending squash's message file — say, in one
+    /// `rev-parse` call.
     ///
     /// Neither a rebase nor `git am` has a pseudo-ref; both keep a directory. `rebase-merge/`
     /// belongs to the merge backend (and `rebase -i`), `rebase-apply/` to the older `am`
     /// backend — and to `git am` itself, which is why the directory alone cannot tell them
     /// apart. Git's own `wt-status` discriminates on the file `rebase-apply/applying`, and so
-    /// does this: `git rebase --apply` leaves that file out, `git am` writes it.
-    private func rebaseState(at root: URL) async throws -> RebaseState {
+    /// does this: `git rebase --apply` leaves that file out, `git am` writes it. `SQUASH_MSG`
+    /// has nothing to discriminate — a pending squash is a pending squash — so it is just a
+    /// stat, folded into the same call because it costs nothing extra to ask for.
+    private func gitPaths(at root: URL) async throws -> (rebase: RebaseState, hasSquashMsg: Bool) {
         let data = try await run(
             [
                 "rev-parse", "--git-path", "rebase-apply/applying", "--git-path", "rebase-merge",
-                "--git-path", "rebase-apply",
+                "--git-path", "rebase-apply", "--git-path", "SQUASH_MSG",
             ], cwd: root)
         let paths = String(decoding: data, as: UTF8.self)
             .split(whereSeparator: \.isNewline).map { String($0) }
-        guard paths.count == 3 else { return .none }
-        if exists(paths[0], relativeTo: root, directory: false) { return .applyingPatches }
-        if exists(paths[1], relativeTo: root, directory: true)
-            || exists(paths[2], relativeTo: root, directory: true) { return .rebase }
-        return .none
+        guard paths.count == 4 else { return (.none, false) }
+        let rebase: RebaseState
+        if exists(paths[0], relativeTo: root, directory: false) {
+            rebase = .applyingPatches
+        } else if exists(paths[1], relativeTo: root, directory: true)
+            || exists(paths[2], relativeTo: root, directory: true) {
+            rebase = .rebase
+        } else {
+            rebase = .none
+        }
+        return (rebase, exists(paths[3], relativeTo: root, directory: false))
     }
 
     private enum RebaseState {

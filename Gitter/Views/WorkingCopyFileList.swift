@@ -27,8 +27,9 @@ struct WorkingCopyFileList: View {
                 actionTitle: "Unstage All",
                 placeholder: "Nothing staged",
                 // `git reset` would drop `MERGE_HEAD` and end the merge behind the user's
-                // back — and it does so just as readily once every conflict is resolved.
-                actionDisabled: store.operationInProgress != nil,
+                // back — and it does so just as readily once every conflict is resolved. See
+                // `RepositoryOperation.blocksUnstaging` for why a pending squash is included.
+                actionDisabled: store.operationInProgress?.blocksUnstaging == true,
                 actionHelp: store.operationInProgress?.unstagingBlockedHelp,
                 action: { store.unstageAll() }
             )
@@ -170,10 +171,10 @@ struct WorkingCopyFileList: View {
     ///
     /// Keyed on the operation rather than on the file's own conflict state — a resolved file
     /// does not look unmerged any more, and the row cannot say whether its resolution is fully
-    /// or only partly staged. `RepositoryStore.operationInProgress` sets out which of those
-    /// `git restore --staged` actually destroys and why the rule covers all of them.
+    /// or only partly staged. `RepositoryOperation.blocksUnstaging` sets out which operations
+    /// `git restore --staged` actually damages and why the rule covers each of them whole.
     private func isBlocked(_ file: FileStatus, staged: Bool) -> Bool {
-        staged && (store.operationInProgress != nil || store.isUnmerged(file))
+        staged && (store.operationInProgress?.blocksUnstaging == true || store.isUnmerged(file))
     }
 
     /// The fallback covers only the impossible case of an unmerged file with no operation

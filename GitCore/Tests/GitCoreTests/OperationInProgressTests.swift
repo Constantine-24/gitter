@@ -33,6 +33,19 @@ import Testing
         try await CLIGitBackend().snapshot(at: root).status.operationInProgress
     }
 
+    /// `main` plus a `feature` branch that only adds a new file, so squashing it never
+    /// conflicts — unlike `makeDivergent`, which exists precisely to conflict.
+    private static func makeSquashable() async throws -> TestRepo {
+        let repo = try await TestRepo.makeEmpty()
+        try repo.write("f.txt", "one\n")
+        try await repo.commitAll("base")
+        try await repo.git(["checkout", "-q", "-b", "feature"])
+        try repo.write("g.txt", "two\n")
+        try await repo.commitAll("feature change")
+        try await repo.git(["checkout", "-q", "main"])
+        return repo
+    }
+
     /// `with(operationInProgress:)` is how the backend completes the parser's output; dropping
     /// a field here would silently blank the branch, the counts or the file list.
     @Test func withOperationKeepsEveryOtherField() {
@@ -51,6 +64,17 @@ import Testing
         // `==` is synthesized over every stored property, so this pins the rest of them too.
         #expect(merged.with(operationInProgress: nil) == status)
         #expect(status.operationInProgress == nil)
+    }
+
+    /// See `RepositoryOperation.blocksUnstaging`'s doc comment for the scratch-repo evidence:
+    /// plain `git reset -q` (what "Unstage All" runs) deletes `.git/SQUASH_MSG`, so `.squash`
+    /// is no safer to blanket-unstage than the other five, even though *some* of the
+    /// individual commands the app also uses (`git restore --staged`, `git apply --cached -R`)
+    /// leave it alone.
+    @Test func blocksUnstagingIsTrueForEveryOperation() {
+        for operation: RepositoryOperation in [.merge, .cherryPick, .revert, .rebase, .applyingPatches, .squash] {
+            #expect(operation.blocksUnstaging, "\(operation)")
+        }
     }
 
     @Test func plainRepositoryHasNoOperationInProgress() async throws {
@@ -222,6 +246,81 @@ import Testing
         try await repo.git(["-C", linked.path, "merge", "main"], allowedExitCodes: [1])
 
         #expect(try await Self.operation(at: linked) == .merge)
+        #expect(try await Self.operation(in: repo) == nil)
+    }
+
+    // MARK: - Pending squash
+
+    /// `git merge --squash` stages the combined changes and writes `.git/SQUASH_MSG`, but —
+    /// unlike the other four — sets no pseudo-ref of its own. This is what finds it instead.
+    @Test func squashPendingIsInProgress() async throws {
+        let repo = try await Self.makeSquashable()
+        defer { repo.cleanUp() }
+        try await repo.git(["merge", "--squash", "feature"])
+
+        #expect(try await Self.operation(in: repo) == .squash)
+    }
+
+    @Test func squashIsOverOnceItIsCommitted() async throws {
+        let repo = try await Self.makeSquashable()
+        defer { repo.cleanUp() }
+        try await repo.git(["merge", "--squash", "feature"])
+        try await repo.git(["commit", "-q", "-m", "squashed"])
+
+        #expect(try await Self.operation(in: repo) == nil)
+    }
+
+    /// `git reset --merge` is the documented way to undo a pending squash (see the design
+    /// doc's evidence table): verified separately that it removes `SQUASH_MSG` along with
+    /// un-staging the squashed changes.
+    @Test func squashIsOverAfterResetMerge() async throws {
+        let repo = try await Self.makeSquashable()
+        defer { repo.cleanUp() }
+        try await repo.git(["merge", "--squash", "feature"])
+        try await repo.git(["reset", "-q", "--merge"])
+
+        #expect(try await Self.operation(in: repo) == nil)
+    }
+
+    /// A `--squash` that conflicts still writes `SQUASH_MSG` (verified: exit 1, no
+    /// `MERGE_HEAD`, an unmerged entry in `status --porcelain=v2`) — still a squash, just one
+    /// with conflicts to resolve before it can be committed.
+    @Test func conflictedSquashIsInProgress() async throws {
+        let repo = try await Self.makeDivergent()
+        defer { repo.cleanUp() }
+        try await repo.git(["merge", "--squash", "side"], allowedExitCodes: [1])
+
+        let status = try await CLIGitBackend().snapshot(at: repo.root).status
+        #expect(status.operationInProgress == .squash)
+        #expect(status.files.contains { $0.staged == .unmerged })
+    }
+
+    /// A leftover `SQUASH_MSG` from an earlier, never-committed squash can in principle sit
+    /// next to a real merge conflict. Verified that git itself refuses to *start* a second
+    /// merge while a squash is still staged ("Your local changes... would be overwritten by
+    /// merge"), so the only way to reach this state is by hand — which is legitimate here:
+    /// the state, however it arises, must resolve to the real operation, not the leftover.
+    @Test func squashLeftoverDoesNotMaskARealMerge() async throws {
+        let repo = try await Self.makeDivergent()
+        defer { repo.cleanUp() }
+        try await repo.git(["merge", "side"], allowedExitCodes: [1])
+        try repo.write(".git/SQUASH_MSG", "Squashed commit of the following:\n")
+
+        #expect(try await Self.operation(in: repo) == .merge)
+    }
+
+    /// Same isolation as `mergeInALinkedWorktreeIsSeenOnlyThere`: `SQUASH_MSG` lives under
+    /// `.git/worktrees/<name>/`, not the shared top-level `.git/`.
+    @Test func squashInALinkedWorktreeIsSeenOnlyThere() async throws {
+        let repo = try await Self.makeSquashable()
+        defer { repo.cleanUp() }
+        let linked = repo.root.deletingLastPathComponent()
+            .appendingPathComponent("gitter-wt-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: linked) }
+        try await repo.git(["worktree", "add", "-q", "-b", "linked", linked.path, "main"])
+        try await repo.git(["-C", linked.path, "merge", "--squash", "feature"])
+
+        #expect(try await Self.operation(at: linked) == .squash)
         #expect(try await Self.operation(in: repo) == nil)
     }
 }

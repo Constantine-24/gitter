@@ -18,6 +18,12 @@ extension RepositoryStore {
         // command when nothing is staged mid-merge, which is a real state — a conflict
         // resolved exactly to our side leaves the index matching HEAD, and git still writes
         // the two-parent commit.
+        //
+        // Same call during a pending squash: `commit -a` would restage every tracked file —
+        // not only the squashed ones — under the "Commit Squash" label, which overstates what
+        // the user asked for. And it is moot in the one case that would make it tempting
+        // (nothing staged because the user unstaged everything): `blocksUnstaging` already
+        // keeps that from happening through the app's own controls.
         let allTracked = stagedFiles.isEmpty && !amend && operationInProgress == nil
 
         mutate { backend, root in
