@@ -70,6 +70,72 @@ import Testing
         #expect(result == .notFullyMerged(uniqueCommits: 0, tip: tip))
     }
 
+    // MARK: - not fully merged: the upstream half of "compares against @{upstream} if one is
+    // set, otherwise HEAD"
+
+    /// `X` gets one commit pushed (setting its upstream to `origin/X`) and then one more that is
+    /// NOT pushed. Merging `X` into HEAD ("main") doesn't help `-d` succeed: it compares against
+    /// the (unadvanced) upstream, not HEAD, and refuses — while `commitsOnlyOn` truthfully
+    /// reports 0, since the unpushed commit is now reachable via "main" too.
+    @Test func deletingABranchAheadOfItsUpstreamIsNotFullyMergedEvenWhenMergedIntoHead()
+        async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("a.txt", "one\n")
+        try await repo.commitAll("root")
+        let remote = try await addBareRemote(to: repo)
+        defer { try? FileManager.default.removeItem(at: remote) }
+        try await repo.git(["push", "-q", "origin", "main"])
+
+        try await repo.git(["switch", "-q", "-c", "X"])
+        try repo.write("a.txt", "two\n")
+        try await repo.commitAll("X: pushed commit")
+        try await repo.git(["push", "-q", "-u", "origin", "X"])
+        try repo.write("a.txt", "three\n")
+        try await repo.commitAll("X: unpushed commit")
+        let tip = try await repo.revParse("X")
+        try await repo.git(["switch", "-q", "main"])
+        try await repo.git(["merge", "-q", "--no-ff", "X", "-m", "merge X into main"])
+        let state = try await RepoState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+
+        let result = try await backend.deleteBranch("X", force: false, at: repo.root)
+
+        #expect(result == .notFullyMerged(uniqueCommits: 0, tip: tip))
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+    }
+
+    /// The mirror: `Y` is merged into its own upstream (trivially — nothing local outruns what
+    /// was pushed) but not into HEAD ("main"). `-d` succeeds on the upstream comparison alone
+    /// and prints a warning to stderr that Gitter deliberately ignores — `deleteBranch` only
+    /// special-cases the *refusal* text "is not fully merged"; a warning alongside exit 0 is
+    /// still a plain `.deleted`. The commit is not lost: it stays reachable from the
+    /// remote-tracking ref after the local branch is gone.
+    @Test func deletingABranchMergedIntoItsUpstreamButNotHeadSucceedsWithAWarning() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("a.txt", "one\n")
+        try await repo.commitAll("root")
+        let remote = try await addBareRemote(to: repo)
+        defer { try? FileManager.default.removeItem(at: remote) }
+        try await repo.git(["push", "-q", "origin", "main"])
+
+        try await repo.git(["switch", "-q", "-c", "Y"])
+        try repo.write("a.txt", "two\n")
+        try await repo.commitAll("Y's commit")
+        try await repo.git(["push", "-q", "-u", "origin", "Y"])
+        let tip = try await repo.revParse("Y")
+        try await repo.git(["switch", "-q", "main"])
+        // Y is not merged into main (HEAD) — only into its own upstream, trivially.
+
+        let result = try await backend.deleteBranch("Y", force: false, at: repo.root)
+
+        #expect(result == .deleted)
+        #expect(try await repo.localBranches() == ["main"])
+        // Still reachable, via the remote-tracking ref, not the (now-gone) local branch.
+        _ = try await repo.git(["merge-base", "--is-ancestor", tip, "refs/remotes/origin/Y"])
+    }
+
     // MARK: - current branch, force or not
 
     @Test(arguments: [false, true])
@@ -89,7 +155,8 @@ import Testing
 
     // MARK: - checked out in a linked worktree
 
-    @Test func deletingABranchCheckedOutInALinkedWorktreeIsRefused() async throws {
+    @Test(arguments: [false, true])
+    func deletingABranchCheckedOutInALinkedWorktreeIsRefused(force: Bool) async throws {
         let repo = try await TestRepo.makeBranched()
         defer { repo.cleanUp() }
         let worktreePath = repo.root.deletingLastPathComponent()
@@ -100,7 +167,7 @@ import Testing
         let worktree = worktreeSnapshot(repo)
 
         let error = await branchError {
-            _ = try await backend.deleteBranch("feature", force: false, at: repo.root)
+            _ = try await backend.deleteBranch("feature", force: force, at: repo.root)
         }
 
         #expect(error == .cannotDeleteCurrent("feature"))
@@ -137,5 +204,19 @@ import Testing
 
         #expect(error == .invalidName("-oops"))
         try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+    }
+
+    // MARK: - Helpers
+
+    /// A bare repo beside `repo.root`, added as its `origin` remote. Nothing is pushed —
+    /// callers push whatever the scenario needs, so a branch's upstream ends up exactly where
+    /// the test wants it.
+    private func addBareRemote(to repo: TestRepo) async throws -> URL {
+        let remote = repo.root.deletingLastPathComponent()
+            .appendingPathComponent("\(repo.root.lastPathComponent)-origin.git", isDirectory: true)
+        try FileManager.default.createDirectory(at: remote, withIntermediateDirectories: true)
+        _ = try await ProcessRunner().run("/usr/bin/git", ["init", "-q", "--bare", "."], cwd: remote)
+        try await repo.git(["remote", "add", "origin", remote.path])
+        return remote
     }
 }

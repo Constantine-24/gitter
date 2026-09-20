@@ -172,6 +172,14 @@ public protocol GitBranchBackend: Sendable {
     ///
     /// A name that does not exist throws `.noSuchBranch`; an invalid one throws `.invalidName`
     /// before git runs, same as every other method here.
+    ///
+    /// One case this method cannot protect against: when HEAD is **detached exactly at a
+    /// branch's tip**, that branch is not current (`symbolic-ref` finds no branch at all, so the
+    /// up-front check above doesn't fire) and git considers it trivially merged into HEAD, so
+    /// even a plain `-d` deletes it without complaint (verified) — its commits then hang on the
+    /// detached HEAD alone, reachable from no other ref, until the next checkout moves HEAD away
+    /// and leaves them to the reflog. Warning about *that* is the switching code's job, before it
+    /// ever leaves HEAD detached there (see the spec).
     func deleteBranch(_ name: String, force: Bool, at root: URL) async throws -> BranchDeletion
 
     /// How many commits are reachable from `name` and from **no other ref** — what the "Delete"
@@ -189,15 +197,24 @@ public protocol GitBranchBackend: Sendable {
     ///   `--all` expands live ref tips only, never reflogs.
     /// - **This is a different question from what `git branch -d` itself asks**, and the two can
     ///   disagree in one direction, not the other. `-d` compares the branch against its
-    ///   `@{upstream}` if one is set, otherwise against HEAD — a single ref. So `-d` can *refuse*
-    ///   a branch this method reports as 0 (merged into some other branch, just not into HEAD or
-    ///   upstream — tested). The reverse cannot happen: whenever `-d` succeeds, the ref it
-    ///   compared against (HEAD or upstream) is itself always part of `--all`'s reachable set
-    ///   (git's own docs: `--all` "pretend[s] as if … HEAD" is listed, even detached, even with
-    ///   no branch pointing at it — verified), so every commit `-d` judged "merged" is provably
-    ///   already counted as reachable elsewhere too. **When git refuses a plain delete but this
-    ///   returns 0, the count is still the truth** — "0 commits exist only here" — it just means
-    ///   git's narrower HEAD/upstream rule doesn't yet agree, not that the warning is wrong.
+    ///   `@{upstream}` if one is set, otherwise against HEAD — a single ref, and the "if one is
+    ///   set" half is tested on its own, not just inferred: a branch with a commit pushed (so it
+    ///   has an upstream) and then one *more*, unpushed, commit — merged into HEAD by a merge
+    ///   commit — still makes `-d` refuse, because it checks the (unadvanced) upstream and never
+    ///   even looks at HEAD once an upstream is configured. `commitsOnlyOn` reports 0 there too
+    ///   (the extra commit is reachable via HEAD once merged). So `-d` can *refuse* a branch this
+    ///   method reports as 0 — merged into some other ref (another branch, or the branch's own
+    ///   upstream), just not into HEAD. The reverse cannot happen: whenever `-d` succeeds, the
+    ///   ref it compared against (HEAD or upstream) is itself always part of `--all`'s reachable
+    ///   set (git's own docs: `--all` "pretend[s] as if … HEAD" is listed, even detached, even
+    ///   with no branch pointing at it — verified), so every commit `-d` judged "merged" is
+    ///   provably already counted as reachable elsewhere too — tested directly for the upstream
+    ///   case too: a branch merged only into its upstream, not HEAD, deletes with a warning on
+    ///   stderr that Gitter ignores (`deleteBranch` only special-cases the refusal text), and its
+    ///   commit stays reachable from the surviving remote-tracking ref. **When git refuses a
+    ///   plain delete but this returns 0, the count is still the truth** — "0 commits exist only
+    ///   here" — it just means git's narrower HEAD/upstream rule doesn't yet agree, not that the
+    ///   warning is wrong.
     /// - **Calling this for the branch HEAD is currently on always returns 0**, whatever its
     ///   real merge status, because `--all`'s HEAD-inclusion makes a branch trivially reachable
     ///   from itself once it *is* HEAD. `deleteBranch` never hits this — it refuses the current
