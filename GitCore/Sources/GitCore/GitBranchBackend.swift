@@ -201,4 +201,41 @@ public protocol GitBranchBackend: Sendable {
     /// (verified on git 2.54). A caller must not render every throw as "your work is untouched";
     /// the snapshot's `operationInProgress` is what says whether a merge is now under way.
     func merge(_ branch: String, mode: MergeMode, at root: URL) async throws -> MergeOutcome
+
+    /// End the operation the repository is part-way through, throwing its work away:
+    /// `merge --abort`, `cherry-pick --abort`, `revert --abort`, `rebase --abort`,
+    /// `am --abort`, and `reset --merge` for a pending squash.
+    ///
+    /// The second of the four actions in Gitter that can lose work, so what it keeps and what
+    /// it destroys is spelled out — verified on git 2.54, pinned by a test per cell in
+    /// `AbortKeptAndLostTests`, and implemented in `CLIGitBackend+Abort.swift`, which carries
+    /// the full evidence:
+    ///
+    /// | | merge · squash · cherry-pick · revert · am | rebase |
+    /// |---|---|---|---|
+    /// | uncommitted edit already there, in another file | kept | *cannot happen* |
+    /// | untracked file already there | kept | kept |
+    /// | unstaged edit made since it began, another file | **kept** | **discarded** |
+    /// | anything staged since it began | discarded | discarded |
+    /// | conflict resolution, staged or not | discarded | discarded |
+    /// | untracked file created since it began | kept | kept |
+    /// | HEAD, the branch, every ref | back to where they were | back to where they were |
+    ///
+    /// "Cannot happen" is literal: git refuses to *start* a rebase while any tracked file has
+    /// an unstaged change, so a rebase never has pre-existing dirt to lose. `am` is the one
+    /// operation that has already committed something when it stops, and its abort rewinds the
+    /// branch past those commits.
+    ///
+    /// Before running anything this asks the repository what is *really* in progress and
+    /// throws `.noOperationInProgress` or `.operationMismatch(expected:actual:)` — see those
+    /// cases for why a wrong or stale request must never reach git.
+    ///
+    /// **An abort can fail, and one of them is not atomic.** A file the operation rewrote that
+    /// now has an unstaged edit makes every one of these aborts except `rebase`'s refuse
+    /// ("Entry '<file>' not uptodate. Cannot merge.", `GitError.commandFailed`); for merge,
+    /// squash, cherry-pick and revert nothing changes at all, but `git am --abort` cleans the
+    /// conflicted index *before* rewinding and so leaves the resolution destroyed, the branch
+    /// unrewound and the `am` still in progress. Never render a failed abort as "nothing
+    /// happened"; re-read the snapshot.
+    func abort(_ operation: RepositoryOperation, at root: URL) async throws
 }

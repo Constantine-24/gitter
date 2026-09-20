@@ -66,6 +66,20 @@ public enum BranchOperationError: Error, Sendable, Equatable {
     /// in these messages, `merge-ort` prints the names space-joined on ONE line, so a name
     /// containing a space could not be told from two names. See `BranchRefusalParser`.
     case indexNotClean
+    /// `abort` was asked to end an operation while the repository is in the middle of nothing.
+    /// Thrown before git runs, and not merely for tidiness: verified on git 2.54, the command
+    /// `abort(.squash)` would have run — `git reset --merge` — exits **0** in a clean
+    /// repository and silently throws away everything that was staged. A stale "Abort" button
+    /// in the UI would be enough to lose a user's staged work without a single error message.
+    case noOperationInProgress
+    /// `abort` was asked to end `expected` while `actual` is what is really in progress.
+    ///
+    /// The UI can be a refresh behind — an operation can have been finished or abandoned in a
+    /// terminal since the last snapshot — and the wrong `--abort` is not harmless: verified on
+    /// git 2.54, `git rebase --abort` during a merge exits **0** while doing nothing at all, so
+    /// running it would report success and leave the merge exactly where it was. Thrown before
+    /// git runs, from a fresh look at the repository rather than from the snapshot.
+    case operationMismatch(expected: RepositoryOperation, actual: RepositoryOperation)
 }
 
 /// How the user chose to merge, in the sheet that appears every time.
