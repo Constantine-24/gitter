@@ -103,6 +103,8 @@ never be put on screen from a script, and a focus bug can never be reproduced.
 | `GITTER_DEBUG_SELECT_LINES=3,4` | pre-select those line ids in the first hunk |
 | `GITTER_DEBUG_APPLY=hunk:0` or `lines` | then stage/unstage that hunk, or those lines |
 | `GITTER_DEBUG_WINDOW=1400x1400` | resize the window, past the screen if asked |
+| `GITTER_DEBUG_OPEN=<path>` | after the first repository has loaded, open that path as "Open Repository…" would — the only way to reach a failed open from a script |
+| `GITTER_DEBUG_APPEARANCE=light\|dark` | force the app's appearance, so a screenshot pass can shoot both without changing the machine's setting |
 | `GITTER_DEBUG_CLICK=x,y[:2\|:shift][;…]` | click those points, in points from the top-left of the window's content area; `:2` double-clicks, `:shift` shift-clicks, and a `type=text` step types between two clicks |
 | `GITTER_DEBUG_KEYS=space,return,cmd+return` | then press those keys (`space`, `return`, `tab`, `escape`, `up`, `down`, with `cmd+`/`shift+`/`opt+`/`ctrl+`) |
 | `GITTER_DEBUG_TYPE=text` | then type that text into whatever has focus |

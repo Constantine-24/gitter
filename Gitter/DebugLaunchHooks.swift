@@ -18,6 +18,8 @@
     ///   GITTER_DEBUG_SELECT_LINES=3,4       pre-select those line ids in the first hunk
     ///   GITTER_DEBUG_APPLY=hunk:0 | lines   then stage/unstage that hunk, or those lines
     ///   GITTER_DEBUG_WINDOW=1400x1400       resize the window, past the screen if asked
+    ///   GITTER_DEBUG_OPEN=<path>            then open that path, as "Open Repository…" does
+    ///   GITTER_DEBUG_APPEARANCE=light|dark  force the window's appearance
     ///
     /// `DebugLaunchHooks+Events` adds the ones that click and type.
     @MainActor
@@ -40,9 +42,15 @@
             let path = env["GITTER_DEBUG_SELECT_PATH"]
             let commit = env["GITTER_DEBUG_SELECT_COMMIT"]
             let window = env["GITTER_DEBUG_WINDOW"]
-            guard path != nil || commit != nil || window != nil || wantsEvents else { return }
+            let openPath = env["GITTER_DEBUG_OPEN"]
+            let appearance = env["GITTER_DEBUG_APPEARANCE"]
+            guard
+                path != nil || commit != nil || window != nil || openPath != nil
+                    || appearance != nil || wantsEvents
+            else { return }
 
             pendingLineIDs = lineIDs()
+            if let appearance { self.appearance(appearance) }
 
             Task {
                 if let window { resize(to: window) }
@@ -63,6 +71,13 @@
 
                 if let apply = env["GITTER_DEBUG_APPLY"], await wait({ !store.diff.isEmpty }) {
                     self.apply(apply, store: store)
+                }
+                // After the first repository has loaded, so this is the "open another one while
+                // one is already up" path — the only way to reach a failed open from a script,
+                // since the `NSOpenPanel` cannot be driven.
+                if let openPath {
+                    store.open(URL(fileURLWithPath: openPath))
+                    try? await Task.sleep(for: .milliseconds(500))
                 }
                 // Last, so a click lands on a list that has finished loading its rows.
                 if wantsEvents { await runEvents() }
@@ -86,7 +101,13 @@
                 display: true)
         }
 
-        /// Runs the real staging path exactly as the buttons do, so the end-to-end check goes
+        /// Pins the whole app to one appearance, so a screenshot pass can shoot light and dark
+    /// without touching the machine's global setting.
+    private static func appearance(_ name: String) {
+        NSApp.appearance = NSAppearance(named: name == "dark" ? .darkAqua : .aqua)
+    }
+
+    /// Runs the real staging path exactly as the buttons do, so the end-to-end check goes
         /// through `PatchBuilder` and `git apply --cached` and not through a shortcut.
         private static func apply(_ command: String, store: RepositoryStore) {
             guard let file = store.diff.first else { return }
