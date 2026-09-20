@@ -21,12 +21,29 @@ struct CommitListView: View {
     /// exactly as in `WorkingCopyFileList.isFocused` — see the reasoning there.
     @FocusState private var isFocused: Bool
 
+    /// The last selection the table itself made, so the scroll below can skip it.
+    ///
+    /// Scrolling is for a selection made *elsewhere* — clicking a branch in the sidebar, or
+    /// landing back on the working copy after a commit — which can be anywhere in 500 rows. A
+    /// row the user just clicked is under the pointer by definition, and re-centring it yanks
+    /// the table out from under them.
+    @State private var selectedInTable: Selection?
+
     var body: some View {
         let rows = rows()
         ScrollViewReader { proxy in
             table(rows)
                 .onChange(of: store.selection) { _, newValue in
-                    withAnimation { proxy.scrollTo(newValue, anchor: .center) }
+                    guard newValue != selectedInTable else {
+                        selectedInTable = nil
+                        return
+                    }
+                    // `x: 0` rather than `.center`: the columns are wider than the pane, and
+                    // centring on both axes pushed the Summary column off to the left until
+                    // only Author was readable. This keeps the leading edge where it is and
+                    // moves only vertically. (Near either end of the log the row lands as
+                    // close to the middle as the content allows, which is not the middle.)
+                    withAnimation { proxy.scrollTo(newValue, anchor: UnitPoint(x: 0, y: 0.5)) }
                 }
         }
     }
@@ -112,6 +129,7 @@ struct CommitListView: View {
             get: { store.selection },
             set: { newValue in
                 guard let newValue, newValue != store.selection else { return }
+                selectedInTable = newValue
                 store.select(newValue)
             }
         )
