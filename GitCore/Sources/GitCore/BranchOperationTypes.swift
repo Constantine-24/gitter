@@ -65,6 +65,12 @@ public enum BranchOperationError: Error, Sendable, Equatable {
     /// not "move that file"), so this is its own case. No file list: unlike every other block
     /// in these messages, `merge-ort` prints the names space-joined on ONE line, so a name
     /// containing a space could not be told from two names. See `BranchRefusalParser`.
+    ///
+    /// **For a squash this is Gitter's own refusal, not git's.** A squash of a
+    /// fast-forwardable branch does not go through the strategy either, so git starts it with a
+    /// dirty index — and `git reset --merge`, the only way to undo a pending squash, then
+    /// destroys whatever was staged beforehand along with the squash. `merge(_:mode:at:)`
+    /// checks the index itself before running a squash; see `requireACleanIndexForASquash`.
     case indexNotClean
     /// `abort` was asked to end an operation while the repository is in the middle of nothing.
     /// Thrown before git runs, and not merely for tidiness: verified on git 2.54, the command
@@ -75,10 +81,12 @@ public enum BranchOperationError: Error, Sendable, Equatable {
     /// `abort` was asked to end `expected` while `actual` is what is really in progress.
     ///
     /// The UI can be a refresh behind — an operation can have been finished or abandoned in a
-    /// terminal since the last snapshot — and the wrong `--abort` is not harmless: verified on
-    /// git 2.54, `git rebase --abort` during a merge exits **0** while doing nothing at all, so
-    /// running it would report success and leave the merge exactly where it was. Thrown before
-    /// git runs, from a fresh look at the repository rather than from the snapshot.
+    /// terminal since the last snapshot. Four of the five `--abort`s would catch that
+    /// themselves (verified on git 2.54: the wrong one during a merge exits 128 and leaves
+    /// `MERGE_HEAD` alone), but `reset --merge` would not: run during a real merge it exits 0
+    /// and aborts **the merge** — `MERGE_HEAD` and every unmerged entry gone — under a button
+    /// labelled "Undo Squash". Thrown before git runs, from a fresh look at the repository
+    /// rather than from the snapshot.
     case operationMismatch(expected: RepositoryOperation, actual: RepositoryOperation)
 }
 
@@ -96,6 +104,12 @@ public enum MergeMode: String, Sendable, CaseIterable {
     case alwaysMergeCommit
     /// `merge --ff --squash`: put the branch's whole change in the index as one pending commit,
     /// leaving HEAD where it is.
+    ///
+    /// The one mode with a precondition Gitter enforces on top of git's: **the index must match
+    /// HEAD**, or `.indexNotClean` is thrown before git runs. Git would allow the squash
+    /// whenever it can fast-forward, and the resulting pending squash cannot be undone without
+    /// also destroying whatever was staged before it — the squashed changes and the user's own
+    /// are the same staged changes by then.
     case squash
 }
 

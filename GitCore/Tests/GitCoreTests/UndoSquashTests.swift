@@ -84,6 +84,34 @@ import Testing
         #expect(try await lab.operationInProgress() == nil)
     }
 
+    /// The one cell of the kept/lost table where an abort destroys work that was **already
+    /// staged before the operation began**, and the reason the squash sheet cannot say
+    /// "anything you staged since it began".
+    ///
+    /// Reachable only from outside Gitter: `merge(_:mode:.squash)` now refuses a dirty index up
+    /// front (`MergeRefusalTests.aStagedChangeRefusesASquashOfAFastForwardableBranchToo`), but
+    /// a terminal can still do it, because git itself allows a fast-forwardable squash to start
+    /// with a dirty index. Built here with raw git for exactly that reason. `reset --merge`
+    /// then resets the whole index to HEAD — it cannot tell the squash's staged changes from
+    /// the user's — and the work is gone from the index *and* from the file.
+    @Test func undoingASquashStartedOutsideGitterDestroysWorkStagedBeforeIt() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        try repo.write("keep.txt", "STAGED BEFORE THE SQUASH\n")
+        try await repo.git(["add", "keep.txt"])
+        // Raw git, as a terminal would: `feature` fast-forwards from here, so this does not go
+        // through the merge strategy and the dirty index is not refused. Exit 0.
+        try await repo.git(["merge", "--ff", "--squash", "feature"])
+        #expect(try await CLIGitBackend().snapshot(at: repo.root).status.operationInProgress == .squash)
+        #expect(try repo.fileContents("keep.txt") == "STAGED BEFORE THE SQUASH\n")
+
+        try await CLIGitBackend().abort(.squash, at: repo.root)
+
+        #expect(try repo.fileContents("keep.txt") == "keep\n",
+                "the work staged before the squash was destroyed — the sheet must say so")
+        #expect(try await repo.git(["diff", "--cached", "--name-only"]).isEmpty)
+    }
+
     /// `main`, a `feature` branch that rewrites `touched.txt` and adds `added.txt`, and an
     /// `other.txt` both branches share. Squashing `feature` into `main` never conflicts.
     private func makeSquashable() async throws -> TestRepo {

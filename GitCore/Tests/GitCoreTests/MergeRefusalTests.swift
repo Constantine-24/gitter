@@ -106,6 +106,33 @@ import Testing
         #expect(error as? BranchOperationError == .indexNotClean)
     }
 
+    /// The hole that asymmetry left, and why `merge` now asks about the index itself rather
+    /// than waiting for git to refuse.
+    ///
+    /// A squash of a **fast-forwardable** branch does not go through the merge strategy either,
+    /// so git 2.54 starts it with a dirty index and the staged change rides along — exit 0,
+    /// `SQUASH_MSG` written, `status` showing both `M  keep.txt` and the squashed change. The
+    /// user now has one pending squash containing work they staged *before* it, and the only
+    /// way out of a squash, `git reset --merge`, resets the whole index to HEAD: the
+    /// pre-existing staged work is destroyed with no warning and no way back.
+    ///
+    /// `UndoSquashTests.undoingASquashStartedOutsideGitterDestroysWorkStagedBeforeIt` builds
+    /// that state with raw git and proves the loss, which is what makes this refusal necessary
+    /// rather than defensive: git allows the state, so Gitter has to be the one that does not.
+    @Test func aStagedChangeRefusesASquashOfAFastForwardableBranchToo() async throws {
+        let repo = try await TestRepo.makeBranched()  // `feature` is a fast-forward from here
+        defer { repo.cleanUp() }
+        try repo.write("keep.txt", "staged\n")
+        try await repo.git(["add", "keep.txt"])
+
+        let error = try await Self.refusal(repo) { backend in
+            _ = try await backend.merge("feature", mode: .squash, at: repo.root)
+        }
+
+        #expect(error as? BranchOperationError == .indexNotClean)
+        #expect(try await repo.gitFileExists("SQUASH_MSG") == false, "no squash was started")
+    }
+
     /// The other half of the same verification: a **fast-forward** does not go through the
     /// merge strategy at all, so git allows it and the staged change rides along untouched.
     /// Recorded as a test so the asymmetry is a known fact rather than a surprise.

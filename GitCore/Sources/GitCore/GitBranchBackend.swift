@@ -189,7 +189,10 @@ public protocol GitBranchBackend: Sendable {
     ///
     /// Refusals, all of which change nothing: `.wouldOverwrite` when a tracked or untracked
     /// file stands in the way, `.indexNotClean` when a true merge finds anything staged (see
-    /// that case — it fires even for files the merge does not touch), `.operationInProgress`
+    /// that case — it fires even for files the merge does not touch) **and, for `.squash`
+    /// alone, when Gitter's own index check finds anything staged even though git would have
+    /// gone ahead** (a squash that fast-forwards skips the strategy; undoing the pending squash
+    /// afterwards would destroy that staged work — see `MergeMode.squash`), `.operationInProgress`
     /// when a merge is already part-way through, `.noSuchBranch` for a name git cannot resolve,
     /// and `.invalidName` before git runs for a name that would be read as an option.
     ///
@@ -208,12 +211,12 @@ public protocol GitBranchBackend: Sendable {
     ///
     /// The second of the four actions in Gitter that can lose work, so what it keeps and what
     /// it destroys is spelled out — verified on git 2.54, pinned by a test per cell in
-    /// `AbortKeptAndLostTests`, and implemented in `CLIGitBackend+Abort.swift`, which carries
-    /// the full evidence:
+    /// `AbortKeptAndLostTests`, with the full evidence in `CLIGitBackend+Abort.swift`:
     ///
     /// | | merge · squash · cherry-pick · revert · am | rebase |
     /// |---|---|---|---|
     /// | uncommitted edit already there, in another file | kept | *cannot happen* |
+    /// | change **staged** already, in another file | *cannot happen* † | *cannot happen* |
     /// | untracked file already there | kept | kept |
     /// | unstaged edit made since it began, another file | **kept** | **discarded** |
     /// | anything staged since it began | discarded | discarded |
@@ -221,20 +224,28 @@ public protocol GitBranchBackend: Sendable {
     /// | untracked file created since it began | kept | kept |
     /// | HEAD, the branch, every ref | back to where they were | back to where they were |
     ///
-    /// "Cannot happen" is literal: git refuses to *start* a rebase while any tracked file has
-    /// an unstaged change, so a rebase never has pre-existing dirt to lose. `am` is the one
+    /// "Cannot happen" is literal, and tested: git refuses to *start* a rebase while any tracked
+    /// file has an unstaged change, and refuses to start **any** of them — five different
+    /// messages, four different exit codes — while the index differs from HEAD. `am` is the one
     /// operation that has already committed something when it stops, and its abort rewinds the
     /// branch past those commits.
     ///
-    /// Before running anything this asks the repository what is *really* in progress and
-    /// throws `.noOperationInProgress` or `.operationMismatch(expected:actual:)` — see those
-    /// cases for why a wrong or stale request must never reach git.
+    /// † two exceptions, recorded rather than papered over. A **squash** that fast-forwards is
+    /// the one operation git *will* start with a dirty index, and undoing it **discards** that
+    /// pre-existing staged work; `merge(_:mode:at:)` refuses to create the state (see
+    /// `MergeMode.squash`), but a terminal still can. A **`git am`** refused over a dirty index
+    /// leaves `rebase-apply/applying` behind, so the snapshot reports an `am` that applied
+    /// nothing; aborting that succeeds and **keeps** the staged work.
+    ///
+    /// Before running anything this asks the repository what is *really* in progress and throws
+    /// `.noOperationInProgress` or `.operationMismatch(expected:actual:)` — see those cases for
+    /// why a wrong or stale request must never reach git.
     ///
     /// **An abort can fail, and one of them is not atomic.** A file the operation rewrote that
     /// now has an unstaged edit makes every one of these aborts except `rebase`'s refuse
     /// ("Entry '<file>' not uptodate. Cannot merge.", `GitError.commandFailed`); for merge,
     /// squash, cherry-pick and revert nothing changes at all, but `git am --abort` cleans the
-    /// conflicted index *before* rewinding and so leaves the resolution destroyed, the branch
+    /// conflicted index *before* rewinding, leaving the resolution destroyed, the branch
     /// unrewound and the `am` still in progress. Never render a failed abort as "nothing
     /// happened"; re-read the snapshot.
     func abort(_ operation: RepositoryOperation, at root: URL) async throws

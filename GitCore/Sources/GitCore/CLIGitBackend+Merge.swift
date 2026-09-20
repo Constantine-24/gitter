@@ -5,6 +5,9 @@ import Foundation
 extension CLIGitBackend {
     public func merge(_ branch: String, mode: MergeMode, at root: URL) async throws -> MergeOutcome {
         try requireName(branch)
+        // A squash is the one mode git will start with a dirty index, and the one mode whose
+        // only exit resets that index wholesale. See `requireACleanIndexForASquash`.
+        if mode == .squash { try await requireACleanIndexForASquash(at: root) }
         let headBefore = try await headSHA(at: root)
 
         // Each vector is a COMPLETE literal chosen by this switch — no flag is ever picked with
@@ -50,6 +53,47 @@ extension CLIGitBackend {
             return .conflicts
         }
         return try await outcome(of: branch, mode: mode, headBefore: headBefore, at: root)
+    }
+
+    // MARK: - The one refusal Gitter makes that git does not
+
+    /// Refuses a squash while anything is staged, because the *undo* cannot tell the user's
+    /// staged work from the squash's.
+    ///
+    /// git refuses this by itself for a **true** merge (`.indexNotClean`, see that case), but a
+    /// squash of a fast-forwardable branch never goes through the merge strategy: verified on
+    /// git 2.54, `git merge --ff --squash feature` with `keep.txt` staged exits 0, writes
+    /// `SQUASH_MSG`, and leaves `keep.txt` staged alongside the squashed changes. The only way
+    /// out of a pending squash is `git reset --merge`, which resets the whole index to HEAD —
+    /// so that pre-existing staged work is destroyed by "Undo Squash", with nothing in the
+    /// confirmation able to warn about it, since by then the two are indistinguishable.
+    ///
+    /// Gitter therefore will not create the state. It is still *reachable* — a terminal can do
+    /// it — and `UndoSquashTests.undoingASquashStartedOutsideGitterDestroysWorkStagedBeforeIt`
+    /// pins what happens then, so the sheet's wording stays honest about it.
+    ///
+    /// Unmerged entries are deliberately not caught here: they make the index differ from HEAD
+    /// too, but the useful refusal for "you are half-way through a conflict" is git's own
+    /// (`.operationInProgress("resolving conflicts")`), so that case is left to git, exactly as
+    /// it is for the other two modes.
+    private func requireACleanIndexForASquash(at root: URL) async throws {
+        guard try await indexDiffersFromHead(at: root) else { return }
+        guard try await hasUnmergedEntries(at: root) == false else { return }
+        throw BranchOperationError.indexNotClean
+    }
+
+    /// `git diff --cached --quiet`: exit 0 when the index matches HEAD, exit 1 when it does
+    /// not. Verified on git 2.54 across the cases that matter here: an unstaged edit alone and
+    /// an untracked file alone both exit 0 (neither is in the index), unmerged entries exit 1,
+    /// and an **unborn HEAD** is handled without a special case — exit 0 with an empty index,
+    /// exit 1 once something is staged, never the 128 a bare `rev-parse HEAD` would give.
+    private func indexDiffersFromHead(at root: URL) async throws -> Bool {
+        do {
+            _ = try await run(["diff", "--cached", "--quiet"], cwd: root)
+            return false
+        } catch GitError.commandFailed(exitCode: 1, stderr: _) {
+            return true
+        }
     }
 
     // MARK: - Reading the outcome out of the repository
