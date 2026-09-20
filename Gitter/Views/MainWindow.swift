@@ -1,11 +1,12 @@
 import SwiftUI
 
-/// The three-pane browser: refs, commits, detail — with the error banner and a
-/// loading indicator on top.
+/// The three-pane browser: refs, commits, detail — with the branch toolbar, the banners and a
+/// loading indicator on top, and whatever sheet the store has asked for.
 struct MainWindow: View {
     @Environment(RepositoryStore.self) private var store
 
     var body: some View {
+        @Bindable var store = store
         Group {
             if store.root == nil {
                 emptyState
@@ -22,6 +23,12 @@ struct MainWindow: View {
                 }
                 .toolbar {
                     ToolbarItem(placement: .navigation) {
+                        BranchMenu()
+                    }
+                    ToolbarItem(placement: .navigation) {
+                        NewBranchButton()
+                    }
+                    ToolbarItem(placement: .navigation) {
                         if store.isLoading {
                             ProgressView().controlSize(.small)
                         }
@@ -30,12 +37,24 @@ struct MainWindow: View {
             }
         }
         .overlay(alignment: .top) {
-            if let error = store.lastError {
-                ErrorBanner(message: error) { store.dismissError() }
-                    .transition(.move(edge: .top).combined(with: .opacity))
+            // Stacked, not exclusive: a notice about what just worked and a banner about what
+            // just failed can both be true (a rename succeeded, the switch after it did not).
+            VStack(spacing: 0) {
+                if let error = store.lastError {
+                    ErrorBanner(message: error) { store.dismissError() }
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                if let notice = store.notice {
+                    NoticeBanner(message: notice) { store.dismissNotice() }
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
             }
         }
         .animation(.default, value: store.lastError)
+        .animation(.default, value: store.notice)
+        .sheet(item: $store.activeSheet) { sheet in
+            BranchSheetHost(sheet: sheet)
+        }
     }
 
     private var emptyState: some View {
