@@ -122,12 +122,12 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `switch:<branch>` / `track:<remote>/<branch>` / `detach:<rev>` | move HEAD, through the same guards the menus use |
 | `create:<name>[:<start>]` / `createswitch:<name>[:<start>]` | create a branch, optionally switching to it |
 | `rename:<old>:<new>` | rename a branch |
-| `delete:<branch>` | `git branch -d`; an unmerged branch opens the confirmation instead |
-| `forcedelete:<branch>` | `git branch -D`, as the confirmation's button does |
-| `merge:<branch>:<ff\|noff\|squash>` | merge in that mode, remembering it |
+| `delete:<branch>` | **acts**: `git branch -d`; an unmerged branch opens the confirmation instead |
+| `forcedelete:<branch>` | **acts**: `-d` first, then `-D` from the warning it opened — the two steps a user takes |
+| `merge:<branch>:<ff\|noff\|squash>` | merge in that mode, remembering it once the merge really runs |
 | `abort` | open the abort confirmation and answer it |
 | `confirmleave` | answer the "leaving a detached HEAD" confirmation a previous step opened |
-| `sheet:new` / `sheet:rename:<b>` / `sheet:merge:<b>` / `sheet:delete:<b>` / `sheet:abort` | open a sheet without acting |
+| `sheet:new` / `sheet:rename:<b>` / `sheet:merge:<b>` / `sheet:delete:<b>` / `sheet:abort` | open a sheet without acting — `sheet:delete` reads the warning's count and tip instead of letting `git branch -d` refuse, so it never deletes anything |
 
 After every step one line goes to stderr, which is what a shell asserts on. `head` and
 `selection` ride along because neither can be read out of git, and "the selection returns to

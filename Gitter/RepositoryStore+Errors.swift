@@ -92,14 +92,20 @@ extension BranchOperationError {
     func sentence(refusing attempt: String) -> String {
         switch self {
         case .wouldOverwrite(let tracked, let untracked):
-            // Both lists in one sentence: git can refuse over both at once, and fixing only the
-            // files from the first block would earn the same refusal again.
-            let opener =
-                tracked.isEmpty
-                ? "these untracked files are in the way"
-                : "your changes to these files would be overwritten"
-            return "Can't \(attempt): \(opener) — \(Self.list(tracked + untracked)). "
-                + "Commit or move them first."
+            // Both lists, kept apart: git can refuse over both at once, so naming only the first
+            // would earn the same refusal again — but "your changes to these files" is simply
+            // false of an untracked file, which has no changes, only a name in the way.
+            let clause =
+                switch (tracked.isEmpty, untracked.isEmpty) {
+                case (false, true):
+                    "your changes to \(Self.list(tracked)) would be overwritten"
+                case (true, _):
+                    "these untracked files are in the way: \(Self.list(untracked))"
+                case (false, false):
+                    "your changes to \(Self.list(tracked)) would be overwritten, and these "
+                        + "untracked files are in the way: \(Self.list(untracked))"
+                }
+            return "Can't \(attempt): \(clause). Commit or move them first."
         case .indexNotClean:
             // Not a file list on purpose: git prints those names space-joined on one line, so a
             // name containing a space could not be told from two names. See the case's own doc.

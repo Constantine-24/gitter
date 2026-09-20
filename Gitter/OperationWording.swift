@@ -71,6 +71,20 @@ extension RepositoryOperation {
         }
     }
 
+    /// Why HEAD may not be moved while this is in progress: the tooltip on a disabled Switch,
+    /// Merge or Check Out item, and the banner if one is reached anyway.
+    ///
+    /// A pending squash gets its own sentence because the rest of the UI never calls it a thing
+    /// "in progress" — the note says "Squash pending", the button says "Undo Squash…" — and a
+    /// tooltip that invented a third vocabulary would read as a different state altogether.
+    var movingHeadBlocked: String {
+        switch self {
+        case .squash: "A squash is pending. Commit it or undo it first."
+        case .merge, .cherryPick, .revert, .rebase, .applyingPatches:
+            "A \(noun.lowercased()) is in progress. Commit or abort it first."
+        }
+    }
+
     /// The tooltip on "Unstage All", on a staged row's "−", and on a hunk button that would
     /// take a whole file back out of the index.
     var unstagingBlockedHelp: String {

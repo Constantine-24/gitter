@@ -55,13 +55,19 @@ extension RepositoryStore {
         })
     }
 
-    /// `git branch -D`, from the sheet `requestDelete` opened. The tip sha is read back off that
-    /// sheet before it closes so the notice can name it: git keeps the commit object, so a user
-    /// who changes their mind can still recreate the branch from it.
+    /// `git branch -D`, and **only** as the answer to the warning that named this branch.
+    ///
+    /// The guard is the point, not bookkeeping: this is one of the four actions that can lose
+    /// work, and the sheet is where the user was told how much. Without a matching
+    /// `.deleteUnmerged` on screen there is no warning this could be the answer to, so there is
+    /// nothing to force — a stale call, a mis-wired menu item or a debug hook reaching straight
+    /// for the destructive half all stop here.
+    ///
+    /// The tip sha comes off that sheet before it closes, so the notice can name it: git keeps
+    /// the commit object (verified), and a user who changes their mind can recreate the branch.
     func confirmForceDelete(_ name: String) {
-        var tip: String?
-        if case .deleteUnmerged(let sheetName, _, let sheetTip) = activeSheet, sheetName == name {
-            tip = sheetTip
+        guard case .deleteUnmerged(let warned, _, let tip) = activeSheet, warned == name else {
+            return
         }
         activeSheet = nil
 
@@ -70,14 +76,34 @@ extension RepositoryStore {
                 try await backend.deleteBranch(name, force: true, at: root)
             }
         }, onSuccess: { [self] in
-            guard let tip else {
-                showNotice("Deleted branch \"\(name)\".")
-                return
-            }
-            let short = String(tip.prefix(7))
-            showNotice("Deleted \"\(name)\". Recreate it with: git branch \(name) \(short)")
+            showNotice(
+                "Deleted \"\(name)\". Recreate it with: git branch \(name) \(tip.prefix(7))")
         })
     }
+
+    #if DEBUG
+        /// Puts the unmerged-delete warning on screen **without deleting anything** — the count
+        /// and the tip are read (`commitsOnlyOn`, plus the branch's sha from the snapshot), not
+        /// obtained by letting `git branch -d` refuse.
+        ///
+        /// Only the debug hook wants this. The real flow has to be the other one: `-d` is the
+        /// authority on whether a branch is merged, it changes nothing when it refuses, and its
+        /// refusal is what the warning answers. This exists so `sheet:delete:<b>` can honestly
+        /// mean "open the sheet", where routing it through `requestDelete` would *delete* a
+        /// merged branch under a step documented as showing a sheet.
+        func previewDeleteWarning(_ name: String) {
+            guard let root, let branch = localBranches.first(where: { $0.name == name }) else {
+                return
+            }
+            let generation = self.generation
+            Task { [self] in
+                guard let count = try? await backend.commitsOnlyOn(branch: name, at: root),
+                    self.generation == generation
+                else { return }
+                activeSheet = .deleteUnmerged(name: name, uniqueCommits: count, tip: branch.sha)
+            }
+        }
+    #endif
 
     // MARK: - Abort
 

@@ -3,9 +3,11 @@ import GitCore
 
 /// Branch actions: everything that moves HEAD, creates a ref or merges.
 ///
-/// All of them go through the same serialized `mutate` as staging and committing, so they queue
-/// behind each other, reload before the banner goes up, and never predict git's answer. Nothing
-/// here passes a force flag — that is `GitBranchBackend`'s contract, and the refusals it throws
+/// All of them go through the same serialized `mutate` as staging and committing: one git write
+/// at a time, a reload before the banner goes up, and never a prediction of git's answer. They
+/// are not *queued* — `mutate` is a no-op while another one is running, which is also what
+/// disables the buttons — so a second click during a merge is dropped, not deferred. Nothing
+/// here passes a force flag; that is `GitBranchBackend`'s contract, and the refusals it throws
 /// are turned into sentences in `RepositoryStore+Errors`.
 ///
 /// Two gates sit in front of the five actions that move HEAD, and only in front of those:
@@ -13,10 +15,12 @@ import GitCore
 /// - **An operation in progress.** git refuses a switch or a merge mid-merge anyway; this
 ///   refuses first, with a sentence that names the operation. Creating a branch without
 ///   switching, renaming and deleting stay available, since none of them touches the worktree.
-/// - **A detached HEAD holding commits on no ref.** Asked of git, not guessed
-///   (`unreferencedCommitCount`), and when the answer is non-zero the action is parked in a
-///   `.leaveDetached` sheet instead of run. See `PendingBranchAction.canStrandCommits` for why
-///   a merge and a `switch -c` from HEAD are exempt.
+/// - **A detached HEAD holding commits on no ref.** Asked of git every time, and never of the
+///   snapshot: `unreferencedCommitCount` is 0 on a branch by construction, so there is no need
+///   to *decide* whether HEAD is detached before asking — and deciding from the snapshot would
+///   mean a terminal that detached HEAD inside the watcher's 300 ms debounce could walk straight
+///   past the guard. See `PendingBranchAction.canStrandCommits` for why a merge and a
+///   `switch -c` from HEAD are exempt.
 extension RepositoryStore {
 
     // MARK: - Actions that move HEAD
@@ -36,10 +40,10 @@ extension RepositoryStore {
         perform(.detach(revision))
     }
 
-    /// Merge `branch` into HEAD. `mode` becomes the remembered one only here, so a sheet the
-    /// user cancelled never changes what the next sheet comes up on.
+    /// Merge `branch` into HEAD. The mode is remembered where the merge is actually run (see
+    /// `rememberMergeMode`), not here: a merge this gate refuses never happened, and must not
+    /// change what the next sheet comes up on.
     func merge(_ branch: String, mode: MergeMode) {
-        rememberMergeMode(mode)
         perform(.merge(branch, mode))
     }
 
@@ -112,9 +116,15 @@ extension RepositoryStore {
     /// ask about a detached HEAD that would strand commits, otherwise run it and return to the
     /// working copy.
     ///
-    /// The detached-HEAD count is asked *inside* `mutate`, not before it, so it cannot race a
-    /// mutation already queued: by the time it runs, everything before it has finished and
-    /// reloaded.
+    /// Everything the guard decides on is read *inside* `mutate` — the count and the sha HEAD is
+    /// really at — so neither can be stale. The snapshot is up to 300 ms behind the repository
+    /// (the watcher debounces), and "is HEAD detached?" answered from it would be a gate a
+    /// terminal could step around by detaching within that window. Asking git costs one
+    /// `rev-list` on a branch, where the answer is 0 by construction.
+    ///
+    /// If that question cannot be answered, the action does **not** run: the error propagates
+    /// out of `mutate` into the banner, and nothing has moved. A guard whose input failed must
+    /// fail closed.
     private func perform(_ action: PendingBranchAction, confirmed: Bool = false) {
         if let reason = branchSwitchingBlockedReason {
             // Through `mutate` rather than straight into `lastError`: that is what makes the
@@ -124,22 +134,22 @@ extension RepositoryStore {
             return
         }
 
-        let asksFirst = !confirmed && isDetached && action.canStrandCommits
-        let detachedAt = headSha
+        let asksFirst = !confirmed && action.canStrandCommits
         mutate(result: { backend, root -> BranchActionResult in
-            if asksFirst, let detachedAt {
+            if asksFirst {
                 let stranded = try await backend.unreferencedCommitCount(at: root)
-                if stranded > 0 {
-                    return .confirm(
-                        .leaveDetached(
-                            unreferencedCommits: stranded, headSha: detachedAt, then: action))
-                }
+                if stranded > 0 { return .confirm(stranded) }
             }
             return .acted(try await Self.run(action, backend: backend, at: root))
         }, onSuccess: { [self] result in
             switch result {
-            case .confirm(let sheet):
-                activeSheet = sheet
+            case .confirm(let stranded):
+                // The sha comes from the reload `mutate` has just finished, which is newer than
+                // the count above and newer than anything the watcher had seen — not from the
+                // snapshot this action started under. A non-zero count means HEAD is detached
+                // (on a branch it cannot be anything but 0), so there is always a commit here.
+                activeSheet = .leaveDetached(
+                    unreferencedCommits: stranded, headSha: headSha ?? "HEAD", then: action)
             case .acted(let message):
                 // The detail pane may be showing a commit that the new HEAD's log no longer
                 // lists, and after a merge the working copy is what the user needs to look at.
@@ -176,6 +186,8 @@ extension RepositoryStore {
             }
             return "Created \"\(name)\" and switched to it."
         case .merge(let branch, let mode):
+            // Here and nowhere earlier: every gate has let go, and git is about to be run.
+            rememberMergeMode(mode)
             let outcome = try await reporting(.merge, branch) {
                 try await backend.merge(branch, mode: mode, at: root)
             }
@@ -217,9 +229,9 @@ extension RepositoryStore {
     }
 }
 
-/// What `perform` found: either the action ran (with an optional notice), or it needs an answer
-/// first and nothing has happened yet.
+/// What `perform` found: either the action ran (with an optional notice), or this many commits
+/// would be stranded and nothing has happened yet.
 private enum BranchActionResult {
     case acted(String?)
-    case confirm(BranchSheet)
+    case confirm(Int)
 }

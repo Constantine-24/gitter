@@ -61,8 +61,7 @@ extension RepositoryStore {
     /// `MERGE_HEAD` for git to refuse over, but switching away from staged, uncommitted squash
     /// content is exactly as bad an idea.
     var branchSwitchingBlockedReason: String? {
-        guard let operation = operationInProgress else { return nil }
-        return "A \(operation.noun.lowercased()) is in progress. Commit or abort it first."
+        operationInProgress?.movingHeadBlocked
     }
 
     /// Switching *to* `branch` is possible: it is not where we already are, and nothing is in
@@ -85,16 +84,52 @@ extension RepositoryStore {
         branch != currentBranch
     }
 
-    /// The files an abort or an undo-squash would revert: everything with a staged change, plus
-    /// every unresolved conflict.
+    /// The files an abort or an undo-squash would revert, so the sheet can name them instead of
+    /// describing them in the abstract.
     ///
-    /// That is what `--abort` and `reset --merge` actually take — verified in `AbortKeptAndLost`
-    /// — and the sheet lists them by name rather than describing them, because the `.squash`
-    /// precondition rests on `SQUASH_MSG` alone and can outlive the squash it belonged to (see
-    /// `CLIGitBackend+Abort.swift`). A user whose staged work is not the operation's work can
-    /// then see so before agreeing.
+    /// Two lists, because the six aborts do not all take the same thing — the kept/lost table in
+    /// `GitBranchBackend.abort` is the source for both:
+    ///
+    /// - **merge, squash, cherry-pick, revert, `am`**: everything **staged** goes back to HEAD,
+    ///   and so does every conflict resolution, staged or not. An *unstaged* edit to a file the
+    ///   operation did not touch is **kept**, so it is not listed.
+    /// - **rebase**: `git rebase --abort` resets **hard**, so unstaged edits go too — even in
+    ///   files the rebase never touched. Every one of them was made since the rebase began (git
+    ///   refuses to *start* a rebase over a dirty tracked file), so during a rebase this lists
+    ///   every tracked change on either side.
+    ///
+    /// Untracked files are never listed: none of these commands is `git clean`, and every
+    /// untracked file survives all six (verified for all seven starting states).
+    ///
+    /// Naming them matters most for a pending squash, whose precondition rests on `SQUASH_MSG`
+    /// alone and can outlive the squash it belonged to (see `CLIGitBackend+Abort.swift`): a user
+    /// whose staged work is not the squash's work can see so before agreeing.
     var filesRevertedByAbort: [FileStatus] {
-        snapshot?.status.files.filter { $0.staged != nil || $0.unstaged == .unmerged } ?? []
+        guard let files = snapshot?.status.files else { return [] }
+        guard abortAlsoDiscardsUnstagedEdits else {
+            return files.filter { $0.staged != nil || $0.unstaged == .unmerged }
+        }
+        return files.filter { $0.staged != nil || ($0.unstaged != nil && !$0.isUntracked) }
+    }
+
+    /// Whether the abort now offered also throws away edits that were never staged.
+    ///
+    /// True for a rebase alone: `rebase --abort` resets hard where the other five reset the
+    /// index two-way and leave an unstaged edit exactly where the user last saved it (verified
+    /// on git 2.54 from the same starting point — `merge --abort` even *refuses* over one). The
+    /// sheet needs two wordings, and this is which.
+    var abortAlsoDiscardsUnstagedEdits: Bool {
+        operationInProgress == .rebase
+    }
+
+    /// Whether the abort now offered also rewinds commits that are already made.
+    ///
+    /// True for `git am` alone: it is the one operation that has already committed something
+    /// when it stops, and `am --abort` rewinds the branch past those commits. Nothing else here
+    /// moves a branch backwards — every other abort puts HEAD and the refs back exactly where
+    /// they were *when the operation started*, which for those five is where they still are.
+    var abortRewindsCommits: Bool {
+        operationInProgress == .applyingPatches
     }
 
     // MARK: - Remembered merge mode
@@ -109,10 +144,14 @@ extension RepositoryStore {
             .flatMap(MergeMode.init(rawValue:)) ?? .fastForwardIfPossible
     }
 
-    /// Called by `merge(_:mode:)` itself, so the remembered mode is the one that was really
-    /// used and never one that was merely selected in a sheet the user then cancelled.
-    // internal (not private): used by +Branches.swift's `merge(_:mode:)`
-    func rememberMergeMode(_ mode: MergeMode) {
+    /// Recorded the moment the merge is actually attempted, never when one is merely asked for:
+    /// a sheet the user cancelled, a merge refused because something is in progress, and one
+    /// parked behind the detached-HEAD confirmation all leave the remembered mode alone.
+    ///
+    /// `static` because that is where it is called from — the merge's own argument vector, in
+    /// `+Branches`' `run` — and because it touches nothing but `UserDefaults`.
+    // internal (not private): used by +Branches.swift's `run(_:backend:at:)`
+    static func rememberMergeMode(_ mode: MergeMode) {
         UserDefaults.standard.set(mode.rawValue, forKey: Self.mergeModeKey)
     }
 }
