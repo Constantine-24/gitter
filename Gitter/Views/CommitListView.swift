@@ -34,15 +34,25 @@ struct CommitListView: View {
         ScrollViewReader { proxy in
             table(rows)
                 .onChange(of: store.selection) { _, newValue in
-                    guard newValue != selectedInTable else {
-                        selectedInTable = nil
-                        return
-                    }
+                    // Cleared whichever branch is taken, so the flag can only ever suppress
+                    // the one scroll it was set for. Left standing, a selection the table made
+                    // and then lost (a reload that drops the row, a repository swap) would go
+                    // on matching and silently swallow a later jump to the same commit.
+                    let clickedInTable = newValue == selectedInTable
+                    selectedInTable = nil
+                    guard !clickedInTable else { return }
                     // `x: 0` rather than `.center`: the columns are wider than the pane, and
                     // centring on both axes pushed the Summary column off to the left until
                     // only Author was readable. This keeps the leading edge where it is and
                     // moves only vertically. (Near either end of the log the row lands as
                     // close to the middle as the content allows, which is not the middle.)
+                    //
+                    // `anchor: nil` — minimal scroll to make visible — was tried instead, to
+                    // get the "already visible row does not move" case for free and drop the
+                    // flag above. It does not work here: clicking a branch 44 commits back
+                    // scrolled the table part of the way and stopped two rows short of the
+                    // selected commit, which stayed off screen. Screenshotted, twice, with the
+                    // animation given 20 s to settle.
                     withAnimation { proxy.scrollTo(newValue, anchor: UnitPoint(x: 0, y: 0.5)) }
                 }
         }
