@@ -29,6 +29,37 @@ import Testing
         }
     }
 
+    /// The whole-tree path — `gitCoreSources` + `findings` together — really fails when a
+    /// source file contains a violation.
+    ///
+    /// Against a throwaway directory, never the real one: a forbidden flag must never be
+    /// written into `GitCore/Sources`, even for a moment, even reverted. `gitCoreSources`
+    /// takes its root as a parameter precisely so this test can point it somewhere else.
+    @Test func theWholeTreeScanFailsOnAFileThatContainsAViolation() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("force-flag-scan-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try """
+            func createBranch(_ name: String) async throws {
+                var arguments = ["switch", "-c", name]
+                arguments += ["--merge"]
+                _ = try await run(arguments, cwd: root)
+            }
+            """.write(to: directory.appendingPathComponent("Offender.swift"), atomically: true,
+                      encoding: .utf8)
+        try "let clean = [\"switch\", \"--no-guess\", branch]\n"
+            .write(to: directory.appendingPathComponent("Fine.swift"), atomically: true,
+                   encoding: .utf8)
+
+        let sources = try ForceFlagScanner.gitCoreSources(root: directory)
+        #expect(sources.count == 2)
+        #expect(ForceFlagScanner.findings(in: try #require(sources["Fine.swift"])).isEmpty)
+        let findings = ForceFlagScanner.findings(in: try #require(sources["Offender.swift"]))
+        #expect(findings.count == 1)
+        #expect(findings.first?.contains("--merge") == true)
+    }
+
     // MARK: - Proof the scanner is not vacuous
 
     @Test(arguments: [
@@ -46,6 +77,39 @@ import Testing
     ])
     func catchesAForbiddenInvocation(source: String) {
         #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// Three shapes the first version of this scanner missed, each of which the production
+    /// code actually uses: `createBranch` builds its argument vector with `var` + `+=`, and a
+    /// global option before the subcommand would leave the array unclassified. A fragment
+    /// cannot be attributed to a subcommand, so it is checked against the union of the
+    /// dangerous flags instead.
+    @Test(arguments: [
+        #"var a = ["switch", "-c", name]; a += ["--merge"]"#,
+        #"var a = ["switch", "-c", name]; a.append("--merge")"#,
+        #"_ = try await run(["-C", path, "switch", "--merge", b], cwd: root)"#,
+        #"var a = ["switch"]; a += ["--discard-changes"]"#,
+        #"var a = ["switch"]; a.append("-C")"#,
+        #"_ = try await run([repoFlag, "switch", "--ours"], cwd: root)"#,
+    ])
+    func catchesAFlagAddedAwayFromItsSubcommand(source: String) {
+        #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// The fragment rule must not fire on what `CLIGitBackend` already does: `commitDiff`
+    /// builds `["--no-commit-id", "-p", "-U3", "-M", "-r"]`, a leading-flag fragment whose
+    /// `-M` means rename detection, not `branch -M`. That is why `-M` is only dangerous in a
+    /// `branch`-classified array.
+    @Test(arguments: [
+        #"let arguments = ["--no-commit-id", "-p", "-U3", "-M", "-r"]"#,
+        #"let arguments = ["--no-commit-id", "--name-status", "-z", "-r", "-M"]"#,
+        #"var arguments = ["commit", "-q"]; arguments.append("--amend")"#,
+        #"var arguments = ["commit", "-q"]; arguments += ["-F", file.path]"#,
+        #"var arguments = ["switch", "-c", name]; arguments += ["--end-of-options", startPoint]"#,
+    ])
+    func doesNotFireOnTheArgumentFragmentsTheCodeAlreadyBuilds(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
     }
 
     @Test(arguments: [

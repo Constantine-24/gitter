@@ -7,25 +7,42 @@ import Foundation
 /// certain git flags. An absence is invisible in a diff, so the suite enforces it directly.
 ///
 /// How it works: comments and string contents are lexed away first, then every array literal
-/// is read as a candidate argument vector (`["switch", "--detach", rev]`). Elements that are
-/// plain string literals become their value; anything else becomes `nil`, so an array mixing
-/// literals and variables still gets checked for the literals it does contain. Rules are then
-/// applied per git subcommand, because the same token can be safe or fatal depending on it:
-/// `reset --merge` is how a pending squash is undone, while `switch --merge` silently merges
-/// local changes into the branch being switched to.
+/// is read as a candidate argument vector and every `.append("…")` as a one-element addition
+/// to one. Elements that are plain string literals become their value; anything else becomes
+/// `nil`, so an array mixing literals and variables still gets checked for the literals it
+/// does contain. Each vector is then handled one of two ways:
+///
+/// - **Classified** — it begins with a string literal that is not a flag, so that literal is
+///   the git subcommand and the per-subcommand rules apply. This is what lets `reset --merge`
+///   (how a pending squash is undone) and `branch -D` (behind a second confirmation) coexist
+///   with `switch --merge` and `branch -M` being fatal.
+/// - **Fragment** — anything else: `arguments += ["--merge"]`, `arguments.append("--merge")`,
+///   `["-C", dir, "switch", "--merge", b]`, `[repoFlag, "switch", "--ours"]`. These are
+///   exactly the shapes the first version of this scanner walked straight past while
+///   `createBranch` was building its vector with `var` + `+=`. A fragment cannot say which
+///   subcommand it belongs to, so it is checked against `fragmentForbidden`, the union of the
+///   per-subcommand rules.
 ///
 /// Known limits, stated so nobody mistakes this for a proof:
 ///
-/// - It only sees flags written as string literals in an array literal. A flag built at
-///   runtime (`"--" + verb`), read from config, or passed in by a caller is invisible to it.
-/// - It has no idea which array literals actually reach git; a non-git array whose first
-///   element happens to be `"clean"` would be flagged. That false positive is the safe
-///   direction and has not come up.
-/// - It parses text, not Swift. Multi-line (`"""`) and raw (`#"..."#`) string literals are
-///   not understood and could shift the element boundaries; `GitCore/Sources` contains
-///   neither, and the whole-file literal sweep still catches an always-forbidden token
-///   wherever it sits.
-/// - It covers `GitCore/Sources` only — deliberately, since this file's own rule tables would
+/// - **Only literals.** A flag assembled from non-literals is invisible: `"--" + verb`,
+///   `"--\(mode)"`, a `let forceFlag = "--" + "force"`, a flag read from config or passed in
+///   by a caller, a `[String]` built in another function and handed over. This is the real
+///   hole, and nothing short of a Swift parser plus dataflow would close it. Argument vectors
+///   in `GitCore` are written as literals by convention precisely so this scanner can see
+///   them; a reviewer must still read any code that departs from that.
+/// - **`-M` is not in the fragment union**, because `commitDiff`'s legitimate
+///   `["--no-commit-id", "-p", "-U3", "-M", "-r"]` is itself a fragment and `-M` there means
+///   rename detection. `branch -M` is still caught in a classified array. A future
+///   `diff -C`/`diff -B` fragment would false-positive for the mirror-image reason and must
+///   be written with its subcommand first.
+/// - **No idea which arrays reach git**: a non-git array starting with `"clean"`, or one
+///   containing `"--force"` for an unrelated reason, is flagged anyway. That false positive
+///   is the safe direction and has not come up.
+/// - **Text, not Swift.** Multi-line (`"""`) and raw (`#"..."#`) string literals are not
+///   understood and could shift element boundaries; `GitCore/Sources` contains neither, and
+///   the whole-file sweep for always-forbidden tokens still fires wherever they sit.
+/// - **`GitCore/Sources` only** — deliberately, since this file's own rule tables would
 ///   otherwise flag themselves. The app target runs no git commands of its own.
 enum ForceFlagScanner {
     /// A human-readable description of each violation found in `source`, empty when clean.
@@ -38,19 +55,36 @@ enum ForceFlagScanner {
         }
 
         for arguments in argumentArrays(in: source, code: code) {
-            guard let subcommand = arguments.first ?? nil else { continue }
-            let flags = arguments.compactMap { $0 }.dropFirst()
+            let literals = arguments.compactMap { $0 }
+
+            // Classified only when the array begins with a literal that is not itself a flag.
+            // Anything else — `a += ["--merge"]`, `[repoFlag, "switch", "--ours"]`,
+            // `["-C", dir, "switch", "--merge", b]` — is a FRAGMENT: it cannot be attributed
+            // to a subcommand, so it is checked against the union instead.
+            guard let subcommand = arguments.first ?? nil, !subcommand.hasPrefix("-") else {
+                findings += fragmentFindings(literals)
+                continue
+            }
 
             if let reason = forbiddenSubcommands[subcommand] {
                 findings.append("forbidden git subcommand \(subcommand.debugDescription): \(reason)")
                 continue
             }
-            for flag in flags where (forbiddenFlags[subcommand] ?? [:])[flag] != nil {
+            for flag in literals.dropFirst() where (forbiddenFlags[subcommand] ?? [:])[flag] != nil {
                 let reason = forbiddenFlags[subcommand]![flag]!
                 findings.append("forbidden `git \(subcommand) \(flag)`: \(reason)")
             }
         }
+
+        // `arguments.append("--merge")` is the same hazard written a different way.
+        findings += fragmentFindings(appendedLiterals(in: source, code: code))
         return findings
+    }
+
+    private static func fragmentFindings(_ literals: [String]) -> [String] {
+        literals.filter(fragmentForbidden.contains).map {
+            "forbidden flag \($0.debugDescription) in an argument fragment"
+        }
     }
 
     /// Every `.swift` file under `GitCore/Sources`, keyed by path relative to that directory.
@@ -102,137 +136,17 @@ enum ForceFlagScanner {
         "merge": ["-f": "force", "--force": "force"],
     ]
 
-    // MARK: - Lexing
-
-    /// `code` with every comment and every string literal's *contents* replaced by spaces, so
-    /// brackets, commas and quotes inside them cannot shift the parse. Offsets line up with
-    /// `source` byte for byte (UTF-8 scalar for scalar), so a literal's position in `code`
-    /// indexes straight back into `source`.
-    private static func strippingCommentsAndStringContents(_ source: String) -> [Character] {
-        var out: [Character] = []
-        out.reserveCapacity(source.count)
-        var characters = Array(source)
-        var index = 0
-        var blockDepth = 0
-
-        while index < characters.count {
-            let c = characters[index]
-            let next = index + 1 < characters.count ? characters[index + 1] : "\0"
-
-            if blockDepth > 0 {
-                if c == "*", next == "/" { blockDepth -= 1; out.append(contentsOf: "  "); index += 2; continue }
-                if c == "/", next == "*" { blockDepth += 1; out.append(contentsOf: "  "); index += 2; continue }
-                out.append(c == "\n" ? "\n" : " ")
-                index += 1
-                continue
-            }
-            if c == "/", next == "*" { blockDepth = 1; out.append(contentsOf: "  "); index += 2; continue }
-            if c == "/", next == "/" {
-                while index < characters.count, characters[index] != "\n" { out.append(" "); index += 1 }
-                continue
-            }
-            if c == "\"" {
-                // Keep the quotes (so literals stay findable) and blank the contents.
-                out.append("\"")
-                index += 1
-                while index < characters.count {
-                    let s = characters[index]
-                    if s == "\\", index + 1 < characters.count {
-                        out.append(contentsOf: "  ")
-                        index += 2
-                        continue
-                    }
-                    if s == "\"" { out.append("\""); index += 1; break }
-                    out.append(s == "\n" ? "\n" : " ")
-                    index += 1
-                }
-                continue
-            }
-            out.append(c)
-            index += 1
-        }
-        characters = []
-        return out
-    }
-
-    /// Every string literal in the file as (offset in `source`, value).
-    private static func literals(in source: String, code: [Character]) -> [(Int, String)] {
-        let raw = Array(source)
-        var result: [(Int, String)] = []
-        var index = 0
-        while index < code.count {
-            guard code[index] == "\"" else { index += 1; continue }
-            var end = index + 1
-            while end < code.count, code[end] != "\"" { end += 1 }
-            guard end < code.count else { break }
-            result.append((index, String(raw[(index + 1)..<end])))
-            index = end + 1
-        }
-        return result
-    }
-
-    /// Each `[...]` array literal's top-level elements: the literal's value, or nil for an
-    /// element that is not a plain string literal.
-    private static func argumentArrays(in source: String, code: [Character]) -> [[String?]] {
-        let raw = Array(source)
-        var result: [[String?]] = []
-
-        for open in code.indices where code[open] == "[" {
-            var depth = 0
-            var close = open
-            var found = false
-            while close < code.count {
-                if "[({".contains(code[close]) { depth += 1 }
-                if "])}".contains(code[close]) {
-                    depth -= 1
-                    if depth == 0 { found = true; break }
-                }
-                close += 1
-            }
-            guard found, close > open + 1 else { continue }
-            result.append(elements(raw: raw, code: code, from: open + 1, to: close))
-        }
-        return result
-    }
-
-    private static func elements(
-        raw: [Character], code: [Character], from start: Int, to end: Int
-    ) -> [String?] {
-        var elements: [String?] = []
-        var current: [Character] = []
-        var currentLiteral: String?
-        var literalCount = 0
-        var depth = 0
-        var index = start
-
-        func flush() {
-            let trimmed = String(current).trimmingCharacters(in: .whitespacesAndNewlines)
-            elements.append(literalCount == 1 && trimmed.hasPrefix("\"") && trimmed.hasSuffix("\"")
-                ? currentLiteral : nil)
-            current = []
-            currentLiteral = nil
-            literalCount = 0
-        }
-
-        while index < end {
-            let c = code[index]
-            if "[({".contains(c) { depth += 1 }
-            if "])}".contains(c) { depth -= 1 }
-            if c == "," && depth == 0 { flush(); index += 1; continue }
-            if c == "\"" {
-                var stop = index + 1
-                while stop < end, code[stop] != "\"" { stop += 1 }
-                guard stop < end else { break }
-                currentLiteral = String(raw[(index + 1)..<stop])
-                literalCount += 1
-                current += ["\"", "\""]
-                index = stop + 1
-                continue
-            }
-            current.append(c)
-            index += 1
-        }
-        flush()
-        return elements
-    }
+    /// What a *fragment* is checked against: the union of every table above, because a
+    /// fragment by definition cannot say which subcommand it will be appended to.
+    ///
+    /// `-M` is the one deliberate omission. `CLIGitBackend.commitDiff` and `commitFiles`
+    /// build `["--no-commit-id", "-p", "-U3", "-M", "-r"]` — a leading-flag fragment whose
+    /// `-M` is `diff-tree`'s rename detection, nothing like `branch -M`. Including it would
+    /// mean a permanent false positive on existing, correct code, so `-M` stays dangerous
+    /// only in a `branch`-classified array. Same reasoning would apply to a future
+    /// `diff -C`/`diff -B` fragment: those two ARE in the union today (nothing in
+    /// `GitCore/Sources` uses them), and adding such a fragment would mean spelling the array
+    /// with its subcommand first so it gets classified.
+    static let fragmentForbidden: Set<String> =
+        Set(forbiddenFlags.values.flatMap(\.keys)).union(alwaysForbidden).subtracting(["-M"])
 }
