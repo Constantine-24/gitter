@@ -19,12 +19,14 @@ final class RepositoryStore {
     var selection: Selection = .workingCopy
     var selectedPath: String?
     private(set) var detailFiles: [FileStatus] = []
-    private(set) var diff: [FileDiff] = []
+    // internal (not private(set)): used by RepositoryStore+Detail.swift
+    var diff: [FileDiff] = []
     /// Which side the loaded `diff` came from. `stagedView` flips the instant the user picks a
     /// row, while the matching `git diff` is still running, so for the time in between the two
     /// disagree. Anything that has to describe the diff actually on screen — the hunk buttons'
     /// labels, the direction their patch is applied in — reads this instead of `stagedView`.
-    private(set) var diffIsStaged = false
+    // internal (not private(set)): used by RepositoryStore+Detail.swift
+    var diffIsStaged = false
     var stagedView = false {
         didSet {
             guard stagedView != oldValue else { return }
@@ -36,7 +38,8 @@ final class RepositoryStore {
     /// True while a stage/unstage/commit is running; mutations are serialized behind it and
     /// the UI disables its controls. Claimed and released through `beginMutation()` /
     /// `finishMutation(generation:failure:)`, since the staging extension is in another file.
-    private(set) var isMutating = false
+    // internal (not private(set)): used by RepositoryStore+Errors.swift
+    var isMutating = false
 
     /// The commit message being written. Stored properties cannot live in an extension, so it
     /// is declared here even though everything that drives it is in `RepositoryStore+Staging`.
@@ -50,19 +53,25 @@ final class RepositoryStore {
 
     /// True while `lastError` holds a message a mutation put there. Such a message outlives
     /// the reloads the mutation itself provokes; see `loadSnapshot()`.
-    private var errorIsSticky = false
+    // internal (not private): used by RepositoryStore+Refresh.swift, +Detail.swift and +Errors.swift
+    var errorIsSticky = false
 
     let backend: any GitBackend & GitWorkingCopyBackend
     private let gitPath: String
 
     private var watcher: RepositoryWatcher?
-    private var refreshTask: Task<Void, Never>?
-    private var detailTask: Task<Void, Never>?
-    private var diffTask: Task<Void, Never>?
+    // internal (not private): used by RepositoryStore+Refresh.swift
+    var refreshTask: Task<Void, Never>?
+    // internal (not private): used by RepositoryStore+Detail.swift
+    var detailTask: Task<Void, Never>?
+    // internal (not private): used by RepositoryStore+Detail.swift
+    var diffTask: Task<Void, Never>?
     /// The most recently scheduled snapshot load; new ones chain behind it. See `refresh()`.
-    private var lastRefresh: Task<Void, Never>?
+    // internal (not private): used by RepositoryStore+Refresh.swift
+    var lastRefresh: Task<Void, Never>?
     /// True while a chained load exists that has not begun reading git yet.
-    private var refreshIsQueued = false
+    // internal (not private): used by RepositoryStore+Refresh.swift
+    var refreshIsQueued = false
 
     private static let lastRepositoryPathKey = "lastRepositoryPath"
 
@@ -175,87 +184,6 @@ final class RepositoryStore {
         open(URL(fileURLWithPath: path))
     }
 
-    // MARK: - Debounced refresh
-
-    private func scheduleRefresh() {
-        refreshTask?.cancel()
-        refreshTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled else { return }
-            await self?.refresh()
-        }
-    }
-
-    // MARK: - Refresh
-
-    /// Loads a fresh snapshot, returning only once a load that *started after this call* has
-    /// finished. `mutate` depends on that: a load already in flight may have read git before
-    /// the mutation landed, so sharing it could hand back a pre-mutation snapshot.
-    ///
-    /// Loads never overlap — each is chained behind the previous one. A load that is chained
-    /// but has not begun reading git yet is shared by every further caller, which is the
-    /// coalescing the file-system watcher needs (many events, one reload). The flip side of
-    /// that chaining: nothing reachable from inside a chained load may `await refresh()`, as
-    /// it would then be waiting on itself forever.
-    func refresh() async {
-        guard root != nil else { return }
-        await chainedRefresh().value
-    }
-
-    private func chainedRefresh() -> Task<Void, Never> {
-        if refreshIsQueued, let queued = lastRefresh { return queued }
-        let previous = lastRefresh
-        refreshIsQueued = true
-        let run = Task { @MainActor [weak self] in
-            await previous?.value
-            guard let self else { return }
-            // Reading git starts now, so anything that happens from here on is invisible to
-            // this load and later callers have to chain behind it instead of sharing it.
-            refreshIsQueued = false
-            await loadSnapshot()
-        }
-        lastRefresh = run
-        return run
-    }
-
-    private func loadSnapshot() async {
-        guard let root else { return }
-        let capturedGeneration = generation
-        isLoading = true
-        defer { isLoading = false }
-
-        do {
-            let newSnapshot = try await backend.snapshot(at: root)
-            // The repository may have been switched (via `open`) while this snapshot was in
-            // flight; a snapshot from before that must never overwrite the new state.
-            guard generation == capturedGeneration else { return }
-            snapshot = newSnapshot
-            // A mutation's own failure outranks the reload it provokes. git writes inside
-            // `.git` before it fails — a rejected commit has already written COMMIT_EDITMSG —
-            // so the watcher fires and this successful snapshot would otherwise erase the
-            // hook's output a fraction of a second after the user saw it.
-            if !errorIsSticky {
-                lastError = nil
-            }
-
-            // Keep a commit selection even when the commit isn't in the loaded window (the
-            // log is capped): the row simply isn't highlighted. Only an empty repository has
-            // no commit the selection could ever refer to. A changed root is handled by
-            // `open()`, which resets the selection itself.
-            if newSnapshot.commits.isEmpty {
-                selection = .workingCopy
-            }
-        } catch {
-            guard generation == capturedGeneration else { return }
-            // A failed load is newer, real information about the repository, so it replaces
-            // even a mutation's message — and stops being protected from the next reload.
-            lastError = Self.describe(error)
-            errorIsSticky = false
-        }
-
-        loadDetail()
-    }
-
     // MARK: - Selection
 
     func select(_ newSelection: Selection) {
@@ -269,179 +197,30 @@ final class RepositoryStore {
         loadDiff()
     }
 
-    // MARK: - Detail loading
+    // MARK: - State mutators for other files
 
-    /// Cancels any in-flight detail load and starts a fresh one for the current
-    /// `root`/`selection`. Only the most recently started task is allowed to write
-    /// `detailFiles`/`selectedPath`/`lastError`: every earlier one is cancelled, and this one
-    /// re-checks that `selection` hasn't changed again before it lands.
-    private func loadDetail() {
-        detailTask?.cancel()
+    /// Narrow setters for state whose `private(set)` is worth keeping even though the code that
+    /// updates it lives in another file — see the file's own doc comment for why. Each pairs
+    /// with exactly the callers named below; nothing else should call these.
 
-        guard let root, snapshot != nil else {
-            detailFiles = []
-            loadDiff()
-            return
-        }
-
-        let capturedSelection = selection
-        let capturedGeneration = generation
-
-        detailTask = Task {
-            var files: [FileStatus] = []
-            var loadError: Error?
-
-            switch capturedSelection {
-            case .workingCopy:
-                files = self.snapshot?.status.files ?? []
-            case .commit(let sha):
-                do {
-                    files = try await self.backend.commitFiles(at: root, sha: sha)
-                } catch {
-                    loadError = error
-                }
-            }
-
-            guard !Task.isCancelled,
-                self.generation == capturedGeneration,
-                self.selection == capturedSelection
-            else { return }
-
-            if let loadError {
-                self.errorIsSticky = false
-                switch capturedSelection {
-                case .commit:
-                    // The selected commit no longer exists (e.g. its branch was rebased or
-                    // force-pushed away). Fall back to the working copy instead of leaving the
-                    // detail pane stuck on a dead selection; the working copy reload never calls
-                    // `commitFiles`, so this cannot loop.
-                    self.selection = .workingCopy
-                    self.lastError = "That commit is no longer in the repository."
-                    self.loadDetail()
-                    return
-                case .workingCopy:
-                    // Unreachable today (the working-copy branch above never throws); kept so
-                    // this switch stays exhaustive if that ever changes.
-                    self.lastError = Self.describe(loadError)
-                    self.detailFiles = []
-                }
-            } else {
-                self.detailFiles = files
-            }
-
-            if let selectedPath = self.selectedPath, !self.detailFiles.contains(where: { $0.path == selectedPath }) {
-                self.selectedPath = nil
-            }
-
-            self.loadDiff()
-        }
+    /// internal (not private(set) write): used by RepositoryStore+Refresh.swift
+    func setSnapshot(_ newSnapshot: RepoSnapshot?) {
+        snapshot = newSnapshot
     }
 
-    private func loadDiff() {
-        diffTask?.cancel()
-
-        guard let root, let selectedPath else {
-            setDiff([], staged: stagedView)
-            return
-        }
-
-        let capturedSelection = selection
-        let capturedPath = selectedPath
-        let capturedStagedView = stagedView
-        let capturedGeneration = generation
-
-        diffTask = Task {
-            var result: [FileDiff] = []
-            var loadError: Error?
-
-            do {
-                switch capturedSelection {
-                case .workingCopy:
-                    result = try await self.backend.workingCopyDiff(
-                        at: root, path: capturedPath, staged: capturedStagedView
-                    )
-                case .commit(let sha):
-                    result = try await self.backend.commitDiff(at: root, sha: sha, path: capturedPath)
-                }
-            } catch {
-                loadError = error
-            }
-
-            guard !Task.isCancelled,
-                  self.generation == capturedGeneration,
-                  self.selection == capturedSelection,
-                  self.selectedPath == capturedPath
-            else { return }
-
-            if let loadError {
-                self.lastError = Self.describe(loadError)
-                self.errorIsSticky = false
-                self.setDiff([], staged: capturedStagedView)
-            } else {
-                self.setDiff(result, staged: capturedStagedView)
-            }
-        }
+    /// internal (not private(set) write): used by RepositoryStore+Refresh.swift
+    func setLoading(_ value: Bool) {
+        isLoading = value
     }
 
-    /// The one place `diff` is written, so `diffIsStaged` can never drift from it.
-    private func setDiff(_ newDiff: [FileDiff], staged: Bool) {
-        diff = newDiff
-        diffIsStaged = staged
+    /// internal (not private(set) write): used by RepositoryStore+Detail.swift
+    func setDetailFiles(_ files: [FileStatus]) {
+        detailFiles = files
     }
 
-    // MARK: - Errors
-
-    /// Clears the currently displayed error (the banner's dismiss button).
-    func dismissError() {
-        lastError = nil
-        errorIsSticky = false
-    }
-
-    // MARK: - Mutation bookkeeping
-
-    /// Claims the store for one git write, returning the generation to hand back to
-    /// `finishMutation`, or nil when it cannot be claimed: no repository, or a mutation is
-    /// already running (mutations are serialized, which is also what disables the buttons).
-    ///
-    /// This pair exists so the setters of `isMutating` and `lastError` can stay private while
-    /// the staging API lives in another file, where `private(set)` would not reach.
-    func beginMutation() -> Int? {
-        guard root != nil, !isMutating else { return nil }
-        isMutating = true
-        // A new attempt supersedes the last one's message: it has been read or ignored by
-        // now, and nothing should keep protecting it from the reloads that follow.
-        if errorIsSticky {
-            lastError = nil
-            errorIsSticky = false
-        }
-        return generation
-    }
-
-    /// Releases the claim `beginMutation()` made, showing `failure` in the banner if there was
-    /// one. A stale generation means `open()` has already reset everything this would write.
-    func finishMutation(generation: Int, failure: Error?) {
-        guard self.generation == generation else { return }
-        if let failure {
-            lastError = Self.describe(failure)
-            // Protected from the reloads this mutation set off — its own, and the
-            // watcher-driven one that git's writes inside `.git` trigger in parallel.
-            errorIsSticky = true
-        }
-        isMutating = false
-    }
-
-    private static func describe(_ error: Error) -> String {
-        if let gitError = error as? GitError {
-            switch gitError {
-            case .commandFailed(let exitCode, let stderr):
-                let trimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                return trimmed.isEmpty ? "git exited with code \(exitCode)" : stderr
-            case .launchFailed(let path):
-                return "Failed to launch: \(path)"
-            case .emptyCommitMessage:
-                return "Enter a commit message."
-            }
-        }
-        return error.localizedDescription
+    /// internal (not private(set) write): used by RepositoryStore+Refresh.swift, +Detail.swift
+    /// and +Errors.swift
+    func setError(_ message: String?) {
+        lastError = message
     }
 }
