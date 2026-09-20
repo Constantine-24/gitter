@@ -86,9 +86,14 @@ enum ForceFlagScanner {
                 findings.append("forbidden git subcommand \(subcommand.debugDescription): \(reason)")
                 continue
             }
-            for flag in literals.dropFirst() where (forbiddenFlags[subcommand] ?? [:])[flag] != nil {
-                let reason = forbiddenFlags[subcommand]![flag]!
-                findings.append("forbidden `git \(subcommand) \(flag)`: \(reason)")
+            for flag in literals.dropFirst() {
+                if let reason = (forbiddenFlags[subcommand] ?? [:])[flag] {
+                    findings.append("forbidden `git \(subcommand) \(flag)`: \(reason)")
+                } else if let allowed = flagsAllowedOnlyAfter[flag], !allowed.contains(subcommand) {
+                    findings.append(
+                        "forbidden `git \(subcommand) \(flag)`: \(flag) is allowed only after "
+                            + allowed.sorted().joined(separator: ", "))
+                }
             }
         }
 
@@ -117,8 +122,14 @@ enum ForceFlagScanner {
     // MARK: - The rules
 
     /// Tokens that are fatal wherever they appear, whatever command they belong to.
+    ///
+    /// `--quit` and `--skip` are the sequencer's other two exits and neither is ever what
+    /// Gitter's "Abort" means: `--quit` drops the cherry-pick/revert/rebase state while leaving
+    /// its half-applied result staged (an operation the user can no longer see, let alone
+    /// abort), and `--skip` throws away the commit git stopped on.
     static let alwaysForbidden: Set<String> = [
         "--force", "-f", "--force-with-lease", "--discard-changes", "--hard", "--ignore-unmerged",
+        "--quit", "--skip",
     ]
 
     /// Subcommands Gitter must never run at all. `checkout` is here because `git checkout --
@@ -158,6 +169,24 @@ enum ForceFlagScanner {
         ],
     ]
 
+    /// Flags that are safe **only** after the subcommands listed, and dangerous everywhere
+    /// else. This is the allow-list this milestone's abort work needs, written positionally so
+    /// that permitting `git merge --abort` did not quietly permit `git switch --abort` too.
+    ///
+    /// - `--abort` undoes the operation it belongs to, and only those five subcommands have
+    ///   one. After anything else it is at best not a flag git knows.
+    /// - `--merge` is how a pending squash is undone (`git reset --merge`). After `switch` it
+    ///   silently merges local changes into a checkout, and after `rebase` it selects a backend
+    ///   Gitter does not choose for the user. `switch` keeps its own entry in `forbiddenFlags`
+    ///   as well, for the better message; the two never both fire on one element.
+    ///
+    /// Every key here is also part of `fragmentForbidden`: a fragment cannot say which
+    /// subcommand it will be appended to, so it cannot prove it is one of the allowed ones.
+    static let flagsAllowedOnlyAfter: [String: Set<String>] = [
+        "--abort": ["merge", "cherry-pick", "revert", "rebase", "am"],
+        "--merge": ["reset"],
+    ]
+
     /// What a *fragment* is checked against: the union of every table above, because a
     /// fragment by definition cannot say which subcommand it will be appended to.
     ///
@@ -170,5 +199,8 @@ enum ForceFlagScanner {
     /// `GitCore/Sources` uses them), and adding such a fragment would mean spelling the array
     /// with its subcommand first so it gets classified.
     static let fragmentForbidden: Set<String> =
-        Set(forbiddenFlags.values.flatMap(\.keys)).union(alwaysForbidden).subtracting(["-M"])
+        Set(forbiddenFlags.values.flatMap(\.keys))
+        .union(alwaysForbidden)
+        .union(flagsAllowedOnlyAfter.keys)
+        .subtracting(["-M"])
 }

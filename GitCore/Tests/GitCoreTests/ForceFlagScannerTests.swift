@@ -74,9 +74,38 @@ import Testing
         #"_ = try await run(["clean", "-d", path], cwd: root)"#,
         #"_ = try await run(["stash", "push"], cwd: root)"#,
         #"_ = try await run(["restore", "--worktree", "--", path], cwd: root)"#,
+        // `--quit` leaves the sequencer's state behind instead of undoing it, and `--skip`
+        // throws away the commit git stopped on. Neither is ever what Gitter's "Abort" means.
+        #"_ = try await run(["cherry-pick", "--quit"], cwd: root)"#,
+        #"_ = try await run(["rebase", "--skip"], cwd: root)"#,
     ])
     func catchesAForbiddenInvocation(source: String) {
         #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// The allow-list this task added is *positional*: `--abort` is only ever safe after the
+    /// five subcommands that have one, and `--merge` only after `reset` (undoing a pending
+    /// squash). Anywhere else both are a way to lose work — `git switch --merge` merges local
+    /// changes into a checkout silently, `git reset --abort` is not even a command — so the
+    /// scanner must not have been widened into "`--abort` and `--merge` are fine now".
+    ///
+    /// Neither flag is in `alwaysForbidden` (it asserts so below), so nothing here can pass by
+    /// way of the whole-file literal sweep: only the per-subcommand rule can catch these.
+    @Test(arguments: [
+        (#"_ = try await run(["switch", "--abort"], cwd: root)"#, "--abort"),
+        (#"_ = try await run(["reset", "--abort"], cwd: root)"#, "--abort"),
+        (#"_ = try await run(["branch", "--abort", name], cwd: root)"#, "--abort"),
+        (#"var a = ["merge"]; a += ["--abort"]"#, "--abort"),
+        (#"_ = try await run(["rebase", "--merge", upstream], cwd: root)"#, "--merge"),
+        (#"_ = try await run(["merge", "--merge"], cwd: root)"#, "--merge"),
+        (#"_ = try await run(["cherry-pick", x ? "--abort" : "--merge"], cwd: root)"#, "--merge"),
+    ])
+    func catchesARestrictedFlagAfterTheWrongSubcommand(source: String, flag: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains(flag) }, "\(findings) should name \(flag)")
+        #expect(!ForceFlagScanner.alwaysForbidden.contains(flag),
+                "\(flag) is always forbidden, so this case would pass without the positional rule")
     }
 
     /// Three shapes the first version of this scanner missed, each of which the production
@@ -155,6 +184,9 @@ import Testing
         #"_ = try await run(["branch", "-D", name], cwd: root)"#,
         #"_ = try await run(["merge", "--abort"], cwd: root)"#,
         #"_ = try await run(["cherry-pick", "--abort"], cwd: root)"#,
+        #"_ = try await run(["revert", "--abort"], cwd: root)"#,
+        #"_ = try await run(["rebase", "--abort"], cwd: root)"#,
+        #"_ = try await run(["am", "--abort"], cwd: root)"#,
         #"_ = try await run(["reset", "--merge"], cwd: root)"#,
         #"_ = try await run(["switch", "--no-guess", "--end-of-options", branch], cwd: root)"#,
         #"_ = try await run(["switch", "--detach", "--end-of-options", revision], cwd: root)"#,
