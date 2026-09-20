@@ -26,8 +26,10 @@ struct WorkingCopyFileList: View {
                 files: store.stagedFiles,
                 actionTitle: "Unstage All",
                 placeholder: "Nothing staged",
-                // `git reset` would drop `MERGE_HEAD` and end the merge behind the user's back.
-                actionDisabled: store.hasUnmergedFiles,
+                // `git reset` would drop `MERGE_HEAD` and end the merge behind the user's
+                // back — and it does so just as readily once every conflict is resolved.
+                actionDisabled: store.operationInProgress != nil,
+                actionHelp: store.operationInProgress?.unstagingBlockedHelp,
                 action: { store.unstageAll() }
             )
             section(
@@ -71,6 +73,7 @@ struct WorkingCopyFileList: View {
         actionTitle: String,
         placeholder: String,
         actionDisabled: Bool = false,
+        actionHelp: String? = nil,
         action: @escaping () -> Void
     ) -> some View {
         Section {
@@ -91,6 +94,9 @@ struct WorkingCopyFileList: View {
                 Button(actionTitle, action: action)
                     .buttonStyle(.borderless)
                     .disabled(files.isEmpty || store.isMutating || actionDisabled)
+                    // A disabled button still shows its tooltip, which is the only place the
+                    // reason for the gate is written down next to the control itself.
+                    .help(actionHelp ?? "")
             }
         }
     }
@@ -137,7 +143,7 @@ struct WorkingCopyFileList: View {
             }
             .buttonStyle(.borderless)
             .disabled(store.isMutating || blocked)
-            .help(blocked ? "Resolve the conflict, then stage the file" : (staged ? "Unstage" : "Stage"))
+            .help(help(staged: staged, blocked: blocked))
             .accessibilityLabel(staged ? "Unstage \(file.path)" : "Stage \(file.path)")
 
             ChangeBadge(kind: staged ? file.staged : file.unstaged)
@@ -160,11 +166,23 @@ struct WorkingCopyFileList: View {
 
     // MARK: - Acting on a row
 
-    /// Whether this row's button moves the file in a direction that would destroy conflict
-    /// state. Only the staged side is blocked: staging an unmerged file with "+" is how a
+    /// Whether this row's button moves the file in a direction that would damage the
+    /// operation under way. Only the staged side is blocked: staging with "+" is how a
     /// resolution is recorded, which is exactly what the user should be able to do here.
+    ///
+    /// Keyed on the operation rather than on the file's own conflict state: `git restore
+    /// --staged` on a file whose conflict has just been resolved throws that resolution away,
+    /// and the file no longer looks unmerged at all.
     private func isBlocked(_ file: FileStatus, staged: Bool) -> Bool {
-        staged && store.isUnmerged(file)
+        staged && (store.operationInProgress != nil || store.isUnmerged(file))
+    }
+
+    /// The fallback covers only the impossible case of an unmerged file with no operation
+    /// reported — a conflict always belongs to one.
+    private func help(staged: Bool, blocked: Bool) -> String {
+        guard blocked else { return staged ? "Unstage" : "Stage" }
+        return store.operationInProgress?.unstagingBlockedHelp
+            ?? "Resolve the conflict, then stage the file"
     }
 
     private func toggle(_ file: FileStatus, staged: Bool) {

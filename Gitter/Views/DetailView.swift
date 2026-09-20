@@ -26,9 +26,9 @@ struct DetailView: View {
         switch store.selection {
         case .workingCopy:
             VStack(alignment: .leading, spacing: 0) {
-                // Why half the list's buttons are disabled. Sits above the list rather than
-                // inside it so the list itself stays a plain `List` of sections.
-                if store.hasUnmergedFiles { mergeNote }
+                // Sits above the list rather than inside it so the list itself stays a plain
+                // `List` of sections.
+                if let operation = store.operationInProgress { note(for: operation) }
                 // The composer is sized by its content; every remaining point of the top half
                 // goes to the file list.
                 WorkingCopyFileList()
@@ -54,8 +54,11 @@ struct DetailView: View {
         }
     }
 
-    private var mergeNote: some View {
-        Text("Merge in progress — resolve conflicts in your editor, then stage the files.")
+    /// Why half the list's buttons are off, and what to do instead. The wording changes once
+    /// the last conflict is staged: nothing is unmerged any more, but the operation is still
+    /// open and only a commit ends it.
+    private func note(for operation: RepositoryOperation) -> some View {
+        Text(operation.note(hasConflicts: store.hasUnmergedFiles))
             .font(.callout)
             .foregroundStyle(.secondary)
             .lineLimit(1)
