@@ -11,6 +11,10 @@ final class CommitDraft {
     var body = ""
     var amend = false
 
+    /// What `prefill` last put in the two fields, kept so that switching amending off again can
+    /// tell "the message Gitter offered" from "the message the user wrote".
+    private(set) var prefilled: (subject: String, body: String)?
+
     /// Subject and body as one message: a blank line between them, and no trailing paragraph
     /// at all when the body is empty. Both sides are trimmed, so stray whitespace from the
     /// text fields never reaches the commit.
@@ -29,6 +33,7 @@ final class CommitDraft {
         subject = ""
         body = ""
         amend = false
+        prefilled = nil
     }
 
     /// Offers an existing commit message for editing (amending HEAD), split into subject and
@@ -48,5 +53,19 @@ final class CommitDraft {
             lines.removeFirst()
         }
         body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        prefilled = (subject, body)
+    }
+
+    /// Takes back a prefill the user never touched — what turning amending off should do.
+    ///
+    /// Anything typed over it outranks the offer and stays: a draft is the user's text, and
+    /// unticking a checkbox is not a good enough reason to throw writing away. Comparing
+    /// against what was actually offered is the whole point of remembering it; "non-empty"
+    /// would not tell the two cases apart.
+    func clearPrefillIfUntouched() {
+        guard let prefilled, subject == prefilled.subject, body == prefilled.body else { return }
+        subject = ""
+        body = ""
+        self.prefilled = nil
     }
 }

@@ -184,10 +184,11 @@ extension RepositoryStore {
     /// Turns amending on or off, prefilling an untouched draft with HEAD's message.
     ///
     /// Not routed through `mutate`: it writes no git state, and the draft has to stay editable
-    /// while a mutation is in flight. Turning amend back off keeps the prefilled message,
-    /// which the user may have edited by then.
+    /// while a mutation is in flight. Turning amend back off takes the prefill away again,
+    /// but only while it is still untouched — see `clearPrefillIfUntouched`.
     func setAmend(_ on: Bool) {
         draft.amend = on
+        if !on { draft.clearPrefillIfUntouched() }
         guard on, draft.subject.isEmpty, draft.body.isEmpty, let root else { return }
         let generation = self.generation
         Task {
