@@ -22,17 +22,22 @@
     ///                                            end — or that many times, 200 ms apart
     extension DebugLaunchHooks {
 
+        /// The variable names, in one place: `wantsEvents` and `runEvents` have to agree about
+        /// them, and a typo in either would silently do nothing.
+        private enum Variable {
+            static let click = "GITTER_DEBUG_CLICK"
+            static let keys = "GITTER_DEBUG_KEYS"
+            static let typing = "GITTER_DEBUG_TYPE"
+            static let dump = "GITTER_DEBUG_DUMP_RESPONDER"
+            static let all = [click, keys, typing, dump]
+        }
+
         /// Whether any of the event variables is set, and `run` therefore has work to do even
         /// without a selection to make.
         static var wantsEvents: Bool {
             let env = ProcessInfo.processInfo.environment
-            return eventVariables.contains { env[$0] != nil }
+            return Variable.all.contains { env[$0] != nil }
         }
-
-        private static let eventVariables = [
-            "GITTER_DEBUG_CLICK", "GITTER_DEBUG_KEYS", "GITTER_DEBUG_TYPE",
-            "GITTER_DEBUG_DUMP_RESPONDER",
-        ]
 
         /// Clicks, then keys, then typing, then the dump — in that order, because each step is
         /// usually the setup for the next (click a row, press space, see where focus went).
@@ -51,26 +56,26 @@
             }
             try? await Task.sleep(for: .milliseconds(300))
 
-            let dump = env["GITTER_DEBUG_DUMP_RESPONDER"]
-            for spec in env["GITTER_DEBUG_CLICK", default: ""].split(separator: ";") {
+            let dump = env[Variable.dump]
+            for spec in env[Variable.click, default: ""].split(separator: ";") {
                 // `type=…` as a step, not only the `GITTER_DEBUG_TYPE` variable, because what
                 // typing is usually for is what happens *after* it — untick a box, press a
-                // button — and that needs the two ordered against each other.
-                if let text = spec.split(separator: "=", maxSplits: 1).last, spec.hasPrefix("type=")
-                {
-                    for character in text { type(character, in: window) }
+                // button — and that needs the two ordered against each other. `type=` with
+                // nothing after it types nothing, rather than typing the word.
+                if spec.hasPrefix(typeStep) {
+                    for character in spec.dropFirst(typeStep.count) { type(character, in: window) }
                 } else {
                     click(String(spec), in: window)
                 }
                 try? await Task.sleep(for: .milliseconds(400))
                 if dump != nil { dumpResponders(of: window, after: "\(spec)") }
             }
-            for name in env["GITTER_DEBUG_KEYS", default: ""].split(separator: ",") {
+            for name in env[Variable.keys, default: ""].split(separator: ",") {
                 press(String(name), in: window)
                 try? await Task.sleep(for: .milliseconds(400))
                 if dump != nil { dumpResponders(of: window, after: "key \(name)") }
             }
-            for character in env["GITTER_DEBUG_TYPE", default: ""] {
+            for character in env[Variable.typing, default: ""] {
                 type(character, in: window)
                 try? await Task.sleep(for: .milliseconds(120))
             }
@@ -84,6 +89,9 @@
                 }
             }
         }
+
+        /// The prefix that turns a click-script step into a typing step.
+        private static let typeStep = "type="
 
         // MARK: - Clicking
 

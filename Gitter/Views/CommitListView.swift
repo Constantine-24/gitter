@@ -16,8 +16,9 @@ enum CommitRow: Identifiable, Hashable {
 
 struct CommitListView: View {
     @Environment(RepositoryStore.self) private var store
-    /// See `WorkingCopyFileList.isFocused`: a click selects a row without making the table the
-    /// window's first responder, which leaves the row drawn in the unemphasized grey.
+    /// Makes the table claim keyboard focus when it is clicked, so its selection draws in the
+    /// system highlight colour rather than the unemphasized grey. Defensive and undiagnosed,
+    /// exactly as in `WorkingCopyFileList.isFocused` — see the reasoning there.
     @FocusState private var isFocused: Bool
 
     var body: some View {

@@ -10,10 +10,12 @@ import SwiftUI
 struct WorkingCopyFileList: View {
     @Environment(RepositoryStore.self) private var store
 
-    /// Clicking a row selects it but does *not* make the list the window's first responder —
-    /// the window itself keeps focus, so the row draws in the unemphasized grey and
-    /// `.onKeyPress(.space)` never fires. Claiming focus on every click through the list is
-    /// what puts it right, a click on the already-selected row included.
+    /// Makes the list claim keyboard focus whenever it is clicked.
+    ///
+    /// Defensive, not a diagnosed fix: after a real click the user saw the row in the
+    /// unemphasized grey and Space doing nothing, both of which follow from the list not
+    /// holding focus — but *why* was never established, since in-process clicks fail to focus
+    /// a stock SwiftUI list too. Delete this if the real cause turns up.
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -39,8 +41,8 @@ struct WorkingCopyFileList: View {
         }
         .listStyle(.inset)
         .focused($isFocused)
-        // Simultaneous, so it rides along with the list's own click handling rather than
-        // replacing it: the row still selects, and `primaryAction` still gets its double click.
+        // Simultaneous so the row still selects and `primaryAction` still gets its double
+        // click; a gesture, since a click on the selected row never reaches the setter below.
         .simultaneousGesture(TapGesture().onEnded { isFocused = true })
         // Staging the selected file moves it to the other section, which deletes the row the
         // selection points at. Both lists are watched because either can be the one the

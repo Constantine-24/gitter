@@ -106,7 +106,7 @@ never be put on screen from a script, and a focus bug can never be reproduced.
 | `GITTER_DEBUG_CLICK=x,y[:2\|:shift][;…]` | click those points, in points from the top-left of the window's content area; `:2` double-clicks, `:shift` shift-clicks, and a `type=text` step types between two clicks |
 | `GITTER_DEBUG_KEYS=space,return,cmd+return` | then press those keys (`space`, `return`, `tab`, `escape`, `up`, `down`, with `cmd+`/`shift+`/`opt+`/`ctrl+`) |
 | `GITTER_DEBUG_TYPE=text` | then type that text into whatever has focus |
-| `GITTER_DEBUG_DUMP_RESPONDER=1` | print the first-responder chain, the window geometry and whether the window is key to stderr, after every click and key |
+| `GITTER_DEBUG_DUMP_RESPONDER=1` | print the first-responder chain, the window geometry and whether the window is key to stderr, after every click and key; a count instead of `1` repeats the final dump that many times, 200 ms apart, which is how you tell "never focused" from "focused, then lost it" |
 
 The click and key variables wait for the window to actually become key first, and activate
 the app, because an inactive window draws its selection in the unemphasized grey whatever

@@ -6,8 +6,9 @@ import SwiftUI
 /// the diff below.
 struct DetailView: View {
     @Environment(RepositoryStore.self) private var store
-    /// See `WorkingCopyFileList.isFocused`: without this the commit's file list keeps drawing
-    /// its selection in the unemphasized grey, since a click never focuses it.
+    /// Makes the commit's file list claim keyboard focus when it is clicked, so its selection
+    /// draws in the system highlight colour rather than the unemphasized grey. Defensive and
+    /// undiagnosed, exactly as in `WorkingCopyFileList.isFocused` — see the reasoning there.
     @FocusState private var isFileListFocused: Bool
 
     var body: some View {
