@@ -57,8 +57,13 @@ public struct FileStatus: Sendable, Hashable, Identifiable {
 /// status has no unmerged entry left while the operation is still open. Each is recorded in the
 /// git directory instead — and each is lost or damaged by `git reset`, which is why the app
 /// asks about them at all.
+///
+/// `applyingPatches` is `git am`, kept apart from `rebase` although the two share the
+/// `rebase-apply/` directory: git refuses `git rebase --abort` while an `am` is running
+/// ("It looks like 'git am' is in progress"), so advice that named a rebase would be a dead
+/// end.
 public enum RepositoryOperation: Sendable, Hashable {
-    case merge, cherryPick, revert, rebase
+    case merge, cherryPick, revert, rebase, applyingPatches
 }
 
 public struct WorkingCopyStatus: Sendable, Hashable {

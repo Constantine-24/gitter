@@ -149,6 +149,66 @@ import Testing
         #expect(try await Self.operation(in: repo) == .rebase)
     }
 
+    /// The older `am` rebase backend uses `rebase-apply/` instead of `rebase-merge/`. It is
+    /// still a rebase, and `git rebase --abort` is still the way out of it.
+    @Test func rebaseWithTheApplyBackendIsStillARebase() async throws {
+        let repo = try await Self.makeDivergent()
+        defer { repo.cleanUp() }
+        try await repo.git(["checkout", "-q", "side"])
+        try await repo.git(["rebase", "--apply", "main"], allowedExitCodes: [1])
+
+        #expect(try await Self.operation(in: repo) == .rebase)
+    }
+
+    /// `git am` borrows `rebase-apply/` from the rebase backend, so the directory alone cannot
+    /// tell the two apart — and calling it a rebase would send the user to
+    /// `git rebase --abort`, which git refuses with "It looks like 'git am' is in progress".
+    /// The marker git's own `wt-status` uses is the `applying` file inside that directory.
+    @Test func aStuckGitAmIsReportedAsApplyingPatches() async throws {
+        let repo = try await Self.makeDivergent()
+        defer { repo.cleanUp() }
+        let patch = try await repo.git(["format-patch", "-1", "--stdout", "side"])
+        let patchFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitter-am-\(UUID().uuidString).patch")
+        defer { try? FileManager.default.removeItem(at: patchFile) }
+        try patch.write(to: patchFile)
+        // The patch does not apply onto `main`, which is the whole point; git exits 128.
+        try await repo.git(["am", patchFile.path], allowedExitCodes: [128])
+
+        #expect(try await Self.operation(in: repo) == .applyingPatches)
+    }
+
+    /// `rebase -r` re-creates a merge commit by merging, so a conflict there sets `MERGE_HEAD`
+    /// *and* leaves `rebase-merge/` in place. The rebase is the operation the user is in, and
+    /// the one whose advice applies, so it has to win.
+    @Test func rebaseReplayingAConflictingMergeIsStillARebase() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("f.txt", "base\n")
+        try await repo.commitAll("base")
+        try await repo.git(["checkout", "-q", "-b", "topic"])
+        try repo.write("f.txt", "topic\n")
+        try await repo.commitAll("topic edits f")
+        try await repo.git(["checkout", "-q", "main"])
+        try repo.write("f.txt", "mainline\n")
+        try await repo.commitAll("main edits f")
+        // A merge whose conflict was resolved by hand, so replaying it conflicts again.
+        try await repo.git(["merge", "--no-commit", "topic"], allowedExitCodes: [1])
+        try repo.write("f.txt", "merged\n")
+        try await repo.git(["add", "f.txt"])
+        try await repo.git(["commit", "-q", "-m", "merge topic"])
+        // A new base that touches nothing either side changed, so only the merge conflicts.
+        try await repo.git(["checkout", "-q", "-b", "newbase", "main~2"])
+        try repo.write("z.txt", "z\n")
+        try await repo.commitAll("newbase adds z")
+        try await repo.git(["checkout", "-q", "main"])
+        try await repo.git(["rebase", "-r", "newbase"], allowedExitCodes: [1])
+
+        let status = try await CLIGitBackend().snapshot(at: repo.root).status
+        #expect(try await repo.revParse("MERGE_HEAD").isEmpty == false)  // both markers exist
+        #expect(status.operationInProgress == .rebase)
+    }
+
     /// A linked worktree keeps its own `MERGE_HEAD` under `.git/worktrees/<name>/`, and its
     /// own `.git` is a *file*, so looking for `<root>/.git/MERGE_HEAD` would find nothing
     /// here and would find the main checkout's merge in the other direction.
