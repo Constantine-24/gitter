@@ -99,6 +99,11 @@ import Testing
         (#"_ = try await run(["rebase", "--merge", upstream], cwd: root)"#, "--merge"),
         (#"_ = try await run(["merge", "--merge"], cwd: root)"#, "--merge"),
         (#"_ = try await run(["cherry-pick", x ? "--abort" : "--merge"], cwd: root)"#, "--merge"),
+        // `git reset --merge` resets the index to HEAD; `git reset --merge <commit>` moves
+        // HEAD there as well. Only the position of the flag tells the two apart.
+        (#"_ = try await run(["reset", "--merge", revision], cwd: root)"#, "--merge"),
+        (#"_ = try await run(["reset", "--merge", "HEAD~1"], cwd: root)"#, "--merge"),
+        (#"_ = try await run(["reset", "--merge", "--end-of-options", rev], cwd: root)"#, "--merge"),
     ])
     func catchesARestrictedFlagAfterTheWrongSubcommand(source: String, flag: String) {
         let findings = ForceFlagScanner.findings(in: source)

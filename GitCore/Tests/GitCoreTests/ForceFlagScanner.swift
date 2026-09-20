@@ -52,6 +52,16 @@ import Foundation
 /// - **Text, not Swift.** Multi-line (`"""`) and raw (`#"..."#`) string literals are not
 ///   understood and could shift element boundaries; `GitCore/Sources` contains neither, and
 ///   the whole-file sweep for always-forbidden tokens still fires wherever they sit.
+/// - **A positional rule only sees inside the array literal.** `["reset", "--merge"] + extra`
+///   reads as a two-element vector and passes, because the concatenation happens outside the
+///   brackets — the same blind spot `doesNotConfuseElementsOfNestedExpressions` records for
+///   every other rule. `CLIGitBackend+Abort.swift` spells that vector as a complete literal
+///   with nothing appended, which is what makes the rule meaningful there.
+/// - **`--skip` is in `alwaysForbidden`, and `git log --skip` exists.** Nothing in
+///   `GitCore/Sources` pages a log today; when something does, it will spell the option
+///   `--skip=<n>` (one token, which does not match) or else be a false positive to resolve
+///   here — by moving `--skip` into the per-subcommand tables — rather than by deleting the
+///   rule. Same shape as the `-M` exception below.
 /// - **`GitCore/Sources` only** — deliberately, since this file's own rule tables would
 ///   otherwise flag themselves. The app target runs no git commands of its own.
 enum ForceFlagScanner {
@@ -86,13 +96,20 @@ enum ForceFlagScanner {
                 findings.append("forbidden git subcommand \(subcommand.debugDescription): \(reason)")
                 continue
             }
-            for flag in literals.dropFirst() {
-                if let reason = (forbiddenFlags[subcommand] ?? [:])[flag] {
-                    findings.append("forbidden `git \(subcommand) \(flag)`: \(reason)")
-                } else if let allowed = flagsAllowedOnlyAfter[flag], !allowed.contains(subcommand) {
-                    findings.append(
-                        "forbidden `git \(subcommand) \(flag)`: \(flag) is allowed only after "
-                            + allowed.sorted().joined(separator: ", "))
+            // Over ELEMENTS, not over the flat literal list, because one rule is positional:
+            // `reset --merge` is safe and `reset --merge <commit>` moves HEAD, and only the
+            // element index can tell them apart. A classified array's first element holds
+            // exactly one literal (the subcommand), so `dropFirst()` still drops it and
+            // nothing else.
+            for (index, element) in arguments.enumerated().dropFirst() {
+                for flag in element.literals {
+                    if let reason = (forbiddenFlags[subcommand] ?? [:])[flag] {
+                        findings.append("forbidden `git \(subcommand) \(flag)`: \(reason)")
+                    } else if let rule = flagsAllowedOnlyAfter[flag] {
+                        findings += rule.findings(
+                            for: flag, after: subcommand,
+                            isLastElement: index == arguments.count - 1)
+                    }
                 }
             }
         }
@@ -169,22 +186,55 @@ enum ForceFlagScanner {
         ],
     ]
 
+    /// A flag that is safe **only** after certain subcommands — and, for `--merge`, only in a
+    /// certain position.
+    struct PositionalRule {
+        let subcommands: Set<String>
+        /// Whether the flag must be the vector's **last** element.
+        ///
+        /// `git reset --merge` resets the index to HEAD. `git reset --merge <commit>` resets it
+        /// to `<commit>` *and moves HEAD there* — a different command entirely, and one that
+        /// can lose commits. Nothing but the argument after the flag distinguishes them, so the
+        /// allow-list has to be able to say "this flag, and then nothing".
+        let mustBeLast: Bool
+
+        func findings(for flag: String, after subcommand: String, isLastElement: Bool) -> [String] {
+            if !subcommands.contains(subcommand) {
+                return [
+                    "forbidden `git \(subcommand) \(flag)`: \(flag) is allowed only after "
+                        + subcommands.sorted().joined(separator: ", ")
+                ]
+            }
+            if mustBeLast, !isLastElement {
+                return [
+                    "forbidden `git \(subcommand) \(flag) …`: \(flag) must be the last argument; "
+                        + "what follows it is a revision, and moves HEAD"
+                ]
+            }
+            return []
+        }
+    }
+
     /// Flags that are safe **only** after the subcommands listed, and dangerous everywhere
     /// else. This is the allow-list this milestone's abort work needs, written positionally so
     /// that permitting `git merge --abort` did not quietly permit `git switch --abort` too.
     ///
     /// - `--abort` undoes the operation it belongs to, and only those five subcommands have
-    ///   one. After anything else it is at best not a flag git knows.
-    /// - `--merge` is how a pending squash is undone (`git reset --merge`). After `switch` it
-    ///   silently merges local changes into a checkout, and after `rebase` it selects a backend
-    ///   Gitter does not choose for the user. `switch` keeps its own entry in `forbiddenFlags`
-    ///   as well, for the better message; the two never both fire on one element.
+    ///   one. After anything else it is at best not a flag git knows. It is not `mustBeLast`:
+    ///   none of the five accepts an argument after it, so a trailing element would be a git
+    ///   usage error rather than a way to lose work.
+    /// - `--merge` is how a pending squash is undone (`git reset --merge`, and *only* that
+    ///   exact vector — see `mustBeLast`). After `switch` it silently merges local changes into
+    ///   a checkout, and after `rebase` it selects a backend Gitter does not choose for the
+    ///   user. `switch` keeps its own entry in `forbiddenFlags` as well, for the better
+    ///   message; the two never both fire on one element.
     ///
     /// Every key here is also part of `fragmentForbidden`: a fragment cannot say which
     /// subcommand it will be appended to, so it cannot prove it is one of the allowed ones.
-    static let flagsAllowedOnlyAfter: [String: Set<String>] = [
-        "--abort": ["merge", "cherry-pick", "revert", "rebase", "am"],
-        "--merge": ["reset"],
+    static let flagsAllowedOnlyAfter: [String: PositionalRule] = [
+        "--abort": PositionalRule(
+            subcommands: ["merge", "cherry-pick", "revert", "rebase", "am"], mustBeLast: false),
+        "--merge": PositionalRule(subcommands: ["reset"], mustBeLast: true),
     ]
 
     /// What a *fragment* is checked against: the union of every table above, because a
