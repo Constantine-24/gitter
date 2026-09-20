@@ -22,7 +22,10 @@ import Testing
     // MARK: - "would be overwritten"
 
     @Test func singleFileOverwrittenByCheckout() throws {
-        #expect(try Self.parseFixture("switch-local-changes-one") == .wouldOverwrite(files: ["f.txt"]))
+        #expect(
+            try Self.parseFixture("switch-local-changes-one")
+                == .wouldOverwrite(tracked: ["f.txt"], untracked: [])
+        )
     }
 
     /// Every file, in git's order, with no truncation: trimming the list to "(+3 more)" is
@@ -31,12 +34,17 @@ import Testing
     @Test func everyFileOverwrittenByCheckoutIsReturnedUnquoted() throws {
         #expect(
             try Self.parseFixture("switch-local-changes-many")
-                == .wouldOverwrite(files: ["f.txt", "qu\"ote.txt", "sp ace.txt", "uni-é.txt"])
+                == .wouldOverwrite(
+                    tracked: ["f.txt", "qu\"ote.txt", "sp ace.txt", "uni-é.txt"], untracked: [])
         )
     }
 
-    @Test func overwrittenByMergeUsesTheSameCase() throws {
-        #expect(try Self.parseFixture("merge-local-changes") == .wouldOverwrite(files: ["f.txt"]))
+    /// Both merge captures: the fast-forwardable one (exit 1) and the true merge (exit 2,
+    /// whose stderr ends with an extra "Merge with strategy ort failed." line that must not
+    /// end up in the file list). The parser ignores the exit code entirely.
+    @Test(arguments: [("merge-local-changes", "f.txt"), ("merge-local-changes-non-ff", "a.txt")])
+    func overwrittenByMergeUsesTheSameCase(fixture: String, file: String) throws {
+        #expect(try Self.parseFixture(fixture) == .wouldOverwrite(tracked: [file], untracked: []))
     }
 
     /// The untracked variant is checked first because its text also contains
@@ -44,24 +52,24 @@ import Testing
     @Test func untrackedFilesGetTheirOwnCase() throws {
         #expect(
             try Self.parseFixture("switch-untracked")
-                == .untrackedWouldBeOverwritten(files: ["\"quoted\".txt", "new.txt"])
+                == .wouldOverwrite(tracked: [], untracked: ["\"quoted\".txt", "new.txt"])
         )
     }
 
     /// A file genuinely named `"quoted".txt` keeps its own quote characters: git prints the
     /// name raw, so unquoting it would corrupt it.
     @Test func aNameThatLooksQuotedIsNotUnquoted() throws {
-        guard case .untrackedWouldBeOverwritten(let files) = try #require(
+        guard case .wouldOverwrite(_, let untracked) = try #require(
             try Self.parseFixture("switch-untracked"))
         else { Issue.record("wrong case"); return }
-        #expect(files.contains("\"quoted\".txt"))
+        #expect(untracked.contains("\"quoted\".txt"))
     }
 
     @Test func theFileListStopsAtTheFirstUnindentedLine() throws {
-        guard case .wouldOverwrite(let files) = try #require(
+        guard case .wouldOverwrite(let tracked, _) = try #require(
             try Self.parseFixture("switch-local-changes-one"))
         else { Issue.record("wrong case"); return }
-        #expect(files == ["f.txt"])  // not "Please commit your changes..." or "Aborting"
+        #expect(tracked == ["f.txt"])  // not "Please commit your changes..." or "Aborting"
     }
 
     // MARK: - operation in progress
@@ -98,6 +106,26 @@ import Testing
     @Test(arguments: ["", "\n", "warning: something harmless\n"])
     func nothingToRecogniseIsNil(stderr: String) {
         #expect(BranchRefusalParser.parse(stderr: stderr) == nil)
+    }
+
+    /// One `git switch` can print BOTH blocks — a conflicting tracked change *and* an
+    /// untracked file in the way. Returning only the first would have the user fix one file,
+    /// retry, and be refused again over the other, so both lists come back from one parse.
+    @Test func bothBlocksAtOnceAreBothReported() throws {
+        #expect(
+            try Self.parseFixture("switch-both-blocks")
+                == .wouldOverwrite(tracked: ["tracked.txt"], untracked: ["untracked.txt"])
+        )
+    }
+
+    /// Leading and trailing spaces in a name survive; a name containing a NEWLINE does not,
+    /// because git prints it raw and its second half reads as the end of the block. Recorded
+    /// here so the loss is a known, tested limit rather than a surprise.
+    @Test func oddFileNamesSpacesSurviveAndANewlineTruncatesTheList() throws {
+        #expect(
+            try Self.parseFixture("switch-odd-file-names")
+                == .wouldOverwrite(tracked: [" lead-and-trail .txt", "new"], untracked: [])
+        )
     }
 
     /// A header with no indented lines after it is not a refusal we can describe, so it falls

@@ -11,27 +11,47 @@ import Foundation
 /// or a non-ASCII byte is printed byte for byte, even with `core.quotepath=true`. So nothing
 /// here unquotes, and `DiffParser.unquoteIfNeeded` is deliberately not used: a file genuinely
 /// named `"quoted".txt` would be mangled by it.
+///
+/// Three consequences of "raw", all verified and all tested:
+///
+/// - Leading and trailing spaces in a name survive intact (` lead-and-trail .txt` comes back
+///   with both spaces), so the only character stripped from a file line is the single leading
+///   TAB.
+/// - A name containing a **newline** cannot be recovered. git prints it raw, so its second
+///   half looks like an unindented line and ends the block — `new\nline.txt` yields `new` and
+///   the rest is lost. There is no `-z` or `--porcelain` variant of these messages to escape
+///   to. The file list is therefore a best effort for display, never a set of paths to feed
+///   back to git.
+/// - A block ends at the first line that does not begin with a TAB, which is how the trailing
+///   "Please commit your changes…", "Aborting" and "Merge with strategy ort failed." lines
+///   stay out of the list.
 public enum BranchRefusalParser {
     public static func parse(stderr: String) -> BranchOperationError? {
         let lines = stderr.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 
+        // Every block, not just the first: one `git switch` can print the tracked block AND
+        // the untracked block (verified on git 2.54). Returning on the first match would have
+        // the user fix the file they were told about, retry, and be refused over the other.
+        var tracked: [String] = []
+        var untracked: [String] = []
         for (index, line) in lines.enumerated() {
-            // The untracked variant is tested first: its text also ends in "would be
-            // overwritten by checkout:", so the order of these two checks is what keeps them
-            // apart.
+            // Tested first: the untracked header also ends in "would be overwritten by
+            // checkout:", so this order is what keeps the two apart.
             if line.contains("untracked working tree files would be overwritten by") {
-                if let files = fileList(after: index, in: lines) {
-                    return .untrackedWouldBeOverwritten(files: files)
-                }
-                continue
-            }
-            if line.contains("would be overwritten by checkout:")
+                untracked += fileList(after: index, in: lines)
+            } else if line.contains("would be overwritten by checkout:")
                 || line.contains("would be overwritten by merge:") {
-                if let files = fileList(after: index, in: lines) {
-                    return .wouldOverwrite(files: files)
-                }
-                continue
+                tracked += fileList(after: index, in: lines)
             }
+        }
+        if !tracked.isEmpty || !untracked.isEmpty {
+            return .wouldOverwrite(tracked: tracked, untracked: untracked)
+        }
+
+        // A header with no files under it falls through to here and then to nil, so it
+        // surfaces as `GitError.commandFailed` with git's own words rather than as an empty
+        // file list the UI would render as a blank refusal.
+        for line in lines {
             if let operation = operationInProgress(in: line) {
                 return .operationInProgress(operation)
             }
@@ -46,16 +66,15 @@ public enum BranchRefusalParser {
     }
 
     /// The tab-indented block git writes under a "would be overwritten" header, up to the
-    /// first line that is not indented ("Please commit your changes…"). Nil when there are no
-    /// indented lines at all: a header with no files is not something worth reporting as a
-    /// typed error.
-    private static func fileList(after index: Int, in lines: [String]) -> [String]? {
+    /// first line that is not indented ("Please commit your changes…"). Empty when there are
+    /// no indented lines at all.
+    private static func fileList(after index: Int, in lines: [String]) -> [String] {
         var files: [String] = []
         for line in lines.dropFirst(index + 1) {
             guard line.hasPrefix("\t") else { break }
             files.append(String(line.dropFirst()))
         }
-        return files.isEmpty ? nil : files
+        return files
     }
 
     /// git spells four of these as "cannot switch branch while <gerund>" and the fifth as

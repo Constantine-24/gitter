@@ -18,7 +18,7 @@ import Testing
 
         let error = await branchError { try await backend.switchTo(branch: "feature", at: repo.root) }
 
-        #expect(error == .wouldOverwrite(files: ["a.txt"]))
+        #expect(error == .wouldOverwrite(tracked: ["a.txt"], untracked: []))
         try await assertRepoUnchanged(repo, since: state, worktree: worktree)
         #expect(try await repo.currentBranch() == "main")
         #expect(try repo.fileContents("a.txt") == "my local edit\n")
@@ -42,11 +42,12 @@ import Testing
 
         let error = await branchError { try await backend.switchTo(branch: "feature", at: repo.root) }
 
-        guard case .wouldOverwrite(let files) = try #require(error) else {
+        guard case .wouldOverwrite(let tracked, let untracked) = try #require(error) else {
             Issue.record("expected .wouldOverwrite, got \(String(describing: error))")
             return
         }
-        #expect(files.sorted() == ["a.txt", "b.txt", "c d.txt"])
+        #expect(tracked.sorted() == ["a.txt", "b.txt", "c d.txt"])
+        #expect(untracked.isEmpty)
         try await assertRepoUnchanged(repo, since: state, worktree: worktree)
     }
 
@@ -63,9 +64,29 @@ import Testing
 
         let error = await branchError { try await backend.switchTo(branch: "feature", at: repo.root) }
 
-        #expect(error == .untrackedWouldBeOverwritten(files: ["added-on-feature.txt"]))
+        #expect(error == .wouldOverwrite(tracked: [], untracked: ["added-on-feature.txt"]))
         try await assertRepoUnchanged(repo, since: state, worktree: worktree)
         #expect(try repo.fileContents("added-on-feature.txt") == "mine, untracked\n")
+    }
+
+    /// git can refuse over both kinds at once, and then the user must hear about both:
+    /// reporting only the tracked file would have them fix it, retry, and be refused again.
+    @Test func aRefusalOverBothKindsAtOnceNamesBoth() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        try await repo.git(["switch", "-q", "feature"])
+        try repo.write("only-on-feature.txt", "from the branch\n")
+        try await repo.commitAll("a file only feature has")
+        try await repo.git(["switch", "-q", "main"])
+        try repo.write("a.txt", "my tracked edit\n")
+        try repo.write("only-on-feature.txt", "my untracked file\n")
+        let state = try await RepoState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+
+        let error = await branchError { try await backend.switchTo(branch: "feature", at: repo.root) }
+
+        #expect(error == .wouldOverwrite(tracked: ["a.txt"], untracked: ["only-on-feature.txt"]))
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
     }
 
     @Test func switchIsRefusedWhileAMergeIsInProgress() async throws {
@@ -94,7 +115,7 @@ import Testing
 
         let error = await branchError { try await backend.checkoutDetached("feature", at: repo.root) }
 
-        #expect(error == .wouldOverwrite(files: ["a.txt"]))
+        #expect(error == .wouldOverwrite(tracked: ["a.txt"], untracked: []))
         try await assertRepoUnchanged(repo, since: state, worktree: worktree)
         #expect(try await repo.currentBranch() == "main", "HEAD must not even become detached")
     }
@@ -112,7 +133,7 @@ import Testing
             try await backend.trackRemoteBranch("origin/feat/x", at: repo.root)
         }
 
-        #expect(error == .wouldOverwrite(files: ["a.txt"]))
+        #expect(error == .wouldOverwrite(tracked: ["a.txt"], untracked: []))
         try await assertRepoUnchanged(repo, since: state, worktree: worktree)
         #expect(try await repo.localBranches() == ["feature", "main"], "no branch is left behind")
     }
@@ -134,7 +155,7 @@ import Testing
 
         let error = await branchError { try await backend.switchTo(branch: "feature", at: repo.root) }
 
-        #expect(error == .untrackedWouldBeOverwritten(files: [awkward]))
+        #expect(error == .wouldOverwrite(tracked: [], untracked: [awkward]))
         try await assertRepoUnchanged(repo, since: state, worktree: worktree)
     }
 }

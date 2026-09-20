@@ -1,0 +1,7 @@
+error: Your local changes to the following files would be overwritten by checkout:
+	tracked.txt
+Please commit your changes or stash them before you switch branches.
+error: The following untracked working tree files would be overwritten by checkout:
+	untracked.txt
+Please move or remove them before you switch branches.
+Aborting
