@@ -18,6 +18,8 @@
     ///   GITTER_DEBUG_SELECT_LINES=3,4       pre-select those line ids in the first hunk
     ///   GITTER_DEBUG_APPLY=hunk:0 | lines   then stage/unstage that hunk, or those lines
     ///   GITTER_DEBUG_WINDOW=1400x1400       resize the window, past the screen if asked
+    ///
+    /// `DebugLaunchHooks+Events` adds the ones that click and type.
     @MainActor
     enum DebugLaunchHooks {
 
@@ -38,7 +40,7 @@
             let path = env["GITTER_DEBUG_SELECT_PATH"]
             let commit = env["GITTER_DEBUG_SELECT_COMMIT"]
             let window = env["GITTER_DEBUG_WINDOW"]
-            guard path != nil || commit != nil || window != nil else { return }
+            guard path != nil || commit != nil || window != nil || wantsEvents else { return }
 
             pendingLineIDs = lineIDs()
 
@@ -59,10 +61,11 @@
                     store.selectPath(path)
                 }
 
-                guard let apply = env["GITTER_DEBUG_APPLY"],
-                    await wait({ !store.diff.isEmpty })
-                else { return }
-                self.apply(apply, store: store)
+                if let apply = env["GITTER_DEBUG_APPLY"], await wait({ !store.diff.isEmpty }) {
+                    self.apply(apply, store: store)
+                }
+                // Last, so a click lands on a list that has finished loading its rows.
+                if wantsEvents { await runEvents() }
             }
         }
 

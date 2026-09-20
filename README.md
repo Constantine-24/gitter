@@ -89,10 +89,11 @@ Gitter/                   macOS app (SwiftUI)
 
 ## Debug launch hooks
 
-`Gitter/DebugLaunchHooks.swift` exists only in Debug builds (`#if DEBUG`, compiled out of
-Release) and drives the UI from environment variables, read once at startup. They exist
-because the verification environment has Screen Recording but not Accessibility, so
-nothing can be clicked — without these, a diff can never be put on screen from a script.
+`Gitter/DebugLaunchHooks.swift` and `DebugLaunchHooks+Events.swift` exist only in Debug
+builds (`#if DEBUG`, compiled out of Release) and drive the UI from environment variables,
+read once at startup. They exist because the verification environment has Screen Recording
+but not Accessibility, so nothing outside the process can click — without these, a diff can
+never be put on screen from a script, and a focus bug can never be reproduced.
 
 | variable | effect |
 |---|---|
@@ -102,6 +103,19 @@ nothing can be clicked — without these, a diff can never be put on screen from
 | `GITTER_DEBUG_SELECT_LINES=3,4` | pre-select those line ids in the first hunk |
 | `GITTER_DEBUG_APPLY=hunk:0` or `lines` | then stage/unstage that hunk, or those lines |
 | `GITTER_DEBUG_WINDOW=1400x1400` | resize the window, past the screen if asked |
+| `GITTER_DEBUG_CLICK=x,y[:2\|:shift][;…]` | click those points, in points from the top-left of the window's content area; `:2` double-clicks, `:shift` shift-clicks, and a `type=text` step types between two clicks |
+| `GITTER_DEBUG_KEYS=space,return,cmd+return` | then press those keys (`space`, `return`, `tab`, `escape`, `up`, `down`, with `cmd+`/`shift+`/`opt+`/`ctrl+`) |
+| `GITTER_DEBUG_TYPE=text` | then type that text into whatever has focus |
+| `GITTER_DEBUG_DUMP_RESPONDER=1` | print the first-responder chain, the window geometry and whether the window is key to stderr, after every click and key |
+
+The click and key variables wait for the window to actually become key first, and activate
+the app, because an inactive window draws its selection in the unemphasized grey whatever
+has focus. Launch through `open` to see stderr and to get a properly frontmost app:
+
+```sh
+open -n -F --stderr /tmp/gitter.log --env GITTER_DEBUG_CLICK=684,170 \
+  --env GITTER_DEBUG_DUMP_RESPONDER=1 -a .build/DerivedData/Build/Products/Debug/Gitter.app
+```
 
 ## Status / roadmap
 
