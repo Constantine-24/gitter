@@ -45,6 +45,38 @@ import Testing
         #expect(try lab.now("other.txt") == AbortMarker.preExistingEdit)
     }
 
+    /// (a′) A change **staged** before the operation began. There is no such cell to fill for
+    /// five of the seven, because git refuses to start the operation at all while the index
+    /// differs from HEAD — verified on git 2.54, with a different message and a different exit
+    /// code every time, and nothing changed in any of them:
+    ///
+    /// | | |
+    /// |---|---|
+    /// | true merge | `Your local changes to the following files would be overwritten by merge:` (exit 2) |
+    /// | cherry-pick | `error: your local changes would be overwritten by cherry-pick.` (exit 128) |
+    /// | revert | `error: your local changes would be overwritten by revert.` (exit 128) |
+    /// | rebase (both backends) | `error: cannot rebase: Your index contains uncommitted changes.` (exit 1) |
+    ///
+    /// `git am` is the exception and has its own test
+    /// (`AbortTests.anAmRefusedOverADirtyIndexStillReportsAnOperationAndAbortsCleanly`): it
+    /// refuses too, but leaves its marker behind. The squash is the *other* exception and the
+    /// dangerous one — see `UndoSquashTests.undoingASquashStartedOutsideGitterDestroysWork…`.
+    @Test(arguments: [AbortCase.merge, .cherryPick, .revert, .rebase, .rebaseApplyBackend])
+    func anOperationWillNotEvenStartWithAChangeAlreadyStaged(kind: AbortCase) async throws {
+        let repo = try await makeAbortHistory(kind)
+        defer { repo.cleanUp() }
+        try repo.write("other.txt", AbortMarker.stagedBefore)
+        try await repo.git(["add", "other.txt"])
+        let state = try await RepoState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+
+        try await startOperationExpectingARefusal(kind, in: repo)
+
+        #expect(try await CLIGitBackend().snapshot(at: repo.root).status.operationInProgress == nil)
+        #expect(try repo.fileContents("other.txt") == AbortMarker.stagedBefore)
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+    }
+
     /// (b) An untracked file that was already there.
     @Test(arguments: AbortCase.allCases)
     func aPreExistingUntrackedFileIsKept(kind: AbortCase) async throws {

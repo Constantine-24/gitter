@@ -42,13 +42,42 @@ import Foundation
 /// `am` made, and `rebase-apply/` still in place — the snapshot still reports
 /// `.applyingPatches`, and a second attempt fails the same way. `anAbortedAmCanFailHalfWay`
 /// pins it. Gitter cannot prevent this; it must simply never claim a failed abort was a no-op.
+///
+/// **The `.squash` precondition is weaker than the other five, and this is the honest limit of
+/// the guard below.** The other five are proved by a pseudo-ref or a sequencer directory that
+/// git itself creates and removes; `.squash` rests on `SQUASH_MSG` alone, a plain file that can
+/// outlive the squash it belonged to. `git restore --staged <path>` and `git apply --cached -R`
+/// both leave it in place (verified — see `RepositoryOperation.blocksUnstaging`), so a user who
+/// squashes, unstages every path by hand, and then stages something else entirely still has a
+/// `SQUASH_MSG`, still sees "Squash pending", and would pass this guard: `reset --merge` would
+/// then discard the new work rather than the squash. There is also a plain
+/// time-of-check/time-of-use window — sub-second, between the detection and the command — in
+/// which only `reset --merge` is dangerous, because it is the only one of the six that does not
+/// re-check for itself (the other five refuse with exit 128 if the state has gone).
+///
+/// Neither is fixable from here: `SQUASH_MSG` is the only marker git leaves, and no check can
+/// close a TOCTOU window against another process. The mitigation belongs to the confirmation
+/// sheet, which lists the exact paths about to be reverted rather than describing them in the
+/// abstract, so a user whose squash this is not can see so before agreeing. What *is* fixable
+/// from here is not creating the worst version of the state in the first place; see
+/// `CLIGitBackend+Merge`'s `requireACleanIndexForASquash`.
 extension CLIGitBackend {
     public func abort(_ operation: RepositoryOperation, at root: URL) async throws {
-        // Asked of the repository, never of the caller's snapshot. Both refusals below are
-        // thrown before a single git *mutation* runs, and both matter: `reset --merge` with no
-        // squash pending exits 0 and silently discards staged work, and `rebase --abort` during
-        // a merge exits 0 while doing nothing at all (both verified on git 2.54). Either would
-        // be reported to the user as a successful abort.
+        // Asked of the repository, never of the caller's snapshot, and both refusals below are
+        // thrown before a single git mutation runs.
+        //
+        // Four of the five `--abort`s are self-guarding: verified on git 2.54, running the
+        // wrong one during a merge exits 128 ("fatal: no rebase in progress", "error: no
+        // cherry-pick or revert in progress", "fatal: Resolve operation not in progress")
+        // with `MERGE_HEAD` untouched. `reset --merge` is not. It exits **0** in both of the
+        // states a stale UI can present it with:
+        //
+        //   - nothing pending at all → the index is reset to HEAD, so everything staged is
+        //     destroyed, silently;
+        //   - a real MERGE in progress → `MERGE_HEAD` and every unmerged entry are gone, i.e.
+        //     the merge is aborted, under a button that says "Undo Squash".
+        //
+        // Both are reproduced as tests. That is what these two guards are for.
         guard let actual = try await operationInProgress(at: root) else {
             throw BranchOperationError.noOperationInProgress
         }

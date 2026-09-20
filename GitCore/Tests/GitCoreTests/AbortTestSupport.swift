@@ -21,13 +21,14 @@ enum AbortCase: String, CaseIterable, Sendable {
         }
     }
 
-    /// Whether a tracked file can already hold an uncommitted edit when the operation starts.
+    /// Whether a tracked file can already hold an **unstaged** edit when the operation starts.
     ///
     /// Verified on git 2.54: a rebase refuses to begin at all while *any* tracked file has an
     /// unstaged change ("error: cannot rebase: You have unstaged changes."), so cell (a) of the
     /// table is unreachable for a rebase — there is no such thing as a rebase with pre-existing
-    /// dirt to lose. `git am` has no such rule and starts happily (verified), which is why it
-    /// is not in this exception.
+    /// dirt to lose. `git am` has no rule about the *worktree* and starts happily with an
+    /// unstaged edit in an untouched file, which is why it is not in this exception. It does
+    /// refuse a dirty **index**, as they all do — that is cell (a′), and a different question.
     var acceptsAPreExistingEdit: Bool {
         switch self {
         case .rebase, .rebaseApplyBackend: return false
@@ -55,6 +56,7 @@ enum AbortCase: String, CaseIterable, Sendable {
 /// failure message instead of showing two indistinguishable "base" strings.
 enum AbortMarker {
     static let preExistingEdit = "PRE-EXISTING EDIT\n"       // (a)
+    static let stagedBefore = "STAGED BEFORE\n"              // (a′)
     static let untrackedBefore = "UNTRACKED BEFORE\n"        // (b)
     static let unstagedAfter = "UNSTAGED AFTER\n"            // (c)
     static let stagedAfter = "STAGED AFTER\n"                // (d)
@@ -104,10 +106,7 @@ private let trackedFiles = ["c1.txt", "c2.txt", "touched.txt", "other.txt", "aft
 /// pre-existing changes (a, b), captured the pre-operation state, started the operation, and
 /// then made the changes a user could only make once it was under way (c–g).
 func makeAbortLab(_ kind: AbortCase) async throws -> AbortLab {
-    let repo = try await TestRepo.makeEmpty()
-    for name in trackedFiles { try repo.write(name, "base\n") }
-    try await repo.commitAll("base")
-    try await buildHistory(kind, in: repo)
+    let repo = try await makeAbortHistory(kind)
 
     if kind.acceptsAPreExistingEdit {
         try repo.write("other.txt", AbortMarker.preExistingEdit)
@@ -128,6 +127,24 @@ func makeAbortLab(_ kind: AbortCase) async throws -> AbortLab {
 
     return AbortLab(
         repo: repo, kind: kind, preOperation: state, preOperationWorktree: worktree)
+}
+
+/// Everything `makeAbortLab` builds *before* the operation starts: the six tracked files, the
+/// history the operation needs, and — for a rebase — the branch it is run from. Separate so a
+/// test can start the operation itself, or watch it be refused.
+func makeAbortHistory(_ kind: AbortCase) async throws -> TestRepo {
+    let repo = try await TestRepo.makeEmpty()
+    for name in trackedFiles { try repo.write(name, "base\n") }
+    try await repo.commitAll("base")
+    try await buildHistory(kind, in: repo)
+    return repo
+}
+
+/// Starts the operation expecting git to **refuse** it. The exit codes differ per operation —
+/// 2 for a true merge, 128 for cherry-pick, revert and am, 1 for a rebase — which is exactly
+/// why no caller may key on them.
+func startOperationExpectingARefusal(_ kind: AbortCase, in repo: TestRepo) async throws {
+    try await startOperation(kind, in: repo, allowedExitCodes: [1, 2, 128])
 }
 
 /// The history each operation needs, and — for a rebase — the branch it is run from.
@@ -182,14 +199,19 @@ private func writeMainChanges(_ repo: TestRepo) async throws {
 
 /// Starts the operation, conflicting. Exit codes verified on git 2.54: 1 for all of them
 /// except `git am`, which exits 128.
-private func startOperation(_ kind: AbortCase, in repo: TestRepo) async throws {
+private func startOperation(
+    _ kind: AbortCase, in repo: TestRepo, allowedExitCodes: Set<Int32>? = nil
+) async throws {
+    func run(_ arguments: [String], _ expected: Set<Int32>) async throws {
+        try await repo.git(arguments, allowedExitCodes: allowedExitCodes ?? expected)
+    }
     switch kind {
-    case .merge: try await repo.git(["merge", "side"], allowedExitCodes: [1])
-    case .squash: try await repo.git(["merge", "--ff", "--squash", "side"], allowedExitCodes: [1])
-    case .cherryPick: try await repo.git(["cherry-pick", "side"], allowedExitCodes: [1])
-    case .revert: try await repo.git(["revert", "--no-edit", "HEAD~1"], allowedExitCodes: [1])
-    case .rebase: try await repo.git(["rebase", "main"], allowedExitCodes: [1])
-    case .rebaseApplyBackend: try await repo.git(["rebase", "--apply", "main"], allowedExitCodes: [1])
-    case .applyingPatches: try await repo.git(["am", "-3", ".git/patches.mbox"], allowedExitCodes: [128])
+    case .merge: try await run(["merge", "side"], [1])
+    case .squash: try await run(["merge", "--ff", "--squash", "side"], [1])
+    case .cherryPick: try await run(["cherry-pick", "side"], [1])
+    case .revert: try await run(["revert", "--no-edit", "HEAD~1"], [1])
+    case .rebase: try await run(["rebase", "main"], [1])
+    case .rebaseApplyBackend: try await run(["rebase", "--apply", "main"], [1])
+    case .applyingPatches: try await run(["am", "-3", ".git/patches.mbox"], [128])
     }
 }

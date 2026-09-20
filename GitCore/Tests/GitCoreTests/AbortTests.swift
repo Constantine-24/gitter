@@ -106,8 +106,13 @@ import Testing
     }
 
     /// The UI can be a refresh behind. Asking to abort X while Y is in progress must never run
-    /// X's command — `git rebase --abort` during a merge exits 0 while doing nothing, which
-    /// would look like success and leave the merge exactly where it was.
+    /// X's command.
+    ///
+    /// Four of the five `--abort`s fail loudly when they are the wrong one — verified on git
+    /// 2.54, `rebase`, `cherry-pick`, `revert` and `am` all exit **128** during a merge and
+    /// leave `MERGE_HEAD` intact — so for those the guard is belt and braces. The sixth command
+    /// is the one that matters; see
+    /// `abortingASquashWhileARealMergeIsInProgressThrowsAndChangesNothing`.
     @Test func abortingTheWrongOperationThrowsAndChangesNothing() async throws {
         let lab = try await makeAbortLab(.merge)
         defer { lab.cleanUp() }
@@ -139,72 +144,73 @@ import Testing
         try await assertRepoUnchanged(lab.repo, since: state, worktree: worktree)
     }
 
-    // MARK: - When the abort itself fails
-
-    /// Git's documented "in some cases be unable to reconstruct" case, pinned down.
-    ///
-    /// `touched.txt` is a file the operation rewrote without conflicting; editing it *after*
-    /// the operation began leaves it differing from HEAD in both the index and the worktree,
-    /// and the two-way reset every one of these aborts performs refuses to proceed
-    /// ("error: Entry 'touched.txt' not uptodate. Cannot merge.", exit 128). Verified atomic:
-    /// nothing at all changes, and the operation is still in progress afterwards.
-    @Test(arguments: [AbortCase.merge, .squash, .cherryPick, .revert])
-    func abortRefusesWhenAFileTheOperationRewroteHasAnUnstagedEdit(
-        kind: AbortCase
-    ) async throws {
-        let lab = try await makeAbortLab(kind)
+    /// The mismatch that is not belt and braces. `reset --merge` — the command `abort(.squash)`
+    /// runs — is the only one of the six that does *not* refuse when it is the wrong one: run
+    /// during a real merge it exits 0 and aborts **the merge**, under a button labelled "Undo
+    /// Squash". The companion below shows it happening.
+    @Test func abortingASquashWhileARealMergeIsInProgressThrowsAndChangesNothing() async throws {
+        let lab = try await makeAbortLab(.merge)
         defer { lab.cleanUp() }
-        try lab.repo.write("touched.txt", "EDITED AFTER\n")
         let state = try await RepoState.capture(lab.repo)
         let worktree = worktreeSnapshot(lab.repo)
 
-        await #expect(throws: GitError.self) { try await lab.abort() }
-
-        try await assertRepoUnchanged(lab.repo, since: state, worktree: worktree)
-        #expect(try await lab.operationInProgress() == kind.operation)
-    }
-
-    /// The same edit does not stop a rebase: `rebase --abort` resets hard, so it overwrites the
-    /// edit rather than refusing over it. Stated as its own test because it is the opposite
-    /// answer to the one above, from the same starting point.
-    @Test func abortingARebaseOverwritesAnUnstagedEditInsteadOfRefusing() async throws {
-        let lab = try await makeAbortLab(.rebase)
-        defer { lab.cleanUp() }
-        try lab.repo.write("touched.txt", "EDITED AFTER\n")
-
-        try await lab.abort()
-
-        #expect(try lab.now("touched.txt") == (try lab.before("touched.txt")))
-        #expect(try await lab.operationInProgress() == nil)
-    }
-
-    /// The one abort that is **not** atomic when it fails, verified on git 2.54.
-    ///
-    /// `git am --abort` cleans the conflicted index *first* and rewinds the branch second, so
-    /// when the rewind is refused ("Entry 'touched.txt' not uptodate. Cannot merge." / "fatal:
-    /// failed to clean index") the conflict is already gone while the branch still carries the
-    /// commits `am` made and `rebase-apply/` is still there. The user is left mid-`am` with
-    /// their conflict resolution destroyed, and retrying fails identically until the unstaged
-    /// edit is dealt with. Nothing Gitter can do about that except never claim a failed abort
-    /// left the repository untouched.
-    @Test func anAbortedAmCanFailHalfWay() async throws {
-        let repo = try await makeAmWhoseFirstPatchRewrites("touched.txt")
-        defer { repo.cleanUp() }
-        #expect(try await repo.unmergedEntries().isEmpty == false)
-        let headMidAm = try await repo.headSha()
-        try repo.write("touched.txt", "EDITED AFTER\n")
-
-        await #expect(throws: GitError.self) {
-            try await CLIGitBackend().abort(.applyingPatches, at: repo.root)
+        let error = await branchError {
+            try await CLIGitBackend().abort(.squash, at: lab.repo.root)
         }
 
-        #expect(try await repo.unmergedEntries().isEmpty, "the conflict was cleaned up anyway")
-        #expect(try await repo.headSha() == headMidAm, "the branch was not rewound")
-        let status = try await CLIGitBackend().snapshot(at: repo.root).status
-        #expect(status.operationInProgress == .applyingPatches, "still mid-am")
+        #expect(error == .operationMismatch(expected: .squash, actual: .merge))
+        try await assertRepoUnchanged(lab.repo, since: state, worktree: worktree)
+        #expect(try await lab.operationInProgress() == .merge)
+        #expect(try await lab.repo.gitFileExists("MERGE_HEAD"))
     }
 
-    // MARK: - Fixtures used by more than one test above
+    /// What the guard above prevents, measured. Nothing about `git reset --merge` says it is
+    /// only for squashes: during a conflicted merge it silently ends the merge — `MERGE_HEAD`
+    /// gone, every unmerged entry gone, exit 0, not a word on stderr.
+    @Test func resetMergeDuringARealMergeSilentlyAbortsTheMerge() async throws {
+        let lab = try await makeAbortLab(.merge)
+        defer { lab.cleanUp() }
+        #expect(try await lab.repo.unmergedEntries().isEmpty == false)
+
+        try await lab.repo.git(["reset", "--merge"])  // exit 0
+
+        #expect(try await lab.repo.gitFileExists("MERGE_HEAD") == false, "the merge was aborted")
+        #expect(try await lab.repo.unmergedEntries().isEmpty)
+        #expect(try await CLIGitBackend().snapshot(at: lab.repo.root).status
+            .operationInProgress == nil)
+    }
+
+    /// The one `.applyingPatches` state a *pre-existing staged* change can reach, and the only
+    /// place in the table where a staged change survives an abort.
+    ///
+    /// Verified on git 2.54: `git am` refuses a dirty index outright ("fatal: Dirty index:
+    /// cannot apply patches (dirty: other.txt)", exit 128) — but it has already created
+    /// `rebase-apply/applying` by then and does not clean it up, so the snapshot reports an
+    /// `am` in progress for an `am` that applied nothing at all. Aborting that exits 0, removes
+    /// the directory, and leaves the staged work exactly where it was.
+    @Test func anAmRefusedOverADirtyIndexStillReportsAnOperationAndAbortsCleanly() async throws {
+        let repo = try await makeAbortHistory(.applyingPatches)
+        defer { repo.cleanUp() }
+        try repo.write("other.txt", "STAGED BEFORE\n")
+        try await repo.git(["add", "other.txt"])
+        let state = try await RepoState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+
+        try await repo.git(["am", "-3", ".git/patches.mbox"], allowedExitCodes: [128])
+
+        #expect(try await CLIGitBackend().snapshot(at: repo.root).status
+            .operationInProgress == .applyingPatches, "an am that applied nothing")
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+
+        try await CLIGitBackend().abort(.applyingPatches, at: repo.root)
+
+        #expect(try repo.fileContents("other.txt") == "STAGED BEFORE\n")
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+        #expect(try await CLIGitBackend().snapshot(at: repo.root).status.operationInProgress == nil)
+    }
+
+    // MARK: - Fixtures
+
 
     /// A clean repository with one staged change, one unstaged change and one untracked file —
     /// exactly the work an abort run by mistake must not be allowed near.
@@ -217,27 +223,6 @@ import Testing
         try await repo.git(["add", "staged.txt"])
         try repo.write("unstaged.txt", "UNSTAGED WORK\n")
         try repo.write("untracked.txt", "UNTRACKED\n")
-        return repo
-    }
-
-    /// A `git am` stopped at a conflict, where the patch it *did* apply rewrote `path`. That
-    /// is what makes the rewind refuse once `path` is edited without being staged.
-    private func makeAmWhoseFirstPatchRewrites(_ path: String) async throws -> TestRepo {
-        let repo = try await TestRepo.makeEmpty()
-        try repo.write("c1.txt", "base\n")
-        try repo.write(path, "base\n")
-        try await repo.commitAll("base")
-        try await repo.git(["switch", "-q", "-c", "side"])
-        try repo.write(path, "from the first patch\n")
-        try await repo.commitAll("patch one")
-        try repo.write("c1.txt", "side\n")
-        try await repo.commitAll("patch two")
-        try await repo.git(["switch", "-q", "main"])
-        try repo.write("c1.txt", "main\n")
-        try await repo.commitAll("main")
-        let patches = try await repo.git(["format-patch", "-2", "--stdout", "side"])
-        try patches.write(to: repo.root.appendingPathComponent(".git/patches.mbox"))
-        try await repo.git(["am", "-3", ".git/patches.mbox"], allowedExitCodes: [128])
         return repo
     }
 }
