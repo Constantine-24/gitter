@@ -75,18 +75,27 @@ struct DiffHunkView: View {
     private func buttons(selectedCount: Int) -> some View {
         HStack(spacing: 6) {
             if selectedCount == 0 {
+                let blocked = store.operationBlocksApplying(
+                    file, hunkIDs: [hunk.id], lineIDs: nil)
                 // `diffIsStaged`, not `stagedView`: the label has to describe the diff these
                 // buttons act on, which for a moment after a side change is still the old one.
                 Button(store.diffIsStaged ? "Unstage Hunk" : "Stage Hunk") {
                     store.applyHunk(hunk, in: file)
                 }
                 // Mutations are serialized in the store; the disabled state is what says so.
-                .disabled(store.isMutating)
+                // `blocked` is the other reason: this selection covers a whole added file, so
+                // it would run `git restore --staged` rather than a patch — see
+                // `operationBlocksApplying`.
+                .disabled(store.isMutating || blocked)
+                .helpIfPresent(blocked ? store.operationInProgress?.unstagingBlockedHelp : nil)
             } else {
+                let ids = selection.ids(for: hunk)
+                let blocked = store.operationBlocksApplying(file, hunkIDs: [hunk.id], lineIDs: ids)
                 Button(lineButtonTitle(selectedCount)) {
-                    store.applyLines(selection.ids(for: hunk), of: hunk, in: file)
+                    store.applyLines(ids, of: hunk, in: file)
                 }
-                .disabled(store.isMutating)
+                .disabled(store.isMutating || blocked)
+                .helpIfPresent(blocked ? store.operationInProgress?.unstagingBlockedHelp : nil)
                 // Clearing writes nothing to git, so a mutation in flight is no reason to
                 // refuse it — dropping a selection is exactly what a user does while waiting.
                 Button("Clear") { selection.clear(hunk) }

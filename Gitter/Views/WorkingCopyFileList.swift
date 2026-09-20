@@ -96,7 +96,7 @@ struct WorkingCopyFileList: View {
                     .disabled(files.isEmpty || store.isMutating || actionDisabled)
                     // A disabled button still shows its tooltip, which is the only place the
                     // reason for the gate is written down next to the control itself.
-                    .help(actionHelp ?? "")
+                    .helpIfPresent(actionHelp)
             }
         }
     }
@@ -170,9 +170,10 @@ struct WorkingCopyFileList: View {
     /// operation under way. Only the staged side is blocked: staging with "+" is how a
     /// resolution is recorded, which is exactly what the user should be able to do here.
     ///
-    /// Keyed on the operation rather than on the file's own conflict state: `git restore
-    /// --staged` on a file whose conflict has just been resolved throws that resolution away,
-    /// and the file no longer looks unmerged at all.
+    /// Keyed on the operation rather than on the file's own conflict state — a resolved file
+    /// does not look unmerged any more, and the row cannot say whether its resolution is fully
+    /// or only partly staged. `RepositoryStore.operationInProgress` sets out which of those
+    /// `git restore --staged` actually destroys and why the rule covers all of them.
     private func isBlocked(_ file: FileStatus, staged: Bool) -> Bool {
         staged && (store.operationInProgress != nil || store.isUnmerged(file))
     }

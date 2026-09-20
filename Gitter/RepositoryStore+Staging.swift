@@ -26,22 +26,34 @@ extension RepositoryStore {
         snapshot?.status.files.filter { $0.unstaged != nil } ?? []
     }
 
-    /// The merge, cherry-pick, revert or rebase the repository is part-way through.
+    /// The merge, cherry-pick, revert, rebase or `git am` the repository is part-way through.
     ///
-    /// This, not the presence of conflicts, is what unstaging has to be gated on. Resolving
-    /// and staging the last conflicted file leaves no unmerged entry behind while the
-    /// operation is still open, and `git reset` there deletes `MERGE_HEAD` (or
-    /// `CHERRY_PICK_HEAD`, or `REVERT_HEAD`): the operation ends silently and the next commit
-    /// is an ordinary one-parent commit, with nothing on screen to say so.
+    /// This, not the presence of conflicts, is what unstaging is gated on. Resolving and
+    /// staging the last conflicted file leaves no unmerged entry behind while the operation is
+    /// still open, and `git reset` there deletes `MERGE_HEAD` (or `CHERRY_PICK_HEAD`, or
+    /// `REVERT_HEAD`): the operation ends silently and the next commit is an ordinary
+    /// one-parent commit, with nothing on screen to say so.
+    ///
+    /// The per-file commands are gated on the same state rather than on each file's own, which
+    /// is deliberately broader than the harm `git restore --staged` does to any one file:
+    ///
+    /// - On a still-conflicted file it collapses three index stages into one. Base, ours and
+    ///   theirs live only in the index, so that is unrecoverable.
+    /// - On a file whose resolution is only *partly* staged it drops the part that was staged.
+    ///   The worktree holds the whole resolution, not the half that was in the index, so that
+    ///   is unrecoverable too.
+    /// - On a fully staged resolution it is in fact harmless: the worktree still holds the
+    ///   text and `git add` puts back a byte-identical blob. (Checked, so the rule is not
+    ///   defended with a claim that is false.)
+    ///
+    /// One rule for the whole operation, because a row does not say which of the three it is,
+    /// and because two of them cannot be undone.
     var operationInProgress: RepositoryOperation? {
         snapshot?.status.operationInProgress
     }
 
-    /// True while at least one file is still conflicted.
-    ///
-    /// Narrower than `operationInProgress`, and about a different harm: `git restore --staged`
-    /// on a conflicted path collapses its three index stages into one. It is what the note
-    /// asks the user to deal with first, not what the gate keys on.
+    /// True while at least one file is still conflicted. Narrower than `operationInProgress`:
+    /// it is what the note asks the user to deal with first, not what the gate keys on.
     var hasUnmergedFiles: Bool {
         snapshot?.status.files.contains(where: isUnmerged) ?? false
     }
@@ -103,6 +115,24 @@ extension RepositoryStore {
         return !status.isUntracked && !isUnmerged(status)
     }
 
+    /// Whether this hunk- or line-selection is barred because an operation is in progress.
+    ///
+    /// Only one selection is: the one that covers the entire change of a file being *added*,
+    /// on the staged side. `apply` cannot send that through a patch, so it falls back to the
+    /// file-level `git restore --staged` — the same command the row's "−" is disabled for, and
+    /// on a file the merge itself added, it takes the whole index entry away. A merge that
+    /// adds a file is exactly where this is reachable.
+    ///
+    /// Everything smaller stays allowed: reverse-applying a patch to the index was checked
+    /// against a live merge and leaves `MERGE_HEAD` alone.
+    func operationBlocksApplying(_ file: FileDiff, hunkIDs: Set<Hunk.ID>, lineIDs: Set<DiffLine.ID>?)
+        -> Bool
+    {
+        guard operationInProgress != nil, patchDirection == .unstage else { return false }
+        return PatchBuilder.isWholeFileChange(
+            file: file, hunkIDs: hunkIDs, lineIDs: lineIDs, direction: .unstage)
+    }
+
     // MARK: - File-level staging
 
     func stage(_ file: FileStatus) {
@@ -114,9 +144,8 @@ extension RepositoryStore {
 
     func unstage(_ file: FileStatus) {
         // Defence in depth behind the disabled button (the debug hooks call straight in).
-        // `git restore --staged` on a resolved file throws the resolution away, and on a
-        // conflicted one collapses its three index stages — neither is recoverable from the
-        // worktree, so the whole operation is off limits, not only its conflicts.
+        // See `operationInProgress` for why the whole operation is off limits and not only
+        // its conflicts.
         guard operationInProgress == nil, !isUnmerged(file) else { return }
         // A staged rename occupies two index entries — the new path and the one it came from —
         // and restoring only one of them would leave half a rename staged.
@@ -149,6 +178,9 @@ extension RepositoryStore {
 
     private func apply(file: FileDiff, hunkIDs: Set<Hunk.ID>, lineIDs: Set<DiffLine.ID>?) {
         let direction = patchDirection
+        // Defence in depth behind the disabled button, as in `unstage(_:)`: the whole-file
+        // branch below reaches `git restore --staged` without passing that guard.
+        guard !operationBlocksApplying(file, hunkIDs: hunkIDs, lineIDs: lineIDs) else { return }
 
         // Selecting the whole change of a file that is being added or removed cannot go
         // through a patch (its header is always a plain modification, which would leave an

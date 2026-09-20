@@ -94,6 +94,15 @@ struct DiffView: View {
 }
 
 extension View {
+    /// `.help(text)` when there is text, and nothing at all when there is not.
+    ///
+    /// `.help("")` is not the same as no tooltip: it replaces whatever an enclosing view or
+    /// the control itself would otherwise say with an empty one.
+    @ViewBuilder
+    func helpIfPresent(_ text: String?) -> some View {
+        if let text { help(text) } else { self }
+    }
+
     /// Fills a header row to the width of the diff pane, so whatever sits at its trailing edge
     /// — the stage buttons — has the full pane to lay out in.
     ///
