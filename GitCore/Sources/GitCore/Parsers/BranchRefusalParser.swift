@@ -25,6 +25,15 @@ import Foundation
 /// - A block ends at the first line that does not begin with a TAB, which is how the trailing
 ///   "Please commit your changes…", "Aborting" and "Merge with strategy ort failed." lines
 ///   stay out of the list.
+///
+/// **One header, two block shapes.** "Your local changes to the following files would be
+/// overwritten by merge:" is printed by two different parts of git (verified on git 2.54): the
+/// checkout machinery writes one TAB-indented line per file and means it literally, while
+/// `merge-ort` writes a single SPACE-indented line with the names joined by spaces and means
+/// "the index does not match HEAD" — which it refuses over even for files the merge never
+/// touches. The indentation of the line after the header is the only discriminator, and the
+/// space-joined form cannot be split back into names (a name with a space in it is
+/// indistinguishable from two names), so it becomes `.indexNotClean` with no file list.
 public enum BranchRefusalParser {
     public static func parse(stderr: String) -> BranchOperationError? {
         let lines = stderr.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
@@ -34,6 +43,7 @@ public enum BranchRefusalParser {
         // the user fix the file they were told about, retry, and be refused over the other.
         var tracked: [String] = []
         var untracked: [String] = []
+        var indexNotClean = false
         for (index, line) in lines.enumerated() {
             // Tested first: the untracked header also ends in "would be overwritten by
             // checkout:", so this order is what keeps the two apart.
@@ -41,12 +51,17 @@ public enum BranchRefusalParser {
                 untracked += fileList(after: index, in: lines)
             } else if line.contains("would be overwritten by checkout:")
                 || line.contains("would be overwritten by merge:") {
-                tracked += fileList(after: index, in: lines)
+                let files = fileList(after: index, in: lines)
+                tracked += files
+                if files.isEmpty, isSpaceIndented(lines.dropFirst(index + 1).first) {
+                    indexNotClean = true
+                }
             }
         }
         if !tracked.isEmpty || !untracked.isEmpty {
             return .wouldOverwrite(tracked: tracked, untracked: untracked)
         }
+        if indexNotClean { return .indexNotClean }
 
         // A header with no files under it falls through to here and then to nil, so it
         // surfaces as `GitError.commandFailed` with git's own words rather than as an empty
@@ -72,8 +87,23 @@ public enum BranchRefusalParser {
             if let name = quotedName(in: line, after: "error: branch ", before: " not found") {
                 return .noSuchBranch(name)
             }
+            // `git merge nosuch` — verified on git 2.54, the one message in this file whose
+            // name is NOT quoted: `merge: nosuch - not something we can merge`.
+            if let name = unquotedName(
+                in: line, after: "merge: ", before: " - not something we can merge") {
+                return .noSuchBranch(name)
+            }
         }
         return nil
+    }
+
+    /// Whether `line` starts with a space — the one thing that tells `merge-ort`'s
+    /// space-joined, space-indented file line apart from the TAB-indented block every other
+    /// message in this file uses. Both sit under the identical "Your local changes to the
+    /// following files would be overwritten by merge:" header (verified on git 2.54), and only
+    /// the indentation says which refusal it is.
+    private static func isSpaceIndented(_ line: String?) -> Bool {
+        line?.hasPrefix(" ") == true
     }
 
     /// The tab-indented block git writes under a "would be overwritten" header, up to the
@@ -95,6 +125,16 @@ public enum BranchRefusalParser {
         if line.contains("cannot switch branch in the middle of an am session") {
             return "applying patches"
         }
+        // `git merge` has two wordings of its own, neither of which mentions switching.
+        // `MERGE_HEAD` with a clean index is unambiguously a merge; unmerged entries could
+        // belong to a merge, cherry-pick, revert or rebase, so that phrase names the state
+        // instead of guessing which operation left them there.
+        if line.contains("You have not concluded your merge (MERGE_HEAD exists)") {
+            return "merging"
+        }
+        if line.contains("Merging is not possible because you have unmerged files") {
+            return "resolving conflicts"
+        }
         guard let range = line.range(of: "cannot switch branch while ") else { return nil }
         let rest = line[range.upperBound...].trimmingCharacters(in: .whitespaces)
         return rest.isEmpty ? nil : rest
@@ -111,5 +151,16 @@ public enum BranchRefusalParser {
         let middle = line[start.upperBound..<end.lowerBound]
         guard middle.hasPrefix("'"), middle.hasSuffix("'"), middle.count >= 2 else { return nil }
         return String(middle.dropFirst().dropLast())
+    }
+
+    /// Same idea without the quotes, for `merge`'s "not something we can merge". The line must
+    /// *start* with `prefix` — a bare `contains` would let any sentence mentioning "merge: "
+    /// through — and `suffix` is found backwards so a name containing " - " survives.
+    private static func unquotedName(in line: String, after prefix: String, before suffix: String)
+        -> String? {
+        guard line.hasPrefix(prefix), let end = line.range(of: suffix, options: .backwards),
+            line.index(line.startIndex, offsetBy: prefix.count) < end.lowerBound
+        else { return nil }
+        return String(line[line.index(line.startIndex, offsetBy: prefix.count)..<end.lowerBound])
     }
 }

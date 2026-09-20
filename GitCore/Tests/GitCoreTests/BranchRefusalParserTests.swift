@@ -72,7 +72,60 @@ import Testing
         #expect(tracked == ["f.txt"])  // not "Please commit your changes..." or "Aborting"
     }
 
+    /// A merge can also be refused over an untracked file, with the same header `switch` uses
+    /// but "by merge:" instead of "by checkout:".
+    @Test func untrackedFilesOverwrittenByMerge() throws {
+        #expect(
+            try Self.parseFixture("merge-untracked")
+                == .wouldOverwrite(tracked: [], untracked: ["new.txt"])
+        )
+    }
+
+    // MARK: - a dirty index
+
+    /// The same header, a *completely* different block: `merge-ort` writes its file list on one
+    /// space-indented, space-joined line instead of one TAB-indented line per file. Verified on
+    /// git 2.54. It fires for any index entry that differs from HEAD, including files the merge
+    /// never touches, so it is not a `.wouldOverwrite` and the names are not recoverable
+    /// (a name containing a space could not be told from two names).
+    @Test(arguments: ["merge-index-not-clean", "merge-index-not-clean-many"])
+    func aSpaceIndentedFileBlockMeansTheIndexIsDirty(fixture: String) throws {
+        #expect(try Self.parseFixture(fixture) == .indexNotClean)
+    }
+
+    /// The discriminator really is the indentation: the TAB-indented block with the very same
+    /// header still means `.wouldOverwrite`, never `.indexNotClean`.
+    @Test func aTabIndentedBlockIsStillWouldOverwrite() throws {
+        #expect(
+            try Self.parseFixture("merge-local-changes-non-ff")
+                == .wouldOverwrite(tracked: ["a.txt"], untracked: [])
+        )
+    }
+
     // MARK: - operation in progress
+
+    /// Two more wordings, neither of which mentions "switch". `MERGE_HEAD` with a clean index
+    /// is "merging"; unmerged entries could belong to a merge, cherry-pick, revert or rebase,
+    /// so the phrase names the state rather than guessing the operation.
+    @Test(arguments: [
+        ("merge-while-merging", "merging"),
+        ("merge-unmerged-files", "resolving conflicts"),
+    ])
+    func mergeRefusedByAnOperationAlreadyInProgress(fixture: String, operation: String) throws {
+        #expect(try Self.parseFixture(fixture) == .operationInProgress(operation))
+    }
+
+    @Test func aBranchGitCannotMerge() throws {
+        #expect(
+            try Self.parseFixture("merge-not-something-we-can-merge")
+                == .noSuchBranch("nosuch-branch"))
+    }
+
+    /// Unrelated histories has no file list and no name to extract, so it stays git's own
+    /// message via `GitError.commandFailed`.
+    @Test func unrelatedHistoriesIsNotRecognised() throws {
+        #expect(try Self.parseFixture("merge-unrelated-histories") == nil)
+    }
 
     @Test(arguments: [
         ("switch-while-merging", "merging"),

@@ -1,59 +1,7 @@
 import Foundation
 
-/// A refusal git made that Gitter can describe precisely, rather than dumping stderr.
-///
-/// Every case here is a refusal: git did nothing. That is the point of the whole type — the
-/// UI can say "these files would be overwritten, commit or move them first" and the user
-/// knows their work is still exactly where they left it. Anything git says that
-/// `BranchRefusalParser` does not recognise stays `GitError.commandFailed`.
-public enum BranchOperationError: Error, Sendable, Equatable {
-    /// Files the operation would have written over: `tracked` are files with local changes
-    /// (staged or not) that differ between here and there, `untracked` are files git does not
-    /// know about that the checkout would have clobbered.
-    ///
-    /// One case rather than two because **git can refuse over both at once** — verified on
-    /// git 2.54, a single `git switch` prints the "Your local changes…" block and then the
-    /// "The following untracked working tree files…" block. Reporting only the first would
-    /// have the user fix that file, retry, and be refused all over again. Either list may be
-    /// empty; never both. Both hold every file git named, in git's order — truncating for
-    /// display is the UI's job.
-    case wouldOverwrite(tracked: [String], untracked: [String])
-    /// git refuses to switch branches part-way through something. Carries the operation as a
-    /// phrase that completes "while …": `merging`, `cherry-picking`, `reverting`, `rebasing`,
-    /// `applying patches`.
-    case operationInProgress(String)
-    /// The name is not a valid branch name — either git's `check-ref-format` said so, or it is
-    /// empty or starts with `-` (which git would read as an option), which Gitter rejects
-    /// before git ever runs.
-    case invalidName(String)
-    /// A branch of that name is already there. Creating, renaming or copying onto it would
-    /// overwrite the other branch, so git refuses and so does Gitter.
-    case branchExists(String)
-    /// The current branch cannot be deleted — either because Gitter checked `symbolic-ref
-    /// --short -q HEAD` before running git at all, or because git itself refused with "cannot
-    /// delete branch '<name>' used by worktree at '<path>'" (verified on git 2.54). That one
-    /// message covers two shapes Gitter treats the same way: the branch is current in *this*
-    /// worktree, or it is checked out in a *linked* worktree elsewhere. Either way deleting it
-    /// would either move HEAD out from under the checkout or corrupt the other worktree, so
-    /// both are refused identically.
-    case cannotDeleteCurrent(String)
-    /// No local branch of that name exists — git said `branch '<name>' not found` (verified on
-    /// git 2.54) to a `branch -d`/`-D` for a name that was never created, or already deleted by
-    /// someone else since Gitter last listed branches.
-    case noSuchBranch(String)
-}
-
-/// What `deleteBranch` did. `.notFullyMerged` is not a failure: git refused a *plain* `-d` and
-/// changed nothing, so the branch is exactly where it was, and the UI now has what it needs to
-/// ask "delete anyway?" — the count of commits that would become unreachable from anywhere
-/// else, and the tip sha a user could recreate the branch from if they change their mind after
-/// a force delete.
-public enum BranchDeletion: Sendable, Hashable {
-    case deleted
-    case notFullyMerged(uniqueCommits: Int, tip: String)
-}
-
-/// Branch-level operations: naming, creating, switching, detaching, tracking and renaming.
+/// Branch-level operations: naming, creating, switching, detaching, tracking, renaming,
+/// deleting and merging.
 ///
 /// These are the first Gitter operations that write working-tree files, so the contract is
 /// deliberately narrow:
@@ -221,4 +169,30 @@ public protocol GitBranchBackend: Sendable {
     ///   branch before calling here — but no other caller should read 0 for the current branch
     ///   as "safe to delete".
     func commitsOnlyOn(branch: String, at root: URL) async throws -> Int
+
+    /// Merge `branch` into whatever HEAD is (a branch, or a detached HEAD — git allows both and
+    /// so does this), the way `mode` says.
+    ///
+    /// The one command in this protocol that rewrites working-tree files wholesale, so three
+    /// rules shape it:
+    ///
+    /// - **No force flag and no strategy option.** Not `-X ours`/`-X theirs`, not
+    ///   `--strategy-option`, not `--autostash`, not `--allow-unrelated-histories`. Everything
+    ///   git refuses stays refused, and nothing this method runs can pick a side of a conflict
+    ///   on the user's behalf.
+    /// - **A conflict is a return value, not a throw.** `.conflicts` comes back with the
+    ///   half-done merge left in place, byte for byte as git wrote it. Nothing is aborted,
+    ///   reset or retried here; the in-progress UI takes it from there.
+    /// - **The outcome is read from the repository, never from git's prose or its exit code.**
+    ///   Verified on git 2.54: a refused merge that would have fast-forwarded exits 1 and a
+    ///   refused true merge exits 2, so the code alone cannot even tell refusal from conflict.
+    ///
+    /// Refusals, all of which change nothing: `.wouldOverwrite` when a tracked or untracked
+    /// file stands in the way, `.indexNotClean` when a true merge finds anything staged (see
+    /// that case — it fires even for files the merge does not touch), `.operationInProgress`
+    /// when a merge is already part-way through, `.noSuchBranch` for a name git cannot resolve,
+    /// `.invalidName` before git runs for a name that would be read as an option, and plain
+    /// `GitError.commandFailed` with git's own words for anything else — unrelated histories,
+    /// for one.
+    func merge(_ branch: String, mode: MergeMode, at root: URL) async throws -> MergeOutcome
 }

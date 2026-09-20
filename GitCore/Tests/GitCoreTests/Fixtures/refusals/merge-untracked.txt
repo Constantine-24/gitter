@@ -1,0 +1,5 @@
+error: The following untracked working tree files would be overwritten by merge:
+	new.txt
+Please move or remove them before you merge.
+Aborting
+Merge with strategy ort failed.
