@@ -24,6 +24,56 @@ extension TestRepo {
         return repo
     }
 
+    /// `makeBranched()` plus one more commit on `main` touching a *different* file, so `main`
+    /// and `feature` have diverged and a merge of the two is clean.
+    static func makeDiverged() async throws -> TestRepo {
+        let repo = try await makeBranched()
+        try repo.write("b.txt", "main side\n")
+        try await repo.commitAll("main side")
+        return repo
+    }
+
+    /// `makeBranched()` plus one more commit on `main` touching **the same file** `feature`
+    /// changed, so any merge of the two conflicts in `a.txt`.
+    static func makeConflicting() async throws -> TestRepo {
+        let repo = try await makeBranched()
+        try repo.write("a.txt", "main change\n")
+        try await repo.commitAll("main change")
+        return repo
+    }
+
+    /// `makeBranched()` with `feature` already merged into `main` by a merge commit, so
+    /// `feature` is an ancestor of HEAD while HEAD is *not* `feature`'s tip — which is what
+    /// keeps "already up to date" distinguishable from "fast-forwarded".
+    static func makeAlreadyMerged() async throws -> TestRepo {
+        let repo = try await makeBranched()
+        try await repo.git(["merge", "--no-ff", "--no-edit", "feature"])
+        return repo
+    }
+
+    /// Index entries at a merge stage other than 0 — git's own definition of "this worktree
+    /// has unresolved conflicts".
+    func unmergedEntries() async throws -> String {
+        let data = try await git(["ls-files", "-u"])
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Whether the pseudo-ref or file `name` (`MERGE_HEAD`, `SQUASH_MSG`) is present.
+    func gitFileExists(_ name: String) async throws -> Bool {
+        let data = try await git(["rev-parse", "--git-path", name])
+        let path = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let url = path.hasPrefix("/") ? URL(fileURLWithPath: path) : root.appendingPathComponent(path)
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    /// The parent shas of `rev`, in git's order.
+    func parents(of rev: String) async throws -> [String] {
+        let data = try await git(["rev-list", "--parents", "-n", "1", rev])
+        return String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: " ").map(String.init).dropFirst().map { $0 }
+    }
+
     /// The branch HEAD is on, or nil when HEAD is detached.
     func currentBranch() async throws -> String? {
         let data = try await git(["symbolic-ref", "-q", "--short", "HEAD"], allowedExitCodes: [1])
