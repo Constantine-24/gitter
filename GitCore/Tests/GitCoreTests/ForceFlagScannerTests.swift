@@ -96,6 +96,45 @@ import Testing
         #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
     }
 
+    /// A flag hidden inside a ternary was the scanner's last structural blind spot: the element
+    /// `cond ? "--squash" : "--merge"` holds two literals, and the lexer used to give up on any
+    /// element that was not exactly one, so *neither* was ever checked. Every literal inside an
+    /// element is now checked, wherever in the expression it sits.
+    ///
+    /// This is why `CLIGitBackend+Merge.swift` still builds each argument vector as a complete
+    /// literal chosen by a `switch`: the scanner sees those plainly, and nobody has to rely on
+    /// this rule catching a cleverer shape.
+    /// Each case names a flag that is dangerous only *in context* — none of them is in
+    /// `alwaysForbidden`, so the whole-file literal sweep cannot be what catches them and the
+    /// test cannot pass vacuously. The finding must name the hidden flag itself.
+    @Test(arguments: [
+        (#"_ = try await run(["switch", squash ? "--merge" : "--no-guess", b], cwd: root)"#, "--merge"),
+        (#"_ = try await run(["switch", squash ? "--no-guess" : "--merge", b], cwd: root)"#, "--merge"),
+        (#"_ = try await run(["branch", force ? "-M" : "-m", old, new], cwd: root)"#, "-M"),
+        (#"var a = ["switch"]; a += [force ? "--ours" : "--theirs"]"#, "--ours"),
+        (#"_ = try await run(["merge", x ? "--ff" : (y ? "--no-ff" : "-X"), b], cwd: root)"#, "-X"),
+    ])
+    func catchesAFlagHiddenInsideATernaryElement(source: String, flag: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains(flag) }, "\(findings) should name \(flag)")
+        #expect(!ForceFlagScanner.alwaysForbidden.contains(flag),
+                "\(flag) is always forbidden, so this case would pass without the ternary rule")
+    }
+
+    /// The mirror image, so the new rule is not simply "flag every multi-literal element":
+    /// a ternary between two harmless flags stays clean, and the element's first literal is
+    /// still not mistaken for a subcommand.
+    @Test(arguments: [
+        #"_ = try await run(["merge", squash ? "--squash" : "--ff", b], cwd: root)"#,
+        #"_ = try await run(["merge", "--ff", squash ? "--squash" : "--no-edit", b], cwd: root)"#,
+        #"_ = try await run([squash ? "--squash" : "--ff", "b"], cwd: root)"#,
+    ])
+    func doesNotFireOnATernaryBetweenHarmlessFlags(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
     /// The fragment rule must not fire on what `CLIGitBackend` already does: `commitDiff`
     /// builds `["--no-commit-id", "-p", "-U3", "-M", "-r"]`, a leading-flag fragment whose
     /// `-M` means rename detection, not `branch -M`. That is why `-M` is only dangerous in a

@@ -8,9 +8,11 @@ import Foundation
 ///
 /// How it works: comments and string contents are lexed away first, then every array literal
 /// is read as a candidate argument vector and every `.append("…")` as a one-element addition
-/// to one. Elements that are plain string literals become their value; anything else becomes
-/// `nil`, so an array mixing literals and variables still gets checked for the literals it
-/// does contain. Each vector is then handled one of two ways:
+/// to one. Two things are asked of each element: whether it is exactly one string literal
+/// (which is what can name a subcommand), and which string literals it contains *anywhere*
+/// (which is what gets checked against the rules). Those differ for an element like
+/// `cond ? "--squash" : "--merge"`, and every literal in it is checked. Each vector is then
+/// handled one of two ways:
 ///
 /// - **Classified** — it begins with a string literal that is not a flag, so that literal is
 ///   the git subcommand and the per-subcommand rules apply. This is what lets `reset --merge`
@@ -25,12 +27,20 @@ import Foundation
 ///
 /// Known limits, stated so nobody mistakes this for a proof:
 ///
-/// - **Only literals.** A flag assembled from non-literals is invisible: `"--" + verb`,
+/// - **Only literals.** This is the remaining hole, and it is now the *only* structural one:
+///   a flag assembled from non-literals is invisible: `"--" + verb`,
 ///   `"--\(mode)"`, a `let forceFlag = "--" + "force"`, a flag read from config or passed in
 ///   by a caller, a `[String]` built in another function and handed over. This is the real
 ///   hole, and nothing short of a Swift parser plus dataflow would close it. Argument vectors
 ///   in `GitCore` are written as literals by convention precisely so this scanner can see
 ///   them; a reviewer must still read any code that departs from that.
+///
+///   A flag chosen by a *ternary between literals* — `["merge", cond ? "--squash" : "--ff", b]`
+///   — used to be in this bucket too and no longer is: such an element has no single value, and
+///   the lexer once discarded it whole rather than keeping the literals inside. Both are now
+///   checked (`catchesAFlagHiddenInsideATernaryElement`). `CLIGitBackend+Merge.swift` still
+///   spells each mode's vector as one complete literal chosen by a `switch`, because reading
+///   what reaches git should not depend on the scanner being clever.
 /// - **`-M` is not in the fragment union**, because `commitDiff`'s legitimate
 ///   `["--no-commit-id", "-p", "-U3", "-M", "-r"]` is itself a fragment and `-M` there means
 ///   rename detection. `branch -M` is still caught in a classified array. A future
@@ -55,13 +65,19 @@ enum ForceFlagScanner {
         }
 
         for arguments in argumentArrays(in: source, code: code) {
-            let literals = arguments.compactMap { $0 }
+            // Every literal in every element, not one per element: a flag chosen by a ternary
+            // (`cond ? "--squash" : "--merge"`) lives in an element that has no single value,
+            // and used to be skipped entirely. Order is preserved, and a classified array's
+            // first element holds exactly one literal, so `dropFirst()` below still drops the
+            // subcommand and nothing else.
+            let literals = arguments.flatMap(\.literals)
 
             // Classified only when the array begins with a literal that is not itself a flag.
             // Anything else — `a += ["--merge"]`, `[repoFlag, "switch", "--ours"]`,
-            // `["-C", dir, "switch", "--merge", b]` — is a FRAGMENT: it cannot be attributed
-            // to a subcommand, so it is checked against the union instead.
-            guard let subcommand = arguments.first ?? nil, !subcommand.hasPrefix("-") else {
+            // `["-C", dir, "switch", "--merge", b]`, `[cond ? "--ff" : "--no-ff", b]` — is a
+            // FRAGMENT: it cannot be attributed to a subcommand, so it is checked against the
+            // union instead.
+            guard let subcommand = arguments.first?.value, !subcommand.hasPrefix("-") else {
                 findings += fragmentFindings(literals)
                 continue
             }
@@ -133,7 +149,13 @@ enum ForceFlagScanner {
             "--worktree": "overwrites files on disk", "-W": "overwrites files on disk",
             "--source": "overwrites files on disk from another commit",
         ],
-        "merge": ["-f": "force", "--force": "force"],
+        "merge": [
+            "-f": "force", "--force": "force",
+            "-X": "a strategy option resolves conflicts by discarding one side",
+            "--strategy-option": "resolves conflicts by discarding one side",
+            "--autostash": "moves the user's changes somewhere they did not ask for",
+            "--allow-unrelated-histories": "overrides a refusal the user should see instead",
+        ],
     ]
 
     /// What a *fragment* is checked against: the union of every table above, because a

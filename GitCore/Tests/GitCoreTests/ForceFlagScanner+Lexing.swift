@@ -96,11 +96,23 @@ extension ForceFlagScanner {
         return result
     }
 
-    /// Each `[...]` array literal's top-level elements: the literal's value, or nil for an
-    /// element that is not a plain string literal.
-    static func argumentArrays(in source: String, code: [Character]) -> [[String?]] {
+    /// One top-level element of an array literal.
+    ///
+    /// Two different questions are asked of an element, and conflating them is what let a flag
+    /// hide inside a ternary: `value` answers "is this element exactly one string literal?",
+    /// which is what identifies a git subcommand, while `literals` answers "which string
+    /// literals appear anywhere in here?", which is what has to be checked against the rules.
+    /// For a plain `"switch"` the two agree; for `cond ? "--squash" : "--merge"` the value is
+    /// nil and `literals` holds both.
+    struct ArrayElement {
+        let value: String?
+        let literals: [String]
+    }
+
+    /// Each `[...]` array literal's top-level elements.
+    static func argumentArrays(in source: String, code: [Character]) -> [[ArrayElement]] {
         let raw = Array(source)
-        var result: [[String?]] = []
+        var result: [[ArrayElement]] = []
 
         for open in code.indices where code[open] == "[" {
             var depth = 0
@@ -122,21 +134,21 @@ extension ForceFlagScanner {
 
     static func elements(
         raw: [Character], code: [Character], from start: Int, to end: Int
-    ) -> [String?] {
-        var elements: [String?] = []
+    ) -> [ArrayElement] {
+        var elements: [ArrayElement] = []
         var current: [Character] = []
-        var currentLiteral: String?
-        var literalCount = 0
+        var found: [String] = []
         var depth = 0
         var index = start
 
         func flush() {
             let trimmed = String(current).trimmingCharacters(in: .whitespacesAndNewlines)
-            elements.append(literalCount == 1 && trimmed.hasPrefix("\"") && trimmed.hasSuffix("\"")
-                ? currentLiteral : nil)
+            let isLoneLiteral =
+                found.count == 1 && trimmed.hasPrefix("\"") && trimmed.hasSuffix("\"")
+            elements.append(
+                ArrayElement(value: isLoneLiteral ? found[0] : nil, literals: found))
             current = []
-            currentLiteral = nil
-            literalCount = 0
+            found = []
         }
 
         while index < end {
@@ -148,8 +160,9 @@ extension ForceFlagScanner {
                 var stop = index + 1
                 while stop < end, code[stop] != "\"" { stop += 1 }
                 guard stop < end else { break }
-                currentLiteral = String(raw[(index + 1)..<stop])
-                literalCount += 1
+                // Every literal in the element is kept, not just the last one: a ternary
+                // between two flags puts two here, and both must be checked.
+                found.append(String(raw[(index + 1)..<stop]))
                 current += ["\"", "\""]
                 index = stop + 1
                 continue
