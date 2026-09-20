@@ -1,0 +1,2 @@
+fatal: cannot switch branch while merging
+Consider "git merge --quit" or "git worktree add".

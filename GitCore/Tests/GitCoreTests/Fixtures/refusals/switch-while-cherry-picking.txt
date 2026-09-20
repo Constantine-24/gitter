@@ -1,0 +1,2 @@
+fatal: cannot switch branch while cherry-picking
+Consider "git cherry-pick --quit" or "git worktree add".

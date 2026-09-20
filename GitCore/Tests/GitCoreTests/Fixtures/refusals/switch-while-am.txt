@@ -1,0 +1,2 @@
+fatal: cannot switch branch in the middle of an am session
+Consider "git am --quit" or "git worktree add".

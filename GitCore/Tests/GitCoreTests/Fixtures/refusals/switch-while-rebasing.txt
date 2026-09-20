@@ -1,0 +1,2 @@
+fatal: cannot switch branch while rebasing
+Consider "git rebase --quit" or "git worktree add".
