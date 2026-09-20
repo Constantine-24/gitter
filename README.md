@@ -129,10 +129,12 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `confirmleave` | answer the "leaving a detached HEAD" confirmation a previous step opened |
 | `sheet:new` / `sheet:rename:<b>` / `sheet:merge:<b>` / `sheet:delete:<b>` / `sheet:abort` | open a sheet without acting |
 
-After every step one line goes to stderr, which is what a shell asserts on:
+After every step one line goes to stderr, which is what a shell asserts on. `head` and
+`selection` ride along because neither can be read out of git, and "the selection returns to
+the working copy" is part of what these actions promise:
 
 ```
-BRANCH_ACTION result: <sheet or nil> | notice: <…> | error: <…>
+BRANCH_ACTION result: <sheet or nil> | notice: <…> | error: <…> | head: <…> | selection: <…>
 ```
 
 The click and key variables wait for the window to actually become key first, and activate

@@ -251,6 +251,9 @@ final class RepositoryStore {
             lastError = nil
             errorIsSticky = false
         }
+        // Same for a success notice, which would otherwise sit next to this attempt's banner
+        // claiming the previous action worked — true, but read as if it were about this one.
+        dismissNotice()
         return generation
     }
 

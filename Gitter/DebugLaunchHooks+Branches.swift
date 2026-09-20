@@ -21,9 +21,12 @@
     /// `confirmleave` answer the sheet the previous step opened, which is why several steps in
     /// one launch matter: a confirmation cannot be reached any other way.
     ///
-    /// After every step one line goes to stderr:
+    /// After every step one line goes to stderr. `head` and `selection` ride along because the
+    /// store's own answer to "where are we now" cannot be read from git, and "the selection
+    /// returns to the working copy" is part of what these actions promise:
     ///
-    ///   BRANCH_ACTION result: <sheet or nil> | notice: <…> | error: <…>
+    ///   BRANCH_ACTION result: <sheet or nil> | notice: <…> | error: <…> | head: <…> |
+    ///   selection: <…>
     extension DebugLaunchHooks {
 
         static var branchActionSpec: String? {
@@ -40,7 +43,8 @@
                 _ = await wait({ !store.isMutating })
                 log(
                     "result: \(describe(store.activeSheet)) | notice: \(store.notice ?? "nil") "
-                        + "| error: \(store.lastError?.replacingOccurrences(of: "\n", with: " ") ?? "nil")")
+                        + "| error: \(store.lastError?.replacingOccurrences(of: "\n", with: " ") ?? "nil") "
+                        + "| head: \(store.headLabel) | selection: \(store.selection)")
             }
         }
 
