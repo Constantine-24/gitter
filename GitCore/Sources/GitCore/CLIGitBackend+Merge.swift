@@ -43,7 +43,10 @@ extension CLIGitBackend {
             // "this merge conflicted" when in fact it never started.
             guard case .commandFailed(_, let stderr) = error else { throw error }
             if let refusal = BranchRefusalParser.parse(stderr: stderr) { throw refusal }
-            guard try await hasUnmergedEntries(at: root) else { throw error }
+            // `try?`, not `try`: if asking about unmerged entries fails for its own reason,
+            // that error must not replace the one git actually reported about the merge. An
+            // unanswerable question falls back to "no conflicts", which rethrows git's words.
+            guard (try? await hasUnmergedEntries(at: root)) == true else { throw error }
             return .conflicts
         }
         return try await outcome(of: branch, mode: mode, headBefore: headBefore, at: root)
@@ -96,13 +99,19 @@ extension CLIGitBackend {
         }
     }
 
-    /// The commit `revision` resolves to, or "" in a repository with no commits — which is what
-    /// `rev-parse --verify HEAD` reports there (exit 128, "Needed a single revision"), and a
-    /// state a merge can legitimately be attempted from.
+    /// The **commit** `revision` resolves to, or "" in a repository with no commits — which is
+    /// what `rev-parse --verify HEAD^{commit}` reports there (exit 128, "Needed a single
+    /// revision"), and a state a merge can legitimately be attempted from.
+    ///
+    /// `^{commit}` is not decoration. An *annotated* tag resolves to the tag object's sha,
+    /// which is never what HEAD points at after a merge, so comparing an unpeeled `v2` against
+    /// HEAD would report a plain single-parent fast-forward as `.merged`. Verified on git 2.54:
+    /// the peel is applied after `--end-of-options` (the suffix is part of the revision, not an
+    /// option), and it is a no-op for a branch, a lightweight tag or a raw sha.
     private func revision(_ revision: String, at root: URL) async throws -> String {
         do {
             let data = try await run(
-                ["rev-parse", "--verify", "--end-of-options", revision], cwd: root)
+                ["rev-parse", "--verify", "--end-of-options", revision + "^{commit}"], cwd: root)
             return String(decoding: data, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         } catch GitError.commandFailed(exitCode: 128, stderr: _) {

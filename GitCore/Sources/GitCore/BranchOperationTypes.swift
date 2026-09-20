@@ -100,8 +100,15 @@ public enum MergeOutcome: Sendable, Hashable {
     case fastForwarded
     /// A new commit with two parents, the first being where HEAD was.
     case merged
-    /// HEAD did not move; the branch's whole change is staged and `SQUASH_MSG` is written, so
-    /// the snapshot reports `RepositoryOperation.squash` until the user commits it.
+    /// HEAD did not move; the branch's change is staged and `SQUASH_MSG` is written, so the
+    /// snapshot reports `RepositoryOperation.squash` until the user commits it.
+    ///
+    /// The staged change **may be empty**: a branch that changed a file and then changed it
+    /// back is not an ancestor of HEAD, so there is something to squash, but its net diff is
+    /// nothing. Verified on git 2.54 — exit 0, `SQUASH_MSG` written, nothing staged. This is
+    /// still `.squashed` rather than `.alreadyUpToDate`, because the `SQUASH_MSG` git left
+    /// behind is real and the snapshot reports `.squash` regardless; the way out is undoing the
+    /// squash, not a different answer here.
     case squashed
     /// Unmerged entries are in the index and the worktree holds conflict markers. For a normal
     /// merge `MERGE_HEAD` is set and the snapshot reports `.merge`; for a squash there is no

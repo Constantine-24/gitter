@@ -191,8 +191,14 @@ public protocol GitBranchBackend: Sendable {
     /// file stands in the way, `.indexNotClean` when a true merge finds anything staged (see
     /// that case — it fires even for files the merge does not touch), `.operationInProgress`
     /// when a merge is already part-way through, `.noSuchBranch` for a name git cannot resolve,
-    /// `.invalidName` before git runs for a name that would be read as an option, and plain
-    /// `GitError.commandFailed` with git's own words for anything else — unrelated histories,
-    /// for one.
+    /// and `.invalidName` before git runs for a name that would be read as an option.
+    ///
+    /// **A throw does not by itself mean nothing changed.** Every `BranchOperationError` above
+    /// is a refusal and leaves the repository untouched, but `GitError.commandFailed` — git's
+    /// own words, for anything Gitter does not recognise — covers both kinds. Unrelated
+    /// histories changes nothing; a `pre-merge-commit` or `commit-msg` hook that exits non-zero
+    /// fails the merge *after* git resolved it, leaving `MERGE_HEAD` set and the result staged
+    /// (verified on git 2.54). A caller must not render every throw as "your work is untouched";
+    /// the snapshot's `operationInProgress` is what says whether a merge is now under way.
     func merge(_ branch: String, mode: MergeMode, at root: URL) async throws -> MergeOutcome
 }
