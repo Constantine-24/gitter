@@ -2,13 +2,14 @@ import GitCore
 
 /// What the UI says about an operation the repository is part-way through.
 ///
-/// Kept out of `GitCore`, which has no opinion about wording, and out of the two views that
-/// need it, which would otherwise have to agree on four strings each by hand.
+/// Kept out of `GitCore`, which has no opinion about wording, and out of the views that need
+/// it, which would otherwise have to agree on five strings each by hand.
 ///
-/// Every message names a way *forward* — commit, or continue — and a way out, because the app
-/// offers neither an abort nor a `--continue` button: the only honest advice for those is a
-/// terminal. Only a merge, cherry-pick and revert are finished by committing; a rebase is
-/// merely advanced by it, and says so.
+/// Every message names a way *forward* and a way out, because the app offers neither an abort
+/// nor a `--continue` button: the only honest advice for those is a terminal. A merge,
+/// cherry-pick and revert are finished by committing. A rebase is only advanced by it — the
+/// commit lands and `git rebase --continue` then moves on to the next one. `git am` is not
+/// advanced by it at all: `git am --continue` does the commit itself.
 extension RepositoryOperation {
 
     /// Sentence-initial: every use of it starts a line.
@@ -18,6 +19,22 @@ extension RepositoryOperation {
         case .cherryPick: "Cherry-pick"
         case .revert: "Revert"
         case .rebase: "Rebase"
+        case .applyingPatches: "Patch application"
+        }
+    }
+
+    /// The commit button's title while this is in progress.
+    ///
+    /// It replaces the file count, which mid-operation says the wrong thing: with everything
+    /// resolved and staged, "Commit 1 File" describes a one-file commit and hides that this is
+    /// the merge concluding. Where the commit does not conclude the operation, the title stays
+    /// the plain verb rather than claiming otherwise.
+    var commitButtonTitle: String {
+        switch self {
+        case .merge: "Commit Merge"
+        case .cherryPick: "Commit Cherry-Pick"
+        case .revert: "Commit Revert"
+        case .rebase, .applyingPatches: "Commit"
         }
     }
 
@@ -27,28 +44,38 @@ extension RepositoryOperation {
     /// everything resolved but the operation still open — the case where nothing is unmerged
     /// and the old gate let go.
     func note(hasConflicts: Bool) -> String {
+        let lead = "\(noun) in progress"
+        let finish =
+            switch self {
+            case .merge, .cherryPick, .revert: "commit."
+            case .rebase: "commit, then run `git rebase --continue` in a terminal."
+            case .applyingPatches: "run `git am --continue` in a terminal."
+            }
         if hasConflicts {
-            return "\(noun) in progress — resolve conflicts in your editor, stage the files, then commit."
+            return "\(lead) — resolve conflicts in your editor, stage the files, then \(finish)"
         }
         switch self {
         case .merge, .cherryPick, .revert:
-            return "\(noun) in progress — commit to complete it."
-        case .rebase:
-            return "Rebase in progress — commit, then run `git rebase --continue` in a terminal."
+            return "\(lead) — commit to complete it."
+        case .rebase, .applyingPatches:
+            return "\(lead) — \(finish)"
         }
     }
 
-    /// The tooltip on "Unstage All" and on a staged row's "−" while this is in progress.
+    /// The tooltip on "Unstage All", on a staged row's "−", and on a hunk button that would
+    /// take a whole file back out of the index.
     var unstagingBlockedHelp: String {
+        "Unstaging would abandon the \(noun.lowercased()). \(wayOut)"
+    }
+
+    private var wayOut: String {
         switch self {
-        case .merge:
-            "Unstaging would abandon the merge. Commit to complete it, or run `git merge --abort` in a terminal."
-        case .cherryPick:
-            "Unstaging would abandon the cherry-pick. Commit to complete it, or run `git cherry-pick --abort` in a terminal."
-        case .revert:
-            "Unstaging would abandon the revert. Commit to complete it, or run `git revert --abort` in a terminal."
-        case .rebase:
-            "Unstaging would abandon the rebase. Commit the resolution, or run `git rebase --abort` in a terminal."
+        case .merge: "Commit to complete it, or run `git merge --abort` in a terminal."
+        case .cherryPick: "Commit to complete it, or run `git cherry-pick --abort` in a terminal."
+        case .revert: "Commit to complete it, or run `git revert --abort` in a terminal."
+        case .rebase: "Commit the resolution, or run `git rebase --abort` in a terminal."
+        case .applyingPatches:
+            "Run `git am --continue` to carry on, or `git am --abort`, in a terminal."
         }
     }
 }

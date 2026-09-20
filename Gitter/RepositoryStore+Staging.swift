@@ -13,8 +13,10 @@ extension RepositoryStore {
     /// Files with an index-side change. A file changed on both sides appears in both lists.
     ///
     /// An unmerged file counts as staged (`staged == .unmerged`) although its index entry is a
-    /// conflict, not a change: counted, it keeps `commitButtonTitle` off "Commit All Tracked"
-    /// mid-merge, where `git commit -a` would commit the conflict markers verbatim.
+    /// conflict, not a change — which is what the list shows and what the count says. It used
+    /// to be load-bearing for keeping `commitButtonTitle` off "Commit All Tracked" mid-merge;
+    /// that now follows from `operationInProgress` instead, and holds after the last conflict
+    /// is resolved too, which this could never cover.
     var stagedFiles: [FileStatus] {
         snapshot?.status.files.filter { $0.staged != nil } ?? []
     }
@@ -71,6 +73,10 @@ extension RepositoryStore {
 
     var commitButtonTitle: String {
         if draft.amend { return "Amend Commit" }
+        // Mid-operation the count is the wrong thing to say, and "Commit All Tracked" is an
+        // outright lie: the commit that concludes a merge takes the index as it stands and
+        // never sweeps the worktree. See `commit()`.
+        if let operation = operationInProgress { return operation.commitButtonTitle }
         switch stagedFiles.count {
         case 0: return "Commit All Tracked"
         case 1: return "Commit 1 File"
@@ -183,7 +189,14 @@ extension RepositoryStore {
         // With nothing staged, commit every tracked modification and deletion (`git commit
         // -a`), which never sweeps in untracked files. Amending keeps HEAD's tree instead.
         // When there is nothing to commit at all, git says so and that becomes the banner.
-        let allTracked = stagedFiles.isEmpty && !amend
+        //
+        // Never mid-operation, though: `git commit -a` there concludes the merge *and* folds
+        // in every unrelated dirty tracked file, which is not what "finish this merge" means
+        // and cannot be undone by the user from here. Plain `git commit` is also the right
+        // command when nothing is staged mid-merge, which is a real state — a conflict
+        // resolved exactly to our side leaves the index matching HEAD, and git still writes
+        // the two-parent commit.
+        let allTracked = stagedFiles.isEmpty && !amend && operationInProgress == nil
 
         mutate { backend, root in
             _ = try await backend.commit(
