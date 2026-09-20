@@ -170,6 +170,25 @@ public protocol GitBranchBackend: Sendable {
     ///   as "safe to delete".
     func commitsOnlyOn(branch: String, at root: URL) async throws -> Int
 
+    /// How many commits are reachable from HEAD but from **no branch, tag or remote-tracking
+    /// ref** — the commits a move of HEAD would strand.
+    ///
+    /// `git rev-list --count HEAD --not --branches --tags --remotes`. Meaningful only while HEAD
+    /// is detached: on a branch the branch itself references HEAD, so the answer is 0 by
+    /// construction, and an unborn HEAD (where `rev-list HEAD` exits 128) is 0 because there is
+    /// nothing there at all.
+    ///
+    /// This backs the fourth loss-capable action in the design doc. `deleteBranch`'s doc comment
+    /// describes how the state is reached: detached exactly at a branch's tip, `git branch -d`
+    /// deletes that branch without complaint (git calls it merged into HEAD), and the next
+    /// switch leaves its commits to the reflog with only a stderr warning. The store asks this
+    /// before every action that would move HEAD *away* from a detached HEAD and, when it is
+    /// non-zero, confirms first.
+    ///
+    /// Deliberately not `--all`: that would include HEAD itself (and the stash), making the
+    /// answer always 0. The three ref namespaces are named explicitly instead.
+    func unreferencedCommitCount(at root: URL) async throws -> Int
+
     /// Merge `branch` into whatever HEAD is (a branch, or a detached HEAD — git allows both and
     /// so does this), the way `mode` says.
     ///

@@ -48,6 +48,30 @@ extension CLIGitBackend {
         return count
     }
 
+    public func unreferencedCommitCount(at root: URL) async throws -> Int {
+        // `--branches --tags --remotes` rather than `--all`: `--all` pretends HEAD is listed
+        // too (verified on git 2.54 — see `commitsOnlyOn`'s doc comment), which would make this
+        // answer 0 in exactly the situation it exists to detect. No `--end-of-options` for the
+        // same reason as `commitsOnlyOn`: it would stop option parsing for the rest of the argv
+        // and turn `--not`/`--branches` into revisions. Nothing here is user input.
+        do {
+            let data = try await run(
+                ["rev-list", "--count", "HEAD", "--not", "--branches", "--tags", "--remotes"],
+                cwd: root)
+            let text = String(decoding: data, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let count = Int(text) else {
+                throw GitError.commandFailed(
+                    exitCode: -1, stderr: "unexpected rev-list --count output: \(text)")
+            }
+            return count
+        } catch GitError.commandFailed(exitCode: 128, stderr: _) {
+            // An unborn HEAD: "fatal: ambiguous argument 'HEAD'". No commits exist, so nothing
+            // can be stranded — the honest answer is 0, not an error the caller must decode.
+            return 0
+        }
+    }
+
     // MARK: - Helpers
 
     /// The branch HEAD is on, or nil when HEAD is detached. `--short -q`: quiet so a detached
