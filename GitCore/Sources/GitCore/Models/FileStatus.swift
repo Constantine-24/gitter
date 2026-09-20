@@ -51,6 +51,16 @@ public struct FileStatus: Sendable, Hashable, Identifiable {
     }
 }
 
+/// A multi-step git operation the repository is part-way through.
+///
+/// None of these can be read off the index: once the last conflict is resolved and staged, the
+/// status has no unmerged entry left while the operation is still open. Each is recorded in the
+/// git directory instead — and each is lost or damaged by `git reset`, which is why the app
+/// asks about them at all.
+public enum RepositoryOperation: Sendable, Hashable {
+    case merge, cherryPick, revert, rebase
+}
+
 public struct WorkingCopyStatus: Sendable, Hashable {
     public let headSha: String?          // nil in an empty repo ("(initial)")
     public let branch: String?           // nil when detached ("(detached)")
@@ -58,14 +68,29 @@ public struct WorkingCopyStatus: Sendable, Hashable {
     public let ahead: Int
     public let behind: Int
     public let files: [FileStatus]
+    /// Set by the backend, not by `StatusParser`: porcelain v2 does not report it.
+    public let operationInProgress: RepositoryOperation?
 
-    public init(headSha: String?, branch: String?, upstream: String?, ahead: Int, behind: Int, files: [FileStatus]) {
+    public init(
+        headSha: String?, branch: String?, upstream: String?, ahead: Int, behind: Int,
+        files: [FileStatus], operationInProgress: RepositoryOperation? = nil
+    ) {
         self.headSha = headSha
         self.branch = branch
         self.upstream = upstream
         self.ahead = ahead
         self.behind = behind
         self.files = files
+        self.operationInProgress = operationInProgress
+    }
+
+    /// The same status with `operationInProgress` replaced — how the backend completes what
+    /// the parser could not know.
+    public func with(operationInProgress: RepositoryOperation?) -> WorkingCopyStatus {
+        WorkingCopyStatus(
+            headSha: headSha, branch: branch, upstream: upstream, ahead: ahead, behind: behind,
+            files: files, operationInProgress: operationInProgress
+        )
     }
 
     public static let empty = WorkingCopyStatus(headSha: nil, branch: nil, upstream: nil, ahead: 0, behind: 0, files: [])

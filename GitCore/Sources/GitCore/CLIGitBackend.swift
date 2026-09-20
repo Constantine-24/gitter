@@ -34,8 +34,12 @@ public struct CLIGitBackend: GitBackend {
         async let statusData = run(["status", "--porcelain=v2", "-z", "--branch"], cwd: root)
         async let refData = run(["for-each-ref", "--format=\(Self.refFormat)"], cwd: root)
         async let commits = commitLog(at: root)
+        // Porcelain v2 says nothing about a merge, cherry-pick, revert or rebase that is
+        // part-way through, so that comes from its own commands alongside these.
+        async let operation = operationInProgress(at: root)
 
         let status = StatusParser.parse(try await statusData)
+            .with(operationInProgress: try await operation)
         let refs = RefParser.parse(try await refData)
         let log = try await commits
         let graph = GraphLayout.layout(log)
