@@ -86,16 +86,18 @@ struct DiffHunkView: View {
                 // `blocked` is the other reason: this selection covers a whole added file, so
                 // it would run `git restore --staged` rather than a patch — see
                 // `operationBlocksApplying`.
-                .disabled(store.isMutating || blocked)
-                .helpIfPresent(blocked ? store.operationInProgress?.unstagingBlockedHelp : nil)
+                .disabled(
+                    store.isMutating || blocked,
+                    help: blocked ? store.operationInProgress?.unstagingBlockedHelp : nil)
             } else {
                 let ids = selection.ids(for: hunk)
                 let blocked = store.operationBlocksApplying(file, hunkIDs: [hunk.id], lineIDs: ids)
                 Button(lineButtonTitle(selectedCount)) {
                     store.applyLines(ids, of: hunk, in: file)
                 }
-                .disabled(store.isMutating || blocked)
-                .helpIfPresent(blocked ? store.operationInProgress?.unstagingBlockedHelp : nil)
+                .disabled(
+                    store.isMutating || blocked,
+                    help: blocked ? store.operationInProgress?.unstagingBlockedHelp : nil)
                 // Clearing writes nothing to git, so a mutation in flight is no reason to
                 // refuse it — dropping a selection is exactly what a user does while waiting.
                 Button("Clear") { selection.clear(hunk) }

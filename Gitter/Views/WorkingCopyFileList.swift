@@ -93,10 +93,9 @@ struct WorkingCopyFileList: View {
                 Spacer()
                 Button(actionTitle, action: action)
                     .buttonStyle(.borderless)
-                    .disabled(files.isEmpty || store.isMutating || actionDisabled)
                     // A disabled button still shows its tooltip, which is the only place the
                     // reason for the gate is written down next to the control itself.
-                    .helpIfPresent(actionHelp)
+                    .disabled(files.isEmpty || store.isMutating || actionDisabled, help: actionHelp)
             }
         }
     }
@@ -142,8 +141,7 @@ struct WorkingCopyFileList: View {
                 Image(systemName: staged ? "minus.circle" : "plus.circle")
             }
             .buttonStyle(.borderless)
-            .disabled(store.isMutating || blocked)
-            .help(help(staged: staged, blocked: blocked))
+            .disabled(store.isMutating || blocked, help: help(staged: staged, blocked: blocked))
             .accessibilityLabel(staged ? "Unstage \(file.path)" : "Stage \(file.path)")
 
             ChangeBadge(kind: staged ? file.staged : file.unstaged)

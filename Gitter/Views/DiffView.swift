@@ -103,6 +103,20 @@ extension View {
         if let text { help(text) } else { self }
     }
 
+    /// Disables the control but keeps its tooltip.
+    ///
+    /// A disabled `NSControl` does not track the mouse, so a `.help` attached directly to a
+    /// disabled control never shows. The wrapper here stays enabled and hit-testable and
+    /// carries the tooltip instead; the (possibly disabled) control just sits inside it.
+    /// `HStack(spacing: 0)` around a single child adds no size or padding of its own, so this
+    /// changes nothing about layout, and it adds no gesture of its own, so a click still reaches
+    /// the control underneath when it is enabled.
+    func disabled(_ isDisabled: Bool, help text: String?) -> some View {
+        HStack(spacing: 0) { self.disabled(isDisabled) }
+            .contentShape(.rect)
+            .helpIfPresent(text)
+    }
+
     /// Fills a header row to the width of the diff pane, so whatever sits at its trailing edge
     /// — the stage buttons — has the full pane to lay out in.
     ///
