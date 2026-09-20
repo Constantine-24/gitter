@@ -10,6 +10,12 @@ import SwiftUI
 struct WorkingCopyFileList: View {
     @Environment(RepositoryStore.self) private var store
 
+    /// Clicking a row selects it but does *not* make the list the window's first responder —
+    /// the window itself keeps focus, so the row draws in the unemphasized grey and
+    /// `.onKeyPress(.space)` never fires. Claiming focus on every click through the list is
+    /// what puts it right, a click on the already-selected row included.
+    @FocusState private var isFocused: Bool
+
     var body: some View {
         List(selection: rowSelection) {
             section(
@@ -32,6 +38,10 @@ struct WorkingCopyFileList: View {
             )
         }
         .listStyle(.inset)
+        .focused($isFocused)
+        // Simultaneous, so it rides along with the list's own click handling rather than
+        // replacing it: the row still selects, and `primaryAction` still gets its double click.
+        .simultaneousGesture(TapGesture().onEnded { isFocused = true })
         // Staging the selected file moves it to the other section, which deletes the row the
         // selection points at. Both lists are watched because either can be the one the
         // selected path just left; `initial` covers coming back from a commit, where a path

@@ -16,6 +16,9 @@ enum CommitRow: Identifiable, Hashable {
 
 struct CommitListView: View {
     @Environment(RepositoryStore.self) private var store
+    /// See `WorkingCopyFileList.isFocused`: a click selects a row without making the table the
+    /// window's first responder, which leaves the row drawn in the unemphasized grey.
+    @FocusState private var isFocused: Bool
 
     var body: some View {
         let rows = rows()
@@ -95,6 +98,8 @@ struct CommitListView: View {
             .width(min: 64, ideal: 74)
         }
         .tableStyle(.inset)
+        .focused($isFocused)
+        .simultaneousGesture(TapGesture().onEnded { isFocused = true })
     }
 
     private var graphWidth: CGFloat {

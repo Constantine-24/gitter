@@ -6,6 +6,9 @@ import SwiftUI
 /// the diff below.
 struct DetailView: View {
     @Environment(RepositoryStore.self) private var store
+    /// See `WorkingCopyFileList.isFocused`: without this the commit's file list keeps drawing
+    /// its selection in the unemphasized grey, since a click never focuses it.
+    @FocusState private var isFileListFocused: Bool
 
     var body: some View {
         // One split view for both selections: switching to a commit and back replaces its
@@ -107,6 +110,8 @@ struct DetailView: View {
             .tag(file.path)
         }
         .listStyle(.inset)
+        .focused($isFileListFocused)
+        .simultaneousGesture(TapGesture().onEnded { isFileListFocused = true })
         .overlay {
             if store.detailFiles.isEmpty {
                 ContentUnavailableView("No Files", systemImage: "doc")
