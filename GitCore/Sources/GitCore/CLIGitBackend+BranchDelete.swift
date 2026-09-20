@@ -65,9 +65,19 @@ extension CLIGitBackend {
                     exitCode: -1, stderr: "unexpected rev-list --count output: \(text)")
             }
             return count
-        } catch GitError.commandFailed(exitCode: 128, stderr: _) {
-            // An unborn HEAD: "fatal: ambiguous argument 'HEAD'". No commits exist, so nothing
-            // can be stranded — the honest answer is 0, not an error the caller must decode.
+        } catch GitError.commandFailed(exitCode: 128, let stderr)
+            where stderr.contains("ambiguous argument 'HEAD'")
+        {
+            // An unborn HEAD, and only that: verified on git 2.54 under `LC_ALL=C` (which
+            // `ProcessRunner` sets), "fatal: ambiguous argument 'HEAD': unknown revision or path
+            // not in the working tree." No commits exist, so nothing can be stranded and the
+            // honest answer is 0.
+            //
+            // Every other exit 128 is rethrown on purpose. "not a git repository" is one of
+            // them, with different words. This number is the only input to the confirmation
+            // standing between the user and losing commits, so a question that could not be
+            // asked must fail **closed** — the caller declines to act and shows the error —
+            // rather than answering 0 and skipping the confirmation silently.
             return 0
         }
     }

@@ -60,12 +60,30 @@ import Testing
         #expect(try await backend.unreferencedCommitCount(at: repo.root) == 0)
     }
 
-    /// An unborn HEAD has no commits at all. `rev-list HEAD` exits 128 there ("ambiguous
-    /// argument 'HEAD'"), which is not a failure worth propagating: there is nothing to strand.
+    /// An unborn HEAD has no commits at all. `rev-list HEAD` exits 128 there — verified on git
+    /// 2.54 under `LC_ALL=C`: "fatal: ambiguous argument 'HEAD': unknown revision or path not in
+    /// the working tree." — which is not a failure worth propagating: there is nothing to strand.
     @Test func isZeroOnAnUnbornHead() async throws {
         let repo = try await TestRepo.makeEmpty()
         defer { repo.cleanUp() }
 
         #expect(try await backend.unreferencedCommitCount(at: repo.root) == 0)
+    }
+
+    /// Every *other* exit 128 must throw, so the guard that calls this fails **closed**.
+    ///
+    /// This count is the only input to a confirmation that stands between the user and losing
+    /// commits; answering 0 for a question that could not be asked would skip that confirmation
+    /// silently. "Not a git repository" is another exit 128 with different words (verified the
+    /// same way), which is exactly the shape a blanket `catch` would have swallowed.
+    @Test func propagatesAnExitCode128ThatIsNotAnUnbornHead() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitter-not-a-repo-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        await #expect(throws: GitError.self) {
+            _ = try await backend.unreferencedCommitCount(at: directory)
+        }
     }
 }

@@ -175,8 +175,13 @@ public protocol GitBranchBackend: Sendable {
     ///
     /// `git rev-list --count HEAD --not --branches --tags --remotes`. Meaningful only while HEAD
     /// is detached: on a branch the branch itself references HEAD, so the answer is 0 by
-    /// construction, and an unborn HEAD (where `rev-list HEAD` exits 128) is 0 because there is
-    /// nothing there at all.
+    /// construction, and an unborn HEAD is 0 because there is nothing there at all.
+    ///
+    /// **It throws rather than guessing.** An unborn HEAD is recognised by git's own words
+    /// ("ambiguous argument 'HEAD'", exit 128); every other failure — including the other exit
+    /// 128, "not a git repository" — propagates. This number is the only input to the
+    /// confirmation that stands between the user and losing commits, so a question that could
+    /// not be asked must fail closed, never answer 0.
     ///
     /// This backs the fourth loss-capable action in the design doc. `deleteBranch`'s doc comment
     /// describes how the state is reached: detached exactly at a branch's tip, `git branch -d`
