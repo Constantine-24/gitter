@@ -11,7 +11,7 @@ import Foundation
 /// instead, which is what protects that position.
 extension CLIGitBackend: GitBranchBackend {
     public func validateBranchName(_ name: String, at root: URL) async throws -> Bool {
-        guard isPlausibleName(name) else { return false }
+        guard isPlausibleName(name), !meansSomethingElse(name) else { return false }
         do {
             _ = try await run(["check-ref-format", "--branch", name], cwd: root)
             return true
@@ -117,6 +117,17 @@ extension CLIGitBackend: GitBranchBackend {
     /// a ref may contain are the only ones that matter.
     private func isPlausibleName(_ name: String) -> Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !name.hasPrefix("-")
+    }
+
+    /// Names `git check-ref-format --branch` accepts but that do not mean what the user typed.
+    /// All four verified on git 2.54 (see `validateBranchName`'s doc comment): `refs/heads/x`
+    /// becomes `refs/heads/refs/heads/x`, `heads/y` becomes `refs/heads/heads/y`, `@{-1}`
+    /// expands to another branch's name, and `@` is a branch nobody can refer to clearly.
+    ///
+    /// Prefix matching only, so names that merely resemble these — `refsx`, `headsy`,
+    /// `my-refs/heads`, `a@b` — stay valid.
+    private func meansSomethingElse(_ name: String) -> Bool {
+        name.hasPrefix("refs/") || name.hasPrefix("heads/") || name.contains("@{") || name == "@"
     }
 
     private func requireName(_ name: String) throws {

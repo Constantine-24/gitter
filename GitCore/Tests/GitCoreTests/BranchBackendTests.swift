@@ -26,6 +26,27 @@ import Testing
         #expect(try await backend.validateBranchName(name, at: repo.root) == false)
     }
 
+    /// Names `check-ref-format --branch` accepts but that mean something other than what the
+    /// user typed. Verified on git 2.54: `git branch refs/heads/x` creates
+    /// `refs/heads/refs/heads/x`, `git branch heads/y` creates `refs/heads/heads/y`, `@{-1}`
+    /// expands to the previously checked-out branch's name, and `@` is a valid-but-baffling
+    /// branch name. All rejected before git runs.
+    @Test(arguments: ["refs/heads/x", "refs/tags/x", "heads/y", "@{-1}", "a@{u}", "@"])
+    func rejectsNamesThatGitAcceptsButWouldMisread(name: String) async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        #expect(try await backend.validateBranchName(name, at: repo.root) == false)
+    }
+
+    /// The rejections above are Gitter's, not git's, so they must not swallow names that only
+    /// *look* similar.
+    @Test(arguments: ["refsx", "heads", "headsy", "my-refs/heads", "a@b", "b@"])
+    func stillAcceptsNamesThatMerelyResembleThoseShapes(name: String) async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        #expect(try await backend.validateBranchName(name, at: repo.root) == true)
+    }
+
     @Test func validatingANameNeverTouchesTheRepository() async throws {
         let repo = try await TestRepo.makeBranched()
         defer { repo.cleanUp() }

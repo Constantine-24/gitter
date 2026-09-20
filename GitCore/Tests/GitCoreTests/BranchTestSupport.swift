@@ -50,20 +50,21 @@ extension TestRepo {
         try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
     }
 
-    /// Adds an `origin` (a bare repo beside this one) holding `main` and `feat/x`, with no
-    /// local `feat/x`. Returns the origin's URL so the caller can clean it up.
+    /// Adds a remote (a bare repo beside this one) holding `main` and `feat/x`, with no local
+    /// `feat/x`. Returns the remote's URL so the caller can clean it up. `named` exists so a
+    /// test can use a remote whose own name contains a slash.
     @discardableResult
-    func addOriginWithFeatureBranch() async throws -> URL {
+    func addOriginWithFeatureBranch(named remoteName: String = "origin") async throws -> URL {
         let remote = root.deletingLastPathComponent()
             .appendingPathComponent("\(root.lastPathComponent)-origin.git", isDirectory: true)
         try FileManager.default.createDirectory(at: remote, withIntermediateDirectories: true)
         let runner = ProcessRunner()
         _ = try await runner.run("/usr/bin/git", ["init", "-q", "--bare", "."], cwd: remote)
 
-        try await git(["remote", "add", "origin", remote.path])
-        try await git(["push", "-q", "origin", "main"])
-        try await git(["push", "-q", "origin", "refs/heads/feature:refs/heads/feat/x"])
-        try await git(["fetch", "-q", "origin"])
+        try await git(["remote", "add", remoteName, remote.path])
+        try await git(["push", "-q", remoteName, "main"])
+        try await git(["push", "-q", remoteName, "refs/heads/feature:refs/heads/feat/x"])
+        try await git(["fetch", "-q", remoteName])
         return remote
     }
 }

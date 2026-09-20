@@ -154,6 +154,22 @@ import Testing
         #expect(try await repo.upstream(of: "feat/x") == nil, "no upstream is invented for it")
     }
 
+    /// A remote whose own name contains a slash is not special-cased: the first component is
+    /// taken as the remote, so `my/remote/feature` yields a local branch called
+    /// `remote/feature`. The upstream is still correct, because git resolves the full
+    /// `my/remote/feature` for `--track`. Recorded as tested behaviour, not an endorsement.
+    @Test func trackKeepsAFragmentOfASlashedRemoteNameInTheLocalBranch() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let remote = try await repo.addOriginWithFeatureBranch(named: "my/remote")
+        defer { try? FileManager.default.removeItem(at: remote) }
+
+        try await backend.trackRemoteBranch("my/remote/feat/x", at: repo.root)
+
+        #expect(try await repo.currentBranch() == "remote/feat/x")
+        #expect(try await repo.upstream(of: "remote/feat/x") == "my/remote/feat/x")
+    }
+
     @Test(arguments: ["origin", "origin/", "", "-origin/x"])
     func trackRejectsAnythingThatIsNotRemoteSlashBranch(name: String) async throws {
         let repo = try await TestRepo.makeBranched()
