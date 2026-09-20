@@ -19,14 +19,12 @@ final class RepositoryStore {
     var selection: Selection = .workingCopy
     var selectedPath: String?
     private(set) var detailFiles: [FileStatus] = []
-    // internal (not private(set)): used by RepositoryStore+Detail.swift
-    var diff: [FileDiff] = []
+    private(set) var diff: [FileDiff] = []
     /// Which side the loaded `diff` came from. `stagedView` flips the instant the user picks a
     /// row, while the matching `git diff` is still running, so for the time in between the two
     /// disagree. Anything that has to describe the diff actually on screen — the hunk buttons'
     /// labels, the direction their patch is applied in — reads this instead of `stagedView`.
-    // internal (not private(set)): used by RepositoryStore+Detail.swift
-    var diffIsStaged = false
+    private(set) var diffIsStaged = false
     var stagedView = false {
         didSet {
             guard stagedView != oldValue else { return }
@@ -37,9 +35,9 @@ final class RepositoryStore {
 
     /// True while a stage/unstage/commit is running; mutations are serialized behind it and
     /// the UI disables its controls. Claimed and released through `beginMutation()` /
-    /// `finishMutation(generation:failure:)`, since the staging extension is in another file.
-    // internal (not private(set)): used by RepositoryStore+Errors.swift
-    var isMutating = false
+    /// `finishMutation(generation:failure:)`, kept in this file so their write to it stays
+    /// `private(set)`.
+    private(set) var isMutating = false
 
     /// The commit message being written. Stored properties cannot live in an extension, so it
     /// is declared here even though everything that drives it is in `RepositoryStore+Staging`.
@@ -53,27 +51,29 @@ final class RepositoryStore {
 
     /// True while `lastError` holds a message a mutation put there. Such a message outlives
     /// the reloads the mutation itself provokes; see `loadSnapshot()`.
-    // internal (not private): used by RepositoryStore+Refresh.swift, +Detail.swift and +Errors.swift
-    var errorIsSticky = false
+    // Direct writes stay in this file; see `clearSticky()` / `clearErrorUnlessSticky()` below.
+    private var errorIsSticky = false
 
     let backend: any GitBackend & GitWorkingCopyBackend
-    private let gitPath: String
+    // internal (not private): used by +Opening.swift's `checkGitAvailability()`
+    let gitPath: String
 
     private var watcher: RepositoryWatcher?
-    // internal (not private): used by RepositoryStore+Refresh.swift
+    // internal (not private), bookkeeping only, views must not touch this: used by +Refresh.swift
     var refreshTask: Task<Void, Never>?
-    // internal (not private): used by RepositoryStore+Detail.swift
+    // internal (not private), bookkeeping only, views must not touch this: used by +Detail.swift
     var detailTask: Task<Void, Never>?
-    // internal (not private): used by RepositoryStore+Detail.swift
+    // internal (not private), bookkeeping only, views must not touch this: used by +Detail.swift
     var diffTask: Task<Void, Never>?
     /// The most recently scheduled snapshot load; new ones chain behind it. See `refresh()`.
-    // internal (not private): used by RepositoryStore+Refresh.swift
+    // internal (not private), bookkeeping only, views must not touch this: used by +Refresh.swift
     var lastRefresh: Task<Void, Never>?
     /// True while a chained load exists that has not begun reading git yet.
-    // internal (not private): used by RepositoryStore+Refresh.swift
+    // internal (not private), bookkeeping only, views must not touch this: used by +Refresh.swift
     var refreshIsQueued = false
 
-    private static let lastRepositoryPathKey = "lastRepositoryPath"
+    // internal (not private): used by RepositoryStore+Opening.swift's `reopenLastRepository()`
+    static let lastRepositoryPathKey = "lastRepositoryPath"
 
     init(
         backend: any GitBackend & GitWorkingCopyBackend = CLIGitBackend(),
@@ -81,35 +81,6 @@ final class RepositoryStore {
     ) {
         self.backend = backend
         self.gitPath = gitPath
-    }
-
-    // MARK: - Git availability
-
-    /// The banner text shown while `git` can't be found. Kept in one place so
-    /// `checkGitAvailability()` can recognize it as "still showing the git-missing banner"
-    /// before clearing it, without duplicating the literal string.
-    private static func gitMissingMessage(at gitPath: String) -> String {
-        "Git was not found at \(gitPath). Install the Xcode Command Line Tools."
-    }
-
-    /// Surfaces a missing `git` as an error banner at launch, before anything tries to run a
-    /// command and fails with a less helpful "failed to launch" message per request. Also
-    /// re-checkable later: if git was missing and has since become available, this clears the
-    /// banner (but only if it's still showing the git-missing message, not some other error).
-    func checkGitAvailability() async {
-        let available = await CLIGitBackend.isGitAvailable(at: gitPath)
-        gitMissing = !available
-        let message = Self.gitMissingMessage(at: gitPath)
-        if available {
-            if lastError == message {
-                lastError = nil
-                // `open()` made this message sticky; with it gone, nothing is being protected
-                // from the next reload any more.
-                errorIsSticky = false
-            }
-        } else {
-            lastError = message
-        }
     }
 
     // MARK: - Opening
@@ -175,15 +146,6 @@ final class RepositoryStore {
         Task { await refresh() }
     }
 
-    func reopenLastRepository() {
-        guard let path = UserDefaults.standard.string(forKey: Self.lastRepositoryPathKey) else { return }
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
-            return
-        }
-        open(URL(fileURLWithPath: path))
-    }
-
     // MARK: - Selection
 
     func select(_ newSelection: Selection) {
@@ -198,29 +160,91 @@ final class RepositoryStore {
     }
 
     // MARK: - State mutators for other files
+    // Narrow setters for `private(set)` state whose writer lives in another file. Each pairs
+    // with exactly the caller(s) named below; nothing else should call these.
 
-    /// Narrow setters for state whose `private(set)` is worth keeping even though the code that
-    /// updates it lives in another file — see the file's own doc comment for why. Each pairs
-    /// with exactly the callers named below; nothing else should call these.
+    /// internal (not private(set) write): used by +Opening.swift's `checkGitAvailability()`
+    func setGitMissing(_ value: Bool) {
+        gitMissing = value
+    }
 
-    /// internal (not private(set) write): used by RepositoryStore+Refresh.swift
+    /// internal (not private(set) write): used by +Refresh.swift
     func setSnapshot(_ newSnapshot: RepoSnapshot?) {
         snapshot = newSnapshot
     }
 
-    /// internal (not private(set) write): used by RepositoryStore+Refresh.swift
+    /// internal (not private(set) write): used by +Refresh.swift
     func setLoading(_ value: Bool) {
         isLoading = value
     }
 
-    /// internal (not private(set) write): used by RepositoryStore+Detail.swift
+    /// internal (not private(set) write): used by +Detail.swift
     func setDetailFiles(_ files: [FileStatus]) {
         detailFiles = files
     }
 
-    /// internal (not private(set) write): used by RepositoryStore+Refresh.swift, +Detail.swift
-    /// and +Errors.swift
+    /// internal (not private(set) write): used by +Refresh.swift, +Detail.swift, +Errors.swift
+    /// and +Opening.swift
     func setError(_ message: String?) {
         lastError = message
+    }
+
+    /// Clears `errorIsSticky` without touching `lastError`: what the original, unsplit code
+    /// wrote as a bare `errorIsSticky = false` next to a `lastError` write it made its own way.
+    /// internal (not private(set) write): used by +Refresh.swift, +Detail.swift, +Errors.swift
+    func clearSticky() {
+        errorIsSticky = false
+    }
+
+    /// The `if !errorIsSticky { lastError = nil }` a successful snapshot load does; the read has
+    /// to move here too since `errorIsSticky` is only readable from this file.
+    /// internal (not private(set) write): used by +Refresh.swift's `loadSnapshot()`
+    func clearErrorUnlessSticky() {
+        if !errorIsSticky {
+            lastError = nil
+        }
+    }
+
+    // MARK: - Mutation bookkeeping
+
+    /// Claims the store for one git write, returning the generation to hand back to
+    /// `finishMutation`, or nil when it cannot be claimed: no repository, or a mutation is
+    /// already running (mutations are serialized, which is also what disables the buttons).
+    ///
+    /// This pair exists so the setters of `isMutating` and `lastError` can stay private while
+    /// the staging API lives in another file, where `private(set)` would not reach.
+    // internal (not private): used by +Staging.swift's `mutate()`
+    func beginMutation() -> Int? {
+        guard root != nil, !isMutating else { return nil }
+        isMutating = true
+        // A new attempt supersedes the last one's message: it has been read or ignored by
+        // now, and nothing should keep protecting it from the reloads that follow.
+        if errorIsSticky {
+            lastError = nil
+            errorIsSticky = false
+        }
+        return generation
+    }
+
+    /// Releases the claim `beginMutation()` made, showing `failure` in the banner if there was
+    /// one. A stale generation means `open()` has already reset everything this would write.
+    /// internal (not private): used by +Staging.swift's `mutate()`; kept next to `beginMutation`.
+    func finishMutation(generation: Int, failure: Error?) {
+        guard self.generation == generation else { return }
+        if let failure {
+            lastError = Self.describe(failure)
+            // Protected from the reloads this mutation set off — its own, and the
+            // watcher-driven one that git's writes inside `.git` trigger in parallel.
+            errorIsSticky = true
+        }
+        isMutating = false
+    }
+
+    /// The one place `diff` is written, so `diffIsStaged` can never drift from it.
+    /// internal (not private): used by +Detail.swift's `loadDiff()`; kept here since it writes
+    /// `diff`/`diffIsStaged` and both stay `private(set)`.
+    func setDiff(_ newDiff: [FileDiff], staged: Bool) {
+        diff = newDiff
+        diffIsStaged = staged
     }
 }

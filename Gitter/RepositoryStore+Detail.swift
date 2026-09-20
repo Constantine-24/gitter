@@ -46,7 +46,7 @@ extension RepositoryStore {
             else { return }
 
             if let loadError {
-                self.errorIsSticky = false
+                self.clearSticky()
                 switch capturedSelection {
                 case .commit:
                     // The selected commit no longer exists (e.g. its branch was rebased or
@@ -115,18 +115,11 @@ extension RepositoryStore {
 
             if let loadError {
                 self.setError(Self.describe(loadError))
-                self.errorIsSticky = false
+                self.clearSticky()
                 self.setDiff([], staged: capturedStagedView)
             } else {
                 self.setDiff(result, staged: capturedStagedView)
             }
         }
-    }
-
-    /// The one place `diff` is written, so `diffIsStaged` can never drift from it.
-    // internal (not private): used by RepositoryStore.swift's `open()` and `select()`
-    func setDiff(_ newDiff: [FileDiff], staged: Bool) {
-        diff = newDiff
-        diffIsStaged = staged
     }
 }

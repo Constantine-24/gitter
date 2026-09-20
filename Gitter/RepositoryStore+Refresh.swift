@@ -65,9 +65,7 @@ extension RepositoryStore {
             // `.git` before it fails — a rejected commit has already written COMMIT_EDITMSG —
             // so the watcher fires and this successful snapshot would otherwise erase the
             // hook's output a fraction of a second after the user saw it.
-            if !errorIsSticky {
-                setError(nil)
-            }
+            clearErrorUnlessSticky()
 
             // Keep a commit selection even when the commit isn't in the loaded window (the
             // log is capped): the row simply isn't highlighted. Only an empty repository has
@@ -81,7 +79,7 @@ extension RepositoryStore {
             // A failed load is newer, real information about the repository, so it replaces
             // even a mutation's message — and stops being protected from the next reload.
             setError(Self.describe(error))
-            errorIsSticky = false
+            clearSticky()
         }
 
         loadDetail()
