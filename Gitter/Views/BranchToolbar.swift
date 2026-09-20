@@ -60,14 +60,18 @@ struct BranchMenu: View {
 
     /// Where HEAD is, for the checkmark; picking anything else switches to it.
     ///
-    /// The setter goes through `canSwitch` rather than straight to `switchTo`: re-picking the
-    /// branch that is already ticked is not a switch, and a menu that is on screen while a
-    /// terminal starts a merge would otherwise hand the store an action it has to refuse.
+    /// The only pick dropped here is a re-pick of the branch that is already ticked, which is
+    /// not a switch at all. A pick that arrives while switching is blocked — the menu was opened
+    /// before a terminal started a merge — goes to `switchTo` like any other: `perform` refuses
+    /// it through `mutate`, which raises `BranchActionBlocked`'s sentence in the sticky banner.
+    /// Dropping it here instead would be a click that does nothing and says nothing. The
+    /// disabled section above is still the primary defence; this is what happens when it is a
+    /// moment out of date.
     private var switchSelection: Binding<String?> {
         Binding(
             get: { store.currentBranch },
             set: { picked in
-                guard let picked, store.canSwitch(to: picked) else { return }
+                guard let picked, picked != store.currentBranch else { return }
                 store.switchTo(branch: picked)
             })
     }

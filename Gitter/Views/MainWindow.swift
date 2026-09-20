@@ -34,6 +34,13 @@ struct MainWindow: View {
                         }
                     }
                 }
+                // On the branch that has a repository, like the toolbar items: every sheet
+                // asks a question about a repository, and `open()` already clears `activeSheet`
+                // when one is closed or replaced. Scoping it here means a sheet cannot outlive
+                // the repository it belongs to even if something sets one without a `root`.
+                .sheet(item: $store.activeSheet) { sheet in
+                    BranchSheetHost(sheet: sheet)
+                }
             }
         }
         .overlay(alignment: .top) {
@@ -52,9 +59,6 @@ struct MainWindow: View {
         }
         .animation(.default, value: store.lastError)
         .animation(.default, value: store.notice)
-        .sheet(item: $store.activeSheet) { sheet in
-            BranchSheetHost(sheet: sheet)
-        }
     }
 
     private var emptyState: some View {

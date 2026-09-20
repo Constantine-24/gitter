@@ -36,9 +36,16 @@ struct NewBranchSheet: View {
                 .font(.headline)
 
             VStack(alignment: .leading, spacing: 4) {
-                TextField("Branch name", text: $name)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($nameFocused)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    // A visible label as well as the placeholder: the placeholder disappears the
+                    // moment anything is typed, which is exactly when a form should still say
+                    // what the field is.
+                    Text("Name:")
+                    TextField("Branch name", text: $name)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($nameFocused)
+                        .accessibilityLabel("Branch name")
+                }
                 if let message = validator.message(for: name) {
                     Text(message)
                         .font(.caption)

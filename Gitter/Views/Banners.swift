@@ -31,7 +31,14 @@ struct Banner: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(tint.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+        // Opaque first, tint second. A banner floats over the commit graph and the diff, and a
+        // tint alone at a quarter opacity lets both through far enough to compete with the text
+        // that is the whole reason the strip is there.
+        .background {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(.background)
+                .overlay(RoundedRectangle(cornerRadius: 8).fill(tint.opacity(0.25)))
+        }
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(tint.opacity(0.6)))
         .padding(8)
     }

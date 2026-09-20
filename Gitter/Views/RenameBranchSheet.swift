@@ -37,9 +37,15 @@ struct RenameBranchSheet: View {
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 4) {
-                TextField("Branch name", text: $name, selection: $selection)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($nameFocused)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    // See `NewBranchSheet`: the placeholder is gone as soon as there is text,
+                    // and here there is text from the start.
+                    Text("Name:")
+                    TextField("Branch name", text: $name, selection: $selection)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($nameFocused)
+                        .accessibilityLabel("Branch name")
+                }
                 if let message = validator.message(for: name) {
                     Text(message)
                         .font(.caption)
