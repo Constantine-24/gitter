@@ -91,6 +91,16 @@ public protocol GitRemoteBackend: Sendable {
     /// to mislead a caller with. The caller re-reads the snapshot. Never render this throw as
     /// "nothing changed".
     ///
+    /// **What it throws there is `GitError.commandFailed`, in git's own words, not a
+    /// `RemoteOperationError`.** A diagnosed cause is a statement about *the* operation, and a
+    /// `--all` is several: "the repository could not be found" is false for every remote that
+    /// succeeded, and it throws away the one thing only git knows — which remote failed. Git's
+    /// stderr names the loser and shows the successes, so a UI that shows it is telling the
+    /// truth about a half-failure that has no single cause. A single-remote fetch is diagnosed
+    /// as before: there, one cause is the whole truth. The words are redacted
+    /// (`RemoteFailureParser.redactingCredentials`) before they leave here, because a remote URL
+    /// can have a token in it.
+    ///
     /// `progress` receives git's stderr progress lines as they arrive — "remote: Counting
     /// objects: 57% (4/7)" — each already trimmed of the padding spaces git uses to erase the
     /// longer line before it, and never empty. **It is called on a background queue** (the

@@ -102,6 +102,23 @@ public enum RemoteFailureParser {
         return nil
     }
 
+    /// Whether git gave up on one remote out of several: a line that **begins**
+    /// `error: could not fetch `, which is what `fetch --all` prints at the end when one of
+    /// them failed (measured on git 2.54, exit 1, with the others' refs already updated).
+    ///
+    /// It is a predicate rather than a cause because that is exactly what it means: several
+    /// operations happened and at least one of them did not. `CLIGitBackend.fetch` uses it to
+    /// decide whether a single diagnosed cause would be an honest summary.
+    ///
+    /// `remote:` lines are excluded — a server-side hook may print anything at all, this
+    /// sentence included — and the phrase must begin the line, so `hint: error: could not fetch
+    /// …` is git quoting itself rather than reporting.
+    static func reportsARemoteThatCouldNotBeFetched(stderr: String) -> Bool {
+        stderr.split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+            .contains { !isServerOutput($0) && $0.hasPrefix("error: could not fetch ") }
+    }
+
     /// `text` with the credentials taken out of every URL and address in it — the one place
     /// that knows how, and the one every payload above goes through.
     ///
@@ -124,6 +141,9 @@ public enum RemoteFailureParser {
     ///   whatever surrounds it.
     /// - `user@host:path`, scp-style — stripped, recognised by the `:` and a non-empty path
     ///   after the host.
+    ///
+    /// A userinfo containing a `/` is none of those: it is a local path git is quoting, and
+    /// `/tmp/gitter-test/a:b@origin.git` is a directory rather than a credential.
     ///
     /// And what is deliberately **left alone**: `user@host` with nothing after it, which is
     /// both `git@github.com` (the ssh login every remote in the world uses, and no secret) and
@@ -254,7 +274,9 @@ public enum RemoteFailureParser {
         guard let at = run.lastIndex(of: "@") else { return run }
         let userinfo = run[..<at]
         let host = run[run.index(after: at)...]
-        guard !userinfo.isEmpty, !host.isEmpty else { return run }
+        // A `/` in the userinfo means this is not an authority at all but a path git is
+        // quoting — `/tmp/gitter-test/a:b@origin.git` is a directory, not a credential.
+        guard !userinfo.isEmpty, !host.isEmpty, !userinfo.contains("/") else { return run }
         // `user:secret@host` — a credential whatever surrounds it.
         if userinfo.contains(":") { return String(host) }
         // `user@host:path`, scp-style: a `:` with something after it. Without that something

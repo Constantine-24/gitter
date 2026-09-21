@@ -250,6 +250,15 @@ import Testing
     /// about what did get through. That is the whole reason its doc comment forbids a caller
     /// from reporting a failed fetch as "nothing changed": this test is the case that would make
     /// such a report a lie.
+    ///
+    /// **And it throws git's words, not a diagnosis.** A diagnosed cause —
+    /// `.repositoryNotFound`, which is what this used to throw — is a statement about *the*
+    /// operation, and here there were several: it is false for every remote that succeeded,
+    /// and it drops the one fact only git has, which is *which* remote failed. A sentence built
+    /// from it ("the repository could not be found") is wrong in a way the user cannot see
+    /// through. Git's own stderr names the loser and shows the successes, so that is what comes
+    /// back. A single-remote fetch is still diagnosed — see
+    /// `anUnknownRemoteIsGitsOwnDiagnosis`, where there is only one operation to speak about.
     @Test func aPartialFetchOfEveryRemoteThrowsAlthoughSomeRefsMoved() async throws {
         let repo = try await TestRepo.makeBranched()
         defer { repo.cleanUp() }
@@ -268,12 +277,55 @@ import Testing
             .appendingPathComponent("\(repo.root.lastPathComponent)-gone.git")
         try await repo.git(["remote", "add", "broken", missing.path])
 
-        let error = await remoteError {
+        var thrown: Error?
+        do {
             try await CLIGitBackend().fetch(remote: nil, at: repo.root, progress: { _ in })
+        } catch {
+            thrown = error
         }
-        #expect(error == .repositoryNotFound)
+
+        guard case .commandFailed(let code, let stderr)? = thrown as? GitError else {
+            Issue.record("expected GitError.commandFailed, got \(String(describing: thrown))")
+            return
+        }
+        #expect(code == 1, "a partial --all exits 1, not the 128 of a single-remote failure")
+        #expect(stderr.contains("error: could not fetch broken"), "\(stderr)")
+        #expect(stderr.contains("From "), "the successful remote's block is part of git's words")
+        #expect(!(thrown is RemoteOperationError))
         #expect(try await repo.revParse("refs/remotes/origin/main") == theirs,
                 "the good remote's refs moved even though the fetch failed")
+    }
+
+    /// The predicate that tells the two apart, on the fixtures rather than through git: a line
+    /// that *begins* `error: could not fetch ` is git saying it gave up on one remote out of
+    /// several. `remote:` lines are the server's own output and say nothing about this fetch —
+    /// a hook is free to print anything at all, including that sentence.
+    @Test(arguments: [
+        (
+            """
+            From /tmp/gitter-test-1234-origin
+               cd39b56..7fdb355  main       -> origin/main
+            fatal: '/tmp/nope' does not appear to be a git repository
+            error: could not fetch broken
+
+            """, true
+        ),
+        ("error: could not fetch broken\n", true),
+        // The server echoing the phrase, and the phrase inside a longer line: neither is git
+        // reporting a remote it skipped.
+        ("remote: error: could not fetch broken\n", false),
+        ("hint: error: could not fetch broken\n", false),
+        (
+            """
+            fatal: 'nosuch' does not appear to be a git repository
+            fatal: Could not read from remote repository.
+
+            """, false
+        ),
+        ("", false),
+    ])
+    func gitSaysWhenItGaveUpOnOneRemoteOfSeveral(stderr: String, expected: Bool) {
+        #expect(RemoteFailureParser.reportsARemoteThatCouldNotBeFetched(stderr: stderr) == expected)
     }
 
     // MARK: - Cancellation

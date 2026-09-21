@@ -103,6 +103,12 @@ import Testing
     /// git exits **1** (not 128), the good remote's refs are already updated, and its `From …`
     /// block sits in stderr *above* the failure. The parser must read past it — a line-by-line
     /// scan that stopped at the first thing it recognised would report the success.
+    ///
+    /// The parser still reads this text, and still reads it correctly; what changed in fix
+    /// round 1 is that `CLIGitBackend.fetch` does not *use* the answer when stderr also says
+    /// `error: could not fetch <name>`, because one cause cannot speak for several remotes.
+    /// The reading matters anyway: the same "do not stop at the first recognised line" rule is
+    /// what keeps a single-remote failure honest, since its stderr has a success block in it too.
     @Test func aPartialFetchOfEveryRemoteIsReadPastItsSuccesses() {
         let stderr = """
             From /tmp/gitter-test-1234-origin
@@ -263,6 +269,9 @@ import Testing
         ("alice:hunter2@github.com", "github.com"),
         // Not addresses, and not to be mangled: an ssh login in prose, and an email.
         ("git@github.com: Permission denied (publickey).", "git@github.com: Permission denied (publickey)."),
+        // A local path that happens to contain a colon and an `@`: userinfo has no `/` in it,
+        // so this is a path git is quoting and not an address.
+        ("/tmp/gitter-test/a:b@origin.git", "/tmp/gitter-test/a:b@origin.git"),
         ("Author: Colleague <colleague@example.invalid>", "Author: Colleague <colleague@example.invalid>"),
         ("https://github.com/acme/p.git", "https://github.com/acme/p.git"),
         // Ragged input: nothing to redact, nothing to crash on.

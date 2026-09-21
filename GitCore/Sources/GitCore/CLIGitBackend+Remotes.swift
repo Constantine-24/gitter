@@ -35,8 +35,22 @@ extension CLIGitBackend: GitRemoteBackend {
             // Two exit codes, measured on git 2.54, and neither is read as a diagnosis: a
             // single-remote failure exits 128, a partial `--all` exits 1. Only the words are
             // consulted, and anything the parser does not recognise is rethrown as git's own.
-            guard case .commandFailed(_, let stderr) = error else { throw error }
-            guard let failure = RemoteFailureParser.parse(stderr: stderr) else { throw error }
+            guard case .commandFailed(let code, let stderr) = error else { throw error }
+
+            // Git's own words — never a diagnosed cause — when several remotes were fetched and
+            // some of them worked. A `RemoteOperationError` is a statement about *the*
+            // operation, and there was more than one here: `.repositoryNotFound` is false for
+            // every remote that succeeded, and it throws away the one fact only git has, which
+            // is which remote failed. Git's stderr names the loser and shows the successes.
+            // A single-remote fetch is still diagnosed: there, one cause is the whole truth.
+            guard !RemoteFailureParser.reportsARemoteThatCouldNotBeFetched(stderr: stderr),
+                let failure = RemoteFailureParser.parse(stderr: stderr)
+            else {
+                // Redacted, because these words can contain the credential the user wrote into
+                // a remote URL, and this error is shown as it is.
+                throw GitError.commandFailed(
+                    exitCode: code, stderr: RemoteFailureParser.redactingCredentials(stderr))
+            }
             throw failure
         }
     }
