@@ -60,6 +60,52 @@ import Testing
         #expect(String(decoding: staged, as: UTF8.self) == "branch.txt\n")
     }
 
+    /// `main` at root; branch `dup` adds `branch.txt`; a tag `dup` sits on **that same commit**,
+    /// annotated or lightweight. Checked out on `main`.
+    private func makeSameCommitTag(annotated: Bool) async throws -> TestRepo {
+        let repo = try await TestRepo.makeEmpty()
+        try repo.write("a.txt", "one\n")
+        try await repo.commitAll("root")
+        try await repo.git(["switch", "-q", "-c", "dup"])
+        try repo.write("branch.txt", "from the branch\n")
+        try await repo.commitAll("branch commit")
+        try await repo.git(["switch", "-q", "main"])
+        try await repo.git(
+            annotated ? ["tag", "-a", "dup", "-m", "annotated", "refs/heads/dup"]
+                : ["tag", "dup", "refs/heads/dup"])
+        return repo
+    }
+
+    /// An **annotated** tag on the branch's own commit is still a different object, and a bare
+    /// `dup` resolves to the tag object. Git merges the same commit either way, but it writes
+    /// "Merge tag 'dup'" and copies the tag's message into the body — a history entry about a
+    /// tag the user never clicked. The branch spelling is what keeps the commit honest.
+    @Test func spellsTheBranchWhenAnAnnotatedTagSitsOnItsOwnCommit() async throws {
+        let repo = try await makeSameCommitTag(annotated: true)
+        defer { repo.cleanUp() }
+
+        #expect(try await backend.merge("dup", mode: .alwaysMergeCommit, at: repo.root) == .merged)
+
+        #expect(try await repo.subject(of: "HEAD") == "Merge branch 'refs/heads/dup'")
+        #expect(try repo.fileContents("branch.txt") == "from the branch\n")
+    }
+
+    /// A **lightweight** tag on the same commit is the same object as the branch tip, so the bare
+    /// name is kept — and git then writes "Merge tag 'dup'" all by itself (verified on git 2.54:
+    /// it names whichever ref it found, and the full refname is the only way to change that).
+    /// Recorded rather than fixed: the commit merged is the branch's, the tag really does point
+    /// at it, and buying a different subject would mean spelling every ambiguous merge
+    /// `refs/heads/…`.
+    @Test func keepsTheBareNameWhenALightweightTagSitsOnTheSameCommit() async throws {
+        let repo = try await makeSameCommitTag(annotated: false)
+        defer { repo.cleanUp() }
+
+        #expect(try await backend.merge("dup", mode: .alwaysMergeCommit, at: repo.root) == .merged)
+
+        #expect(try await repo.subject(of: "HEAD") == "Merge tag 'dup'")
+        #expect(try repo.fileContents("branch.txt") == "from the branch\n")
+    }
+
     /// The ordinary case must be untouched, message and all: a full refname would make git write
     /// "Merge branch 'refs/heads/feature'" (verified on git 2.54), which is not what a user
     /// reading their history should find.

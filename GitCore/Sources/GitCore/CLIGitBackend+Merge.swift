@@ -75,20 +75,34 @@ extension CLIGitBackend {
     /// kept wherever it is unambiguous — which is every repository that does not have a tag and
     /// a branch of the same name pointing at different commits.
     ///
-    /// Compared by **value**, not by name: a tag sitting on the very commit the branch is at
-    /// merges the same thing either way, so that case keeps the nicer message too.
+    /// Compared by **object**, not by name and not by the commit each side peels to: the bare
+    /// name is kept only when it resolves to the very object `refs/heads/<name>` does.
+    ///
+    /// That distinction is the whole difference an *annotated* tag makes. An annotated tag on the
+    /// branch's own commit is a separate object, so `git merge dup` merges the right commit but
+    /// writes "Merge tag 'dup'" and copies the tag's message into the body (verified on git
+    /// 2.54) — a history entry about a tag the user never clicked. Peeling both sides with
+    /// `^{commit}` would call that unambiguous; comparing the unpeeled names does not, and the
+    /// merge is spelled `refs/heads/dup`.
+    ///
+    /// A **lightweight** tag on the same commit *is* the same object, so the bare name is kept —
+    /// and git then writes "Merge tag 'dup'" of its own accord, because it names whichever ref it
+    /// found and only the full refname changes that (verified on git 2.54; pinned by
+    /// `MergeAmbiguousNameTests`). Recorded rather than fixed: the commit merged is the branch's,
+    /// the tag really does point at it, and the alternative is spelling every merge in a
+    /// repository that has a same-named tag `refs/heads/…`.
     ///
     /// Ambiguity is re-read here rather than taken from the snapshot, but this is still a check
     /// followed by an act: a tag created in between is merged as before. That is a
     /// wrong-thing-merged, not a loss — a merge commit is a commit, and nothing uncommitted is
-    /// touched — so it does not fail closed the way `unreferencedCommitCount` does.
+    /// touched — so it does not fail closed the way `unreferencedCommits` does.
     private func unambiguousSpelling(of name: String, at root: URL) async throws -> String {
         let branchRef = "refs/heads/" + name
-        let tip = try await revision(branchRef, at: root)
+        let tip = try await objectName(branchRef, at: root)
         // Not a local branch at all (a remote-tracking branch, a tag, a raw sha): `name` is the
         // only spelling there is, and git's own lookup is the right answer.
         guard !tip.isEmpty else { return name }
-        return (try await revision(name, at: root)) == tip ? name : branchRef
+        return (try await objectName(name, at: root)) == tip ? name : branchRef
     }
 
     // MARK: - The one refusal Gitter makes that git does not
@@ -189,9 +203,20 @@ extension CLIGitBackend {
     /// the peel is applied after `--end-of-options` (the suffix is part of the revision, not an
     /// option), and it is a no-op for a branch, a lightweight tag or a raw sha.
     private func revision(_ revision: String, at root: URL) async throws -> String {
+        try await revParse(revision + "^{commit}", at: root)
+    }
+
+    /// The object `name` resolves to **unpeeled**, or "" when it resolves to nothing: the tag
+    /// object for an annotated tag, the commit for a branch, a lightweight tag or a raw sha.
+    /// What `unambiguousSpelling` compares, and the one read here that must *not* peel.
+    private func objectName(_ name: String, at root: URL) async throws -> String {
+        try await revParse(name, at: root)
+    }
+
+    private func revParse(_ revision: String, at root: URL) async throws -> String {
         do {
             let data = try await run(
-                ["rev-parse", "--verify", "--end-of-options", revision + "^{commit}"], cwd: root)
+                ["rev-parse", "--verify", "--end-of-options", revision], cwd: root)
             return String(decoding: data, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         } catch GitError.commandFailed(exitCode: 128, stderr: _) {
