@@ -43,8 +43,8 @@ Switch, detach, track and merge run plain git with **no force flag anywhere in t
 a test greps the sources for them on every run). When git refuses, nothing has changed,
 and Gitter shows the files git named rather than a wall of stderr.
 
-Exactly four actions can lose anything, and each is behind a confirmation that says what
-goes and what stays:
+Four actions can lose something without being asked for by name, and each is behind a
+confirmation that says what goes and what stays:
 
 | action | how it is confirmed |
 |---|---|
@@ -52,6 +52,14 @@ goes and what stays:
 | Undo a pending squash | the same sheet: everything staged goes, including work staged before the squash if the squash was started outside Gitter, which is why the file list is not optional |
 | Force-delete an unmerged branch | `git branch -d` runs first and either deletes or refuses *without changing anything*; only its refusal opens a warning naming the unique-commit count and the tip sha, and "Delete Anyway" is refused unless the branch still points at exactly that tip |
 | Leave a detached HEAD holding commits on no branch, tag or remote | a warning naming the count and the full sha, with "Create Branch Here…" as the safe answer; leaving anyway prints the command that brings the commits back |
+
+Amending is the fifth, and the one with no confirmation sheet: it rewrites HEAD and leaves
+the commit it replaces reachable from no branch, tag or remote. What stands in for the sheet
+is that nothing else asks for it — you tick the Amend toggle yourself and the commit button
+then reads "Amend Commit" — plus a warning when the branch tracks an upstream and has
+nothing ahead of it, which is exactly when the commit being rewritten has already been
+pushed. And the replaced commit is still in the reflog, as `HEAD@{1}`, which is more than
+the four above can say for what they discard.
 
 Amending is unavailable while any of those operations is in progress, and that is not
 belt-and-braces: git refuses `git commit --amend` during a merge and a cherry-pick and
@@ -113,8 +121,12 @@ on looking green.
 
 ## Project layout
 
-Every `.swift` file in both targets, so the tree can be checked against `find . -name
-'*.swift'` rather than believed.
+Every `.swift` file in the two product targets — 69 of them, which is what `find
+GitCore/Sources Gitter -name '*.swift' | wc -l` prints — with the ones inside `Models/`,
+`Parsers/` and `Views/` named in prose rather than one per line. The 43 test files and
+`GitCore/Package.swift` are summarised rather than listed, which is also why the check is
+that command and not a bare `find . -name '*.swift'`: that one reaches them too, and the
+generated sources under `.build` as well.
 
 ```
 GitCore/                  SwiftPM package, no SwiftUI dependency
@@ -171,8 +183,8 @@ Gitter/                   macOS app (SwiftUI)
 ## Debug launch hooks
 
 `Gitter/DebugLaunchHooks.swift`, `DebugLaunchHooks+Events.swift` and
-`DebugLaunchHooks+Branches.swift` exist only in Debug builds (`#if DEBUG`, compiled out of Release) and drive the UI from environment variables,
-read once at startup. They exist because the verification environment has Screen Recording
+`DebugLaunchHooks+Branches.swift` exist only in Debug builds (`#if DEBUG`, compiled out of
+Release) and drive the UI from environment variables, read once at startup. They exist because the verification environment has Screen Recording
 but not Accessibility, so nothing outside the process can click — without these, a diff can
 never be put on screen from a script, and a focus bug can never be reproduced.
 
