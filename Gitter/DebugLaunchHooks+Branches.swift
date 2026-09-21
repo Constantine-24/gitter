@@ -25,8 +25,11 @@
     /// `wait:<seconds>` does nothing but hold the sheet on screen, and it exists for one kind of
     /// check that cannot be made any other way: what the app does when the repository changes
     /// **underneath a confirmation that is already up**. The script opens the sheet, waits here
-    /// while a terminal moves a branch, and the clicks in `GITTER_DEBUG_CLICK` — which run after
-    /// every step — then answer a warning that has gone out of date.
+    /// while a terminal moves a branch, and the clicks in `GITTER_DEBUG_CLICK` — which run once,
+    /// after the **last** step — then answer a warning that has gone out of date. (Clicks after
+    /// *every* step is what this comment used to claim; `DebugLaunchHooks.run` posts them once,
+    /// when `runBranchActions` has returned.) A wait is clamped to 0…120 seconds: a typo in the
+    /// number should not leave a launched app sitting there for an hour with nothing to quit it.
     ///
     /// `delete:` and `forcedelete:` **act** — they run `git branch -d`/`-D`. Every `sheet:` step
     /// only opens a sheet; `sheet:delete:<b>` in particular reads the warning's numbers instead
@@ -113,8 +116,10 @@
             case "confirmleave": store.confirmLeaveDetached()
             case "wait":
                 // Seconds, not milliseconds: what this is for is giving a shell time to change
-                // the repository, and a step measured in milliseconds could not.
-                try? await Task.sleep(for: .seconds(Double(first ?? "") ?? 1))
+                // the repository, and a step measured in milliseconds could not. Clamped, so a
+                // mistyped number cannot park the app past the end of the check.
+                try? await Task.sleep(
+                    for: .seconds(min(max(Double(first ?? "") ?? 1, 0), 120)))
             case "sheet": await sheet(first, second, store: store)
             default: log("unknown step: \(step)")
             }
