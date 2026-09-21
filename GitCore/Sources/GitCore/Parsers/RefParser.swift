@@ -1,13 +1,17 @@
 import Foundation
 
 /// Parses the output of
-/// `git for-each-ref --format='%(refname)%00%(objectname)%00%(HEAD)%00%(upstream:short)%00%(objecttype)%00%(*objectname)'`
+/// `git for-each-ref --format='%(refname)%00%(objectname)%00%(HEAD)%00%(upstream:short)%00%(objecttype)%00%(*objectname)%00%(upstream:track)%00%(upstream:remotename)%00%(upstream:remoteref)'`
 /// into a `RefCollection`.
 ///
-/// The trailing `%(*objectname)` field is the *peeled* object: for an annotated tag it is the
-/// commit the tag object points at, and it is empty for everything else. Lines with only the
-/// first five fields are still accepted, so output captured before that field was added (and
-/// the test fixtures recorded from it) keeps parsing.
+/// The sixth `%(*objectname)` field is the *peeled* object: for an annotated tag it is the
+/// commit the tag object points at, and it is empty for everything else. The last three are
+/// the tracking fields. Every field after the fifth is optional: lines with only the first
+/// five, six or eight are still accepted, so output captured before a field was added (and
+/// the test fixtures recorded from it) keeps parsing, with the missing fields simply unset.
+///
+/// `RefParser` knows nothing about which remotes are *configured* — that is `git remote -v`
+/// and `RemoteParser` — so the `RefCollection` it returns has none.
 public enum RefParser {
     private static let localBranchPrefix = "refs/heads/"
     private static let remoteBranchPrefix = "refs/remotes/"
@@ -30,13 +34,25 @@ public enum RefParser {
             let upstreamField = String(fields[3])
             let objectType = fields[4]
             let peeled = fields.count >= 6 ? String(fields[5]) : ""
+            let trackField = fields.count >= 7 ? fields[6] : nil
+            let remoteNameField = fields.count >= 8 ? String(fields[7]) : ""
+            let remoteRefField = fields.count >= 9 ? String(fields[8]) : ""
 
             if refname.hasPrefix(localBranchPrefix) {
                 let name = String(refname.dropFirst(localBranchPrefix.count))
                 guard !name.isEmpty else { continue }
                 let upstream = upstreamField.isEmpty ? nil : upstreamField
+                // git reports "." as the remote name when the upstream is another *local*
+                // branch. "." is not a remote — `git remote add .` is refused outright — so it
+                // is not passed off as one; such a branch has an `upstreamRef` but no
+                // `upstreamRemote`, which is what `tracksLocalBranch` reads.
+                let upstreamRemote =
+                    (remoteNameField.isEmpty || remoteNameField == ".") ? nil : remoteNameField
                 localBranches.append(
-                    Branch(name: name, sha: sha, isHead: headMarker == "*", upstream: upstream)
+                    Branch(name: name, sha: sha, isHead: headMarker == "*", upstream: upstream,
+                           tracking: Tracking.parse(trackField, hasUpstream: upstream != nil),
+                           upstreamRemote: upstreamRemote,
+                           upstreamRef: remoteRefField.isEmpty ? nil : remoteRefField)
                 )
             } else if refname.hasPrefix(remoteBranchPrefix) {
                 let name = String(refname.dropFirst(remoteBranchPrefix.count))

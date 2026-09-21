@@ -105,6 +105,15 @@ func remoteOfPrefersTheLongestMatchingRemoteName() {
 }
 
 @Test
+func trackingDefaultsKeepOlderCallSitesWorking() {
+    let branch = Branch(name: "main", sha: "abc", isHead: true, upstream: nil)
+    #expect(branch.tracking == .none)
+    #expect(branch.upstreamRemote == nil)
+    #expect(branch.upstreamRef == nil)
+    #expect(branch.tracksLocalBranch == false)
+}
+
+@Test
 func changeKindFromPorcelain() {
     #expect(ChangeKind.from(porcelain: "M") == .modified)
     #expect(ChangeKind.from(porcelain: "A") == .added)

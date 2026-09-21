@@ -24,8 +24,11 @@ public struct CLIGitBackend: GitBackend {
 
     // MARK: - Format strings (must match the parsers' doc comments verbatim)
 
+    // The tracking fields go at the END so that any output recorded from the shorter format
+    // still parses: `RefParser` treats every field after the fifth as optional.
     private static let refFormat =
         "%(refname)%00%(objectname)%00%(HEAD)%00%(upstream:short)%00%(objecttype)%00%(*objectname)"
+        + "%00%(upstream:track)%00%(upstream:remotename)%00%(upstream:remoteref)"
     private static let logFormat = "%H%x00%P%x00%an%x00%ae%x00%aI%x00%s%x00%D"
 
     // MARK: - GitBackend

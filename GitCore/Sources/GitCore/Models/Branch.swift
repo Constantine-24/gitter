@@ -6,14 +6,33 @@ public struct Branch: Sendable, Hashable, Identifiable {
     public let sha: String
     public let isHead: Bool
     public let upstream: String?
+    /// How far this branch is ahead of and behind its upstream. Always `.none` for a
+    /// remote-tracking branch, which has no upstream of its own.
+    public let tracking: Tracking
+    /// The remote the upstream lives on, or nil when there is no upstream — or when the
+    /// upstream is another *local* branch, which git reports as the remote ".". "." is not a
+    /// remote (`git remote add .` is refused), so it is never handed to push as one.
+    public let upstreamRemote: String?
+    /// The upstream's full name on that remote, e.g. "refs/heads/main".
+    public let upstreamRef: String?
 
     public var id: String { name }
 
-    public init(name: String, sha: String, isHead: Bool, upstream: String?) {
+    /// The upstream is another local branch: an upstream ref, but no remote to push it to.
+    public var tracksLocalBranch: Bool {
+        upstream != nil && upstreamRemote == nil && upstreamRef != nil
+    }
+
+    public init(name: String, sha: String, isHead: Bool, upstream: String?,
+                tracking: Tracking = .none, upstreamRemote: String? = nil,
+                upstreamRef: String? = nil) {
         self.name = name
         self.sha = sha
         self.isHead = isHead
         self.upstream = upstream
+        self.tracking = tracking
+        self.upstreamRemote = upstreamRemote
+        self.upstreamRef = upstreamRef
     }
 }
 

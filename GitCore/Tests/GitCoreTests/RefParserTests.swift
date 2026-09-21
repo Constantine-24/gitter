@@ -105,4 +105,86 @@ import Testing
         let collection = RefParser.parse(Data(line.utf8))
         #expect(collection.localBranches.first?.sha == "ddddddd4")
     }
+
+    // MARK: - Tracking (fields 7–9)
+
+    /// A nine-field line: the six the parser has always read, then
+    /// `%(upstream:track)`, `%(upstream:remotename)`, `%(upstream:remoteref)`.
+    private static func trackingLine(upstream: String, track: String,
+                                     remoteName: String = "origin",
+                                     remoteRef: String = "refs/heads/main") -> Data {
+        Data("refs/heads/main\0aaaa\0*\0\(upstream)\0commit\0\0\(track)\0\(remoteName)\0\(remoteRef)\n".utf8)
+    }
+
+    private static func parsedMain(_ data: Data) throws -> Branch {
+        try #require(RefParser.parse(data).localBranches.first { $0.name == "main" })
+    }
+
+    @Test func aheadOnlyIsParsed() throws {
+        let main = try Self.parsedMain(Self.trackingLine(upstream: "origin/main", track: "[ahead 2]"))
+        #expect(main.tracking == .counts(ahead: 2, behind: 0))
+    }
+
+    @Test func behindOnlyIsParsed() throws {
+        let main = try Self.parsedMain(Self.trackingLine(upstream: "origin/main", track: "[behind 3]"))
+        #expect(main.tracking == .counts(ahead: 0, behind: 3))
+    }
+
+    @Test func aheadAndBehindAreParsed() throws {
+        let main = try Self.parsedMain(
+            Self.trackingLine(upstream: "origin/main", track: "[ahead 1, behind 1]"))
+        #expect(main.tracking == .counts(ahead: 1, behind: 1))
+    }
+
+    @Test func goneIsParsed() throws {
+        let main = try Self.parsedMain(Self.trackingLine(upstream: "origin/main", track: "[gone]"))
+        #expect(main.tracking == .gone)
+    }
+
+    /// An empty track field means two different things, and the upstream field tells them
+    /// apart: level when there is an upstream, nothing at all when there is not.
+    @Test func anEmptyTrackFieldWithAnUpstreamIsLevel() throws {
+        let main = try Self.parsedMain(Self.trackingLine(upstream: "origin/main", track: ""))
+        #expect(main.tracking == .counts(ahead: 0, behind: 0))
+    }
+
+    @Test func anEmptyTrackFieldWithNoUpstreamIsNone() throws {
+        let main = try Self.parsedMain(
+            Self.trackingLine(upstream: "", track: "", remoteName: "", remoteRef: ""))
+        #expect(main.tracking == .none)
+        #expect(main.upstreamRemote == nil)
+        #expect(main.upstreamRef == nil)
+    }
+
+    @Test func aDotRemoteNameBecomesNoRemote() throws {
+        let main = try Self.parsedMain(
+            Self.trackingLine(upstream: "dev", track: "[ahead 1]", remoteName: ".",
+                              remoteRef: "refs/heads/dev"))
+        #expect(main.upstreamRemote == nil)
+        #expect(main.upstreamRef == "refs/heads/dev")
+        #expect(main.tracksLocalBranch)
+    }
+
+    @Test func anUnrecognisedTrackFieldIsNotReportedAsLevel() throws {
+        let main = try Self.parsedMain(
+            Self.trackingLine(upstream: "origin/main", track: "[something new]"))
+        #expect(main.tracking == .none, "a token we cannot read must not be claimed as level")
+    }
+
+    /// The old six-field shape — the recorded fixtures and any older call path — still parses,
+    /// with no tracking rather than a refusal.
+    @Test func theOldSixFieldShapeStillParses() throws {
+        let line = "refs/heads/main\0aaaa\0*\0origin/main\0commit\0\n"
+        let main = try Self.parsedMain(Data(line.utf8))
+        #expect(main.upstream == "origin/main")
+        #expect(main.tracking == .none)
+        #expect(main.upstreamRemote == nil)
+        #expect(main.upstreamRef == nil)
+    }
+
+    @Test func theFixtureStillParsesWithoutTrackingFields() throws {
+        let collection = RefParser.parse(try Self.fixtureData())
+        let main = try #require(collection.localBranches.first { $0.name == "main" })
+        #expect(main.tracking == .none)
+    }
 }

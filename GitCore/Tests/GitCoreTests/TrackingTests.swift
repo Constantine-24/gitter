@@ -3,13 +3,115 @@ import Testing
 
 @testable import GitCore
 
-/// The remotes themselves — read from a real repository through `CLIGitBackend.snapshot`,
-/// not from a hand-written fixture.
+/// Ahead/behind, the upstream's remote, and the remotes themselves — read from a real
+/// repository through `CLIGitBackend.snapshot`, not from a hand-written fixture.
 @Suite struct TrackingTests {
     private let backend = CLIGitBackend()
 
     private func refs(_ repo: TestRepo) async throws -> RefCollection {
         try await backend.snapshot(at: repo.root).refs
+    }
+
+    private func main(_ repo: TestRepo) async throws -> Branch {
+        try #require(try await refs(repo).localBranches.first { $0.name == "main" })
+    }
+
+    // MARK: - Tracking
+
+    @Test func aLevelBranchIsZeroAheadZeroBehind() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let remote = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: remote) }
+        try await repo.git(["branch", "--set-upstream-to=origin/main", "main"])
+
+        let main = try await main(repo)
+        #expect(main.tracking == .counts(ahead: 0, behind: 0))
+        #expect(main.upstream == "origin/main")
+        #expect(main.upstreamRemote == "origin")
+        #expect(main.upstreamRef == "refs/heads/main")
+    }
+
+    @Test func oneLocalCommitIsOneAhead() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let remote = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: remote) }
+        try await repo.git(["branch", "--set-upstream-to=origin/main", "main"])
+        try repo.write("ahead.txt", "ahead\n")
+        try await repo.commitAll("one ahead")
+
+        #expect(try await main(repo).tracking == .counts(ahead: 1, behind: 0))
+    }
+
+    @Test func aRemoteOnlyCommitIsBehind() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let remote = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: remote) }
+        try await repo.git(["branch", "--set-upstream-to=origin/main", "main"])
+        // Move the remote-tracking ref forward without moving `main`: the same shape a fetch
+        // that brought down someone else's commit leaves behind.
+        try await repo.git(["update-ref", "refs/remotes/origin/main", "feature"])
+
+        #expect(try await main(repo).tracking == .counts(ahead: 0, behind: 1))
+    }
+
+    @Test func divergenceIsCountedOnBothSides() async throws {
+        let repo = try await TestRepo.makeDiverged()
+        defer { repo.cleanUp() }
+        let remote = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: remote) }
+        try await repo.git(["branch", "--set-upstream-to=origin/main", "main"])
+        try await repo.git(["update-ref", "refs/remotes/origin/main", "feature"])
+
+        #expect(try await main(repo).tracking == .counts(ahead: 1, behind: 1))
+    }
+
+    /// The upstream ref is gone (pruned elsewhere) while the configuration still names it.
+    @Test func aDeletedUpstreamRefIsGone() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let remote = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: remote) }
+        try await repo.git(["branch", "--set-upstream-to=origin/main", "main"])
+        try await repo.git(["update-ref", "-d", "refs/remotes/origin/main"])
+
+        let main = try await main(repo)
+        #expect(main.tracking == .gone)
+        // Measured: git still reports the configured remote and ref for a gone upstream.
+        #expect(main.upstreamRemote == "origin")
+        #expect(main.upstreamRef == "refs/heads/main")
+    }
+
+    @Test func aBranchWithNoUpstreamHasNoTracking() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+
+        let feature = try #require(try await refs(repo).localBranches.first { $0.name == "feature" })
+        #expect(feature.tracking == .none)
+        #expect(feature.upstream == nil)
+        #expect(feature.upstreamRemote == nil)
+        #expect(feature.upstreamRef == nil)
+        #expect(feature.tracksLocalBranch == false)
+    }
+
+    /// `git branch --set-upstream-to=main topic` makes git report the remote as ".", which is
+    /// not a remote at all — `git remote add .` is refused outright. It must never reach push.
+    @Test func anUpstreamThatIsALocalBranchIsNotARemote() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        try await repo.git(["switch", "-q", "-c", "topic"])
+        try await repo.git(["branch", "--set-upstream-to=main", "topic"])
+        try repo.write("t.txt", "t\n")
+        try await repo.commitAll("topic commit")
+
+        let topic = try #require(try await refs(repo).localBranches.first { $0.name == "topic" })
+        #expect(topic.upstream == "main")
+        #expect(topic.upstreamRemote == nil, "\".\" is not a remote name")
+        #expect(topic.upstreamRef == "refs/heads/main")
+        #expect(topic.tracksLocalBranch)
+        #expect(topic.tracking == .counts(ahead: 1, behind: 0))
     }
 
     // MARK: - Remotes
