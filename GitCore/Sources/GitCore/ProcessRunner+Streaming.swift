@@ -29,18 +29,33 @@ extension ProcessRunner {
     /// safe to run off the main actor, and it must not block: the pipe is not drained while it
     /// runs. Every call for one process is serialized and in order.
     ///
-    /// Cancelling the task terminates the process (SIGTERM) and the call then throws
-    /// `CancellationError`, never a `GitError.commandFailed` invented from the signal exit.
-    /// A cancel that arrives before the process is launched prevents the launch.
+    /// Segments arrive with git's own trailing padding spaces: it pads each progress line out
+    /// to erase the longer one before it (`remote: Counting objects: 100% (12/12)        \r`,
+    /// measured against `git clone --progress`). A caller that displays a segment trims it.
     ///
-    /// Caveat, measured and deliberately not solved here: SIGTERM reaches the child only. A
-    /// grandchild — git's transport running under a wrapper script, say — can outlive it, and
-    /// while it holds the inherited pipe ends open this call waits for the EOFs that its
-    /// exactly-once resume is built on. Fetch over an ordinary transport has no such
-    /// grandchild. Killing the whole process group is a separate change.
+    /// Cancelling the task terminates the process and the call then throws `CancellationError`,
+    /// never a `GitError.commandFailed` invented from the signal exit. A cancel that arrives
+    /// before the process is launched prevents the launch.
+    ///
+    /// Measured on this OS: `Foundation.Process` starts the child in a process group of its own
+    /// whose id is the child's pid, and `terminate()` signals that whole group — so a
+    /// grandchild (git's transport under an `--upload-pack` wrapper script, say) dies with the
+    /// child instead of outliving it and holding the inherited pipe ends open. A bare
+    /// `kill <pid>` from a shell would not reach that grandchild; `terminate()` does.
+    ///
+    /// What SIGTERM cannot do is end a child that ignores it — `/bin/sh -c "trap '' TERM;
+    /// sleep 30"` kept a cancelled call waiting 29.7 s — so the cancel escalates. If the
+    /// process has still not been *observed to terminate* `killGracePeriod` after the SIGTERM,
+    /// its process group is sent SIGKILL, which nothing can ignore.
+    ///
+    /// A cancelled call throws, which discards the stdout captured so far. A caller that
+    /// cancelled a WRITE therefore knows nothing about how much of it happened: it must re-read
+    /// the repository's state, and must never report the cancel as "nothing changed".
     ///
     /// The environment, the `/dev/null` stdin and the pipe-draining rule are `run`'s; see
     /// `ProcessRunner.run` for why nothing but a readability handler ever reads a pipe.
+    /// `StreamingRunnerTests.bothRunnersGiveTheChildTheSameEnvironmentAndStdin` pins the two
+    /// hand-written copies together.
     ///
     /// - Throws: `GitError.launchFailed` if the executable cannot be started,
     ///   `GitError.commandFailed` on an exit code that is neither 0 nor in `allowedExitCodes`,
@@ -55,21 +70,25 @@ extension ProcessRunner {
             onLaunch: nil, onStderr: onStderr)
     }
 
-    /// The implementation, with a seam the tests need.
+    /// The implementation, with the two seams the tests need.
     ///
+    /// - Parameter killGracePeriod: how long a cancelled process is given to act on its
+    ///   SIGTERM before its process group is sent SIGKILL. Two seconds in production; a test
+    ///   that only needs to prove the wait is real passes a short one rather than sleeping it.
     /// - Parameter onLaunch: called with the child's pid once `run()` has succeeded, from
     ///   whatever thread started it. It exists so a cancellation test can ask the kernel
     ///   whether the process is really gone; production callers use the public overload.
     func runStreaming(
         _ executable: String, _ arguments: [String], cwd: URL,
         allowedExitCodes: Set<Int32> = [],
+        killGracePeriod: Duration = .seconds(2),
         onLaunch: (@Sendable (Int32) -> Void)?,
         onStderr: @escaping @Sendable (String) -> Void
     ) async throws -> StreamedResult {
         // Built before the cancellation handler is installed, because `onCancel` can run at
         // any moment from any thread — including before the operation closure is entered, if
         // the task is cancelled already — and it has nowhere to record that but here.
-        let state = StreamingProcessState()
+        let state = StreamingProcessState(killGracePeriod: killGracePeriod)
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation {
@@ -189,14 +208,22 @@ extension ProcessRunner {
 /// cancellation handler and the launching thread of a single `runStreaming` call.
 ///
 /// `@unchecked Sendable` on the same terms as `run`'s `ProcessState`: every stored property is
-/// touched only under `lock`, and `terminate()` is the one call deliberately made outside it,
-/// after the decision to make it has been recorded.
+/// touched only under `lock`. Signalling the child — `terminate()`, and the SIGKILL that may
+/// follow it — is deliberately done *outside* the lock, after the decision to do it has been
+/// recorded inside. That is sound because the decision, not the signal, is the shared state:
+/// the `terminateSent` / `killSent` flags are set under the lock by whichever thread wins, so
+/// each signal is sent at most once no matter how many threads raced for it, and the signal
+/// itself touches nothing this class owns. Doing it the other way round would be worse than
+/// merely unnecessary: `Process.terminate()` and `kill` are kernel calls made while the
+/// termination handler, on another thread, may already be waiting on this very lock to record
+/// the exit — holding the lock across them would serialise the two for no gain.
 ///
 /// It keeps `run`'s three-signal rule — stdout EOF, stderr EOF and termination must all have
-/// arrived before the continuation is resumed — and adds three things: the byte-level carry-
+/// arrived before the continuation is resumed — and adds four things: the byte-level carry-
 /// over for a stderr segment that spans two reads, the `cancelled` flag that turns a completed
-/// run into a `CancellationError`, and the process itself, so the cancellation handler has
-/// something to terminate.
+/// run into a `CancellationError`, the process itself, so the cancellation handler has
+/// something to terminate, and the pending escalation that turns an ignored SIGTERM into a
+/// SIGKILL.
 private final class StreamingProcessState: @unchecked Sendable {
     /// What the first caller to observe all three signals is told to resume with.
     enum Resumption {
@@ -204,6 +231,7 @@ private final class StreamingProcessState: @unchecked Sendable {
         case finished(status: Int32, stdout: Data, stderr: Data)
     }
 
+    private let killGracePeriod: Duration
     private let lock = NSLock()
     private var outBuffer = Data()
     private var errBuffer = Data()
@@ -218,6 +246,12 @@ private final class StreamingProcessState: @unchecked Sendable {
     private var cancelled = false
     private var process: Process?
     private var terminateSent = false
+    private var killSent = false
+    private var killWork: DispatchWorkItem?
+
+    init(killGracePeriod: Duration) {
+        self.killGracePeriod = killGracePeriod
+    }
 
     func appendStdout(_ chunk: Data) {
         lock.lock()
@@ -286,7 +320,7 @@ private final class StreamingProcessState: @unchecked Sendable {
         let target = (process != nil && !terminateSent && status == nil) ? process : nil
         if target != nil { terminateSent = true }
         lock.unlock()
-        if let target, target.isRunning { target.terminate() }
+        if let target, target.isRunning { terminate(target) }
     }
 
     /// Publishes the launched process to the cancellation handler, terminating it at once if
@@ -297,27 +331,103 @@ private final class StreamingProcessState: @unchecked Sendable {
         let shouldTerminate = cancelled && !terminateSent && status == nil
         if shouldTerminate { terminateSent = true }
         lock.unlock()
-        if shouldTerminate, launched.isRunning { launched.terminate() }
+        if shouldTerminate, launched.isRunning { terminate(launched) }
+    }
+
+    /// Sends the SIGTERM and arms the escalation behind it. Called outside the lock, at most
+    /// once per run — `terminateSent` is what guarantees that.
+    ///
+    /// The escalation is a `DispatchWorkItem` rather than a timer source on purpose: a source
+    /// must be resumed before it may be released, and the branch below that decides *not* to
+    /// arm one would have had to release a suspended source, which traps inside libdispatch
+    /// (`_dispatch_lane_suspend` from `_xref_dispose`). A work item has no such rule, and
+    /// `cancel()` on one that has not started yet means it simply never runs.
+    private func terminate(_ target: Process) {
+        target.terminate()
+
+        // Weak, so a pending escalation keeps nothing alive; and every path that ends the run
+        // cancels it, so it cannot act after the continuation has resumed.
+        let escalation = DispatchWorkItem { [weak self] in self?.escalateToKill() }
+        let grace = killGracePeriod.components
+        let seconds = Double(grace.seconds) + Double(grace.attoseconds) / 1e18
+
+        lock.lock()
+        let stillWorthArming = !resumed && !killSent && status == nil
+        if stillWorthArming { killWork = escalation }
+        lock.unlock()
+        guard stillWorthArming else { return }
+        DispatchQueue.global(qos: .userInitiated)
+            .asyncAfter(deadline: .now() + seconds, execute: escalation)
+    }
+
+    /// The grace period is up. If the process has still not been *observed* to terminate, kill
+    /// its process group.
+    private func escalateToKill() {
+        lock.lock()
+        // `status == nil` is the same rule as the SIGTERM's, and it matters more here: once
+        // termination has been recorded the pid is reaped, and a signal aimed at it would land
+        // on whatever the system handed that number to next.
+        let target = (!killSent && !resumed && status == nil) ? process : nil
+        if target != nil { killSent = true }
+        killWork = nil
+        lock.unlock()
+
+        guard let target, target.isRunning else { return }
+        let pid = target.processIdentifier
+        // Nothing below may ever be reached with a pid of 0 (`kill` would signal *our* whole
+        // process group) or -1 (every process we may signal). `Process` only reports a pid
+        // above 1 for a running child, but the consequence of a bug here is severe enough to
+        // be worth the two comparisons.
+        guard pid > 1 else { return }
+        // Measured on macOS: a `Foundation.Process` child is the leader of a process group of
+        // its own, so its pgid is its pid and `kill(-pgid, …)` reaches it and everything it
+        // started. The equality is checked rather than assumed: if it does not hold, the group
+        // is somebody else's — possibly ours — and only the child itself is signalled.
+        // `getpgid` returning -1 means the pid is already gone; nothing is signalled then.
+        let group = getpgid(pid)
+        if group == pid {
+            kill(-group, SIGKILL)
+        } else if group > 0 {
+            kill(pid, SIGKILL)
+        }
     }
 
     /// Returns what to resume with exactly once, to the first caller that observes all three
     /// signals (stdout EOF, stderr EOF, termination). Every other call returns `nil`.
     func claimResumeIfComplete() -> Resumption? {
         lock.lock()
-        defer { lock.unlock() }
-        guard stdoutFinished, stderrFinished, let status, !resumed else { return nil }
+        guard stdoutFinished, stderrFinished, let status, !resumed else {
+            lock.unlock()
+            return nil
+        }
         resumed = true
-        if cancelled { return .cancelled }
-        return .finished(status: status, stdout: outBuffer, stderr: errBuffer)
+        let escalation = killWork
+        killWork = nil
+        let resumption: Resumption =
+            cancelled
+            ? .cancelled : .finished(status: status, stdout: outBuffer, stderr: errBuffer)
+        lock.unlock()
+        // Outside the lock, like the signals, and for the same reason. `cancel()` does not
+        // wait for an escalation that is already running, so it cannot deadlock against one
+        // blocked on the lock this just released; that one then finds `resumed` set and
+        // signals nothing.
+        escalation?.cancel()
+        return resumption
     }
 
     /// Claims the resume for a process that never launched — cancelled beforehand, or a launch
     /// that threw. No handler can ever run, so this is the only completion the caller gets.
     func claimResumeWithoutLaunching() -> Bool {
         lock.lock()
-        defer { lock.unlock() }
-        guard !resumed else { return false }
+        guard !resumed else {
+            lock.unlock()
+            return false
+        }
         resumed = true
+        let escalation = killWork
+        killWork = nil
+        lock.unlock()
+        escalation?.cancel()
         return true
     }
 }
