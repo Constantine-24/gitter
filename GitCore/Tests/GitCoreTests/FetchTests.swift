@@ -11,7 +11,10 @@ import Testing
 
     /// The whole point of fetch, and the whole point of it being *not* a pull: the
     /// remote-tracking ref catches up with the server and the local branch does not move one
-    /// commit. Nothing in the worktree changes either.
+    /// commit. Nothing in the worktree changes either — and nothing in the **index**, which is
+    /// the third place a pull would have written and the one a worktree snapshot cannot see: a
+    /// staged change that survived on disk but was dropped from the index would pass every
+    /// other assertion here.
     @Test func bringsTheColleaguesCommitToTheTrackingRefAndLeavesTheLocalBranchAlone() async throws {
         let repo = try await TestRepo.makeBranched()
         defer { repo.cleanUp() }
@@ -25,10 +28,17 @@ import Testing
         try await colleague.git(["push", "-q", "origin", "main"])
         let theirs = try await colleague.headSha()
 
+        // Something staged but not committed, so "the index did not change" is a claim about
+        // an index that has something in it to lose.
+        try repo.write("staged.txt", "staged\n")
+        try await repo.git(["add", "staged.txt"])
+
         let localBefore = try await repo.headSha()
         let trackingBefore = try await repo.revParse("refs/remotes/origin/main")
         let worktreeBefore = worktreeSnapshot(repo)
+        let stateBefore = try await RepoState.capture(repo)
         #expect(trackingBefore != theirs, "nothing to fetch, so this test would prove nothing")
+        #expect(stateBefore.index.contains("staged.txt"), "\(stateBefore.index)")
 
         try await CLIGitBackend().fetch(remote: "origin", at: repo.root, progress: { _ in })
 
@@ -36,6 +46,13 @@ import Testing
         #expect(try await repo.headSha() == localBefore)
         #expect(try await repo.revParse("refs/heads/main") == localBefore)
         assertWorktreeUnchanged(repo, since: worktreeBefore)
+
+        let stateAfter = try await RepoState.capture(repo)
+        #expect(stateAfter.index == stateBefore.index, "the index changed")
+        #expect(stateAfter.symbolicHead == stateBefore.symbolicHead, "HEAD points somewhere else")
+        // Not vacuous: the refs really did move, so the three comparisons above were made
+        // across a fetch that did something rather than one that fell over early.
+        #expect(stateAfter.refs != stateBefore.refs, "the fetch changed no ref at all")
     }
 
     /// A fetch is a read of the server. It must leave the bare repository byte-for-byte what
@@ -190,7 +207,11 @@ import Testing
     /// - `"."` — git **accepts** it: `git fetch .` prints `From .`, fetches this repository's own
     ///   HEAD into `FETCH_HEAD` and exits 0. That is the one that has to be stopped here, because
     ///   git will not stop it, and `FETCH_HEAD` is what the test below checks.
-    @Test(arguments: ["-x", "", "   ", "."])
+    ///
+    /// `" -x"` is there because the check used to ask the *untrimmed* name whether it began
+    /// with `-` while asking the trimmed one about everything else: a leading space walked
+    /// straight past it, and git got an argument no one had looked at.
+    @Test(arguments: ["-x", " -x", "", "   ", "."])
     func aRemoteNameGitWouldMisreadIsRefusedBeforeGitRuns(name: String) async throws {
         let repo = try await TestRepo.makeBranched()
         defer { repo.cleanUp() }

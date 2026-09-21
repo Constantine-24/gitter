@@ -61,9 +61,12 @@ extension CLIGitBackend: GitRemoteBackend {
     /// It is deliberately *not* `requireName`: that one throws a `BranchOperationError`, which
     /// belongs to a different protocol, and it does not know about `"."` — a perfectly good
     /// branch name and a thoroughly bad remote.
+    /// Every question is asked of the **trimmed** name. It used to ask the untrimmed one about
+    /// the leading `-` and the trimmed one about everything else, so `" -x"` walked past the
+    /// check and reached git — which answered it by writing a `FETCH_HEAD`.
     private func requireRemoteName(_ name: String) throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !name.hasPrefix("-"), trimmed != "." else {
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("-"), trimmed != "." else {
             throw RemoteOperationError.noRemote
         }
     }

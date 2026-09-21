@@ -115,6 +115,14 @@ public struct CLIGitBackend: GitBackend {
     /// not an update worth reporting. Both are dealt with here so that no caller — and no view
     /// — has to know that git does it.
     ///
+    /// **The trim is not free, and the returned stderr is where the unmodified text lives.**
+    /// It takes whitespace off *both* ends, so a `remote:` line the server indented arrives at
+    /// `progress` without its indentation — a hook that lays its output out in columns loses
+    /// that layout in the progress stream. `StreamedResult.stderr` is untrimmed and holds every
+    /// byte git wrote, which is what Task 5's `remoteMessages` and any banner quoting the
+    /// server are built from. Nothing that cares about the shape of a line should read it from
+    /// a progress segment.
+    ///
     /// `progress` is called on the pipe's readability queue, **not** the caller's executor, and
     /// the pipe is not drained while it runs; the work done on that queue is therefore kept to
     /// one `trimmingCharacters` and one `isEmpty`. See `ProcessRunner.runStreaming` for the
