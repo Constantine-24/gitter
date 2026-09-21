@@ -216,6 +216,14 @@ public enum PushTargetRefusal: Equatable, Sendable {
 ///    onto a branch called something else.
 /// 5. Otherwise `.push(pushRemote, "refs/heads/<branch>")`.
 ///
+/// **This is the first of two checks, not the only one.** Whatever ref comes out of here is
+/// handed to `GitRemoteBackend.push`, which refuses a destination that is not a full
+/// `refs/heads/…` name — no `:`, no leading `-` or `+` — before git is launched
+/// (`requirePushDestination` in `CLIGitBackend+Push`). That backstop is why rule 3 can honour
+/// `%(push:remoteref)` as git reports it without this function having to validate a field git
+/// filled in: a value that would make a refspec nobody chose is refused on the way out, by the
+/// one place that knows how the refspec is spelled.
+///
 /// **A known limit of rule 4.** `push.default` is not among the fields `for-each-ref` reports —
 /// measured: rows (g) under `simple`, `upstream` and `current` print byte-identical fields
 /// while a bare `git push` refuses, pushes to the upstream's name and pushes to the branch's

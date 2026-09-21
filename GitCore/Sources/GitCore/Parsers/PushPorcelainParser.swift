@@ -48,6 +48,27 @@ import Foundation
 /// flag is the field before the first tab because for a fast-forward it *is a space*, which
 /// "the first non-blank character" would have thrown away. Both the flag and the summary are
 /// checked: `=` with a summary nobody has seen is `.other`, not "up to date".
+///
+/// **Why a line this cannot read is a rejection rather than a success, and why that is safe.**
+/// `.rejected(.other(line))` is the honest answer only if every line reaching here is git's
+/// own — a server that could write onto this stdout could otherwise forge `[up to date]` for a
+/// push it had refused. It cannot: **stdout belongs to the local git, and everything the far
+/// end says arrives on stderr behind a `remote:` prefix.** Measured on git 2.54 with a
+/// `pre-receive` hook printing a fake porcelain line and `Done`:
+///
+/// ```
+/// stdout: To ../origin.git
+///         !^Irefs/heads/hooky:refs/heads/hooky^I[remote rejected] (pre-receive hook declined)
+///         Done
+/// stderr: remote: =^Irefs/heads/hooky:refs/heads/hooky^I[up to date]        $
+///         remote: Done        $
+///         error: failed to push some refs to '../origin.git'$
+/// ```
+///
+/// The forgery arrived in `remoteMessages`, where it is somebody else's text and is rendered
+/// as such; stdout carried git's own verdict, unchanged. So an unreadable line is a line git
+/// wrote that this version does not know, and refusing to guess at it can only be over-cautious
+/// — never a rejection read as a success.
 public enum PushPorcelainParser {
     /// The outcome for `destinationRef`, or `nil` when no result line names it.
     ///
