@@ -2,12 +2,13 @@
 
 Gitter is a simpler native Git client for macOS — an alternative to Tower and GitKraken
 without the feature bloat. It opens a repo, browses branches and the commit graph, and
-shows diffs, all live-refreshed as the working copy changes. It now stages files, hunks
-and even single lines, and commits — including amend and "commit all tracked" — from
-those diffs. There is still no discard, no branch operations and no remotes; those are
-next.
+shows diffs, all live-refreshed as the working copy changes. It stages files, hunks and
+even single lines, and commits — including amend and "commit all tracked" — from those
+diffs. It now also creates, switches, merges, renames and deletes branches, checks out
+remote branches and tags, and ends an operation the repository is stuck part-way through.
+There is still no discard and no push/pull/fetch; those are next.
 
-![Gitter main window](docs/screenshots/main.png)
+![Gitter's main window: the branch button, the sidebar, the lane graph and a diff](docs/screenshots/branches.png)
 
 ## What it can do
 
@@ -15,18 +16,46 @@ next.
 - View diffs of a commit, or of the working copy, with wrapping long lines
 - Stage and unstage whole files, individual hunks, or a hand-picked set of lines
 - Commit, amend the last commit, or commit every tracked change in one step
+- Create, switch, rename and delete local branches; check out a remote branch as a local
+  tracking branch; check out a commit or a tag (detached HEAD)
+- Merge, choosing each time between fast-forward if possible, always a merge commit, and
+  squash — the last choice is remembered
+- Finish a conflicted merge from the app (resolve in your editor, stage, "Commit Merge"),
+  or end it: abort a merge, cherry-pick, revert, rebase or `git am`, and undo a pending
+  squash
 - Hooks and commit signing apply as configured, because every commit runs through
   your own `git`, not a reimplementation of it
 
+![Line-level staging, in dark mode, with a long line wrapped](docs/screenshots/main.png)
+
 ## Safety
 
-Gitter's own operations never modify or delete a file in your working tree: staging and
-unstaging change only the index (`git apply --cached`, `git add`, `git reset`), and
-committing writes only to the repository. Hooks you have configured run exactly as they
-would from the command line, so a pre-commit hook that rewrites files (an auto-formatter,
-say) will still do so — that rewrite is your hook acting, not Gitter. The staging claim is
-verified by tests that `shasum` every worktree file before and after each staging
-operation and require the bytes to be identical.
+Gitter's own code never writes working-tree files — staging and unstaging change only the
+index (`git apply --cached`, `git add`, `git reset`) and committing writes only to the
+repository. Branch operations do change the working tree, since that is what a checkout
+is, so the promise is restated rather than dropped:
+
+> **Gitter never discards uncommitted work or commits without a confirmation that names
+> what will be lost.**
+
+Switch, detach, track and merge run plain git with **no force flag anywhere in the code**
+(`--force`, `-f`, `--discard-changes`, `-B`, `-C`, `--merge` on switch are forbidden, and
+a test greps the sources for them on every run). When git refuses, nothing has changed,
+and Gitter shows the files git named rather than a wall of stderr.
+
+Exactly four actions can lose anything, and each is behind a confirmation that says what
+goes and what stays:
+
+| action | how it is confirmed |
+|---|---|
+| Abort a merge, cherry-pick, revert, rebase or `git am` | a sheet with that operation's own kept/lost wording — a rebase abort also takes unstaged edits, `am --abort` rewinds the branch past the patches it committed — and **the exact list of files** it is about to put back, read live |
+| Undo a pending squash | the same sheet: everything staged goes, including work staged before the squash if the squash was started outside Gitter, which is why the file list is not optional |
+| Force-delete an unmerged branch | `git branch -d` runs first and either deletes or refuses *without changing anything*; only its refusal opens a warning naming the unique-commit count and the tip sha, and "Delete Anyway" is refused unless the branch still points at exactly that tip |
+| Leave a detached HEAD holding commits on no branch, tag or remote | a warning naming the count and the full sha, with "Create Branch Here…" as the safe answer; leaving anyway prints the command that brings the commits back |
+
+The staging claim is verified by tests that `shasum` every worktree file before and after
+each staging operation and require the bytes to be identical; every branch refusal is
+tested the same way, with the index, HEAD and every ref compared as well.
 
 ## Design decisions
 
@@ -37,7 +66,9 @@ operation and require the bytes to be identical.
 | Deployment | macOS 26.0 minimum, macOS 27 SDK | Dev machine runs 27 |
 | Project | xcodegen `project.yml` -> `Gitter.xcodeproj`; `GitCore` local SwiftPM package | Xcode workflow for the app; `swift test` for the core |
 | Staging | Patches built in-process (`PatchBuilder`) and applied with `git apply --cached`, never a hand-rolled index writer | The same command a user would run themselves; hunk- and line-level staging fall out of the same code path as whole-file staging |
-| Scope | Repo browsing, diffs, staging and commit are done. Discard, branches and remotes are not built yet | Ship the commit loop before touching anything that mutates the working tree |
+| Dirty switch | git's default — carry non-conflicting changes, refuse otherwise. No stash, no force | A refusal that changes nothing is a better answer than a stash the user did not ask for |
+| Delete | `git branch -d` first, then `-D` only from the warning its refusal opened, and only if the tip is still the one that warning named | `-d` is git's own authority on "is this merged", and it changes nothing when it refuses |
+| Scope | Repo browsing, diffs, staging, commit and branch operations are done. Discard and remotes are not built yet | Ship the commit loop before touching anything that mutates the working tree |
 
 ## Build & run
 
@@ -59,7 +90,9 @@ xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -config
 cd GitCore && swift test
 ```
 
-182 tests, 4 known issues (pre-existing, tracked skips — not failures).
+392 tests in 35 suites, 4 known issues (pre-existing, tracked skips — not failures). Most
+of them run real `git` against a temporary repository rather than a fake, including one
+that greps `GitCore`'s own sources for forbidden force flags.
 
 ## Project layout
 
@@ -73,6 +106,9 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
     PatchBuilder.swift        Builds a hunk- or line-level patch from a parsed diff
     GitWorkingCopyBackend.swift  Staging/commit/amend protocol, implemented over the CLI
       in CLIGitBackend+WorkingCopy.swift
+    GitBranchBackend.swift    Branch/merge/abort protocol and its contract, implemented in
+      CLIGitBackend+Branches / +BranchDelete / +Merge / +Abort / +Operation
+    BranchOperationTypes.swift  MergeMode, MergeOutcome, BranchDeletion, the typed refusals
   Tests/GitCoreTests/
 
 Gitter/                   macOS app (SwiftUI)
@@ -85,10 +121,14 @@ Gitter/                   macOS app (SwiftUI)
   BranchSheet.swift          Which confirmation or form the store wants on screen
   CommitDraft.swift          The commit message + amend toggle being edited
   RepositoryWatcher.swift    FSEvents-based debounced refresh trigger
+  OperationWording.swift     Every sentence the UI says about an operation in progress,
+                              including the abort confirmation's five wordings
   DebugLaunchHooks.swift     Debug-only launch hooks for screenshot verification (see below)
-  Views/                     SidebarView, CommitListView, CommitGraphCell, DetailView,
-                              WorkingCopyFileList, CommitComposerView, DiffView, DiffHunkView,
-                              DiffLineSelection, ErrorBanner
+  Views/                     SidebarView, SidebarMenus, CommitListView, CommitGraphCell,
+                              DetailView, WorkingCopyFileList, CommitComposerView, DiffView,
+                              DiffHunkView, DiffLineSelection, Banners, BranchToolbar,
+                              BranchSheetHost and the six sheets (NewBranch, Rename, Merge,
+                              DeleteBranch, Abort, LeaveDetached)
 ```
 
 ## Debug launch hooks
@@ -109,7 +149,7 @@ never be put on screen from a script, and a focus bug can never be reproduced.
 | `GITTER_DEBUG_WINDOW=1400x1400` | resize the window, past the screen if asked |
 | `GITTER_DEBUG_OPEN=<path>` | after the first repository has loaded, open that path as "Open Repository…" would — the only way to reach a failed open from a script |
 | `GITTER_DEBUG_APPEARANCE=light\|dark` | force the app's appearance, so a screenshot pass can shoot both without changing the machine's setting |
-| `GITTER_DEBUG_CLICK=x,y[:2\|:shift][;…]` | click those points, in points from the top-left of the window's content area; `:2` double-clicks, `:shift` shift-clicks, and a `type=text` step types between two clicks |
+| `GITTER_DEBUG_CLICK=x,y[:2\|:shift\|:right][;…]` | click those points, in points from the top-left of the *frontmost* window's content area — the sheet's own, while one is up; `:2` double-clicks, `:shift` shift-clicks, a `type=text` step types between two clicks, and `:right` posts a right-click, which is kept as a recorded negative result: it does not open a SwiftUI `.contextMenu` |
 | `GITTER_DEBUG_KEYS=space,return,cmd+return` | then press those keys (`space`, `return`, `tab`, `escape`, `up`, `down`, with `cmd+`/`shift+`/`opt+`/`ctrl+`) |
 | `GITTER_DEBUG_TYPE=text` | then type that text into whatever has focus |
 | `GITTER_DEBUG_DUMP_RESPONDER=1` | print the first-responder chain, the window geometry and whether the window is key to stderr, after every click and key; a count instead of `1` repeats the final dump that many times, 200 ms apart, which is how you tell "never focused" from "focused, then lost it" |
@@ -127,7 +167,11 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `merge:<branch>:<ff\|noff\|squash>` | merge in that mode, remembering it once the merge really runs |
 | `abort` | open the abort confirmation and answer it |
 | `confirmleave` | answer the "leaving a detached HEAD" confirmation a previous step opened |
+| `wait:<seconds>` | hold whatever is on screen, so a terminal can change the repository *underneath* a confirmation — the only way to check what a stale sheet does. Clamped to 0…120 |
 | `sheet:new` / `sheet:rename:<b>` / `sheet:merge:<b>` / `sheet:delete:<b>` / `sheet:abort` | open a sheet without acting — `sheet:delete` reads the warning's count and tip instead of letting `git branch -d` refuse, so it never deletes anything |
+
+The clicks and keys in `GITTER_DEBUG_CLICK`/`KEYS`/`TYPE` run **once, after the last
+step**, so a `wait:` step is what puts a click on a sheet that has gone out of date.
 
 After every step one line goes to stderr, which is what a shell asserts on. `head` and
 `selection` ride along because neither can be read out of git, and "the selection returns to
@@ -148,6 +192,8 @@ open -n -F --stderr /tmp/gitter.log --env GITTER_DEBUG_CLICK=684,170 \
 
 ## Status / roadmap
 
-Stages files, hunks and lines; commits, amends and commits all tracked changes. Next up:
-branch operations (create, checkout, delete, merge), then push/pull/fetch. Later: discard,
-stash, and conflict resolution.
+Stages files, hunks and lines; commits, amends and commits all tracked changes; creates,
+switches, merges, renames and deletes branches, checks out remote branches and tags, and
+aborts an operation or undoes a pending squash. Next up: push, pull and fetch. Later:
+stash, discard, and conflict resolution inside the app (today you resolve in your editor
+and Gitter stages and commits the result).
