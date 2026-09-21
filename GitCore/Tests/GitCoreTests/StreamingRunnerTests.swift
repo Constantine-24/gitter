@@ -26,6 +26,11 @@ private final class Locked<Value>: @unchecked Sendable {
 
 /// `runStreaming`: the same capture guarantees as `run`, plus stderr as it arrives and a call
 /// that ends promptly when its task is cancelled.
+///
+/// Every child here is `/bin/sh`, `/bin/sleep` or `/usr/bin/pgrep` — deliberately never git,
+/// which is why the bare `ProcessRunner()`s below need no `isolatedRunner()`: there is no
+/// configuration for the developer's machine to leak in through. See `TestGitEnvironment` for
+/// the audit that says so.
 @Suite struct StreamingRunnerTests {
     private static let root = URL(fileURLWithPath: "/")
 

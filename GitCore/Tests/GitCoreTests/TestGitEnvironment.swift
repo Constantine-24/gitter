@@ -41,6 +41,22 @@ import Testing
 /// through. The few places that run git without a `TestRepo` (the bare repositories, the
 /// colleague's clone, `RemoteState.capture`) take their runner from `isolatedRunner()`, which
 /// touches it too.
+///
+/// **The whole target audited, so "every git" is a claim and not a hope.** `git grep` for
+/// `ProcessRunner()` and `Process()` across `Tests/` leaves exactly three kinds of caller:
+///
+/// - `TestRepo`'s own runner and `isolatedRunner()` — both behind the precondition above.
+/// - `CLIGitBackend()`, which builds its own runner and is the object under test. Every use of
+///   it in the suite operates on a `TestRepo`'s `root`, so the repository — and with it this
+///   `setenv` — exists before git is started.
+/// - `StreamingRunnerTests` and two cases in `ProcessRunnerTests`, which start `/bin/sh`,
+///   `/bin/sleep`, `/usr/bin/pgrep` and one executable that does not exist. None of them is
+///   git, so there is no configuration for the developer's machine to leak in through.
+///
+/// What the audit caught: three cases in `ProcessRunnerTests` that really did run
+/// `/usr/bin/git` on a bare `ProcessRunner()`. They were isolated only by whichever other suite
+/// happened to have built a `TestRepo` first, and `swift test --filter ProcessRunnerTests` ran
+/// them against the developer's own configuration.
 enum TestGitEnvironment {
     /// Always `true`; the value is not the point, the side effect is.
     static let isolated: Bool = {

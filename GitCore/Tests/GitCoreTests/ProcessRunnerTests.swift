@@ -2,15 +2,29 @@ import Foundation
 import Testing
 @testable import GitCore
 
+/// `ProcessRunner` itself: capture, exit codes, and the pipe-draining order.
+///
+/// **Every git here goes through `isolatedRunner()`.** `TestGitEnvironment`'s `setenv` is
+/// process-wide, so a bare `ProcessRunner()` in this file was isolated only by luck — by
+/// whichever other suite happened to have built a `TestRepo` first. Run alone (`swift test
+/// --filter ProcessRunnerTests`) these three started a git that read the developer's own
+/// `~/.gitconfig`, and `throwsWithExitCodeAndStderrOnFailure` in particular asks a question
+/// about a directory that is not a repository — an answer a global `safe.directory` or an
+/// `insteadOf` rewrite is entitled to change. The runner under test is the same object either
+/// way: `isolatedRunner()` returns a plain `ProcessRunner`, and asking for it is what
+/// guarantees the environment has been shut out.
+///
+/// The cases that run `/bin/sh` need none of it and use `ProcessRunner()` directly: no git, no
+/// configuration to leak in.
 @Suite struct ProcessRunnerTests {
     @Test func capturesStdoutOfSuccessfulCommand() async throws {
-        let runner = ProcessRunner()
+        let runner = isolatedRunner()
         let out = try await runner.run("/usr/bin/git", ["--version"], cwd: URL(fileURLWithPath: "/"))
         #expect(String(decoding: out, as: UTF8.self).hasPrefix("git version"))
     }
 
     @Test func throwsWithExitCodeAndStderrOnFailure() async {
-        let runner = ProcessRunner()
+        let runner = isolatedRunner()
         await #expect {
             _ = try await runner.run("/usr/bin/git", ["rev-parse", "HEAD"], cwd: URL(fileURLWithPath: "/"))
         } throws: { error in
@@ -27,7 +41,7 @@ import Testing
     }
 
     @Test func allowedExitCodesReturnsStdoutInsteadOfThrowing() async throws {
-        let runner = ProcessRunner()
+        let runner = isolatedRunner()
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("gitter-processrunner-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
