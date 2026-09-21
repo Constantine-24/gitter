@@ -114,4 +114,75 @@ public protocol GitRemoteBackend: Sendable {
     func fetch(
         remote: String?, at root: URL, progress: @escaping @Sendable (String) -> Void
     ) async throws
+
+    /// Send `branch` to `remoteRef` on `remote`:
+    /// `git push --porcelain --progress [-u] <remote> refs/heads/<branch>:<remoteRef>`.
+    ///
+    /// **The backend never works out where a branch goes.** `remote` and `remoteRef` are the
+    /// caller's to choose, and there is exactly one way to choose them: `PushTarget.resolve`,
+    /// which reads `Branch.pushRemote` / `Branch.pushRef` and never `upstreamRemote` /
+    /// `upstreamRef` — under `branch.<name>.pushRemote` or `remote.pushDefault` those name a
+    /// different repository than the one the branch pushes to. See `PushTarget` for the rules
+    /// and the measured rows behind them.
+    ///
+    /// **The outcome is read from `--porcelain` stdout, never from the exit code.** Every
+    /// rejection exits 1, so the code cannot tell one from another; and the code is not even
+    /// about our ref — measured on git 2.54, a push whose branch went through while a second
+    /// refspec was refused exits 1 all the same. `PushPorcelainParser` matches the result line
+    /// by the destination that was asked for, which is also what keeps the extra lines the
+    /// user's own `push.followTags` adds from being mistaken for ours.
+    ///
+    /// **A rejection comes back rather than being thrown**, as a merge conflict does for
+    /// `MergeOutcome`: the server considered the push and said no, which is a different fact
+    /// from "git could not run" or "the host could not be reached".
+    ///
+    /// **`remoteMessages` is filled in for every outcome, success included.** The hosting
+    /// service's "create a pull request" URL is printed by a `post-receive` hook *after* the
+    /// push has gone through, and arrives exactly as a declining hook's reason does — as
+    /// `remote:` lines on stderr. See `PushResult`.
+    ///
+    /// **What `-u` writes, and the trap in it.** Measured on git 2.54: `-u` sets
+    /// `branch.<name>.remote` and `branch.<name>.merge` — the **upstream** — and leaves
+    /// `branch.<name>.pushremote` alone. In a triangular setup (`branch.<name>.pushRemote` or
+    /// `remote.pushDefault` pointing somewhere else) a `push -u <pushRemote>` therefore
+    /// *repoints the upstream* at the repository being pushed to, so the branch afterwards
+    /// fetches from and counts its ahead/behind against a different server than it did before:
+    ///
+    /// ```
+    /// $ git config branch.tri.pushRemote fork       # upstream is origin/tri
+    /// $ git push --porcelain --progress -u --end-of-options fork refs/heads/tri:refs/heads/tri
+    /// branch 'tri' set up to track 'fork/tri'.
+    /// $ git config --get-regexp '^branch\.tri\.'
+    /// branch.tri.remote fork
+    /// branch.tri.pushremote fork
+    /// branch.tri.merge refs/heads/tri
+    /// ```
+    ///
+    /// `merge` is likewise set to `remoteRef`, whatever it is: publishing `other` to
+    /// `refs/heads/renamed` leaves the branch tracking `origin/renamed`. A caller that offers
+    /// `setUpstream: true` for anything but a first publish onto the branch's own name owes the
+    /// user a word about that.
+    ///
+    /// **Names are refused before git runs**, and the refusal really is a no-op: `branch` by
+    /// `requireName`'s rules plus "no `:`", `remote` by the same three shapes `fetch` refuses
+    /// (`RemoteOperationError.noRemote`), and `remoteRef` must be a full `refs/heads/…` name
+    /// with no `:` in it. Both sides go into one refspec argument, so a `:` in either would
+    /// make a refspec with a destination nobody chose.
+    ///
+    /// **A cancelled push says nothing about the server.** Cancelling terminates git wherever
+    /// it had got to, which may be after the server accepted the update and before this end
+    /// heard about it, so the call throws `CancellationError` and the remote may or may not have
+    /// been written. Never render that as "nothing was pushed": fetch and look.
+    ///
+    /// `progress` receives git's stderr progress lines as they arrive, on a background queue —
+    /// see `fetch` for the full threading contract.
+    ///
+    /// - Throws: `BranchOperationError.invalidName` or `RemoteOperationError.noRemote` for a
+    ///   name refused before git runs (nothing happened), `RemoteOperationError` for a network
+    ///   failure Gitter recognises, `GitError.commandFailed` with git's own words for one it
+    ///   does not, and `CancellationError` if the task was cancelled.
+    func push(
+        _ branch: String, to remote: String, remoteRef: String, setUpstream: Bool,
+        at root: URL, progress: @escaping @Sendable (String) -> Void
+    ) async throws -> PushResult
 }

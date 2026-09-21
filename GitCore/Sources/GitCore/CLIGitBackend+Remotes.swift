@@ -64,7 +64,11 @@ extension CLIGitBackend: GitRemoteBackend {
     /// Every question is asked of the **trimmed** name. It used to ask the untrimmed one about
     /// the leading `-` and the trimmed one about everything else, so `" -x"` walked past the
     /// check and reached git — which answered it by writing a `FETCH_HEAD`.
-    private func requireRemoteName(_ name: String) throws {
+    ///
+    /// Internal rather than private because `CLIGitBackend+Push.swift` asks the same question of
+    /// the same kind of name, and a second copy of a security check is a second thing to forget
+    /// to fix: the leading-space hole above was in exactly one of two places for a while.
+    func requireRemoteName(_ name: String) throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !trimmed.hasPrefix("-"), trimmed != "." else {
             throw RemoteOperationError.noRemote
