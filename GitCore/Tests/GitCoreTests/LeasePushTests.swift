@@ -94,6 +94,41 @@ import Testing
         #expect(try await RemoteState.capture(origin).refs.contains("refs/heads/main\u{0}\(ours)"))
     }
 
+    /// **A leased force push moves the one branch the sheet named and creates nothing else.**
+    ///
+    /// The lease is a claim about one ref, and the confirmation behind it counts what that one
+    /// ref would lose. Measured on git 2.54, `push.followTags=true` makes this vector publish
+    /// annotated tags too:
+    ///
+    /// ```
+    ///  ^Irefs/heads/main:refs/heads/main^Ie14f0f6..985b548
+    /// *^Irefs/tags/annot2:refs/tags/annot2^I[new tag]
+    /// ```
+    ///
+    /// No sheet named that tag. `--no-follow-tags` is on this vector for the same reason it is
+    /// on `push`'s, and the claim is checked against the server's whole ref list.
+    @Test func aForcePushMovesTheBranchAndCreatesNoTagEvenUnderFollowTags() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        try await repo.git(["config", "push.followTags", "true"])
+        let remoteTip = try await bareGit(origin, ["rev-parse", "refs/heads/main"])
+        try repo.write("later.txt", "later\n")
+        try await repo.commitAll("later")
+        try await repo.git(["tag", "-a", "annotated", "-m", "an annotated tag"])
+
+        let before = try await RemoteState.capture(origin)
+        #expect(!before.refs.contains("refs/tags/"), "\(before.refs)")
+
+        _ = try await CLIGitBackend().forcePush(
+            "main", to: "origin", remoteRef: "refs/heads/main", expectedRemoteTip: remoteTip,
+            at: repo.root, progress: { _ in })
+
+        try await assertOnlyRefChanged(origin, since: before, isThe: "refs/heads/main")
+    }
+
     // MARK: - The lease that does not match
 
     /// **The heart of the task.** The sheet read the remote tip; the colleague pushed again

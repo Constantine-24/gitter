@@ -22,12 +22,20 @@ import Foundation
 /// — so an outcome read from the exit code would have called a successful push a rejection.
 /// The outcome is the line for the destination that was asked for, and nothing else.
 ///
-/// **Extra result lines are not an error and not our business.** Gitter always passes one
-/// explicit refspec, but the user's own configuration can add refs to the same push: measured,
-/// `push.followTags=true` with an annotated tag on the commit being pushed adds
-/// `*\trefs/tags/v9:refs/tags/v9\t[new tag]` beside our branch's line. Those refs were not
-/// asked about, nothing in Gitter shows them, and they are skipped. (`remote.<name>.push` does
-/// *not* add any: measured, an explicit refspec on the command line replaces it outright.)
+/// **Extra result lines are not an error and not our business.** A push can carry result lines
+/// for refs the caller never named: measured, `push.followTags=true` with an annotated tag on
+/// the commit being pushed adds `*\trefs/tags/v9:refs/tags/v9\t[new tag]` beside the branch's
+/// line. Those refs were not asked about, nothing in Gitter shows them, and they are skipped.
+/// (`remote.<name>.push` does *not* add any: measured, an explicit refspec on the command line
+/// replaces it outright.)
+///
+/// **Corrected in Task 6's fix round: no push *Gitter* makes can produce such a line any
+/// more.** All four vectors in `CLIGitBackend+Push.swift` now carry `--no-follow-tags`, which
+/// was measured to defeat `push.followTags=true` on every one of them — because a tag nobody
+/// named reaching somebody's server is a change no confirmation sheet described, whatever this
+/// parser does with the line. The skipping behaviour stays exactly as it is: this is a pure
+/// function over stdout, it is handed output from a vector it cannot see, and a guarantee that
+/// lives in another file is not one it may assume.
 ///
 /// **The rows.** Measured by Task 5 on git 2.54.0 (Apple Git-157) with `LC_ALL=C`, stdout
 /// captured to a file and read back with `cat -vet` so the tabs are git's and not a terminal's:

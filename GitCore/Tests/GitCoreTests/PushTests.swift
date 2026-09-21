@@ -103,6 +103,48 @@ import Testing
         try await assertRemoteUnchanged(origin, since: originBefore)
     }
 
+    /// **A push publishes the branch the user named and nothing else — tags included.**
+    ///
+    /// `push.followTags=true` is an ordinary line in many people's configuration, and measured
+    /// on git 2.54 it makes *every* push in this milestone create annotated tags on the server
+    /// beside the branch:
+    ///
+    /// ```
+    /// *^Irefs/heads/main:refs/heads/main^I[new branch]
+    /// *^Irefs/tags/annotated:refs/tags/annotated^I[new tag]
+    /// ```
+    ///
+    /// Nothing in Gitter asked for that tag, no confirmation named it, and pushing tags is not
+    /// in this milestone at all — so `--no-follow-tags` is on every push vector. It is a fact
+    /// about the *server*, not about the result line, which is why the assertion is over the
+    /// whole ref list.
+    ///
+    /// The key goes in the **repository's** config because the suite isolates the global one
+    /// (`TestGitEnvironment`); `push.followTags` is read from either, so this is the same fact.
+    @Test(arguments: [true, false])
+    func aPushPublishesTheBranchAndNoTagEvenUnderFollowTags(setUpstream: Bool) async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        try await repo.git(["config", "push.followTags", "true"])
+        try await repo.git(["switch", "-q", "-c", "topic"])
+        try repo.write("topic.txt", "topic\n")
+        try await repo.commitAll("topic")
+        try await repo.git(["tag", "-a", "annotated", "-m", "an annotated tag"])
+
+        let before = try await RemoteState.capture(origin)
+        #expect(!before.refs.contains("refs/tags/"), "\(before.refs)")
+
+        let result = try await CLIGitBackend().push(
+            "topic", to: "origin", remoteRef: "refs/heads/topic", setUpstream: setUpstream,
+            at: repo.root, progress: { _ in })
+
+        #expect(result.outcome == .created)
+        try await assertOnlyRefChanged(origin, since: before, isThe: "refs/heads/topic")
+    }
+
     // MARK: - Rejections, which are outcomes and not errors
 
     /// The colleague pushed first and this repository has never seen it: `(fetch first)`, exit

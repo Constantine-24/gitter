@@ -13,6 +13,42 @@ import Foundation
 /// the user just read. All four are pinned there, character for character, by
 /// `allowsTheRemoteOperationsThisMilestoneNeeds`, which is why the local bindings below are
 /// named `tip` and `b`: the contract is the text.
+///
+/// **All four also carry `--no-follow-tags`, and leaving `--follow-tags` out would not have
+/// been enough** — for exactly the reason `fetch` spells `--no-prune` rather than merely
+/// omitting `--prune`. `push.followTags=true` is an ordinary line in a user's own
+/// configuration and turns the flag on from there. Measured on git 2.54 with that key set,
+/// each vector **without** `--no-follow-tags`:
+///
+/// | vector | what reached the server |
+/// |---|---|
+/// | `push -u …` | the branch, **and** `*⇥refs/tags/annotated:refs/tags/annotated⇥[new tag]` |
+/// | `push …` (no `-u`) | the branch, and the same extra tag line |
+/// | `push --force-with-lease=… …` | ` ⇥refs/heads/main:…⇥e14f0f6..985b548`, and `*⇥refs/tags/annot2:…⇥[new tag]` |
+/// | `push --force-with-lease=… :refs/heads/doomed` | `-⇥:refs/heads/doomed⇥[deleted]`, and `*⇥refs/tags/annotated:…⇥[new tag]` |
+///
+/// The last row is the one nobody would guess: a push whose only refspec **deletes** a ref
+/// still follows tags. Pushing tags is not in this milestone, no confirmation names a tag, and
+/// a ref appearing on somebody's server because of a key Gitter never read is precisely what
+/// this package exists to make impossible.
+///
+/// **And the flag settles it, in every vector and against every neighbouring key** (all
+/// measured on git 2.54 with `push.followTags=true` in force): with `--no-follow-tags` each of
+/// the four pushed the one ref it named and no tag. `remote.<n>.push` adds none either — an
+/// explicit refspec on the command line replaces a configured one outright, measured with
+/// `remote.origin.push=refs/tags/*:refs/tags/*` set — `remote.<n>.pushurl` only chooses the URL
+/// (same one-ref result against a second bare repository), and there is no
+/// `remote.<n>.followTags`: setting it changes nothing. `--tags`, `--all`, `--mirror` and
+/// `--follow-tags` itself are already in the scanner's `push` deny table, so configuration was
+/// the one road left to a tag, and this closes it.
+///
+/// Consequence for `PushPorcelainParser`, and it is a *narrowing* rather than a change: it
+/// still skips result lines for refs it was not asked about, and still must, because a user's
+/// own `git push` and a future Gitter vector both can produce them — but after this, **no push
+/// Gitter makes can**.
+///
+/// The flag is written out four times rather than hoisted into a constant, because each vector
+/// is a complete array literal the scanner reads as text.
 extension CLIGitBackend {
     public func push(
         _ branch: String, to remote: String, remoteRef: String, setUpstream: Bool,
@@ -39,14 +75,17 @@ extension CLIGitBackend {
         // refs/heads/main:refs/heads/main` exits 0 and pushes), which is what lets a remote
         // whose name resembles an option still be read as a remote.
         //
+        // **`--no-follow-tags` is on all four vectors, and it is not decoration either.** See
+        // `noFollowTags` below for what it is defending against and what it was measured to do.
+        //
         // The refspec is explicit and full on both sides, and never begins with `+`: the force
         // this package permits is a lease, and a lease is a flag with a sha in it rather than a
         // character in a refspec.
         let arguments: [String]
         if setUpstream {
-            arguments = ["push", "--porcelain", "--progress", "-u", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"]
+            arguments = ["push", "--porcelain", "--progress", "--no-follow-tags", "-u", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"]
         } else {
-            arguments = ["push", "--porcelain", "--progress", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"]
+            arguments = ["push", "--porcelain", "--progress", "--no-follow-tags", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"]
         }
 
         let (outcome, streamed) = try await pushing(
@@ -81,7 +120,7 @@ extension CLIGitBackend {
         // claim about what the destination holds, and under a rename or a `remote.<n>.push`
         // refspec those are two different refs (`theLeaseNamesTheDestinationRefAndNot…`).
         let tip = expectedRemoteTip
-        let arguments = ["push", "--porcelain", "--progress", "--force-with-lease=\(remoteRef):\(tip)", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"]
+        let arguments = ["push", "--porcelain", "--progress", "--no-follow-tags", "--force-with-lease=\(remoteRef):\(tip)", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"]
 
         let (outcome, streamed) = try await pushing(
             arguments, destinationRef: remoteRef, at: root, progress: progress)
@@ -109,7 +148,7 @@ extension CLIGitBackend {
         // sheet showed.
         let b = branch
         let tip = expectedTip
-        let arguments = ["push", "--porcelain", "--progress", "--force-with-lease=refs/heads/\(b):\(tip)", "--end-of-options", remote, ":refs/heads/\(b)"]
+        let arguments = ["push", "--porcelain", "--progress", "--no-follow-tags", "--force-with-lease=refs/heads/\(b):\(tip)", "--end-of-options", remote, ":refs/heads/\(b)"]
 
         // No progress to report: a deletion sends one command and transfers no objects, so git
         // prints no counters. It is cancellable all the same — `runStreaming` is what makes it

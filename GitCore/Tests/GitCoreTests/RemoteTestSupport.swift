@@ -189,6 +189,41 @@ func assertRemoteUnchanged(
     #expect(now.head == state.head, "the remote's HEAD changed", sourceLocation: sourceLocation)
 }
 
+/// Asserts that the only ref the server gained, lost or moved since `state` is `ref`.
+///
+/// What "a push publishes the branch and nothing else" is actually made of. `push.followTags`
+/// and friends can add refs to a push Gitter never named — a tag, most of all — and those land
+/// as extra refs on the server while the branch's own result line looks perfectly ordinary. So
+/// the claim is made over the whole ref list rather than over the one ref the test cares about.
+///
+/// Two ways for it to be vacuous are closed: an **empty baseline** (`assertRemoteUnchanged`'s
+/// reason — a capture that read nothing compares equal to anything) and an **empty diff**,
+/// which would mean the operation under test did nothing at all and the assertion passed by
+/// saying nothing.
+func assertOnlyRefChanged(
+    _ bareURL: URL, since state: RemoteState, isThe ref: String,
+    sourceLocation: SourceLocation = #_sourceLocation
+) async throws {
+    guard !state.refs.isEmpty else {
+        Issue.record(
+            "remote baseline holds no refs, so comparing against it would prove nothing",
+            sourceLocation: sourceLocation)
+        return
+    }
+    let now = try await RemoteState.capture(bareURL)
+    let lines: (String) -> Set<String> = { Set($0.split(separator: "\n").map(String.init)) }
+    let changed = lines(state.refs).symmetricDifference(lines(now.refs))
+    #expect(!changed.isEmpty, "nothing on the server changed, so this proves nothing",
+            sourceLocation: sourceLocation)
+    // Each captured line is `<refname>\0<objectname>`; a ref name cannot contain a NUL.
+    let names = Set(changed.compactMap {
+        $0.split(separator: "\u{0}", maxSplits: 1).first.map(String.init)
+    })
+    #expect(names == [ref], "the server's refs changed beyond \(ref): \(names.sorted())",
+            sourceLocation: sourceLocation)
+    #expect(now.head == state.head, "the remote's HEAD changed", sourceLocation: sourceLocation)
+}
+
 /// Runs `body` and returns the `RemoteOperationError` it threw, failing the test when it threw
 /// something else or nothing at all. The mirror of `branchError`.
 @discardableResult

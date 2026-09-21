@@ -659,11 +659,19 @@ import Testing
     /// Read them as the shape the scanner demands in return for what it permits: one complete
     /// array literal, its subcommand first, the lease carrying an interpolated expected sha,
     /// and the delete refspec standing in the same literal as the lease that guards it.
+    ///
+    /// **`--no-follow-tags` joined all four push vectors in Task 6's fix round**, because
+    /// `push.followTags=true` made every one of them create tags on the server (measured — see
+    /// `CLIGitBackend+Push.swift`). It is checked here as well as in the source, and this is
+    /// also where it was probed before it was written anywhere: every rule in this scanner keys
+    /// on a **whole token**, `--follow-tags` is a different token from `--no-follow-tags`, and
+    /// the only prefix rule is `--force-with-lease=`. So the deny table for `push` needed no
+    /// narrowing — these four sources staying clean is the proof.
     @Test(arguments: [
-        #"_ = try await run(["push", "--porcelain", "--progress", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
-        #"_ = try await run(["push", "--porcelain", "--progress", "-u", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
-        #"_ = try await run(["push", "--porcelain", "--progress", "--force-with-lease=\(remoteRef):\(tip)", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
-        #"_ = try await run(["push", "--porcelain", "--progress", "--force-with-lease=refs/heads/\(b):\(tip)", "--end-of-options", remote, ":refs/heads/\(b)"], cwd: root)"#,
+        #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
+        #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "-u", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
+        #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "--force-with-lease=\(remoteRef):\(tip)", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
+        #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "--force-with-lease=refs/heads/\(b):\(tip)", "--end-of-options", remote, ":refs/heads/\(b)"], cwd: root)"#,
         #"""
         _ = try await run(["fetch", "--progress", "--no-prune", "--end-of-options", remote], cwd: root)
         _ = try await run(["fetch", "--progress", "--no-prune", "--all"], cwd: root)

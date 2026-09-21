@@ -116,7 +116,17 @@ public protocol GitRemoteBackend: Sendable {
     ) async throws
 
     /// Send `branch` to `remoteRef` on `remote`:
-    /// `git push --porcelain --progress [-u] <remote> refs/heads/<branch>:<remoteRef>`.
+    /// `git push --porcelain --progress --no-follow-tags [-u] --end-of-options <remote>
+    /// refs/heads/<branch>:<remoteRef>`.
+    ///
+    /// **One ref goes to the server, and it is the one named here.** `--no-follow-tags` is on
+    /// this vector and on both lease vectors for the reason `fetch` carries `--no-prune`:
+    /// leaving `--follow-tags` out does not keep tags off the server, because
+    /// `push.followTags=true` turns it on from the user's own configuration. Measured on git
+    /// 2.54, every one of the four vectors then also published annotated tags — the **delete**
+    /// included. Pushing tags is not in this milestone and no confirmation names one. The full
+    /// measured table, and the neighbouring keys that were checked and cannot re-enable it, are
+    /// in `CLIGitBackend+Push.swift`.
     ///
     /// **The backend never works out where a branch goes.** `remote` and `remoteRef` are the
     /// caller's to choose, and there is exactly one way to choose them: `PushTarget.resolve`,
@@ -129,8 +139,10 @@ public protocol GitRemoteBackend: Sendable {
     /// rejection exits 1, so the code cannot tell one from another; and the code is not even
     /// about our ref — measured on git 2.54, a push whose branch went through while a second
     /// refspec was refused exits 1 all the same. `PushPorcelainParser` matches the result line
-    /// by the destination that was asked for, which is also what keeps the extra lines the
-    /// user's own `push.followTags` adds from being mistaken for ours.
+    /// by the destination that was asked for, so a result line for a ref nobody here named is
+    /// skipped rather than mistaken for ours. Since `--no-follow-tags` joined the vectors, a
+    /// push **Gitter** makes can no longer produce one; the rule stays because the parser is a
+    /// pure function over stdout and must not depend on the vector being spelled right.
     ///
     /// **A rejection comes back rather than being thrown**, as a merge conflict does for
     /// `MergeOutcome`: the server considered the push and said no, which is a different fact
@@ -197,8 +209,8 @@ public protocol GitRemoteBackend: Sendable {
 
     /// Send `branch` to `remoteRef` on `remote` **over commits the server already has**, but
     /// only while that ref is still at `expectedRemoteTip`:
-    /// `git push --porcelain --progress --force-with-lease=<remoteRef>:<tip> --end-of-options
-    /// <remote> refs/heads/<branch>:<remoteRef>`.
+    /// `git push --porcelain --progress --no-follow-tags --force-with-lease=<remoteRef>:<tip>
+    /// --end-of-options <remote> refs/heads/<branch>:<remoteRef>`.
     ///
     /// **This is the operation that can destroy somebody else's commits, and the lease is the
     /// whole of what stands between it and that.** `expectedRemoteTip` is the sha the
@@ -255,8 +267,15 @@ public protocol GitRemoteBackend: Sendable {
     ) async throws -> PushResult
 
     /// Delete `branch` on `remote`, but only while it is still at `expectedTip`:
-    /// `git push --porcelain --progress --force-with-lease=refs/heads/<branch>:<tip>
-    /// --end-of-options <remote> :refs/heads/<branch>`.
+    /// `git push --porcelain --progress --no-follow-tags
+    /// --force-with-lease=refs/heads/<branch>:<tip> --end-of-options <remote>
+    /// :refs/heads/<branch>`.
+    ///
+    /// **`--no-follow-tags` is not redundant here, surprising as that is.** Measured on git
+    /// 2.54 with `push.followTags=true`, a push whose only refspec deletes a ref *still*
+    /// publishes annotated tags: `-⇥:refs/heads/doomed⇥[deleted]` arrived with
+    /// `*⇥refs/tags/annotated:…⇥[new tag]` beside it. A sheet that said "the branch will be
+    /// deleted" would have been followed by a tag appearing on the server.
     ///
     /// The refspec with an empty source side is how a branch is deleted on a server; `--delete`
     /// and `-d` say the same thing and are both forbidden in this package, because the lease is

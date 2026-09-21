@@ -71,6 +71,43 @@ import Testing
                 .trimmingCharacters(in: .whitespacesAndNewlines) == "[gone]")
     }
 
+    /// **A delete removes the one branch the sheet named and creates nothing.**
+    ///
+    /// The most surprising of the three: a push whose only refspec *deletes* a ref still
+    /// follows tags. Measured on git 2.54 with `push.followTags=true`:
+    ///
+    /// ```
+    /// -^I:refs/heads/doomed^I[deleted]
+    /// *^Irefs/tags/annotated:refs/tags/annotated^I[new tag]
+    /// ```
+    ///
+    /// So a confirmation that said "the branch will be deleted" would have been followed by a
+    /// tag appearing on the server. `--no-follow-tags` is on this vector too.
+    @Test func aDeleteRemovesTheBranchAndCreatesNoTagEvenUnderFollowTags() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        try await repo.git(["config", "push.followTags", "true"])
+        try await repo.git(["switch", "-q", "-c", "topic"])
+        try repo.write("topic.txt", "topic\n")
+        try await repo.commitAll("topic")
+        try await repo.git(["push", "-q", "origin", "refs/heads/topic:refs/heads/topic"])
+        try await repo.git(["switch", "-q", "main"])
+        try await repo.git(["tag", "-a", "annotated", "-m", "an annotated tag"])
+        let tip = try await repo.revParse("refs/heads/topic")
+
+        let before = try await RemoteState.capture(origin)
+        #expect(!before.refs.contains("refs/tags/"), "\(before.refs)")
+
+        let result = try await CLIGitBackend().deleteRemoteBranch(
+            "topic", on: "origin", expectedTip: tip, at: repo.root)
+
+        #expect(result.outcome == .deleted)
+        try await assertOnlyRefChanged(origin, since: before, isThe: "refs/heads/topic")
+    }
+
     /// The stale case, which is what the lease is for: somebody pushed to the branch while the
     /// sheet was open, so the commits the sheet counted are not the commits that would be lost.
     ///

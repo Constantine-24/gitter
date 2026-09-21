@@ -131,6 +131,13 @@ import Testing
     /// ```
     ///
     /// The outcome is the line for our destination and nothing else.
+    ///
+    /// **Task 6's fix round put `--no-follow-tags` on all four push vectors**, so a push
+    /// Gitter makes can no longer produce that second line. This test stays, and so does the
+    /// behaviour: the parser is a pure function over a string, it is handed stdout from a
+    /// vector it cannot see, and "the caller spells its arguments correctly" is not a
+    /// precondition a parser may adopt. A user's own `git push` in the same repository still
+    /// produces lines of exactly this shape.
     @Test func ignoresAResultLineForARefWeDidNotAskAbout() {
         let stdout = """
             To ../origin.git
