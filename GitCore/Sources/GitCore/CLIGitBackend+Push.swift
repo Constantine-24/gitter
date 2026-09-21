@@ -1,8 +1,18 @@
 import Foundation
 
-/// `GitRemoteBackend`'s writing half: push. See the protocol for the contract; this file is
-/// about how the two argument vectors are spelled, which names are refused before git runs, and
-/// why the outcome is read out of stdout rather than out of the exit code.
+/// `GitRemoteBackend`'s writing half: push, force push behind a lease, and delete a remote
+/// branch behind the same lease. See the protocol for the contract; this file is about how the
+/// four argument vectors are spelled, which names and which leases are refused before git runs,
+/// and why the outcome is read out of stdout rather than out of the exit code.
+///
+/// **Two of the four vectors carry a `--force-with-lease=`, which is the only force this
+/// package permits, and they are written in the one shape `ForceFlagScannerTests` will
+/// accept**: a complete array literal beginning with `"push"`, the lease standing alone as an
+/// element of it (never an arm of a ternary, never concatenated, never appended), and the
+/// expected value an interpolation — because a hard-coded sha cannot have come from the sheet
+/// the user just read. All four are pinned there, character for character, by
+/// `allowsTheRemoteOperationsThisMilestoneNeeds`, which is why the local bindings below are
+/// named `tip` and `b`: the contract is the text.
 extension CLIGitBackend {
     public func push(
         _ branch: String, to remote: String, remoteRef: String, setUpstream: Bool,
@@ -39,6 +49,85 @@ extension CLIGitBackend {
             arguments = ["push", "--porcelain", "--progress", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"]
         }
 
+        let (outcome, streamed) = try await pushing(
+            arguments, destinationRef: remoteRef, at: root, progress: progress)
+        return result(
+            outcome, streamed,
+            upstreamWasSet: await upstreamWasSet(
+                asked: setUpstream, outcome: outcome, branch: branch, remote: remote,
+                remoteRef: remoteRef, at: root))
+    }
+
+    public func forcePush(
+        _ branch: String, to remote: String, remoteRef: String, expectedRemoteTip: String,
+        at root: URL, progress: @escaping @Sendable (String) -> Void
+    ) async throws -> PushResult {
+        // The same three name checks `push` makes, and then the one only a lease needs. Order
+        // matters only in that all four happen before git is launched, which is what makes
+        // every one of these refusals a true no-op: `aLeaseThatIsNotAFullObjectNameIsRefused…`
+        // proves it with a `pre-push` hook that never fires.
+        try requireRefspecSide(branch)
+        try requireRemoteName(remote)
+        try requirePushDestination(remoteRef)
+        try requireFullObjectName(expectedRemoteTip)
+
+        // Bound rather than used directly because the vector below is a **contract**: it is
+        // written out in `ForceFlagScannerTests.allowsTheRemoteOperationsThisMilestoneNeeds`
+        // character for character, `\(tip)` included, and the scanner permits a lease only in
+        // that exact shape — one whole literal, standing alone as an element of an array
+        // literal that begins with `"push"`, with the expected value an interpolation.
+        //
+        // The lease names `remoteRef`, the ref **on the server**, and not `branch`: it is a
+        // claim about what the destination holds, and under a rename or a `remote.<n>.push`
+        // refspec those are two different refs (`theLeaseNamesTheDestinationRefAndNot…`).
+        let tip = expectedRemoteTip
+        let arguments = ["push", "--porcelain", "--progress", "--force-with-lease=\(remoteRef):\(tip)", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"]
+
+        let (outcome, streamed) = try await pushing(
+            arguments, destinationRef: remoteRef, at: root, progress: progress)
+        // `nil`, not `false`: nothing asked for an upstream here, so there is nothing to report
+        // about one. See `PushResult.upstreamWasSet`.
+        return result(outcome, streamed, upstreamWasSet: nil)
+    }
+
+    public func deleteRemoteBranch(
+        _ branch: String, on remote: String, expectedTip: String, at root: URL
+    ) async throws -> PushResult {
+        // `requireRefspecSide` rather than `requirePushDestination`, because what is passed
+        // here is a branch *name* and this file writes the `refs/heads/` in front of it. That
+        // prefix settles a leading `-`, `+` or `:` on its own; the `:` **inside** the name is
+        // the one that would still break the argument in two, and it is what this refuses.
+        try requireRefspecSide(branch)
+        try requireRemoteName(remote)
+        try requireFullObjectName(expectedTip)
+
+        // `b` and `tip` for the same reason as above: this vector is pinned character for
+        // character in `ForceFlagScannerTests`, and the scanner's stand-down for the delete
+        // refspec (`":refs/heads/\(b)"`, an empty source side — `push --delete` written as
+        // data) is granted only because a permitted lease stands as an element of the *same*
+        // array literal. That is the whole design: the deletion is conditional on the tip the
+        // sheet showed.
+        let b = branch
+        let tip = expectedTip
+        let arguments = ["push", "--porcelain", "--progress", "--force-with-lease=refs/heads/\(b):\(tip)", "--end-of-options", remote, ":refs/heads/\(b)"]
+
+        // No progress to report: a deletion sends one command and transfers no objects, so git
+        // prints no counters. It is cancellable all the same — `runStreaming` is what makes it
+        // so — and a cancelled deletion says nothing about whether the server carried it out.
+        let (outcome, streamed) = try await pushing(
+            arguments, destinationRef: "refs/heads/" + b, at: root, progress: { _ in })
+        return result(outcome, streamed, upstreamWasSet: nil)
+    }
+
+    /// Runs one push vector and reads its outcome off `--porcelain` stdout.
+    ///
+    /// The one place all three push methods go through, so that "the outcome never comes from
+    /// the exit code" and "a push with no result line is a failure" are one decision rather
+    /// than three copies of one.
+    private func pushing(
+        _ arguments: [String], destinationRef: String, at root: URL,
+        progress: @escaping @Sendable (String) -> Void
+    ) async throws -> (PushOutcome, ProcessRunner.StreamedResult) {
         let streamed: ProcessRunner.StreamedResult
         do {
             // Exit 1 is *allowed*, not tolerated: it is what every rejection exits with, and a
@@ -53,17 +142,18 @@ extension CLIGitBackend {
         }
 
         let stdout = String(decoding: streamed.stdout, as: UTF8.self)
-        guard let outcome = PushPorcelainParser.parse(stdout: stdout, destinationRef: remoteRef)
+        guard let outcome = PushPorcelainParser.parse(stdout: stdout, destinationRef: destinationRef)
         else {
             // git exited 0 or 1 and said nothing about the ref it was given. Either way it is a
             // failure — a push that went through always prints a line — and the code reported
-            // is git's own rather than an assumed one. Three shapes reach here, measured on git
-            // 2.54 (a fourth, an unreadable remote, exits 128 and is caught above):
+            // is git's own rather than an assumed one. Four shapes reach here, measured on git
+            // 2.54 (a fifth, an unreadable remote, exits 128 and is caught above):
             //
             // | shape | stdout | stderr | exit |
             // |---|---|---|---|
             // | `push origin refs/heads/ghost:…` | empty | `error: src refspec refs/heads/ghost does not match any` | 1 |
             // | a local `pre-push` hook that exits 1 | empty | the hook's own words, then `error: failed to push some refs to …` | 1 |
+            // | a lease git cannot parse (a 64-hex name in a sha-1 repository) | empty | `error: cannot parse expected object name '…'` | **129** |
             // | an unreadable remote (caught above) | empty | `fatal: '…' does not appear to be a git repository` | 128 |
             //
             // The hook's words are on stderr with **no** `remote:` prefix — it ran here, not on
@@ -72,14 +162,41 @@ extension CLIGitBackend {
             // observed and would be a git this code does not know; it is still a failure here.
             throw diagnosed(exitCode: streamed.exitCode, stderr: streamed.stderr)
         }
-        return PushResult(
+        return (outcome, streamed)
+    }
+
+    /// The outcome and everything the server said, assembled the same way for every push.
+    private func result(
+        _ outcome: PushOutcome, _ streamed: ProcessRunner.StreamedResult, upstreamWasSet: Bool?
+    ) -> PushResult {
+        PushResult(
             outcome: outcome,
             remoteMessages: PushPorcelainParser.remoteMessages(stderr: streamed.stderr),
-            upstreamWasSet: await upstreamWasSet(
-                asked: setUpstream, outcome: outcome, branch: branch, remote: remote,
-                remoteRef: remoteRef, at: root),
+            upstreamWasSet: upstreamWasSet,
             errorLines: PushPorcelainParser.errorLines(stderr: streamed.stderr))
     }
+
+    /// Refuses an expected tip that is not a full object name, before git runs.
+    ///
+    /// Forty (sha-1) or sixty-four (sha-256) characters, every one of them a **lower-case**
+    /// hexadecimal digit, and not all zeros. See `RemoteOperationError.invalidLease` for the
+    /// five shapes measured on git 2.54 and why three of them are accepted by git and are still
+    /// never what Gitter means.
+    ///
+    /// The digits are checked against a written-out set rather than with `Character.isHexDigit`,
+    /// which is true for the full-width forms (`\u{FF10}`…) as well: a name that is "hex" by
+    /// that test and not by git's would have passed a check whose whole job is to make sure the
+    /// string reaching git is the sha the sheet showed.
+    private func requireFullObjectName(_ tip: String) throws {
+        guard tip.count == 40 || tip.count == 64,
+            tip.allSatisfy(Self.lowercaseHexDigits.contains),
+            !tip.allSatisfy({ $0 == "0" })
+        else {
+            throw RemoteOperationError.invalidLease(tip)
+        }
+    }
+
+    private static let lowercaseHexDigits: Set<Character> = Set("0123456789abcdef")
 
     /// Whether the branch is now tracking what `-u` was asked to make it track, read back out
     /// of the configuration rather than assumed from the push having succeeded.

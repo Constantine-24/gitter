@@ -194,4 +194,151 @@ public protocol GitRemoteBackend: Sendable {
         _ branch: String, to remote: String, remoteRef: String, setUpstream: Bool,
         at root: URL, progress: @escaping @Sendable (String) -> Void
     ) async throws -> PushResult
+
+    /// Send `branch` to `remoteRef` on `remote` **over commits the server already has**, but
+    /// only while that ref is still at `expectedRemoteTip`:
+    /// `git push --porcelain --progress --force-with-lease=<remoteRef>:<tip> --end-of-options
+    /// <remote> refs/heads/<branch>:<remoteRef>`.
+    ///
+    /// **This is the operation that can destroy somebody else's commits, and the lease is the
+    /// whole of what stands between it and that.** `expectedRemoteTip` is the sha the
+    /// confirmation sheet showed while it counted what would be lost. git compares it against
+    /// what the server holds *at the moment of the push*, and refuses with
+    /// `.rejected(.staleLease)` — `[rejected] (stale info)` — if they differ, leaving the
+    /// server untouched. The stale-confirmation rule of the previous milestone, enforced by the
+    /// server rather than by a re-read that could itself be overtaken.
+    ///
+    /// **The sha is spelled out because the alternative is a lease that lies.** A bare
+    /// `--force-with-lease` leases against `refs/remotes/<remote>/<branch>` — a ref *Gitter's
+    /// own auto-fetch rewrites*. Measured on git 2.54, the same divergence with the colleague's
+    /// newest commit fetched between the sheet and the push: the explicit-sha form answers
+    /// `[rejected] (stale info)` and the bare form exits **0** with `(forced update)` and the
+    /// colleague's commit off the branch. So the sha is passed, and `refs/remotes/*` is never
+    /// consulted by this method — deleting the tracking ref first, or fetching first, changes
+    /// nothing about the outcome (all three are tested).
+    ///
+    /// **The lease names the destination**, `<remoteRef>`, not the local branch: it is a
+    /// statement about a ref on the server, and under a rename or a `remote.<name>.push`
+    /// refspec those are two different refs.
+    ///
+    /// **`expectedRemoteTip` must be a full object name** — 40 or 64 lower-case hex characters,
+    /// and not all zeros — or `RemoteOperationError.invalidLease` is thrown before git runs. See
+    /// that case for the five shapes measured and why three of them are accepted by git and
+    /// still wrong.
+    ///
+    /// **A forced push and a fast-forward are told apart, truthfully.** When the server is
+    /// exactly at the lease and the local branch is ahead of it, nothing is discarded and git
+    /// says so: the porcelain flag is a space and the summary is `<from>..<to>`, so the outcome
+    /// is `.pushed` and not `.forced`. A backend that reported `.forced` for every leased push
+    /// would have Gitter announce a loss that did not happen.
+    ///
+    /// Everything else is `push`'s: the outcome is read from `--porcelain` stdout and never
+    /// from the exit code, a rejection is an outcome rather than an error, `remoteMessages`
+    /// carries the server's words for every outcome, and the names are refused before git runs
+    /// by the same three checks. `PushResult.upstreamWasSet` is always `nil` — a force push is
+    /// never asked to write an upstream.
+    ///
+    /// **A cancelled force push says nothing about the server**, exactly as a cancelled `push`
+    /// does, and here the stakes are higher: it may have been cancelled after the server
+    /// accepted the rewrite and before this end heard about it. Never render it as "nothing was
+    /// pushed"; fetch and look.
+    ///
+    /// - Throws: `RemoteOperationError.invalidLease` for an expected tip that is not a full
+    ///   object name, `BranchOperationError.invalidName` or `RemoteOperationError.noRemote` for
+    ///   a name refused before git runs (nothing happened in any of the three cases),
+    ///   `RemoteOperationError` for a network failure Gitter recognises,
+    ///   `GitError.commandFailed` with git's own words for one it does not, and
+    ///   `CancellationError` if the task was cancelled.
+    func forcePush(
+        _ branch: String, to remote: String, remoteRef: String, expectedRemoteTip: String,
+        at root: URL, progress: @escaping @Sendable (String) -> Void
+    ) async throws -> PushResult
+
+    /// Delete `branch` on `remote`, but only while it is still at `expectedTip`:
+    /// `git push --porcelain --progress --force-with-lease=refs/heads/<branch>:<tip>
+    /// --end-of-options <remote> :refs/heads/<branch>`.
+    ///
+    /// The refspec with an empty source side is how a branch is deleted on a server; `--delete`
+    /// and `-d` say the same thing and are both forbidden in this package, because the lease is
+    /// what makes the deletion answerable for and a flag would invite writing it without one.
+    ///
+    /// **The lease is the same mechanism as `forcePush`'s, and it matters as much.** The sheet
+    /// says how many of the branch's commits exist nowhere else
+    /// (`commitsOnlyOnRemoteBranch`); a commit pushed to that branch while the sheet was open
+    /// was never in that count. With the tip pinned, git answers `.rejected(.staleLease)` and
+    /// the branch stays. `expectedTip` is validated exactly as `forcePush`'s is —
+    /// `RemoteOperationError.invalidLease`, before git runs.
+    ///
+    /// **What a successful delete does on this side, measured on git 2.54.** git removes the
+    /// local `refs/remotes/<remote>/<branch>` along with the remote ref — a prune of the one
+    /// ref the command is about, with no `--prune` anywhere, which is why `fetch`'s `--no-prune`
+    /// does not contradict it. The **local branch is untouched**, and so is its configuration:
+    /// `branch.<b>.remote` and `branch.<b>.merge` stay, which is precisely what makes the
+    /// branch's tracking read `[gone]` afterwards.
+    ///
+    /// **Two refusals come from the server rather than from here.** Deleting the branch the
+    /// server's HEAD points at is denied by default — measured against a bare repository:
+    /// `[remote rejected] (deletion of the current branch prohibited)`, with `remote: error:
+    /// refusing to delete the current branch: refs/heads/main` beside it — and it is
+    /// configuration (`receive.denyDeleteCurrent`), not a law, so it is asked rather than
+    /// assumed. Deleting a branch that is **not there** is `[rejected] (stale info)`: the lease
+    /// named a sha and the ref holds nothing. Both come back as outcomes for the caller to say
+    /// something true about; neither is smoothed into a success.
+    ///
+    /// There is no `progress` parameter because a deletion transfers no objects: git sends one
+    /// command and prints no counters. It is still cancellable, and a cancelled deletion says
+    /// nothing about whether the server carried it out.
+    ///
+    /// - Throws: the same set as `forcePush`.
+    func deleteRemoteBranch(
+        _ branch: String, on remote: String, expectedTip: String, at root: URL
+    ) async throws -> PushResult
+
+    /// The commits reachable from `revision` but not from `base`, newest first, at most
+    /// `limit` of them: `git log -n <limit> -z --format=… <base>..<revision> --`.
+    ///
+    /// What the force-push sheet lists. `commitCount(in:notIn:)` answers "how many"; this
+    /// answers "which", so the sheet can name the author and the subject of work that is about
+    /// to be taken off a branch — the difference between "3 commits will be discarded" and
+    /// three lines the user recognises as somebody else's afternoon.
+    ///
+    /// **`limit` is clamped to at least 1.** `git log -n 0` prints nothing, so a caller whose
+    /// arithmetic produced a zero would be handed an empty list and would draw a sheet saying
+    /// nothing is at stake — the one wrong answer this pair must never give. A visibly
+    /// incomplete list is recoverable; a false reassurance is not.
+    ///
+    /// Both revisions are refused before git runs by `requireRevision`'s rules: they are the
+    /// two halves of one `<base>..<revision>` argument. A revision git cannot resolve throws
+    /// (`fatal: bad revision …`) rather than answering with an empty list, for the same reason.
+    func commits(
+        in revision: String, notIn base: String, limit: Int, at root: URL
+    ) async throws -> [Commit]
+
+    /// How many commits on `refs/remotes/<remoteBranch>` are held by **no** local branch, no
+    /// tag and no other remote-tracking ref — the number the delete-a-remote-branch sheet is
+    /// built on.
+    ///
+    /// `remoteBranch` is the short remote-tracking name, `origin/topic`, as git prints it.
+    ///
+    /// **The ref must not cover itself**, or the answer would always be 0, so it is excluded
+    /// from `--remotes` — and the spelling is a fact measured rather than guessed:
+    /// `--exclude=<pattern>` applies to the **next** `--branches`/`--tags`/`--remotes`, and its
+    /// pattern lives in that option's own namespace. So the pattern is `origin/topic`, relative
+    /// to `refs/remotes/`; `--exclude=refs/remotes/origin/topic` matches nothing and was
+    /// measured returning 0 where the truth is 3.
+    ///
+    /// **`refs/remotes/<r>/HEAD` is excluded as well, because a symbolic ref is not an
+    /// independent holder.** Measured: `--remotes` lists it as a ref of its own, so when it
+    /// points at the branch being asked about it covers that branch's commits and the count
+    /// comes back 0 for a deletion that would strand them. It holds nothing on its own —
+    /// deleting the branch leaves it dangling — and excluding `*/HEAD` costs nothing, since
+    /// `HEAD` is not a valid branch name (`git branch HEAD` → `fatal: 'HEAD' is not a valid
+    /// branch name`) and another remote's HEAD only ever points at a branch that `--remotes`
+    /// already lists in its own right.
+    ///
+    /// The name is refused before git runs when it is empty, begins with `-`, or contains a
+    /// glob character (`*`, `?`, `[`): git's own `check-ref-format` forbids all three in a ref
+    /// name, and one of them in the `--exclude=` argument would exclude refs nobody named and
+    /// **inflate** the count — a sheet warning about commits that are in fact safe elsewhere.
+    func commitsOnlyOnRemoteBranch(_ remoteBranch: String, at root: URL) async throws -> Int
 }

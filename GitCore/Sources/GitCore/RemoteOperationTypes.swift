@@ -60,6 +60,30 @@ public enum RemoteOperationError: Error, Equatable, Sendable {
     /// thrown by `fetch`, which does not need one; it is here for the operations in the tasks
     /// that follow, which do.
     case noUpstream
+    /// The expected tip handed to `forcePush` or `deleteRemoteBranch` is not a full object
+    /// name — 40 or 64 **lower-case** hexadecimal characters, and not all zeros. Thrown
+    /// **before git runs**, so it is the third case here that really does mean nothing changed.
+    /// The payload is the value that was refused; an object name is not a credential.
+    ///
+    /// **Every other shape is a lease that cannot do its job, and git accepts most of them.**
+    /// Measured on git 2.54, with the remote branch genuinely ahead:
+    ///
+    /// | expected value | what git does |
+    /// |---|---|
+    /// | `211f4ff` (abbreviated) | `error: cannot parse expected object name`, exit 129 |
+    /// | a 40-hex name in UPPER CASE | **accepted**: the push is forced |
+    /// | `refs/heads/main`, `HEAD`, `origin/main` | **accepted**, resolved *locally* as a revision |
+    /// | empty | **accepted**; means "the ref must not exist" |
+    /// | forty zeros | **accepted**; means the same |
+    ///
+    /// The three that are accepted are why this exists. A value git resolves as a revision is a
+    /// lease on a **local** name that moves: measured,
+    /// `--force-with-lease=refs/heads/main:refs/remotes/origin/main` forced the push, which is
+    /// the bare `--force-with-lease` hole reached by another road. The all-zero name is a lease
+    /// that can never refuse: measured, with the branch absent from the server it exits 0 and
+    /// pushes `[new branch]`. And an upper-case name is a spelling of a sha the sheet never
+    /// showed — git prints object names in lower case, so that is what the sheet held.
+    case invalidLease(String)
 }
 
 /// Why the server refused a ref. Each case is git's own `--porcelain` summary, read back from
