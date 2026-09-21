@@ -244,10 +244,20 @@ import Testing
 
         let marker = "47.\(UInt32.random(in: 100_000...999_999))"
         let script = ".git/slow-upload-pack.sh"
+        let started = repo.root.appendingPathComponent(".git/slow-upload-pack.started")
+        // The script touches a file before it sleeps, so "has the transport started?" is a
+        // `stat` rather than a `pgrep`. That is not tidiness: polling `pgrep -f` every 20 ms
+        // spawns a process that walks the whole process table fifty times a second, and Swift
+        // Testing runs suites in parallel — the load that produced was enough to push
+        // `StreamingRunnerTests.theKillGracePeriodIsHonoured`, which allows itself 750 ms of
+        // slack, past its bound in roughly one full-suite run in five. `pgrep` is still what
+        // answers "is it really running" and "did it outlive the cancel", but twice, not fifty
+        // times.
         try repo.writeExecutable(
             script,
             """
             #!/bin/sh
+            : > "\(started.path)"
             sleep \(marker)
             exec git-upload-pack "$@"
 
@@ -273,11 +283,10 @@ import Testing
 
         // Wait for the transport to really be running before cancelling: without this the test
         // could pass by cancelling a fetch that had not started, which proves nothing.
-        var running: [String] = []
-        for _ in 0..<250 where running.isEmpty {
-            running = try await processesMatching("sleep \(marker)")
-            if running.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        for _ in 0..<250 where !FileManager.default.fileExists(atPath: started.path) {
+            try await Task.sleep(for: .milliseconds(20))
         }
+        let running = try await processesMatching("sleep \(marker)")
         #expect(!running.isEmpty, "the slow transport never started, so the cancel proves nothing")
 
         let cancelledAt = clock.now
@@ -292,8 +301,8 @@ import Testing
         // grandchild is already dead by the time the call returns; the short wait is about it
         // being *reaped* by launchd after its parent shell died, which is not instantaneous.
         var leftovers = try await processesMatching("sleep \(marker)")
-        for _ in 0..<50 where !leftovers.isEmpty {
-            try await Task.sleep(for: .milliseconds(20))
+        for _ in 0..<20 where !leftovers.isEmpty {
+            try await Task.sleep(for: .milliseconds(100))
             leftovers = try await processesMatching("sleep \(marker)")
         }
         #expect(leftovers.isEmpty, "the slow transport outlived the cancel: \(leftovers)")

@@ -268,6 +268,23 @@ private final class Locked<Value>: @unchecked Sendable {
 
     /// The grace period is a parameter and it is really what is waited out: the same
     /// SIGTERM-ignoring child with a 250 ms grace is gone well inside the 2 s default.
+    ///
+    /// The bound only has to stay under the 2 s default to tell "the 250 ms parameter was
+    /// honoured" from "the default was used". It was 1 s until Task 4, and that was too tight
+    /// for a suite this size: Swift Testing runs suites in parallel, and once the remote suites
+    /// were added it went over about one full run in five (measured: 3 failures in 19 runs,
+    /// against 0 in 9 at the previous commit) while passing 15 times out of 15 in isolation.
+    /// Nothing about the escalation changed; a `DispatchQueue.asyncAfter` plus a SIGKILL plus
+    /// the three-signal rendezvous simply does not fit in 750 ms of slack on a loaded machine.
+    /// 1.5 s keeps every claim the test makes and stops it reporting the neighbours' load as a
+    /// bug in the runner.
+    ///
+    /// A lower bound was tried here too — a child that ignores SIGTERM should not be able to
+    /// die before the escalation fires — and was taken out again: it failed once in 12 runs
+    /// with an `elapsed` just under 200 ms, which says the SIGTERM-ignoring premise does not
+    /// always hold on this machine. That is a question about `/bin/sh`'s trap and inherited
+    /// signal dispositions, not about the runner, and it is in `docs/BACKLOG.md` rather than
+    /// asserted either way.
     @Test func theKillGracePeriodIsHonoured() async throws {
         let runner = ProcessRunner()
         let pid = Locked<Int32?>(nil)
@@ -297,7 +314,7 @@ private final class Locked<Value>: @unchecked Sendable {
         let elapsed = clock.now - cancelledAt
 
         #expect(error is CancellationError)
-        #expect(elapsed < .seconds(1))
+        #expect(elapsed < .seconds(1.5), "\(elapsed)")
         errno = 0
         #expect(kill(child, 0) == -1)
         #expect(errno == ESRCH)
