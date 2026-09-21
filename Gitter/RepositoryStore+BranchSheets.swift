@@ -133,6 +133,26 @@ extension RepositoryStore {
         })
     }
 
+    // MARK: - What a merge would bring in
+
+    /// How many commits `branch` has that HEAD does not — the merge sheet's "N commits in
+    /// <branch> are not in <current>" line.
+    ///
+    /// **nil means the question could not be answered**, and the sheet then shows no number at
+    /// all: a made-up count is worse than none, and this one is only ever informational, so
+    /// unlike `unreferencedCommitCount` (which gates a confirmation and must fail closed) a
+    /// failure here simply removes the line.
+    ///
+    /// Asked of git against `HEAD` rather than worked out from the snapshot, for the same
+    /// reason as everywhere else in this milestone: the snapshot is up to 300 ms behind, and
+    /// `HEAD` is also the only spelling that works while HEAD is detached — which is a legal
+    /// merge target. Like `validateNewBranchName` this takes no mutation lock and writes
+    /// nothing, so it cannot deadlock behind one.
+    func incomingCommitCount(for branch: String) async -> Int? {
+        guard let root else { return nil }
+        return try? await backend.commitCount(in: branch, notIn: "HEAD", at: root)
+    }
+
     // MARK: - Live name validation
 
     /// What is wrong with `name` as a new branch name, or nil when nothing is.

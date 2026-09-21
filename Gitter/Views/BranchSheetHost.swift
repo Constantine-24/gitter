@@ -3,9 +3,10 @@ import SwiftUI
 /// The one place a `BranchSheet` becomes a view. `MainWindow` presents it; the store decides
 /// which question is on screen.
 ///
-/// The switch is exhaustive on purpose. The cases this milestone has not built yet get a plain
-/// placeholder rather than an empty view, so a hook or a menu item that opens one shows
-/// something nameable and closable instead of a blank sheet with no way out.
+/// The switch is exhaustive on purpose. The two cases this milestone has not built yet — the
+/// abort confirmation and the detached-HEAD warning — get a plain placeholder rather than an
+/// empty view, so a hook or a menu item that opens one shows something nameable and closable
+/// instead of a blank sheet with no way out.
 struct BranchSheetHost: View {
     let sheet: BranchSheet
 
@@ -16,9 +17,9 @@ struct BranchSheetHost: View {
         case .rename(let branch):
             RenameBranchSheet(branch: branch)
         case .merge(let branch):
-            PlaceholderSheet(name: "merge(\(branch))")
-        case .deleteUnmerged(let name, let uniqueCommits, _):
-            PlaceholderSheet(name: "deleteUnmerged(\(name), \(uniqueCommits) commits)")
+            MergeSheet(branch: branch)
+        case .deleteUnmerged(let name, let uniqueCommits, let tip):
+            DeleteBranchSheet(name: name, uniqueCommits: uniqueCommits, tip: tip)
         case .abort(let operation):
             PlaceholderSheet(name: "abort(\(operation))")
         case .leaveDetached(let unreferencedCommits, _, _):
@@ -28,8 +29,8 @@ struct BranchSheetHost: View {
 }
 
 /// A sheet that is not built yet: it names itself and closes. Nothing here answers the question
-/// it stands for — confirming a force-delete, an abort or leaving a detached HEAD are the four
-/// actions that can lose work, and each gets its own sheet in a later task.
+/// it stands for — aborting an operation and leaving a detached HEAD are two of the four
+/// actions that can lose work, and each gets its own sheet in Task 9.
 struct PlaceholderSheet: View {
     let name: String
 
