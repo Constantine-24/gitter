@@ -58,8 +58,7 @@ the commit it replaces reachable from no branch, tag or remote. What stands in f
 is that nothing else asks for it — you tick the Amend toggle yourself and the commit button
 then reads "Amend Commit" — plus a warning when the branch tracks an upstream and has
 nothing ahead of it, which is exactly when the commit being rewritten has already been
-pushed. And the replaced commit is still in the reflog, as `HEAD@{1}`, which is more than
-the four above can say for what they discard.
+pushed. And the replaced commit is still in the reflog, as `HEAD@{1}`.
 
 Amending is unavailable while any of those operations is in progress, and that is not
 belt-and-braces: git refuses `git commit --amend` during a merge and a cherry-pick and
