@@ -128,6 +128,15 @@ struct CommitListView: View {
         .tableStyle(.inset)
         .focused($isFocused)
         .simultaneousGesture(TapGesture().onEnded { isFocused = true })
+        // `forSelectionType:` rather than a `.contextMenu` inside the row views: this is the
+        // form `Table` knows about, and it is what makes a right-click select the row it lands
+        // on before building the menu. The working-copy row and a right-click on empty space
+        // both arrive here with nothing to offer a menu about, and get none.
+        .contextMenu(forSelectionType: CommitRow.ID.self) { ids in
+            if case .commit(let sha) = ids.first {
+                CommitMenu(sha: sha)
+            }
+        }
     }
 
     private var graphWidth: CGFloat {

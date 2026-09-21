@@ -64,24 +64,45 @@ extension RepositoryStore {
         operationInProgress?.movingHeadBlocked
     }
 
-    /// Switching *to* `branch` is possible: it is not where we already are, and nothing is in
-    /// progress. Detaching at it is a different question (that is always possible).
+    /// The one sentence behind every item a branch's own menu turns off when that branch is the
+    /// one HEAD is on: it cannot be switched to (we are there), merged into itself (git would
+    /// say "Already up to date"), or deleted (the backend refuses, twice over).
+    ///
+    /// Deliberately one sentence for all three. A disabled menu item shows no tooltip on macOS,
+    /// so these reasons are rendered *in* the menu (see `BranchContextMenu`), and three wordings
+    /// for one fact would be three grey lines explaining the same thing.
+    static let currentBranchReason = "This is the branch you are on."
+
+    /// Why switching to `branch` is off right now, or nil when it is available. Detaching at it
+    /// is a different question (that is always possible).
+    func switchBlockedReason(for branch: String) -> String? {
+        if branch == currentBranch { return Self.currentBranchReason }
+        return branchSwitchingBlockedReason
+    }
+
+    /// Why merging `branch` into HEAD is off right now, or nil when it is available.
+    func mergeBlockedReason(for branch: String) -> String? {
+        if branch == currentBranch { return Self.currentBranchReason }
+        return branchSwitchingBlockedReason
+    }
+
+    /// Why deleting `branch` is off right now, or nil when it is available. Not gated on an
+    /// operation in progress: deleting some *other* branch mid-merge touches neither the
+    /// worktree nor the index.
+    func deleteBlockedReason(for branch: String) -> String? {
+        branch == currentBranch ? Self.currentBranchReason : nil
+    }
+
     func canSwitch(to branch: String) -> Bool {
-        branchSwitchingBlockedReason == nil && branch != currentBranch
+        switchBlockedReason(for: branch) == nil
     }
 
-    /// Merging `branch` into HEAD is possible. Merging a branch into itself is a no-op git would
-    /// report as "Already up to date", which is not worth offering.
     func canMerge(_ branch: String) -> Bool {
-        branchSwitchingBlockedReason == nil && branch != currentBranch
+        mergeBlockedReason(for: branch) == nil
     }
 
-    /// Deleting `branch` is possible. The current branch is refused by the backend twice over
-    /// (before git runs and again from git's own words); this keeps the menu item from
-    /// pretending otherwise. Not gated on an operation in progress: deleting some *other*
-    /// branch mid-merge touches neither the worktree nor the index.
     func canDelete(_ branch: String) -> Bool {
-        branch != currentBranch
+        deleteBlockedReason(for: branch) == nil
     }
 
     /// The files an abort or an undo-squash would revert, so the sheet can name them instead of

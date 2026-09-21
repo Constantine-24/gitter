@@ -2,7 +2,11 @@ import GitCore
 import SwiftUI
 
 /// Repository outline: the working copy, local branches, remotes and tags.
-/// Selecting a branch or tag selects the commit it points at in the commit list.
+///
+/// Selecting a branch or tag selects the commit it points at in the commit list. Right-clicking
+/// one opens its menu (see `SidebarMenus.swift`), and double-clicking does the obvious thing for
+/// the kind of ref it is: a local branch is switched to, a remote branch is checked out as a
+/// local tracking branch, and a tag does nothing at all — detaching HEAD should be deliberate.
 struct SidebarView: View {
     @Environment(RepositoryStore.self) private var store
 
@@ -32,6 +36,16 @@ struct SidebarView: View {
                 Section("Branches") {
                     ForEach(refs.localBranches) { branch in
                         branchRow(branch, showCheck: true)
+                            .contextMenu { LocalBranchMenu(branch: branch.name) }
+                            // Double-click switches, which is what a branch row in every other
+                            // Git client does. `simultaneousGesture` rather than
+                            // `onTapGesture(count: 2)`: the latter swallows the row's own
+                            // single click, and selecting the branch's commit on one click is
+                            // the behaviour this list already had.
+                            .simultaneousGesture(
+                                TapGesture(count: 2).onEnded {
+                                    store.switchTo(branch: branch.name)
+                                })
                     }
                 }
             }
@@ -42,6 +56,11 @@ struct SidebarView: View {
                         DisclosureGroup(remote) {
                             ForEach(refs.remoteBranches.filter { $0.name.hasPrefix(remote + "/") }) { branch in
                                 branchRow(branch, showCheck: false)
+                                    .contextMenu { RemoteBranchMenu(branch: branch.name) }
+                                    .simultaneousGesture(
+                                        TapGesture(count: 2).onEnded {
+                                            store.track(remoteBranch: branch.name)
+                                        })
                             }
                         }
                     }
@@ -57,6 +76,9 @@ struct SidebarView: View {
                             Label(tag.name, systemImage: "tag")
                         }
                         .buttonStyle(.plain)
+                        .contextMenu { TagMenu(tag: tag.name) }
+                        // No double-click action on purpose: checking out a tag detaches HEAD,
+                        // and the design asks for that to be deliberate.
                     }
                 }
             }
