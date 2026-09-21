@@ -120,7 +120,12 @@ extension CLIGitBackend {
     /// Output that is not a number is never rounded down to 0: every one of these counts feeds
     /// a confirmation or a warning, so an answer that cannot be read has to be an error the
     /// caller sees, not a reassuring zero.
-    private func revListCount(_ arguments: [String], at root: URL) async throws -> Int {
+    ///
+    /// Internal rather than private because `CLIGitBackend+Remotes.swift`'s
+    /// `commitsOnlyOnRemoteBranch` is the fourth count of this kind and reads its answer under
+    /// the same rule. A second copy would be a second place for "unreadable means zero" to
+    /// creep back in.
+    func revListCount(_ arguments: [String], at root: URL) async throws -> Int {
         let data = try await run(arguments, cwd: root)
         let text = String(decoding: data, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)

@@ -1,7 +1,8 @@
 import Foundation
 
-/// `GitRemoteBackend`'s read-only half: fetch. See the protocol for the contract; this file is
-/// about how the two argument vectors are spelled and how a failure is turned into words.
+/// `GitRemoteBackend`'s read-only half: fetch, and the two reads the confirmation sheets for
+/// the *writing* half are built out of. See the protocol for the contract; this file is about
+/// how the argument vectors are spelled and how a failure is turned into words.
 extension CLIGitBackend: GitRemoteBackend {
     public func fetch(
         remote: String?, at root: URL, progress: @escaping @Sendable (String) -> Void
@@ -53,6 +54,71 @@ extension CLIGitBackend: GitRemoteBackend {
             }
             throw failure
         }
+    }
+
+    public func commits(
+        in revision: String, notIn base: String, limit: Int, at root: URL
+    ) async throws -> [Commit] {
+        try requireRevision(revision)
+        try requireRevision(base)
+
+        // `git log -n 0` prints nothing, and an empty list here would draw a sheet saying no
+        // commits are at stake. Clamped rather than refused: a caller whose arithmetic produced
+        // a zero has a bug, and a short list is a bug the user can see.
+        let count = max(1, limit)
+
+        // The **range** form rather than `<revision> --not <base>`, which the task brief
+        // suggested and which produces byte-identical output (measured). The difference is
+        // hardening: `--end-of-options` stops option parsing for the *rest* of the argv, so
+        // with `--not` after it git answers `fatal: option '--not' must come before non-option
+        // arguments`. With the range as the last argument there is nothing after it to lose,
+        // which is the same reasoning — and the same spelling — as `commitCount(in:notIn:)`,
+        // the count this list is the detail of.
+        //
+        // The trailing `--` says "no pathspecs follow", so a revision git cannot resolve fails
+        // as `fatal: bad revision '…'` rather than being tried as a file name. Failing is the
+        // point: a sheet built on a silent empty list would tell the user nothing will be lost.
+        let data = try await run(
+            ["log", "-n", String(count), "-z", "--format=\(Self.logFormat)", "--end-of-options",
+             base + ".." + revision, "--"],
+            cwd: root)
+        return LogParser.parse(data)
+    }
+
+    public func commitsOnlyOnRemoteBranch(_ remoteBranch: String, at root: URL) async throws -> Int {
+        try requireName(remoteBranch)
+        // A glob character cannot occur in a real ref name — git's own `check-ref-format`
+        // forbids all three — and one of them in the `--exclude=` argument below would exclude
+        // refs nobody named, **inflating** the count. That is the safe direction of a wrong
+        // answer and still a wrong answer: a sheet warning about commits that are in fact held
+        // elsewhere. Refused rather than passed on.
+        guard !remoteBranch.contains(where: { $0 == "*" || $0 == "?" || $0 == "[" }) else {
+            throw BranchOperationError.invalidName(remoteBranch)
+        }
+
+        // No `--end-of-options`, for `commitsOnlyOn`'s reason: it would stop option parsing for
+        // the rest of the argv and turn `--not`, `--branches` and the rest into revisions. It is
+        // not needed either — the ref is always spelled `refs/remotes/<name>`, which cannot
+        // begin with `-` however `name` is spelled.
+        //
+        // **The exclusion's spelling is measured, not guessed** (git 2.54). `--exclude=<pattern>`
+        // applies to the *next* `--branches`/`--tags`/`--remotes`, and the pattern lives in that
+        // option's namespace — so it is `origin/topic`, relative to `refs/remotes/`. The design
+        // document's `--exclude=refs/remotes/origin/topic` matches nothing: measured, it returned
+        // 0 against a fixture whose true answer is 3.
+        //
+        // `*/HEAD` is excluded as well, because `refs/remotes/<r>/HEAD` is a **symbolic ref** and
+        // a symref is not an independent holder of anything. Measured: `--remotes` lists it as a
+        // ref of its own, so when it points at the branch being asked about it covers that
+        // branch's commits and the answer comes back 0 for a deletion that would strand them.
+        // Deleting the branch leaves it dangling; it was never holding the commits. The
+        // exclusion costs nothing — `HEAD` is not a valid branch name (`git branch HEAD` →
+        // `fatal: 'HEAD' is not a valid branch name`), and another remote's HEAD only points at
+        // a branch `--remotes` already lists in its own right.
+        return try await revListCount(
+            ["rev-list", "--count", "refs/remotes/" + remoteBranch, "--not", "--branches",
+             "--tags", "--exclude=" + remoteBranch, "--exclude=*/HEAD", "--remotes"],
+            at: root)
     }
 
     /// Refuses a remote name before git runs. See `GitRemoteBackend.fetch` for what git does
