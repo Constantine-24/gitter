@@ -322,7 +322,8 @@ public protocol GitBranchBackend: Sendable {
     ///
     /// "Cannot happen" is literal, and tested: git refuses to *start* a rebase while any tracked
     /// file has an unstaged change, and refuses to start **any** of them — five different
-    /// messages, four different exit codes — while the index differs from HEAD. `am` is the one
+    /// messages, three different exit codes (re-measured on git 2.54: true merge 2, rebase 1,
+    /// cherry-pick / revert / am 128) — while the index differs from HEAD. `am` is the one
     /// operation that has already committed something when it stops, and its abort rewinds the
     /// branch past those commits.
     ///

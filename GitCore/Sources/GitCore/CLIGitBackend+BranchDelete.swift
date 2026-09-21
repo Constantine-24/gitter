@@ -2,7 +2,7 @@ import Foundation
 
 /// `deleteBranch`, `forceDeleteBranch` and the three `rev-list --count` readers the
 /// confirmations are built on
-/// (`commitsOnlyOn`, `commitCount(in:notIn:)`, `unreferencedCommitCount`). Split out of
+/// (`commitsOnlyOn`, `commitCount(in:notIn:)`, `unreferencedCommits`). Split out of
 /// `CLIGitBackend+Branches.swift` for length, not for any difference in the rules it follows —
 /// see that file's header comment (no force flag outside `branch -D`, names are never
 /// pathspecs) and `GitBranchBackend`'s doc comments on each method for exactly what each

@@ -164,7 +164,7 @@ extension RepositoryStore {
     ///
     /// **nil means the question could not be answered**, and the sheet then shows no number at
     /// all: a made-up count is worse than none, and this one is only ever informational, so
-    /// unlike `unreferencedCommitCount` (which gates a confirmation and must fail closed) a
+    /// unlike `unreferencedCommits` (which gates a confirmation and must fail closed) a
     /// failure here simply removes the line.
     ///
     /// Asked of git against `HEAD` rather than worked out from the snapshot, for the same
