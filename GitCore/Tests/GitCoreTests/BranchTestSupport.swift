@@ -123,6 +123,29 @@ extension TestRepo {
         try await git(["fetch", "-q", remoteName])
         return remote
     }
+
+    /// What `ref` points at when it is a symbolic ref, or nil when it is not one (or absent):
+    /// `git symbolic-ref` exits 128 in both of those cases.
+    func symbolicRef(_ ref: String) async throws -> String? {
+        let data = try await git(["symbolic-ref", "--quiet", ref], allowedExitCodes: [1, 128])
+        let target = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return target.isEmpty ? nil : target
+    }
+
+    /// Adds a second, empty bare repository as a remote — what the triangular-push cases
+    /// (`branch.<name>.pushRemote`, `remote.pushDefault`) need: somewhere to push that is not
+    /// where the branch fetches from. Returns the remote's URL so the caller can clean it up.
+    @discardableResult
+    func addEmptyRemote(named remoteName: String) async throws -> URL {
+        let slug = remoteName.replacingOccurrences(of: "/", with: "-")
+        let remote = root.deletingLastPathComponent()
+            .appendingPathComponent("\(root.lastPathComponent)-\(slug).git", isDirectory: true)
+        try FileManager.default.createDirectory(at: remote, withIntermediateDirectories: true)
+        _ = try await ProcessRunner().run("/usr/bin/git", ["init", "-q", "--bare", "."], cwd: remote)
+        try await git(["remote", "add", remoteName, remote.path])
+        return remote
+    }
 }
 
 /// Runs `body` and returns the `BranchOperationError` it threw, failing the test when it threw

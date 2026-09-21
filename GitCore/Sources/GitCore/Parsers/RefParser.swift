@@ -1,14 +1,19 @@
 import Foundation
 
-/// Parses the output of
-/// `git for-each-ref --format='%(refname)%00%(objectname)%00%(HEAD)%00%(upstream:short)%00%(objecttype)%00%(*objectname)%00%(upstream:track)%00%(upstream:remotename)%00%(upstream:remoteref)'`
-/// into a `RefCollection`.
+/// Parses the output of `git for-each-ref` with the twelve-field format
+/// `%(refname) %(objectname) %(HEAD) %(upstream:short) %(objecttype) %(*objectname)`
+/// `%(upstream:track) %(upstream:remotename) %(upstream:remoteref)`
+/// `%(symref) %(push:remotename) %(push:remoteref)`, NUL-separated, into a `RefCollection`.
 ///
 /// The sixth `%(*objectname)` field is the *peeled* object: for an annotated tag it is the
-/// commit the tag object points at, and it is empty for everything else. The last three are
-/// the tracking fields. Every field after the fifth is optional: lines with only the first
-/// five, six or eight are still accepted, so output captured before a field was added (and
-/// the test fixtures recorded from it) keeps parsing, with the missing fields simply unset.
+/// commit the tag object points at, and it is empty for everything else. Fields 7–9 say where
+/// the branch fetches from, 11–12 where it pushes to — two different things (see
+/// `Branch.pushRemote`) — and field 10 is `%(symref)`, which is non-empty exactly for a
+/// symbolic ref.
+///
+/// Every field after the fifth is optional: a line with only the first five, six, nine or
+/// eleven is still accepted, so output captured before a field was added (and the test
+/// fixtures recorded from it) keeps parsing, with the missing fields simply unset.
 ///
 /// `RefParser` knows nothing about which remotes are *configured* — that is `git remote -v`
 /// and `RemoteParser` — so the `RefCollection` it returns has none.
@@ -37,6 +42,9 @@ public enum RefParser {
             let trackField = fields.count >= 7 ? fields[6] : nil
             let remoteNameField = fields.count >= 8 ? String(fields[7]) : ""
             let remoteRefField = fields.count >= 9 ? String(fields[8]) : ""
+            let symrefField = fields.count >= 10 ? String(fields[9]) : nil
+            let pushRemoteField = fields.count >= 11 ? String(fields[10]) : ""
+            let pushRefField = fields.count >= 12 ? String(fields[11]) : ""
 
             if refname.hasPrefix(localBranchPrefix) {
                 let name = String(refname.dropFirst(localBranchPrefix.count))
@@ -48,20 +56,32 @@ public enum RefParser {
                 // `upstreamRemote`, which is what `tracksLocalBranch` reads.
                 let upstreamRemote =
                     (remoteNameField.isEmpty || remoteNameField == ".") ? nil : remoteNameField
+                let pushRemote =
+                    (pushRemoteField.isEmpty || pushRemoteField == ".") ? nil : pushRemoteField
                 localBranches.append(
                     Branch(name: name, sha: sha, isHead: headMarker == "*", upstream: upstream,
                            tracking: Tracking.parse(trackField, hasUpstream: upstream != nil),
                            upstreamRemote: upstreamRemote,
-                           upstreamRef: remoteRefField.isEmpty ? nil : remoteRefField)
+                           upstreamRef: remoteRefField.isEmpty ? nil : remoteRefField,
+                           pushRemote: pushRemote,
+                           pushRef: pushRefField.isEmpty ? nil : pushRefField)
                 )
             } else if refname.hasPrefix(remoteBranchPrefix) {
                 let name = String(refname.dropFirst(remoteBranchPrefix.count))
-                guard !name.isEmpty else { continue }
-                // name is "R/X"; skip only when X (everything after the remote's own
-                // first path component) is exactly "HEAD", not merely ending in "/HEAD".
+                // A remote-tracking branch is always "<remote>/<branch>".
                 guard let slashIndex = name.firstIndex(of: "/") else { continue }
-                let branchPart = name[name.index(after: slashIndex)...]
-                guard branchPart != "HEAD" else { continue }
+                if let symrefField {
+                    // `<remote>/HEAD` is a *symbolic* ref, and git says so outright — which is
+                    // the only reliable test: guessing from the name ("is everything after the
+                    // first slash exactly HEAD?") lets `up/stream/HEAD` through for a remote
+                    // whose own name contains a slash, and hides a non-symbolic ref that
+                    // merely happens to be called HEAD, along with the commits it holds.
+                    guard symrefField.isEmpty else { continue }
+                } else {
+                    // Output recorded before `%(symref)` was in the format: fall back to the
+                    // name, which is right for every single-component remote name.
+                    guard name[name.index(after: slashIndex)...] != "HEAD" else { continue }
+                }
                 remoteBranches.append(
                     Branch(name: name, sha: sha, isHead: headMarker == "*", upstream: nil)
                 )

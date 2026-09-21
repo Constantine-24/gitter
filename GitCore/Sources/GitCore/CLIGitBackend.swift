@@ -29,6 +29,7 @@ public struct CLIGitBackend: GitBackend {
     private static let refFormat =
         "%(refname)%00%(objectname)%00%(HEAD)%00%(upstream:short)%00%(objecttype)%00%(*objectname)"
         + "%00%(upstream:track)%00%(upstream:remotename)%00%(upstream:remoteref)"
+        + "%00%(symref)%00%(push:remotename)%00%(push:remoteref)"
     private static let logFormat = "%H%x00%P%x00%an%x00%ae%x00%aI%x00%s%x00%D"
 
     // MARK: - GitBackend

@@ -6,8 +6,12 @@ public struct Branch: Sendable, Hashable, Identifiable {
     public let sha: String
     public let isHead: Bool
     public let upstream: String?
-    /// How far this branch is ahead of and behind its upstream. Always `.none` for a
-    /// remote-tracking branch, which has no upstream of its own.
+    /// How far this branch is ahead of and behind **its upstream** — which is not necessarily
+    /// anything on a remote: when `tracksLocalBranch` is true the counts are against another
+    /// *local* branch, and when `pushRemote` differs from `upstreamRemote` they are against a
+    /// repository the branch does not push to. A badge must say "ahead of `<upstream>`", never
+    /// "ahead of the remote". Always `.none` for a remote-tracking branch, which has no
+    /// upstream of its own.
     public let tracking: Tracking
     /// The remote the upstream lives on, or nil when there is no upstream — or when the
     /// upstream is another *local* branch, which git reports as the remote ".". "." is not a
@@ -15,6 +19,30 @@ public struct Branch: Sendable, Hashable, Identifiable {
     public let upstreamRemote: String?
     /// The upstream's full name on that remote, e.g. "refs/heads/main".
     public let upstreamRef: String?
+    /// Where a `git push` of this branch would go — `%(push:remotename)`, which is **not**
+    /// `upstreamRemote`: `branch.<name>.pushRemote` and `remote.pushDefault` send the push to
+    /// a different repository than the one the branch fetches from, and `remote.pushDefault`
+    /// gives a push target even to a branch with no upstream at all. With neither configured
+    /// it equals `upstreamRemote`. nil when git named no remote — and, as for
+    /// `upstreamRemote`, when git said "." (a local upstream), which is not a remote.
+    ///
+    /// nil does **not** mean git would refuse to push: with no explicit configuration git
+    /// falls back to the implicit default remote (measured: `origin`, and under
+    /// `push.default=current` a bare `git push` of an upstreamless branch publishes it there).
+    /// Gitter does not follow that fallback — a branch with no `pushRemote` is unpublished and
+    /// goes through Publish, which names the remote explicitly.
+    public let pushRemote: String?
+    /// The ref `git push` would write **on that remote**, e.g. "refs/heads/main" —
+    /// `%(push:remoteref)`.
+    ///
+    /// Measured on git 2.54: this is non-nil **only** when a `remote.<name>.push` refspec is
+    /// configured. For an ordinary tracking branch it is nil even though a bare `git push`
+    /// would happily write `refs/heads/<name>`, and it stays nil in the case where git
+    /// *refuses* (`push.default=simple` with an upstream whose name differs). So nil says
+    /// nothing either way, and the destination must never be inferred from `upstreamRef`:
+    /// that is where the branch fetches from, which under a `pushRemote` override is a
+    /// different repository entirely.
+    public let pushRef: String?
 
     public var id: String { name }
 
@@ -25,7 +53,8 @@ public struct Branch: Sendable, Hashable, Identifiable {
 
     public init(name: String, sha: String, isHead: Bool, upstream: String?,
                 tracking: Tracking = .none, upstreamRemote: String? = nil,
-                upstreamRef: String? = nil) {
+                upstreamRef: String? = nil, pushRemote: String? = nil,
+                pushRef: String? = nil) {
         self.name = name
         self.sha = sha
         self.isHead = isHead
@@ -33,6 +62,8 @@ public struct Branch: Sendable, Hashable, Identifiable {
         self.tracking = tracking
         self.upstreamRemote = upstreamRemote
         self.upstreamRef = upstreamRef
+        self.pushRemote = pushRemote
+        self.pushRef = pushRef
     }
 }
 
@@ -52,7 +83,7 @@ public struct Tag: Sendable, Hashable, Identifiable {
 
 public struct RefCollection: Sendable, Hashable {
     public let localBranches: [Branch]
-    public let remoteBranches: [Branch]   // excludes symbolic "origin/HEAD"
+    public let remoteBranches: [Branch]   // excludes symbolic refs such as "origin/HEAD"
     public let tags: [Tag]
     public let remotes: [Remote]
 

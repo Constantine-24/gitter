@@ -187,4 +187,97 @@ import Testing
         let main = try #require(collection.localBranches.first { $0.name == "main" })
         #expect(main.tracking == .none)
     }
+
+    // MARK: - Push target (fields 11–12)
+
+    /// A twelve-field line: the nine above, then `%(symref)`, `%(push:remotename)` and
+    /// `%(push:remoteref)`.
+    private static func pushLine(upstream: String = "origin/main",
+                                 upstreamRemote: String = "origin",
+                                 upstreamRef: String = "refs/heads/main",
+                                 pushRemote: String,
+                                 pushRef: String = "") -> Data {
+        Data(("refs/heads/main\0aaaa\0*\0\(upstream)\0commit\0\0\0\(upstreamRemote)\0"
+              + "\(upstreamRef)\0\0\(pushRemote)\0\(pushRef)\n").utf8)
+    }
+
+    @Test func thePushRemoteIsParsed() throws {
+        let main = try Self.parsedMain(Self.pushLine(pushRemote: "origin"))
+        #expect(main.pushRemote == "origin")
+        #expect(main.pushRef == nil)
+    }
+
+    /// `branch.<name>.pushRemote` / `remote.pushDefault`: push goes somewhere other than where
+    /// the branch fetches from, and only the push fields say so.
+    @Test func aPushRemoteDifferentFromTheUpstreamsIsKeptApart() throws {
+        let main = try Self.parsedMain(Self.pushLine(pushRemote: "fork"))
+        #expect(main.upstreamRemote == "origin")
+        #expect(main.pushRemote == "fork")
+    }
+
+    @Test func anEmptyPushRemoteIsNil() throws {
+        let main = try Self.parsedMain(
+            Self.pushLine(upstream: "", upstreamRemote: "", upstreamRef: "", pushRemote: ""))
+        #expect(main.pushRemote == nil)
+        #expect(main.pushRef == nil)
+    }
+
+    /// "." is no more a remote for push than it is for fetch.
+    @Test func aDotPushRemoteBecomesNoPushRemote() throws {
+        let main = try Self.parsedMain(
+            Self.pushLine(upstream: "dev", upstreamRemote: ".", upstreamRef: "refs/heads/dev",
+                          pushRemote: "."))
+        #expect(main.pushRemote == nil)
+        #expect(main.upstreamRemote == nil)
+    }
+
+    /// The one configuration that fills `%(push:remoteref)`: an explicit `remote.<name>.push`
+    /// refspec.
+    @Test func anExplicitPushRefIsParsed() throws {
+        let main = try Self.parsedMain(
+            Self.pushLine(pushRemote: "origin", pushRef: "refs/heads/prefix-main"))
+        #expect(main.pushRemote == "origin")
+        #expect(main.pushRef == "refs/heads/prefix-main")
+    }
+
+    /// A line recorded before the push fields existed says nothing about the push target.
+    @Test func theNineFieldShapeLeavesThePushFieldsUnset() throws {
+        let main = try Self.parsedMain(
+            Self.trackingLine(upstream: "origin/main", track: "[ahead 2]"))
+        #expect(main.tracking == .counts(ahead: 2, behind: 0))
+        #expect(main.pushRemote == nil)
+        #expect(main.pushRef == nil)
+    }
+
+    // MARK: - Symbolic refs (field 10)
+
+    /// A ten-field remote line: the nine above plus `%(symref)`.
+    private static func remoteLine(_ refname: String, symref: String) -> String {
+        "\(refname)\0aaaa\0 \0\0commit\0\0\0\0\0\(symref)\n"
+    }
+
+    /// The old rule looked for "HEAD" after the *first* slash, so the symbolic HEAD of a
+    /// remote whose own name contains a slash survived and was listed as a branch. `%(symref)`
+    /// answers the question git already knows the answer to.
+    @Test func theSymbolicHeadOfASlashNamedRemoteIsSkipped() throws {
+        let data = Data((Self.remoteLine("refs/remotes/up/stream/HEAD",
+                                         symref: "refs/remotes/up/stream/main")
+                         + Self.remoteLine("refs/remotes/up/stream/main", symref: "")).utf8)
+        #expect(RefParser.parse(data).remoteBranches.map(\.name) == ["up/stream/main"])
+    }
+
+    /// A hand-made symbolic ref under `refs/remotes/` that is not named HEAD is still a
+    /// symbolic ref, and still not a branch.
+    @Test func aSymbolicRemoteRefNotNamedHeadIsSkipped() throws {
+        let data = Data(Self.remoteLine("refs/remotes/origin/alias",
+                                        symref: "refs/remotes/origin/main").utf8)
+        #expect(RefParser.parse(data).remoteBranches.isEmpty)
+    }
+
+    /// The converse: a ref literally at `refs/remotes/origin/HEAD` that is *not* symbolic
+    /// holds a commit of its own, and hiding it would hide those commits.
+    @Test func aNonSymbolicRefNamedHeadIsKept() throws {
+        let data = Data(Self.remoteLine("refs/remotes/origin/HEAD", symref: "").utf8)
+        #expect(RefParser.parse(data).remoteBranches.map(\.name) == ["origin/HEAD"])
+    }
 }
