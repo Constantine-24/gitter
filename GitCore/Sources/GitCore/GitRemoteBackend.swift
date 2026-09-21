@@ -17,24 +17,44 @@ import Foundation
 ///   work already done — measured, for `fetch --all`, in `fetch`'s own doc comment. Only the
 ///   errors thrown *before git runs* promise a no-op, and they say so in
 ///   `RemoteOperationError`. A caller must re-read the repository rather than infer.
-/// - **No force flag, no refspec beginning with `+`, no `--prune`, and never `git pull`.** The
+/// - **No force flag, no refspec beginning with `+`, never a prune, and never `git pull`.** The
 ///   same rule the branch protocol lives under, enforced the same way: `ForceFlagScannerTests`
 ///   fails the build if one appears anywhere in `GitCore/Sources`, and the exact argument
 ///   vectors this protocol's implementation writes are pinned there as a contract before the
 ///   code that writes them exists.
 public protocol GitRemoteBackend: Sendable {
     /// Bring the remote-tracking refs up to date with the server, changing nothing local:
-    /// `git fetch --progress <remote>`, or `git fetch --progress --all` when `remote` is nil.
+    /// `git fetch --progress --no-prune <remote>`, or `git fetch --progress --no-prune --all`
+    /// when `remote` is nil.
     ///
     /// **It never moves a local branch and never touches the worktree.** That is the whole
     /// reason Gitter fetches rather than pulls: after this, `origin/main` is where the server
     /// says it is, `main` is exactly where the user left it, and what to do about the
     /// difference is a separate decision the user makes.
     ///
-    /// **No `--prune`.** Pruning deletes remote-tracking refs for branches that are gone from
-    /// the server, and that can drop the last ref to commits — a loss, and one that needs its
-    /// own confirmation. Consequence, stated in the README: a "gone" upstream only shows up in
-    /// Gitter after a prune done elsewhere.
+    /// **`--no-prune`, not merely "no `--prune`".** Pruning deletes remote-tracking refs for
+    /// branches that are gone from the server, and that can drop the last ref to commits — a
+    /// loss, and one that needs its own confirmation. Leaving the flag out does not prevent it:
+    /// pruning is a configuration as much as a flag, and `fetch.prune=true` is one of the first
+    /// lines in many people's `~/.gitconfig`. Measured on git 2.54, in a repository whose
+    /// colleague had deleted a branch on the server:
+    ///
+    /// | config | flag | what the fetch did |
+    /// |---|---|---|
+    /// | `fetch.prune=true` | — | ` - [deleted] (none) -> origin/doomed` |
+    /// | `fetch.prune=true` | `--no-prune` | nothing; the ref stayed |
+    /// | `remote.origin.prune=true` | — | ` - [deleted] (none) -> origin/doomed` |
+    /// | `remote.origin.prune=true` | `--no-prune` | nothing; the ref stayed |
+    /// | `fetch.prune` + `fetch.pruneTags` | — | the ref **and the local tag**, both deleted |
+    /// | `fetch.prune` + `fetch.pruneTags` | `--no-prune` | both kept |
+    /// | `fetch.pruneTags=true` alone | — | nothing: a tag is pruned only when pruning happens |
+    ///
+    /// So one flag covers all four keys, on both vectors (`--all` included, measured). There is
+    /// no `--no-prune-tags`: it exists and git accepts it — here and after `--all` — but with
+    /// `--no-prune` already there it would be a second flag saying what the first has said.
+    ///
+    /// Consequence, stated in the README: a "gone" upstream only shows up in Gitter after a
+    /// prune done elsewhere.
     ///
     /// **`remote` is validated before git runs** and `.noRemote` is thrown for a name Gitter
     /// will not pass on. All three refusals were measured on git 2.54 and each has its own
@@ -43,8 +63,15 @@ public protocol GitRemoteBackend: Sendable {
     /// - A name beginning with `-` — git does block it (`fatal: strange pathname '-x'
     ///   blocked`), so this is not a hole being closed; it is refused here so the user is told
     ///   which name was wrong, under the same rule every other name in this package gets.
-    /// - An empty or whitespace-only name — it means nothing, and git reads an empty remote as
-    ///   the current directory.
+    /// - An empty or whitespace-only name — **git exits 0 and does nothing**, which is the
+    ///   worst of the three answers. Measured: `git fetch --progress --end-of-options ""`
+    ///   prints nothing on stdout or stderr, writes an *empty* `FETCH_HEAD`, moves no ref and
+    ///   contacts nothing. (An earlier version of this comment said git reads an empty remote
+    ///   as the current directory. It does not: `git fetch .` prints `From .` and writes a
+    ///   44-byte `FETCH_HEAD` naming this repository's HEAD. The empty name is quieter than
+    ///   that, not louder.) A fetch that reports success while doing nothing is exactly what
+    ///   this milestone's "never report a failed network operation as nothing changed" promise
+    ///   is about, read from the other side.
     /// - `"."` — **git accepts it.** `git fetch .` prints `From .`, fetches this repository's
     ///   own HEAD into `FETCH_HEAD` and exits 0. A fetch that quietly succeeds while
     ///   contacting nothing is worse than one that fails, so this is the refusal that earns its

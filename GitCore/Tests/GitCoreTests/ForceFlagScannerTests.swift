@@ -665,8 +665,8 @@ import Testing
         #"_ = try await run(["push", "--porcelain", "--progress", "--force-with-lease=\(remoteRef):\(tip)", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
         #"_ = try await run(["push", "--porcelain", "--progress", "--force-with-lease=refs/heads/\(b):\(tip)", "--end-of-options", remote, ":refs/heads/\(b)"], cwd: root)"#,
         #"""
-        _ = try await run(["fetch", "--progress", "--end-of-options", remote], cwd: root)
-        _ = try await run(["fetch", "--progress", "--all"], cwd: root)
+        _ = try await run(["fetch", "--progress", "--no-prune", "--end-of-options", remote], cwd: root)
+        _ = try await run(["fetch", "--progress", "--no-prune", "--all"], cwd: root)
         """#,
         #"_ = try await run(["rebase", "--end-of-options", upstream], cwd: root)"#,
         #"_ = try await run(["remote", "-v"], cwd: root)"#,

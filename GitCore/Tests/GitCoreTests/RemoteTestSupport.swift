@@ -46,6 +46,16 @@ extension TestRepo {
         return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Whether `ref` resolves to anything. `rev-parse --verify -q` exits 1 and says nothing
+    /// when it does not, which is the answer being asked for rather than an error — and unlike
+    /// `revParse`, a missing ref is a `false` here instead of a thrown `GitError`, so a test can
+    /// assert a ref's *absence* as easily as its presence.
+    func gitRefExists(_ ref: String) async throws -> Bool {
+        let data = try await git(["rev-parse", "--verify", "-q", ref], allowedExitCodes: [1])
+        return !String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     /// Every `*.lock` file anywhere under `.git`, as paths relative to `.git`.
     ///
     /// What a killed git leaves behind if it is killed at the wrong moment: `index.lock`,

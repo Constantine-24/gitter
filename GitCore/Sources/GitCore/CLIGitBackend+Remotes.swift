@@ -15,13 +15,18 @@ extension CLIGitBackend: GitRemoteBackend {
         // `--progress` is not decoration: without a tty git prints no progress at all, so the
         // callback would never fire. `--end-of-options` is accepted by `fetch` in this position
         // (verified on git 2.54), which is what lets a remote whose name resembles an option
-        // still be read as a remote. There is no `--prune`: see the protocol.
+        // still be read as a remote.
+        //
+        // `--no-prune` is how "no `--prune`" is actually kept. Leaving the flag out is not
+        // enough: `fetch.prune` and `remote.<name>.prune` turn pruning on from the user's own
+        // config (measured — see the protocol), and then a fetch deletes remote-tracking refs
+        // and, with the `pruneTags` twins, local tags. Both vectors carry it.
         let arguments: [String]
         if let remote {
             try requireRemoteName(remote)
-            arguments = ["fetch", "--progress", "--end-of-options", remote]
+            arguments = ["fetch", "--progress", "--no-prune", "--end-of-options", remote]
         } else {
-            arguments = ["fetch", "--progress", "--all"]
+            arguments = ["fetch", "--progress", "--no-prune", "--all"]
         }
 
         do {

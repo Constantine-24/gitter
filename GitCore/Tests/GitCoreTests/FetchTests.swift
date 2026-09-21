@@ -88,6 +88,64 @@ import Testing
         #expect(try await repo.revParse("refs/remotes/mirror/extra") == theirs)
     }
 
+    // MARK: - Pruning, which this fetch never does
+
+    /// The "no `--prune`" promise is not kept by leaving the flag out: pruning is a *config*,
+    /// and `fetch.prune=true` is one of the first things people put in their `~/.gitconfig`.
+    /// Measured on git 2.54, in a repository where the colleague deleted a branch on the server:
+    ///
+    /// ```
+    /// $ git -c fetch.prune=true fetch --progress --end-of-options origin
+    /// From /…/origin
+    ///  - [deleted]         (none)     -> origin/feat/x
+    /// ```
+    ///
+    /// — and with `fetch.pruneTags=true` alongside it, ` - [deleted] (none) -> v1` as well: a
+    /// local tag, gone, with no confirmation and no ref left to the commit it named. Four keys
+    /// reach this (`fetch.prune`, `remote.<name>.prune`, and the two `pruneTags` twins), from
+    /// the global config as readily as from the repository's, so the only defence is on the
+    /// command line. `--no-prune` is it, and it covers the tags too: measured, `--no-prune`
+    /// with both `prune` and `pruneTags` set keeps the branch *and* the tag, because a tag is
+    /// only pruned when pruning happens at all (`fetch.pruneTags=true` on its own prunes
+    /// nothing). `--no-prune-tags` exists and is accepted, here and with `--all`, but it would
+    /// be a second flag saying what the first already said.
+    ///
+    /// The configuration is set in the *repository* rather than globally because the suite runs
+    /// with the developer's global config shut out — see `TestGitEnvironment`.
+    @Test(arguments: [
+        (["fetch.prune"], "origin"),
+        (["remote.origin.prune"], "origin"),
+        (["fetch.prune", "fetch.pruneTags"], "origin"),
+        (["fetch.prune", "fetch.pruneTags"], String?.none),
+    ] as [([String], String?)])
+    func aPruneConfigurationNeverDeletesTheUsersRefs(keys: [String], remote: String?) async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+        let colleague = try await repo.addColleague()
+        defer { colleague.cleanUp() }
+
+        for key in keys { try await repo.git(["config", key, "true"]) }
+        // The colleague deletes the branch on the server, which is the only way to reach the
+        // state that tempts a prune: pushing the deletion from this repository would drop its
+        // own remote-tracking ref on the spot, and the fetch would have nothing left to prune.
+        try await colleague.git(["push", "-q", "origin", ":refs/heads/feat/x"])
+
+        // Baselines that can fail: the tracking ref and the tag are really here, and the
+        // server really has lost the branch, so a prune had something to delete.
+        #expect(try await repo.revParse("refs/remotes/origin/feat/x") != "")
+        #expect(try await repo.revParse("refs/tags/v1") != "")
+        let serverRefs = try await RemoteState.capture(origin).refs
+        #expect(!serverRefs.contains("refs/heads/feat/x"), "\(serverRefs)")
+
+        try await CLIGitBackend().fetch(remote: remote, at: repo.root, progress: { _ in })
+
+        #expect(try await repo.gitRefExists("refs/remotes/origin/feat/x"),
+                "the remote-tracking ref was pruned behind the user's back")
+        #expect(try await repo.gitRefExists("refs/tags/v1"), "the local tag was pruned")
+    }
+
     // MARK: - Progress
 
     /// git prints no progress at all without a tty, so `--progress` is on the command line and
@@ -123,7 +181,12 @@ import Testing
     /// - `-x` — git answers `fatal: strange pathname '-x' blocked`, so it is not a *hole*; it is
     ///   refused here anyway, with the same rule every other name in this package gets, so the
     ///   user is told which name was bad instead of being shown that sentence.
-    /// - `""` — means nothing, and git reads an empty remote as the current directory.
+    /// - `""` — git **exits 0 and does nothing**: measured, `git fetch --progress
+    ///   --end-of-options ""` prints not one word on stdout or stderr, writes an *empty*
+    ///   `FETCH_HEAD` and moves no ref. It does not read the empty name as the current
+    ///   directory, which this comment used to claim — `git fetch .` is the loud version, with
+    ///   a `From .` line and a 44-byte `FETCH_HEAD`. A quiet false success is the worse of the
+    ///   two, and `FETCH_HEAD`'s absence below catches both.
     /// - `"."` — git **accepts** it: `git fetch .` prints `From .`, fetches this repository's own
     ///   HEAD into `FETCH_HEAD` and exits 0. That is the one that has to be stopped here, because
     ///   git will not stop it, and `FETCH_HEAD` is what the test below checks.
