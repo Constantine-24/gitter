@@ -691,17 +691,6 @@ import Testing
         try await assertRemoteUnchanged(origin, since: serverBefore)
     }
 
-    // MARK: -
-
-    /// Writes an executable hook into a **bare** repository's `hooks` directory. `TestRepo`'s
-    /// `writeExecutable` works on a working repository; the server has no worktree.
-    private func writeBareHook(_ bareURL: URL, _ name: String, _ contents: String) throws {
-        let url = bareURL.appendingPathComponent("hooks/\(name)")
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try contents.write(to: url, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
-    }
 }
 
 /// A lock-protected collector for progress segments, which arrive on the pipe's background

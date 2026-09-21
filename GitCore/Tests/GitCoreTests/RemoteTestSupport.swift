@@ -89,6 +89,38 @@ extension TestRepo {
     }
 }
 
+/// One git command run **in a bare repository**, as trimmed text.
+///
+/// `RemoteState` says what the server's refs are, and this says everything else about it: that
+/// a commit a force push took off a branch is still an object in the object store, that a
+/// commit is no longer reachable from a branch, what the bare repository's HEAD is. A working
+/// `TestRepo` cannot answer any of those about the server, because the server has no worktree
+/// and is nobody's `TestRepo`.
+///
+/// The runner is `isolatedRunner()`, so the developer's own configuration reaches this git as
+/// little as it reaches every other one in this suite.
+@discardableResult
+func bareGit(
+    _ bareURL: URL, _ arguments: [String], allowedExitCodes: Set<Int32> = []
+) async throws -> String {
+    let data = try await isolatedRunner().run(
+        "/usr/bin/git", arguments, cwd: bareURL, allowedExitCodes: allowedExitCodes)
+    return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+/// Writes an executable hook into a **bare** repository's `hooks` directory.
+///
+/// `TestRepo.writeExecutable` works on a working repository; the server has no worktree, so
+/// its hooks are written by path. Shared by every suite that needs a server with an opinion —
+/// a `pre-receive` that declines, a `post-receive` that prints a pull-request URL.
+func writeBareHook(_ bareURL: URL, _ name: String, _ contents: String) throws {
+    let url = bareURL.appendingPathComponent("hooks/\(name)")
+    try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try contents.write(to: url, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+}
+
 /// Processes whose full command line contains `pattern`, as `pgrep -f` reports them.
 ///
 /// `pgrep` exits 1 when nothing matches, which is the answer this asks for and not an error.
