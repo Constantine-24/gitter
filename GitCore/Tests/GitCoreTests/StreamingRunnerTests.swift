@@ -215,21 +215,36 @@ private final class Locked<Value>: @unchecked Sendable {
         }
     }
 
-    /// A child that ignores SIGTERM does not get to outlive its cancel. After the grace period
-    /// the runner escalates to SIGKILL, aimed at the child's process group so the `sleep` the
-    /// shell started goes with it.
+    /// A child that has installed `trap '' TERM` and said so, with the pid the runner launched.
+    private struct TrappedChild {
+        let task: Task<Error?, Never>
+        let pid: Int32
+    }
+
+    /// `/bin/sh -c "trap '' TERM; : > <marker>; sleep 30"`, returned once the marker exists.
     ///
-    /// `trap '' TERM` is inherited by the shell's own children, so both processes in the group
-    /// ignore the SIGTERM: without the escalation this call waits out the full `sleep 30`.
-    @Test func aChildThatIgnoresSIGTERMIsKilled() async throws {
+    /// The marker is the point. The fixture's premise — that this child ignores SIGTERM — is
+    /// only true *after* the trap is installed, and a test that cancels before that cancels an
+    /// ordinary shell which dies on the spot. Measured by the reviewer: with the 300 ms sleep
+    /// these tests used to settle with, 360 runs produced **0** early deaths (idle, and under a
+    /// concurrent full `swift test`); with **no** settle at all, 210 out of 210 died early. So
+    /// the race is real and lives entirely before the trap, and a fixed sleep excluded it by
+    /// being long enough rather than by asking. The marker asks: the shell writes it on the
+    /// line after the trap, so its existence *is* "this child now ignores SIGTERM", at any load
+    /// and on any machine.
+    private func startChildIgnoringSIGTERM(
+        killGracePeriod: Duration = .seconds(2),
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws -> TrappedChild {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitter-trap-\(UUID().uuidString)")
         let runner = ProcessRunner()
         let pid = Locked<Int32?>(nil)
-        let clock = ContinuousClock()
-
         let task = Task { () -> Error? in
             do {
                 _ = try await runner.runStreaming(
-                    "/bin/sh", ["-c", "trap '' TERM; sleep 30"], cwd: Self.root,
+                    "/bin/sh", ["-c", "trap '' TERM; : > \"\(marker.path)\"; sleep 30"],
+                    cwd: Self.root, killGracePeriod: killGracePeriod,
                     onLaunch: { launched in pid.mutate { $0 = launched } },
                     onStderr: { _ in })
                 return nil
@@ -237,10 +252,27 @@ private final class Locked<Value>: @unchecked Sendable {
                 return error
             }
         }
+        for _ in 0..<1000 where !FileManager.default.fileExists(atPath: marker.path) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(
+            FileManager.default.fileExists(atPath: marker.path),
+            "the child never installed its trap", sourceLocation: sourceLocation)
+        try? FileManager.default.removeItem(at: marker)
+        return TrappedChild(task: task, pid: try #require(pid.current))
+    }
 
-        while pid.current == nil { try await Task.sleep(for: .milliseconds(20)) }
-        let child = try #require(pid.current)
-        try await Task.sleep(for: .milliseconds(300))
+    /// A child that ignores SIGTERM does not get to outlive its cancel. After the grace period
+    /// the runner escalates to SIGKILL, aimed at the child's process group so the `sleep` the
+    /// shell started goes with it.
+    ///
+    /// `trap '' TERM` is inherited by the shell's own children, so both processes in the group
+    /// ignore the SIGTERM: without the escalation this call waits out the full `sleep 30`.
+    @Test func aChildThatIgnoresSIGTERMIsKilled() async throws {
+        let clock = ContinuousClock()
+        let started = try await startChildIgnoringSIGTERM()
+        let task = started.task
+        let child = started.pid
 
         // Measured, and what the escalation's `kill(-pgid, …)` rests on: the child leads a
         // process group of its own, which is never Gitter's.
@@ -266,57 +298,57 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(await Self.groupIsGone(group))
     }
 
-    /// The grace period is a parameter and it is really what is waited out: the same
-    /// SIGTERM-ignoring child with a 250 ms grace is gone well inside the 2 s default.
+    /// The grace period is really waited out, proved by a **lower** bound: a six-second grace
+    /// against a child that ignores SIGTERM cannot end before five seconds have passed, whatever
+    /// the machine is doing, because load can only make a wait longer. If the parameter were
+    /// ignored the 2 s default would end it at about two seconds and this would fail.
     ///
-    /// The bound only has to stay under the 2 s default to tell "the 250 ms parameter was
-    /// honoured" from "the default was used". It was 1 s until Task 4, and that was too tight
-    /// for a suite this size: Swift Testing runs suites in parallel, and once the remote suites
-    /// were added it went over about one full run in five (measured: 3 failures in 19 runs,
-    /// against 0 in 9 at the previous commit) while passing 15 times out of 15 in isolation.
-    /// Nothing about the escalation changed; a `DispatchQueue.asyncAfter` plus a SIGKILL plus
-    /// the three-signal rendezvous simply does not fit in 750 ms of slack on a loaded machine.
-    /// 1.5 s keeps every claim the test makes and stops it reporting the neighbours' load as a
-    /// bug in the runner.
+    /// That is the whole reason this case exists. An upper bound cannot prove it: a fast
+    /// machine returning in 300 ms satisfies "under 1.5 s" whether the 250 ms parameter was
+    /// read or the default was, and it was that upper bound — tuned twice, once in Task 4 —
+    /// that made this test look like a flaky one. The claim is now the direction that load
+    /// cannot move.
     ///
-    /// A lower bound was tried here too — a child that ignores SIGTERM should not be able to
-    /// die before the escalation fires — and was taken out again: it failed once in 12 runs
-    /// with an `elapsed` just under 200 ms, which says the SIGTERM-ignoring premise does not
-    /// always hold on this machine. That is a question about `/bin/sh`'s trap and inherited
-    /// signal dispositions, not about the runner, and it is in `docs/BACKLOG.md` rather than
-    /// asserted either way.
-    @Test func theKillGracePeriodIsHonoured() async throws {
-        let runner = ProcessRunner()
-        let pid = Locked<Int32?>(nil)
+    /// It costs six seconds of a suite that runs its suites in parallel, and it is the only
+    /// place the parameter is proved at all.
+    @Test func aLongKillGracePeriodIsReallyWaitedOut() async throws {
         let clock = ContinuousClock()
-
-        let task = Task { () -> Error? in
-            do {
-                _ = try await runner.runStreaming(
-                    "/bin/sh", ["-c", "trap '' TERM; sleep 30"], cwd: Self.root,
-                    killGracePeriod: .milliseconds(250),
-                    onLaunch: { launched in pid.mutate { $0 = launched } },
-                    onStderr: { _ in })
-                return nil
-            } catch {
-                return error
-            }
-        }
-
-        while pid.current == nil { try await Task.sleep(for: .milliseconds(20)) }
-        let child = try #require(pid.current)
-        try await Task.sleep(for: .milliseconds(300))
-        #expect(kill(child, 0) == 0)
+        let started = try await startChildIgnoringSIGTERM(killGracePeriod: .seconds(6))
+        #expect(kill(started.pid, 0) == 0)
 
         let cancelledAt = clock.now
-        task.cancel()
-        let error = await task.value
+        started.task.cancel()
+        let error = await started.task.value
         let elapsed = clock.now - cancelledAt
 
         #expect(error is CancellationError)
-        #expect(elapsed < .seconds(1.5), "\(elapsed)")
+        #expect(elapsed > .seconds(5), "the grace period was not waited out: \(elapsed)")
+        // Not the `sleep 30` the child would have run to completion without an escalation.
+        #expect(elapsed < .seconds(20), "\(elapsed)")
         errno = 0
-        #expect(kill(child, 0) == -1)
+        #expect(kill(started.pid, 0) == -1)
+        #expect(errno == ESRCH)
+    }
+
+    /// The short grace period, kept for what it can honestly say: with 250 ms the call comes
+    /// back rather than waiting out the child's `sleep 30`. The bound is deliberately loose —
+    /// it is a "did not hang" check, not a measurement, and a tight one here measures the
+    /// neighbours' load rather than the runner. `aLongKillGracePeriodIsReallyWaitedOut` is what
+    /// proves the parameter is read.
+    @Test func theKillGracePeriodIsHonoured() async throws {
+        let clock = ContinuousClock()
+        let started = try await startChildIgnoringSIGTERM(killGracePeriod: .milliseconds(250))
+        #expect(kill(started.pid, 0) == 0)
+
+        let cancelledAt = clock.now
+        started.task.cancel()
+        let error = await started.task.value
+        let elapsed = clock.now - cancelledAt
+
+        #expect(error is CancellationError)
+        #expect(elapsed < .seconds(15), "the call did not come back: \(elapsed)")
+        errno = 0
+        #expect(kill(started.pid, 0) == -1)
         #expect(errno == ESRCH)
     }
 

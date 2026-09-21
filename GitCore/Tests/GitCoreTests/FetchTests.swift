@@ -385,10 +385,12 @@ import Testing
         // `stat` rather than a `pgrep`. That is not tidiness: polling `pgrep -f` every 20 ms
         // spawns a process that walks the whole process table fifty times a second, and Swift
         // Testing runs suites in parallel — the load that produced was enough to push
-        // `StreamingRunnerTests.theKillGracePeriodIsHonoured`, which allows itself 750 ms of
-        // slack, past its bound in roughly one full-suite run in five. `pgrep` is still what
-        // answers "is it really running" and "did it outlive the cancel", but twice, not fifty
-        // times.
+        // `StreamingRunnerTests.theKillGracePeriodIsHonoured` past the tight upper bound it
+        // had then, in roughly one full-suite run in five. (That test no longer has a tight
+        // bound: what it was trying to prove is proved by a *lower* one in
+        // `aLongKillGracePeriodIsReallyWaitedOut`, which load cannot break.) `pgrep` is still
+        // what answers "is it really running" and "did it outlive the cancel", but twice, not
+        // fifty times.
         try repo.writeExecutable(
             script,
             """
