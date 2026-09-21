@@ -128,6 +128,67 @@ import Testing
         }
     }
 
+    /// **These parameters are ref names, not revisions, and a revision is refused.**
+    ///
+    /// `commits(in:notIn:)` builds one `<base>..<revision>` argument out of them, so an
+    /// argument that is itself range syntax silently makes a *different* question. The two that
+    /// matter most, and neither errors today:
+    ///
+    /// - `base = "refs/heads/main."` — the trailing dot joins the `..` this code writes into
+    ///   `...`, which is the **symmetric** difference: a sheet listing commits from both sides.
+    /// - `revision = "a..b"` — `<base>..a..b`, which git reads as a different range again.
+    ///
+    /// `^`, `~` and `@{…}` are the other three ways to name something other than the ref
+    /// passed, and `:` is `<rev>:<path>`. A leading `.` is the mirror of the trailing one (it
+    /// joins the `..` from the other side). All six are refused **before git runs**, which is
+    /// why `branchError` is the assertion: a sheet built on the wrong range is worse than one
+    /// that refuses to open.
+    @Test(arguments: [
+        "refs/heads/main.", ".refs/heads/main", "a..b", "main^", "main~1", "main@{1}", "a:b",
+    ])
+    func aRevisionWhereARefNameIsExpectedIsRefusedBeforeGitRuns(name: String) async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let backend = CLIGitBackend()
+
+        await branchError {
+            _ = try await backend.commits(
+                in: name, notIn: "refs/heads/main", limit: 10, at: repo.root)
+        }
+        await branchError {
+            _ = try await backend.commits(
+                in: "refs/heads/main", notIn: name, limit: 10, at: repo.root)
+        }
+    }
+
+    /// The forms the pair above is *for*, which the rule must not take with it: a full ref
+    /// name on either side, the short remote-tracking name, `HEAD`, and a plain object name.
+    /// Each is resolved and answers rather than throwing.
+    @Test func theFormsCallersLegitimatelyPassAreStillAccepted() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        try repo.write("ours.txt", "ours\n")
+        try await repo.commitAll("ours")
+        let tip = try await repo.headSha()
+        let base = try await repo.revParse("refs/remotes/origin/main")
+        let backend = CLIGitBackend()
+
+        for (revision, name) in [
+            ("refs/heads/main", "a full ref name"), ("HEAD", "HEAD"), (tip, "a full object name"),
+        ] {
+            let commits = try await backend.commits(
+                in: revision, notIn: base, limit: 10, at: repo.root)
+            #expect(commits.map(\.summary) == ["ours"], "\(name) was not accepted")
+        }
+        // And the short remote-tracking name, which is what `commitsOnlyOnRemoteBranch` takes.
+        #expect(try await backend.commits(
+            in: "origin/main", notIn: "refs/heads/main", limit: 10, at: repo.root).isEmpty)
+        #expect(try await backend.commitsOnlyOnRemoteBranch("origin/feat/x", at: repo.root) >= 0)
+    }
+
     /// A revision that is plausible but not there fails loudly. A confirmation built on a
     /// silent empty list would tell the user nothing will be lost, which is the one answer
     /// that can cost them work.
@@ -333,7 +394,17 @@ import Testing
     /// and one of them in the `--exclude=` argument would exclude refs nobody named — which
     /// **inflates** the count, so a sheet would warn about commits that are in fact held
     /// elsewhere. Refused rather than passed on.
-    @Test(arguments: ["-x", " -x", "", "   ", "origin/*", "origin/to?ic", "origin/[t]opic"])
+    ///
+    /// The last six are the range and revision operators: this parameter is spelled into
+    /// `refs/remotes/<name>` and handed to `rev-list` as a *revision*, so `origin/a..main`
+    /// becomes a range and the count comes back **0** — "nothing would be lost" — for a name
+    /// nobody could have meant. Same rule, same reason and same refusal as
+    /// `commits(in:notIn:)`'s.
+    @Test(arguments: [
+        "-x", " -x", "", "   ", "origin/*", "origin/to?ic", "origin/[t]opic",
+        "origin/a..main", "origin/topic^", "origin/topic~1", "origin/topic@{1}", "origin/topic.",
+        "origin/to:pic",
+    ])
     func aRemoteBranchNameTheCountWouldMisreadIsRefusedBeforeGitRuns(name: String) async throws {
         let repo = try await TestRepo.makeBranched()
         defer { repo.cleanUp() }

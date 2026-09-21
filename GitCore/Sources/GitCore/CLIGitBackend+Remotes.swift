@@ -61,6 +61,11 @@ extension CLIGitBackend: GitRemoteBackend {
     ) async throws -> [Commit] {
         try requireRevision(revision)
         try requireRevision(base)
+        // And then the check only this pair needs: both go into ONE `<base>..<revision>`
+        // argument, so either of them being range syntax makes a different question. See
+        // `requireRefNameOrObjectName`.
+        try requireRefNameOrObjectName(revision)
+        try requireRefNameOrObjectName(base)
 
         // `git log -n 0` prints nothing, and an empty list here would draw a sheet saying no
         // commits are at stake. Clamped rather than refused: a caller whose arithmetic produced
@@ -95,6 +100,10 @@ extension CLIGitBackend: GitRemoteBackend {
         guard !remoteBranch.contains(where: { $0 == "*" || $0 == "?" || $0 == "[" }) else {
             throw BranchOperationError.invalidName(remoteBranch)
         }
+        // `refs/remotes/<name>` is handed to `rev-list` as a **revision**, so a name carrying
+        // range or revision syntax asks a different question — `origin/a..main` becomes a range
+        // and the count comes back 0, which is "nothing would be lost".
+        try requireRefNameOrObjectName(remoteBranch)
 
         // No `--end-of-options`, for `commitsOnlyOn`'s reason: it would stop option parsing for
         // the rest of the argv and turn `--not`, `--branches` and the rest into revisions. It is
@@ -185,6 +194,47 @@ extension CLIGitBackend: GitRemoteBackend {
             return pattern.isEmpty ? nil : String(pattern)
         }
     }
+
+    /// Refuses an argument that is a **revision** where a ref name or a plain object name is
+    /// what the caller meant.
+    ///
+    /// The two counting/listing functions above take *names* — `refs/heads/main`,
+    /// `origin/topic`, `HEAD`, a sha — and spell them into a bigger revision argument
+    /// themselves. `requireName`/`requireRevision` only ask that the string be non-empty and
+    /// not look like an option, which is not enough here, because git's revision language turns
+    /// a name that reached these functions into a *different question* with no error anywhere:
+    ///
+    /// | argument | what git was actually asked | answer |
+    /// |---|---|---|
+    /// | `base = "refs/heads/main."` | `refs/heads/main...<revision>` — the **symmetric** difference | commits from both sides |
+    /// | `revision = "a..b"` | `<base>..a..b` | a range nobody chose |
+    /// | `remoteBranch = "origin/a..main"` | `refs/remotes/origin/a..main`, a range | **0**, i.e. "nothing would be lost" |
+    ///
+    /// So six shapes are refused: `..` (and, with it, the `...` a stray dot composes),
+    /// `^` (exclusion and parent), `~` (ancestry), `:` (`<rev>:<path>`), `@{…}` (reflog and
+    /// `@{upstream}`), and a leading or trailing `.` — which is dangerous only because this
+    /// code writes a `..` next to it, from either side depending on which parameter it is.
+    ///
+    /// **The accepted forms, written down because refusing too much would break a caller**: a
+    /// full ref name (`refs/heads/main`, `refs/remotes/origin/main`), a short remote-tracking
+    /// name (`origin/main`), `HEAD`, and a full object name. All four are tested
+    /// (`theFormsCallersLegitimatelyPassAreStillAccepted`). Everything refused here is
+    /// something git's own `check-ref-format` refuses in a ref name too, so no real ref is lost;
+    /// what is closed is the gap between a string that reached this function and a ref that
+    /// exists.
+    ///
+    /// `BranchOperationError.invalidName`, thrown before git runs, so the refusal is a true
+    /// no-op and the caller is told which argument was wrong.
+    private func requireRefNameOrObjectName(_ name: String) throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !Self.revisionOperators.contains(where: trimmed.contains),
+            !trimmed.hasPrefix("."), !trimmed.hasSuffix(".")
+        else {
+            throw BranchOperationError.invalidName(name)
+        }
+    }
+
+    private static let revisionOperators = ["..", "^", "~", ":", "@{"]
 
     /// Refuses a remote name before git runs. See `GitRemoteBackend.fetch` for what git does
     /// with each of the three shapes and why `"."` is the one that earns this check its keep.
