@@ -126,11 +126,47 @@ public struct PushResult: Equatable, Sendable {
     /// that said nothing — which is every server without a hook. Blank lines the server printed
     /// are kept as empty strings: they are its layout, and dropping them would join two
     /// paragraphs of somebody else's text together.
+    ///
+    /// **It is somebody else's text, and unbounded.** A hook may print any number of lines and
+    /// any bytes at all: measured on git 2.54, an ANSI colour escape (`\u{1B}[31m`), a tab and
+    /// a BEL all arrive intact, and only a NUL is lost (git cuts the line there). Whatever
+    /// renders this shows it as plain text — escapes and control characters stripped, length
+    /// capped — never as anything a terminal or a formatter would interpret.
     public let remoteMessages: [String]
+    /// Whether the branch's upstream is now what `setUpstream: true` asked for, or `nil` when
+    /// there is nothing to report: the push did not ask for one, or the server refused it, in
+    /// which case git had no occasion to write one.
+    ///
+    /// **`-u` is best-effort in git, and Gitter reads it back.** Measured on git 2.54 with
+    /// `.git/config` made unwritable: the push succeeds and exits **0**, the branch appears on
+    /// the server, the `branch '…' set up to track '…'.` notice is simply absent, and the
+    /// failure is two `error:` lines on stderr that `remoteMessages` does not carry because
+    /// they are not the server's. A caller that trusted `-u` would show a published branch with
+    /// an upstream it does not have — so the upstream is read back out of
+    /// `branch.<name>.remote` / `branch.<name>.merge` and reported here.
+    ///
+    /// `false` means "not confirmed" rather than "definitely not written": it is also what a
+    /// read-back that could not be run answers, because in both cases Gitter cannot say the
+    /// branch is tracking what it was asked to track.
+    public let upstreamWasSet: Bool?
+    /// git's own `error:` lines from stderr, whole and redacted — the ones that are *not* the
+    /// server talking. See `PushPorcelainParser.errorLines`.
+    ///
+    /// This is where a failure that leaves the outcome a success ends up: the unwritable
+    /// upstream above, and anything else git reports about this end after the push itself went
+    /// through. It also carries git's `error: failed to push some refs to …` summary on a
+    /// rejection, which is a true sentence the caller has usually already said better; whether
+    /// to show it beside an outcome that explains itself is the caller's decision.
+    public let errorLines: [String]
 
-    public init(outcome: PushOutcome, remoteMessages: [String]) {
+    public init(
+        outcome: PushOutcome, remoteMessages: [String], upstreamWasSet: Bool? = nil,
+        errorLines: [String] = []
+    ) {
         self.outcome = outcome
         self.remoteMessages = remoteMessages
+        self.upstreamWasSet = upstreamWasSet
+        self.errorLines = errorLines
     }
 }
 

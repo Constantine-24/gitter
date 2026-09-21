@@ -276,6 +276,138 @@ import Testing
         #expect(try await repo.upstream(of: "tri") == "fork/tri")
     }
 
+    /// `-u` is **best-effort in git**, and its failure is invisible to anything that reads only
+    /// the porcelain line. Measured on git 2.54 with `.git` and `.git/config` made unwritable:
+    ///
+    /// ```
+    /// $ git push --porcelain --progress -u --end-of-options origin refs/heads/x:refs/heads/x
+    /// To ../origin.git
+    /// *	refs/heads/x:refs/heads/x	[new branch]
+    /// Done
+    /// EXIT=0
+    /// stderr: error: could not lock config file .git/config: Permission denied
+    ///         error: unable to write upstream branch configuration
+    /// $ git config --get-regexp '^branch\.x\.'      # nothing
+    /// ```
+    ///
+    /// The push really did go through, the `branch '…' set up to track '…'.` notice is simply
+    /// absent, and the branch has no upstream — so the badge will never count against the
+    /// server and a later Push will publish rather than update. Neither `error:` line has a
+    /// `remote:` prefix, so `remoteMessages` drops both: on the old shape the whole failure
+    /// vanished and the caller was told `.created`, which is true, beside an upstream that does
+    /// not exist. Gitter reads the upstream back out of the configuration instead of trusting
+    /// `-u`, and carries git's own words.
+    @Test func anUpstreamGitCouldNotWriteIsReportedRatherThanAssumed() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        try await repo.git(["switch", "-q", "-c", "topic"])
+        try repo.write("topic.txt", "topic\n")
+        try await repo.commitAll("topic")
+
+        let gitDirectory = repo.root.appendingPathComponent(".git")
+        let configFile = gitDirectory.appendingPathComponent("config")
+        // Restored before the repository is cleaned up (defers run in reverse), or the temp
+        // directory could not be removed.
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: gitDirectory.path)
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o644], ofItemAtPath: configFile.path)
+        }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o444], ofItemAtPath: configFile.path)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o555], ofItemAtPath: gitDirectory.path)
+
+        let result = try await CLIGitBackend().push(
+            "topic", to: "origin", remoteRef: "refs/heads/topic", setUpstream: true,
+            at: repo.root, progress: { _ in })
+
+        // The push itself succeeded — that is the whole difficulty.
+        #expect(result.outcome == .created)
+        let tip = try await repo.headSha()
+        #expect(try await RemoteState.capture(origin).refs.contains("refs/heads/topic\u{0}\(tip)"))
+        // And the upstream it was asked to write is not there.
+        #expect(result.upstreamWasSet == false)
+        #expect(result.errorLines.contains {
+            $0.contains("unable to write upstream branch configuration")
+        }, "\(result.errorLines)")
+        #expect(result.remoteMessages == [], "git's own errors are not the server talking")
+        #expect(try await repo.upstream(of: "topic") == nil)
+    }
+
+    /// The same read-back on the path that works: `-u` really did write the configuration, so
+    /// the answer is `true` — without which the test above would pass against a field that is
+    /// always `false`.
+    @Test func anUpstreamGitDidWriteIsReportedAsSet() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        try await repo.git(["switch", "-q", "-c", "topic"])
+        try repo.write("topic.txt", "topic\n")
+        try await repo.commitAll("topic")
+
+        let result = try await CLIGitBackend().push(
+            "topic", to: "origin", remoteRef: "refs/heads/topic", setUpstream: true,
+            at: repo.root, progress: { _ in })
+
+        #expect(result.outcome == .created)
+        #expect(result.upstreamWasSet == true)
+        #expect(result.errorLines == [])
+        #expect(try await repo.upstream(of: "topic") == "origin/topic")
+    }
+
+    /// The question was not asked, so there is no answer to give: `nil` rather than `false`,
+    /// which would read as "the upstream is wrong" for every ordinary push.
+    @Test func aPushThatWasNotAskedToSetAnUpstreamReportsNothingAboutOne() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        try repo.write("later.txt", "later\n")
+        try await repo.commitAll("later")
+
+        let result = try await CLIGitBackend().push(
+            "main", to: "origin", remoteRef: "refs/heads/main", setUpstream: false,
+            at: repo.root, progress: { _ in })
+
+        #expect(result.upstreamWasSet == nil)
+    }
+
+    /// A push the server refused wrote no upstream and was never going to, so there is nothing
+    /// to report about one either — the banner is about the refusal.
+    @Test func aRejectedPushReportsNothingAboutTheUpstreamItDidNotWrite() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+        let colleague = try await repo.addColleague()
+        defer { colleague.cleanUp() }
+
+        try colleague.write("colleague.txt", "theirs\n")
+        try await colleague.commitAll("the colleague's commit")
+        try await colleague.git(["push", "-q", "origin", "main"])
+
+        try repo.write("ours.txt", "ours\n")
+        try await repo.commitAll("ours")
+
+        let result = try await CLIGitBackend().push(
+            "main", to: "origin", remoteRef: "refs/heads/main", setUpstream: true,
+            at: repo.root, progress: { _ in })
+
+        #expect(result.outcome == .rejected(.fetchFirst))
+        #expect(result.upstreamWasSet == nil)
+        // git's own summary of the failure is carried, and it is not the server's words.
+        #expect(result.errorLines.contains { $0.contains("failed to push some refs") },
+                "\(result.errorLines)")
+    }
+
     // MARK: - Names refused before git runs
 
     /// A branch name git would misread, or one that would break the refspec in two. `:` is the

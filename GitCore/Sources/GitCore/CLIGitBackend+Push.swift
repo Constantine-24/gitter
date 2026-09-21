@@ -74,7 +74,56 @@ extension CLIGitBackend {
         }
         return PushResult(
             outcome: outcome,
-            remoteMessages: PushPorcelainParser.remoteMessages(stderr: streamed.stderr))
+            remoteMessages: PushPorcelainParser.remoteMessages(stderr: streamed.stderr),
+            upstreamWasSet: await upstreamWasSet(
+                asked: setUpstream, outcome: outcome, branch: branch, remote: remote,
+                remoteRef: remoteRef, at: root),
+            errorLines: PushPorcelainParser.errorLines(stderr: streamed.stderr))
+    }
+
+    /// Whether the branch is now tracking what `-u` was asked to make it track, read back out
+    /// of the configuration rather than assumed from the push having succeeded.
+    ///
+    /// **git's `-u` is best-effort and says so nowhere the outcome can see.** Measured on git
+    /// 2.54 with `.git` and `.git/config` made unwritable: the push goes through, git exits
+    /// **0**, the `branch '…' set up to track '…'.` notice is absent, and the two lines that
+    /// explain it (`error: could not lock config file …`, `error: unable to write upstream
+    /// branch configuration`) are on stderr with no `remote:` prefix — invisible to both the
+    /// porcelain parser and `remoteMessages`.
+    ///
+    /// The configuration keys are read rather than `<branch>@{upstream}`, which is the same
+    /// question asked in a way that can answer wrongly: `@{upstream}` resolves through the
+    /// remote's *fetch* refspec, so a remote configured to map refs somewhere else would give
+    /// a name that does not match while the upstream really is what was asked for. `-u` writes
+    /// exactly these two keys (measured, Task 5), so these two are what is compared.
+    ///
+    /// `nil` when nothing was asked, and when the server refused — a rejected push wrote no
+    /// upstream and was never going to, and the banner is about the refusal. `false` also
+    /// covers a read-back that could not be run: either way Gitter cannot say the branch
+    /// tracks what it was asked to track, and saying so is the point.
+    private func upstreamWasSet(
+        asked: Bool, outcome: PushOutcome, branch: String, remote: String, remoteRef: String,
+        at root: URL
+    ) async -> Bool? {
+        guard asked else { return nil }
+        if case .rejected = outcome { return nil }
+        do {
+            // A branch name reaching here has been through `requireRefspecSide`, so it cannot
+            // begin with a `-` and the key cannot be read as an option.
+            let configuredRemote = try await configValue("branch.\(branch).remote", at: root)
+            let configuredMerge = try await configValue("branch.\(branch).merge", at: root)
+            return configuredRemote == remote && configuredMerge == remoteRef
+        } catch {
+            return false
+        }
+    }
+
+    /// One configuration value, trimmed, or `""` when the key is not set — which `--get`
+    /// reports with exit 1 rather than with a message, and which is a legitimate answer here.
+    private func configValue(_ key: String, at root: URL) async throws -> String {
+        let data = try await run(["config", "--get", key], cwd: root, allowedExitCodes: [1])
+        return String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// A network failure in Gitter's words when the parser recognises one, and in git's own —

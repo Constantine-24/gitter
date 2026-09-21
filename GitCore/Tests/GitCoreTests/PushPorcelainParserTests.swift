@@ -317,4 +317,62 @@ import Testing
         let stderr = "hint: the remote: prefix is not at the start here\n"
         #expect(PushPorcelainParser.remoteMessages(stderr: stderr) == [])
     }
+
+    /// Both parsers ask the same question, so they ask it through the same predicate.
+    /// `remoteMessages` used to require `remote:` at column 0 while `RemoteFailureParser`
+    /// trimmed the line first, so a line git had indented was the *server* talking to one of
+    /// them and *this connection* to the other — and the half that read it as this connection's
+    /// would have diagnosed a hook's `Permission denied (publickey)` as a refused key, which is
+    /// the very mistake `isServerOutput` exists to prevent.
+    @Test func anIndentedServerLineIsTheServerTalkingToBothParsers() {
+        let stderr = "  remote: Permission denied (publickey).\n"
+        #expect(PushPorcelainParser.remoteMessages(stderr: stderr)
+                == ["Permission denied (publickey)."])
+        #expect(RemoteFailureParser.parse(stderr: stderr) == nil)
+        #expect(PushPorcelainParser.errorLines(stderr: "  remote: error: no\n") == [])
+    }
+
+    // MARK: - What git said about this end
+
+    /// git's own `error:` lines, which are the other half of stderr: `remoteMessages` is the
+    /// server talking, this is the local git. The fixture is the measured stderr of a `push -u`
+    /// whose configuration could not be written (git 2.54, `.git/config` made unwritable) —
+    /// exit **0**, the branch on the server, and the whole failure living in two lines nothing
+    /// used to read.
+    @Test func readsGitsOwnErrorLines() {
+        let stderr = """
+            Total 11 (delta 1), reused 0 (delta 0), pack-reused 0 (from 0)
+            error: could not lock config file .git/config: Permission denied
+            error: unable to write upstream branch configuration
+            hint:
+            hint: After fixing the error cause you may try to fix up
+
+            """
+        #expect(PushPorcelainParser.errorLines(stderr: stderr) == [
+            "error: could not lock config file .git/config: Permission denied",
+            "error: unable to write upstream branch configuration",
+        ])
+    }
+
+    /// The server's own words are never git's, however they are spelled. A `remote: error: …`
+    /// belongs to `remoteMessages`, and a line that merely quotes the word is neither.
+    @Test func keepsTheServersErrorsAndGitsQuotationsOutOfTheErrorLines() {
+        let stderr = """
+            remote: error: the hook did not like it
+            hint: error: could not lock config file is what it would have said
+            To ../origin.git
+
+            """
+        #expect(PushPorcelainParser.errorLines(stderr: stderr) == [])
+        #expect(PushPorcelainParser.remoteMessages(stderr: stderr)
+                == ["error: the hook did not like it"])
+    }
+
+    /// git quotes the remote's URL in these lines, and a URL can carry a token, so they go
+    /// through the same redaction as everything else. The trailing padding goes too.
+    @Test func redactsAndTrimsGitsOwnErrorLines() {
+        let stderr = "error: failed to push some refs to 'https://alice:ghp_s3cr3t@x.invalid/p.git'  \n"
+        #expect(PushPorcelainParser.errorLines(stderr: stderr)
+                == ["error: failed to push some refs to 'https://x.invalid/p.git'"])
+    }
 }

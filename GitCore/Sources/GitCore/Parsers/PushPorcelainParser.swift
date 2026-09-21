@@ -101,22 +101,63 @@ public enum PushPorcelainParser {
     /// free to print a URL with a token in it; `RemoteFailureParser.redactingCredentials` is the
     /// one place that knows how to take one out.
     public static func remoteMessages(stderr: String) -> [String] {
-        stderr
-            // `"\r\n"` is listed beside the two singles because Swift reads a CR immediately
-            // followed by an LF as **one** `Character` — a grapheme cluster that equals neither
-            // `"\r"` nor `"\n"`, so a server's final counter line would otherwise have kept its
-            // terminator and come through as `"… (2/2)\r\n"`.
-            .split(whereSeparator: { $0 == "\n" || $0 == "\r" || $0 == "\r\n" })
-            .compactMap { line in
-                guard line.hasPrefix(serverPrefix) else { return nil }
-                var body = line.dropFirst(serverPrefix.count)
-                if body.first == " " { body = body.dropFirst() }
-                while body.last == " " || body.last == "\t" { body = body.dropLast() }
-                return RemoteFailureParser.redactingCredentials(String(body))
-            }
+        lines(of: stderr).compactMap { line in
+            guard RemoteFailureParser.isServerOutput(line) else { return nil }
+            // Whatever git put in front of the prefix is git's, not the server's; the server's
+            // own indentation begins after it.
+            var body = line.drop(while: { $0.isWhitespace })
+                .dropFirst(RemoteFailureParser.serverPrefix.count)
+            if body.first == " " { body = body.dropFirst() }
+            while body.last == " " || body.last == "\t" { body = body.dropLast() }
+            return RemoteFailureParser.redactingCredentials(String(body))
+        }
     }
 
-    private static let serverPrefix = "remote:"
+    /// git's own `error:` lines — the other half of what a push writes to stderr, and the half
+    /// nothing used to read.
+    ///
+    /// **Why they are carried at all.** `push -u` whose configuration could not be written
+    /// exits **0** with the branch on the server and the whole failure in two lines that are
+    /// not `remote:` and not a porcelain result (measured on git 2.54 with `.git/config` made
+    /// unwritable):
+    ///
+    /// ```
+    /// error: could not lock config file .git/config: Permission denied
+    /// error: unable to write upstream branch configuration
+    /// ```
+    ///
+    /// A caller that read only the result line was told `.created`, which is true, beside an
+    /// upstream that does not exist. See `PushResult.errorLines`.
+    ///
+    /// The line is kept **whole**, `error: ` and all: the prefix is what says these are git's
+    /// words about this end rather than the server's, and a banner that dropped it would read
+    /// as Gitter's own sentence. Server lines are excluded by the shared predicate — a hook may
+    /// print `error:` too, and that is `remoteMessages`' business — and the prefix must begin
+    /// the line, so `hint: error: …` is git quoting itself. Trailing padding goes, and the line
+    /// is redacted: git quotes the remote's URL in these, and a URL can carry a token.
+    public static func errorLines(stderr: String) -> [String] {
+        lines(of: stderr).compactMap { line in
+            guard !RemoteFailureParser.isServerOutput(line), line.hasPrefix(errorPrefix) else {
+                return nil
+            }
+            var body = line[...]
+            while body.last == " " || body.last == "\t" { body = body.dropLast() }
+            return RemoteFailureParser.redactingCredentials(String(body))
+        }
+    }
+
+    private static let errorPrefix = "error: "
+
+    /// `text` in lines, split on `\n`, `\r` **and** `\r\n`.
+    ///
+    /// The last one is listed beside the two singles because Swift reads a CR immediately
+    /// followed by an LF as **one** `Character` — a grapheme cluster that equals neither `"\r"`
+    /// nor `"\n"` — so neither single would split it. git separates its counters with `\r`
+    /// everywhere, a server's `Resolving deltas:` progress arrives the same way, and stdout
+    /// from a git on another platform can arrive CRLF-terminated.
+    private static func lines(of text: String) -> [Substring] {
+        text.split(whereSeparator: { $0 == "\n" || $0 == "\r" || $0 == "\r\n" })
+    }
 
     /// One result line's flag and summary, as the table above reads them. Anything else is the
     /// line itself: see `PushRejection.other` for why nothing is guessed here.

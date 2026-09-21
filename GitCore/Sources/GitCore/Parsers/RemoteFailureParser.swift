@@ -194,9 +194,17 @@ public enum RemoteFailureParser {
     /// cause here produced `.authenticationFailed(url: "remote")`: a payload that is not even
     /// an address. They are dropped before any cause is looked for; `PushPorcelainParser` is
     /// where they are read, as the messages they are.
-    private static func isServerOutput(_ line: String) -> Bool {
-        line.trimmingCharacters(in: .whitespaces).hasPrefix("remote:")
+    ///
+    /// **Internal rather than private because `PushPorcelainParser` asks the same question.**
+    /// It used to ask its own way — `remote:` at column 0, where this one trims first — so a
+    /// line git had indented was the server talking to one of them and this connection to the
+    /// other. One predicate, one answer: the leading whitespace is not part of the question.
+    static func isServerOutput(_ line: some StringProtocol) -> Bool {
+        line.trimmingCharacters(in: .whitespaces).hasPrefix(serverPrefix)
     }
+
+    /// The `remote:` prefix itself, shared with `PushPorcelainParser`, which strips it.
+    static let serverPrefix = "remote:"
 
     /// The address in `<user>@<host>: Permission denied (publickey).`, or `nil` when what
     /// precedes that phrase is not an address at all.

@@ -163,6 +163,15 @@ public protocol GitRemoteBackend: Sendable {
     /// `setUpstream: true` for anything but a first publish onto the branch's own name owes the
     /// user a word about that.
     ///
+    /// **`-u` is best-effort in git, so Gitter reads it back.** git writes the upstream *after*
+    /// the push and does not fail the push when it cannot: measured on git 2.54 with
+    /// `.git/config` made unwritable, the push goes through, git exits **0**, the `branch '…'
+    /// set up to track '…'.` notice is absent, and the explanation is two `error:` lines on
+    /// stderr with no `remote:` prefix — which neither the porcelain parser nor
+    /// `remoteMessages` reads. Every implementation therefore reads the configuration back
+    /// after a `setUpstream: true` push and answers in `PushResult.upstreamWasSet`; git's own
+    /// `error:` lines come back in `PushResult.errorLines` so the caller can quote them.
+    ///
     /// **Names are refused before git runs**, and the refusal really is a no-op: `branch` by
     /// `requireName`'s rules plus "no `:`", `remote` by the same three shapes `fetch` refuses
     /// (`RemoteOperationError.noRemote`), and `remoteRef` must be a full `refs/heads/…` name
