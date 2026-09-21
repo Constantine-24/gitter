@@ -273,10 +273,16 @@ import Testing
     /// argument list. The carve-out is now that list's own shape — a fragment carrying
     /// `--no-commit-id`, which is not an option `branch` or `switch` has — so `-M` appended to
     /// anything else is caught again.
+    ///
+    /// The last case is why the carve-out cannot apply to appended literals at all: every
+    /// `.append("…")` in a file is pooled into one list, so a `--no-commit-id` appended to one
+    /// vector sat in the same list as a `-M` appended to another and excused it. Two unrelated
+    /// vectors, one of them `branch`.
     @Test(arguments: [
         #"var a = ["branch"]; a.append("-M")"#,
         #"var a = ["branch"]; a += ["-M", old, new]"#,
         #"_ = try await run([repoFlag, "branch", "-M", old, new], cwd: root)"#,
+        #"var d = [String](); d.append("--no-commit-id"); var b = ["branch"]; b.append("-M")"#,
     ])
     func theRenameDetectionCarveOutNoLongerCoversEveryFragment(source: String) {
         #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")

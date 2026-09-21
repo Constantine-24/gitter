@@ -43,10 +43,12 @@ import Foundation
 ///   what reaches git should not depend on the scanner being clever.
 /// - **`-M` is exempt in one fragment shape**: `commitDiff`'s legitimate
 ///   `["--no-commit-id", "-p", "-U3", "-M", "-r"]` is itself a fragment and `-M` there means
-///   rename detection, so a fragment carrying `--no-commit-id` — an option no `branch` or
-///   `switch` vector has — does not have `-M` checked against it. Everywhere else, fragments
-///   included, `-M` is caught. A future `diff -C`/`diff -B` fragment would false-positive for
-///   the mirror-image reason and must be written with its subcommand first.
+///   rename detection, so an *array literal* carrying `--no-commit-id` — an option no `branch`
+///   or `switch` vector has — does not have `-M` checked against it. One vector, one exemption:
+///   appended literals are pooled per file rather than per vector, so they never get it.
+///   Everywhere else, fragments included, `-M` is caught. A future `diff -C`/`diff -B` fragment
+///   would false-positive for the mirror-image reason and must be written with its subcommand
+///   first.
 /// - **No idea which arrays reach git**: a non-git array starting with `"clean"`, or one
 ///   containing `"--force"` for an unrelated reason, is flagged anyway. That false positive
 ///   is the safe direction and has not come up.
@@ -103,7 +105,7 @@ enum ForceFlagScanner {
             // FRAGMENT: it cannot be attributed to a subcommand, so it is checked against the
             // union instead.
             guard let subcommand = arguments.first?.value, !subcommand.hasPrefix("-") else {
-                findings += fragmentFindings(literals)
+                findings += fragmentFindings(literals, isOneVector: true)
                 continue
             }
 
@@ -129,20 +131,31 @@ enum ForceFlagScanner {
             }
         }
 
-        // `arguments.append("--merge")` is the same hazard written a different way.
-        findings += fragmentFindings(appendedLiterals(in: source, code: code))
+        // `arguments.append("--merge")` is the same hazard written a different way. These
+        // literals come from every `.append("…")` in the FILE, pooled, so they are not one
+        // vector and get no carve-out — see `fragmentFindings`.
+        findings += fragmentFindings(appendedLiterals(in: source, code: code), isOneVector: false)
         return findings
     }
 
-    private static func fragmentFindings(_ literals: [String]) -> [String] {
+    /// - Parameter isOneVector: whether `literals` are the elements of a single array literal.
+    ///   Only then can one of them vouch for another.
+    private static func fragmentFindings(_ literals: [String], isOneVector: Bool) -> [String] {
         // The one carve-out, and it is the fragment's own shape rather than a token struck from
-        // the union: `--no-commit-id` is a `diff-tree`/`diff-index` option, so a fragment
+        // the union: `--no-commit-id` is a `diff-tree`/`diff-index` option, so an array literal
         // carrying it is one of `commitDiff`/`commitFiles`' argument lists and its `-M` is
-        // rename detection. `branch` and `switch` have no such option, so this cannot excuse a
-        // `branch -M` assembled away from its subcommand — which the global
-        // `.subtracting(["-M"])` it replaces did excuse, everywhere.
+        // rename detection. `branch` and `switch` have no such option, so within one vector this
+        // cannot excuse a `branch -M` — which the global `.subtracting(["-M"])` it replaces did
+        // excuse, everywhere.
+        //
+        // It applies to array literals only. The appended literals are pooled per file, not per
+        // vector, so a `--no-commit-id` appended to one list would otherwise excuse a `-M`
+        // appended to an unrelated `branch` one — the same hole in a smaller room. No
+        // `.append("…")` in `GitCore/Sources` is part of a `diff-tree` list today (`git grep`:
+        // the appended literals there are `--unidiff-zero`, `--reverse`, `-a` and `--amend`), so
+        // withholding it costs nothing; a future one must spell its vector as a literal.
         let forbidden =
-            literals.contains(diffTreeMarker)
+            isOneVector && literals.contains(diffTreeMarker)
             ? fragmentForbidden.subtracting(["-M"]) : fragmentForbidden
         return literals.filter(forbidden.contains).map {
             "forbidden flag \($0.debugDescription) in an argument fragment"
@@ -313,6 +326,12 @@ enum ForceFlagScanner {
     /// - **`-M`** is `diff-tree`'s rename detection in three argument lists. Same reasoning as
     ///   `fragmentFindings`' carve-out, which is narrower but cannot help here: the sweep has
     ///   no array to look at.
+    ///
+    /// Say the consequence plainly, because these two subtractions are the sweep's price and it
+    /// is not zero: `let flag = "--abort"`, `let flag = "--merge"` or `let flag = "-M"`, used as
+    /// a non-literal array element, is seen by **no rule at all** — the sweep skips the token
+    /// and the array rules see an element with no literal in it. That is three tokens wide
+    /// rather than the whole union it used to be, but it is narrower, not closed.
     ///
     /// Everything else in the union — `checkout`, `clean`, `stash`, `--ours`, `-C`, `-X`,
     /// `--autostash` and the rest — appears in no source file, so widening onto them produced
