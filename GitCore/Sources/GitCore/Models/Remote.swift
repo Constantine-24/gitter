@@ -3,12 +3,18 @@ import Foundation
 /// A configured remote, as `git remote -v` reports it.
 public struct Remote: Sendable, Hashable, Identifiable {
     public let name: String
-    public let fetchURL: String
-    public let pushURL: String
+    /// The URL git fetches from, or nil when it printed no `(fetch)` URL for this remote —
+    /// a remote configured with only a `pushurl`. Not filled in from `pushURL`: a remote
+    /// nothing can be fetched from must not look as though it can.
+    public let fetchURL: String?
+    /// The first URL git pushes to (a remote may have several), or nil when it printed no
+    /// `(push)` URL. For an ordinary remote git prints a `(push)` line holding the fetch URL,
+    /// which is git's own answer, not this parser inventing one.
+    public let pushURL: String?
 
     public var id: String { name }
 
-    public init(name: String, fetchURL: String, pushURL: String) {
+    public init(name: String, fetchURL: String?, pushURL: String?) {
         self.name = name
         self.fetchURL = fetchURL
         self.pushURL = pushURL

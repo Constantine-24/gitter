@@ -45,14 +45,50 @@ import Testing
         #expect(remote?.pushURL == "/tmp/pushA.git")
     }
 
-    @Test func aRemoteWithOnlyAFetchLineUsesItForBothURLs() {
+    /// Each URL is exactly what git printed on that kind of line; neither is copied into the
+    /// other. A remote Gitter cannot fetch from must not look as though it can.
+    @Test func aRemoteWithOnlyAFetchLineHasNoPushURL() {
         let remote = RemoteParser.parse("origin\t/tmp/o.git (fetch)\n").first
-        #expect(remote == Remote(name: "origin", fetchURL: "/tmp/o.git", pushURL: "/tmp/o.git"))
+        #expect(remote == Remote(name: "origin", fetchURL: "/tmp/o.git", pushURL: nil))
     }
 
-    @Test func aRemoteWithOnlyAPushLineUsesItForBothURLs() {
+    @Test func aRemoteWithOnlyAPushLineHasNoFetchURL() {
         let remote = RemoteParser.parse("origin\t/tmp/o.git (push)\n").first
-        #expect(remote == Remote(name: "origin", fetchURL: "/tmp/o.git", pushURL: "/tmp/o.git"))
+        #expect(remote == Remote(name: "origin", fetchURL: nil, pushURL: "/tmp/o.git"))
+    }
+
+    /// Measured: `git config --add remote.pushonly.pushurl <path>` makes `git remote -v` print
+    /// a bare name-only line *and* a `(push)` line for that remote — the name-only line is the
+    /// fetch side saying there is no fetch URL.
+    @Test func aPushURLOnlyRemoteHasNoFetchURL() {
+        let output = """
+            pushonly\t
+            pushonly\t/tmp/o.git (push)
+
+            """
+        #expect(RemoteParser.parse(output)
+                == [Remote(name: "pushonly", fetchURL: nil, pushURL: "/tmp/o.git")])
+    }
+
+    /// Measured: a remote configured without any `url` (only a fetch refspec) prints one
+    /// name-only line. It has no URL of either kind, so nothing can be fetched or pushed
+    /// through it; it is left out, and the remotes around it are unaffected.
+    @Test func aRemoteWithNoURLAtAllIsLeftOut() {
+        let output = """
+            nourl\t
+            origin\t/tmp/o.git (fetch)
+            origin\t/tmp/o.git (push)
+
+            """
+        #expect(RemoteParser.parse(output).map(\.name) == ["origin"])
+    }
+
+    /// A stray carriage return before the newline must not end up inside the URL — or, on a
+    /// `(fetch)`/`(push)` line, stop the suffix from matching and drop the remote entirely.
+    @Test func aTrailingCarriageReturnIsIgnored() {
+        let output = "origin\t/tmp/o.git (fetch)\r\norigin\t/tmp/o.git (push)\r\n"
+        #expect(RemoteParser.parse(output)
+                == [Remote(name: "origin", fetchURL: "/tmp/o.git", pushURL: "/tmp/o.git")])
     }
 
     @Test func noRemotesProducesAnEmptyArray() {
