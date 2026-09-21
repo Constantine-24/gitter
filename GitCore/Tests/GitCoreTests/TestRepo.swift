@@ -7,6 +7,14 @@ struct TestRepo {
     let root: URL
     private let runner = ProcessRunner()
 
+    /// Written out rather than left to the memberwise initialiser so that *constructing* a
+    /// repository is one of the two places `TestGitEnvironment` is guaranteed to have run —
+    /// see there for what the developer's own `~/.gitconfig` would otherwise do to this suite.
+    init(root: URL) {
+        precondition(TestGitEnvironment.isolated)
+        self.root = root
+    }
+
     static func makeEmpty() async throws -> TestRepo {
         let repo = TestRepo(root: FileManager.default.temporaryDirectory
             .appendingPathComponent("gitter-test-\(UUID().uuidString)", isDirectory: true))
@@ -25,7 +33,11 @@ struct TestRepo {
 
     @discardableResult
     func git(_ arguments: [String], allowedExitCodes: Set<Int32> = []) async throws -> Data {
-        try await runner.run("/usr/bin/git", arguments, cwd: root, allowedExitCodes: allowedExitCodes)
+        // The other guaranteed touch of `TestGitEnvironment`: a repository could in principle be
+        // decoded or copied rather than initialised, but nothing runs git without coming here.
+        precondition(TestGitEnvironment.isolated)
+        return try await runner.run(
+            "/usr/bin/git", arguments, cwd: root, allowedExitCodes: allowedExitCodes)
     }
 
     func write(_ relativePath: String, _ contents: String) throws {

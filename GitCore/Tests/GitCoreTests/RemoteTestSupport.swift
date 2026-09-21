@@ -27,8 +27,7 @@ extension TestRepo {
         let url = try await configValue("remote.origin.url")
         let colleagueRoot = root.deletingLastPathComponent()
             .appendingPathComponent("\(root.lastPathComponent)-\(name)", isDirectory: true)
-        let runner = ProcessRunner()
-        _ = try await runner.run(
+        _ = try await isolatedRunner().run(
             "/usr/bin/git", ["clone", "-q", url, colleagueRoot.path],
             cwd: root.deletingLastPathComponent())
 
@@ -87,7 +86,7 @@ extension TestRepo {
 /// also match a developer's own shell — which is why the slow-transport script below sleeps
 /// for a duration nothing else would.
 func processesMatching(_ pattern: String) async throws -> [String] {
-    let runner = ProcessRunner()
+    let runner = isolatedRunner()
     let data = try await runner.run(
         "/usr/bin/pgrep", ["-f", pattern], cwd: URL(fileURLWithPath: "/"), allowedExitCodes: [1])
     return String(decoding: data, as: UTF8.self)
@@ -117,7 +116,7 @@ struct RemoteState: Equatable {
     private static func text(
         _ bareURL: URL, _ arguments: [String], allowedExitCodes: Set<Int32> = []
     ) async throws -> String {
-        let data = try await ProcessRunner().run(
+        let data = try await isolatedRunner().run(
             "/usr/bin/git", arguments, cwd: bareURL, allowedExitCodes: allowedExitCodes)
         return String(decoding: data, as: UTF8.self)
     }

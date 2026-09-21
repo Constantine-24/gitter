@@ -215,7 +215,8 @@ import Testing
         let remote = repo.root.deletingLastPathComponent()
             .appendingPathComponent("\(repo.root.lastPathComponent)-origin.git", isDirectory: true)
         try FileManager.default.createDirectory(at: remote, withIntermediateDirectories: true)
-        _ = try await ProcessRunner().run("/usr/bin/git", ["init", "-q", "--bare", "."], cwd: remote)
+        _ = try await isolatedRunner().run(
+            "/usr/bin/git", ["init", "-q", "--bare", "-b", "main", "."], cwd: remote)
         try await repo.git(["remote", "add", "origin", remote.path])
         return remote
     }

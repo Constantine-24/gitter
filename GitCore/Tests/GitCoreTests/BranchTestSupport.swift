@@ -114,8 +114,12 @@ extension TestRepo {
         let remote = root.deletingLastPathComponent()
             .appendingPathComponent("\(root.lastPathComponent)-origin.git", isDirectory: true)
         try FileManager.default.createDirectory(at: remote, withIntermediateDirectories: true)
-        let runner = ProcessRunner()
-        _ = try await runner.run("/usr/bin/git", ["init", "-q", "--bare", "."], cwd: remote)
+        // `-b main` is spelled out because the suite runs with `GIT_CONFIG_NOSYSTEM=1` (see
+        // `TestGitEnvironment`): without the Xcode gitconfig's `init.defaultbranch=main` a bare
+        // repository starts on `master`, and cloning one whose HEAD names a branch that does
+        // not exist checks nothing out.
+        _ = try await isolatedRunner().run(
+            "/usr/bin/git", ["init", "-q", "--bare", "-b", "main", "."], cwd: remote)
 
         try await git(["remote", "add", remoteName, remote.path])
         try await git(["push", "-q", remoteName, "main"])
@@ -142,7 +146,8 @@ extension TestRepo {
         let remote = root.deletingLastPathComponent()
             .appendingPathComponent("\(root.lastPathComponent)-\(slug).git", isDirectory: true)
         try FileManager.default.createDirectory(at: remote, withIntermediateDirectories: true)
-        _ = try await ProcessRunner().run("/usr/bin/git", ["init", "-q", "--bare", "."], cwd: remote)
+        _ = try await isolatedRunner().run(
+            "/usr/bin/git", ["init", "-q", "--bare", "-b", "main", "."], cwd: remote)
         try await git(["remote", "add", remoteName, remote.path])
         return remote
     }
