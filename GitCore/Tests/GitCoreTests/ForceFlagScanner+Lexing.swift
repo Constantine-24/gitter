@@ -141,8 +141,16 @@ extension ForceFlagScanner {
         var depth = 0
         var index = start
 
-        func flush() {
+        /// `final` marks the flush after the closing bracket, which Swift's trailing comma
+        /// makes optional: `["reset", "--merge",]` has a comma with nothing after it, and
+        /// appending an element for that nothing gave the vector a phantom third entry. The
+        /// one positional rule reads element indices, so `reset --merge` — the exact vector
+        /// the allow-list permits — was reported for not being last. An empty final flush is
+        /// therefore dropped, unless it is the only one (an array of nothing but whitespace,
+        /// which `argumentArrays` already excludes, but the guard costs a word).
+        func flush(final: Bool = false) {
             let trimmed = String(current).trimmingCharacters(in: .whitespacesAndNewlines)
+            if final, trimmed.isEmpty, found.isEmpty, !elements.isEmpty { return }
             let isLoneLiteral =
                 found.count == 1 && trimmed.hasPrefix("\"") && trimmed.hasSuffix("\"")
             elements.append(
@@ -170,7 +178,7 @@ extension ForceFlagScanner {
             current.append(c)
             index += 1
         }
-        flush()
+        flush(final: true)
         return elements
     }
 }

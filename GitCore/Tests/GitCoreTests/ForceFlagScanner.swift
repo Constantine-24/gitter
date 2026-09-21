@@ -41,23 +41,26 @@ import Foundation
 ///   checked (`catchesAFlagHiddenInsideATernaryElement`). `CLIGitBackend+Merge.swift` still
 ///   spells each mode's vector as one complete literal chosen by a `switch`, because reading
 ///   what reaches git should not depend on the scanner being clever.
-/// - **`-M` is not in the fragment union**, because `commitDiff`'s legitimate
+/// - **`-M` is exempt in one fragment shape**: `commitDiff`'s legitimate
 ///   `["--no-commit-id", "-p", "-U3", "-M", "-r"]` is itself a fragment and `-M` there means
-///   rename detection. `branch -M` is still caught in a classified array. A future
-///   `diff -C`/`diff -B` fragment would false-positive for the mirror-image reason and must
-///   be written with its subcommand first.
+///   rename detection, so a fragment carrying `--no-commit-id` — an option no `branch` or
+///   `switch` vector has — does not have `-M` checked against it. Everywhere else, fragments
+///   included, `-M` is caught. A future `diff -C`/`diff -B` fragment would false-positive for
+///   the mirror-image reason and must be written with its subcommand first.
 /// - **No idea which arrays reach git**: a non-git array starting with `"clean"`, or one
 ///   containing `"--force"` for an unrelated reason, is flagged anyway. That false positive
 ///   is the safe direction and has not come up.
 /// - **Text, not Swift.** Multi-line (`"""`) and raw (`#"..."#`) string literals are not
-///   understood and could shift element boundaries; `GitCore/Sources` contains neither, and
-///   the whole-file sweep for always-forbidden tokens still fires wherever they sit.
+///   understood: one unpaired `"` inside either desynchronises the lexer for the rest of the
+///   file, silently. So a file containing either is *not scanned* — `findings` returns one
+///   loud refusal naming the construct, and nothing else, rather than a reassuring empty list.
+///   `GitCore/Sources` contains neither today.
 /// - **A positional rule only sees inside the array literal.** `["reset", "--merge"] + extra`
 ///   reads as a two-element vector and passes, because the concatenation happens outside the
 ///   brackets — the same blind spot `doesNotConfuseElementsOfNestedExpressions` records for
 ///   every other rule. `CLIGitBackend+Abort.swift` spells that vector as a complete literal
 ///   with nothing appended, which is what makes the rule meaningful there.
-/// - **`--skip` is in `alwaysForbidden`, and `git log --skip` exists.** Nothing in
+/// - **`--skip` is in `fileWideForbidden`, and `git log --skip` exists.** Nothing in
 ///   `GitCore/Sources` pages a log today; when something does, it will spell the option
 ///   `--skip=<n>` (one token, which does not match) or else be a false positive to resolve
 ///   here — by moving `--skip` into the per-subcommand tables — rather than by deleting the
@@ -67,10 +70,22 @@ import Foundation
 enum ForceFlagScanner {
     /// A human-readable description of each violation found in `source`, empty when clean.
     static func findings(in source: String) -> [String] {
+        // Before anything else, and on the RAW text: the lexer pairs `"` characters, so a
+        // multi-line or raw literal containing an unpaired quote shifts every element boundary
+        // after it — silently, for the rest of the file. A scanner that has lost its place must
+        // say so rather than report "clean". See `unlexableConstruct`.
+        if let construct = unlexableConstruct(in: source) {
+            return [
+                "this file cannot be scanned: it contains \(construct), which this scanner "
+                    + "does not lex. Rewrite the literal as an ordinary \"…\" string, or teach "
+                    + "the lexer about it — do not leave the file unchecked."
+            ]
+        }
+
         let code = strippingCommentsAndStringContents(source)
         var findings: [String] = []
 
-        for (token, literal) in literals(in: source, code: code) where alwaysForbidden.contains(literal) {
+        for (token, literal) in literals(in: source, code: code) where fileWideForbidden.contains(literal) {
             findings.append("forbidden literal \(literal.debugDescription) (offset \(token))")
         }
 
@@ -120,9 +135,34 @@ enum ForceFlagScanner {
     }
 
     private static func fragmentFindings(_ literals: [String]) -> [String] {
-        literals.filter(fragmentForbidden.contains).map {
+        // The one carve-out, and it is the fragment's own shape rather than a token struck from
+        // the union: `--no-commit-id` is a `diff-tree`/`diff-index` option, so a fragment
+        // carrying it is one of `commitDiff`/`commitFiles`' argument lists and its `-M` is
+        // rename detection. `branch` and `switch` have no such option, so this cannot excuse a
+        // `branch -M` assembled away from its subcommand — which the global
+        // `.subtracting(["-M"])` it replaces did excuse, everywhere.
+        let forbidden =
+            literals.contains(diffTreeMarker)
+            ? fragmentForbidden.subtracting(["-M"]) : fragmentForbidden
+        return literals.filter(forbidden.contains).map {
             "forbidden flag \($0.debugDescription) in an argument fragment"
         }
+    }
+
+    /// The option that identifies a `diff-tree` argument fragment. See `fragmentFindings`.
+    private static let diffTreeMarker = "--no-commit-id"
+
+    /// What the lexer provably cannot read, found in the raw source.
+    ///
+    /// Deliberately crude, and deliberately over-strict: it looks at the text before comments
+    /// are stripped, because stripping is the very step that goes wrong, so a `"""` inside a
+    /// doc comment refuses the file too. That is the price of a rule that cannot itself be
+    /// fooled, and it is not a price anyone pays today — `GitCore/Sources` contains neither
+    /// construct, which `gitCoreSourcesContainOnlyLexableStringLiterals` pins.
+    static func unlexableConstruct(in source: String) -> String? {
+        if source.contains("\"\"\"") { return "a multi-line string literal (\"\"\")" }
+        if source.contains("#\"") { return "a raw string literal (#\"…\"#)" }
+        return nil
     }
 
     /// Every `.swift` file under `GitCore/Sources`, keyed by path relative to that directory.
@@ -144,9 +184,15 @@ enum ForceFlagScanner {
     /// Gitter's "Abort" means: `--quit` drops the cherry-pick/revert/rebase state while leaving
     /// its half-applied result staged (an operation the user can no longer see, let alone
     /// abort), and `--skip` throws away the commit git stopped on.
+    /// `-B` is here because the README and the design doc have both claimed it was scanned
+    /// since the milestone began, and it was not: `git checkout -B` / `git branch -B`
+    /// force-creates a branch over an existing one. Nothing in `GitCore/Sources` uses it, so
+    /// this costs nothing today. `git diff -B` (break-rewrites) is the future false positive
+    /// waiting to happen, and it resolves the same way `-M` did: spell the vector with its
+    /// subcommand first, and move the token into the per-subcommand table.
     static let alwaysForbidden: Set<String> = [
         "--force", "-f", "--force-with-lease", "--discard-changes", "--hard", "--ignore-unmerged",
-        "--quit", "--skip",
+        "--quit", "--skip", "-B",
     ]
 
     /// Subcommands Gitter must never run at all. `checkout` is here because `git checkout --
@@ -240,17 +286,40 @@ enum ForceFlagScanner {
     /// What a *fragment* is checked against: the union of every table above, because a
     /// fragment by definition cannot say which subcommand it will be appended to.
     ///
-    /// `-M` is the one deliberate omission. `CLIGitBackend.commitDiff` and `commitFiles`
-    /// build `["--no-commit-id", "-p", "-U3", "-M", "-r"]` — a leading-flag fragment whose
-    /// `-M` is `diff-tree`'s rename detection, nothing like `branch -M`. Including it would
-    /// mean a permanent false positive on existing, correct code, so `-M` stays dangerous
-    /// only in a `branch`-classified array. Same reasoning would apply to a future
-    /// `diff -C`/`diff -B` fragment: those two ARE in the union today (nothing in
-    /// `GitCore/Sources` uses them), and adding such a fragment would mean spelling the array
-    /// with its subcommand first so it gets classified.
+    /// Nothing is subtracted here any more. `-M` used to be, globally, to spare one
+    /// `diff-tree` argument list — which meant `branch -M` assembled away from its subcommand
+    /// was unreachable by every rule at once. The exemption now lives in `fragmentFindings`
+    /// and is keyed on that list's own `--no-commit-id`, so it covers the fragment it was
+    /// written for and nothing else. A future `diff -C`/`diff -B` fragment is the mirror image
+    /// and resolves the same way: spell the array with its subcommand first so it is
+    /// classified, or give it a marker of its own here with the reasoning written down.
     static let fragmentForbidden: Set<String> =
         Set(forbiddenFlags.values.flatMap(\.keys))
         .union(alwaysForbidden)
         .union(flagsAllowedOnlyAfter.keys)
+
+    /// What the whole-file sweep checks every string literal against, wherever it sits.
+    ///
+    /// The sweep used to be `alwaysForbidden` alone, which left everything a per-subcommand
+    /// rule covers invisible the moment it stopped being a literal *inside* an argument array:
+    /// `let resolve = "--ours"; run(["merge", resolve, b])` and `a.append("clean")` both
+    /// passed. It is now the fragment union plus the forbidden subcommands, less the only two
+    /// groups that have legitimate uses in `GitCore/Sources` — and each subtraction is a fact
+    /// about this codebase, checked with `git grep`, not a softening of the rule:
+    ///
+    /// - **`--abort` and `--merge`** are exactly what `CLIGitBackend+Abort.swift` runs. They
+    ///   stay dangerous everywhere the *positional* rule can see them, which is the whole
+    ///   point of `flagsAllowedOnlyAfter`; a sweep over them would fail on correct code.
+    /// - **`-M`** is `diff-tree`'s rename detection in three argument lists. Same reasoning as
+    ///   `fragmentFindings`' carve-out, which is narrower but cannot help here: the sweep has
+    ///   no array to look at.
+    ///
+    /// Everything else in the union — `checkout`, `clean`, `stash`, `--ours`, `-C`, `-X`,
+    /// `--autostash` and the rest — appears in no source file, so widening onto them produced
+    /// no false positive (`gitCoreSourcesContainNoForceFlags` is the standing proof).
+    static let fileWideForbidden: Set<String> =
+        fragmentForbidden
+        .subtracting(flagsAllowedOnlyAfter.keys)
         .subtracting(["-M"])
+        .union(forbiddenSubcommands.keys)
 }

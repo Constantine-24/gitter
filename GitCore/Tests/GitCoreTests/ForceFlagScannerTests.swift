@@ -224,6 +224,114 @@ import Testing
         #expect(!ForceFlagScanner.findings(in: #"let dangerous = "--force""#).isEmpty)
     }
 
+    /// `-B` is `git checkout -B` / `git branch -B`, the force-create this project's README and
+    /// design doc have claimed was scanned since the milestone began. It was not: the token
+    /// appeared in no table at all, so `a.append("-B")` and a bare `let flag = "-B"` both
+    /// walked straight through. Nothing in `GitCore/Sources` uses `-B` (checked with `git
+    /// grep`), so adding it costs nothing today.
+    @Test(arguments: [
+        #"var a = ["switch"]; a.append("-B")"#,
+        #"var a = ["branch"]; a += ["-B", name]"#,
+        #"let flag = "-B""#,
+    ])
+    func catchesTheForceCreateFlagTheDocsAlreadyClaimed(source: String) {
+        #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// The whole-file sweep used to check `alwaysForbidden` alone, so a dangerous token that
+    /// reached git by any route the array/append rules could not follow was invisible. Both of
+    /// these are real shapes: a flag held in a `let` (the array element is not a literal at
+    /// all) and a subcommand appended to a vector built empty.
+    @Test(arguments: [
+        (#"let resolve = "--ours"; _ = try await run(["merge", resolve, b], cwd: root)"#, "--ours"),
+        (#"var a: [String] = []; a.append("clean"); a.append("-fdx")"#, "clean"),
+        (#"let sub = "checkout"; _ = try await run([sub, "--", path], cwd: root)"#, "checkout"),
+        (#"let flag = "--discard-changes""#, "--discard-changes"),
+    ])
+    func catchesATokenOnlyTheWholeFileSweepCanSee(source: String, token: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains(token) }, "\(findings) should name \(token)")
+    }
+
+    /// The sweep must stay narrower than `fragmentForbidden` in the two places where a token is
+    /// legitimate somewhere in `GitCore/Sources`: `--abort`/`--merge` are what `+Abort.swift`
+    /// runs, and `-M` is `diff-tree`'s rename detection. Widening onto those would have made
+    /// the suite fail on correct code, which is the failure mode that gets a rule deleted.
+    @Test(arguments: [
+        #"_ = try await run(["merge", "--abort"], cwd: root)"#,
+        #"_ = try await run(["reset", "--merge"], cwd: root)"#,
+        #"let arguments = ["--no-commit-id", "-p", "-U3", "-M", "-r"]"#,
+        #"let arguments = ["diff", "--cached", "--no-color", "-U3", "-M", "--", path]"#,
+    ])
+    func theWholeFileSweepDoesNotFireOnTokensTheSourcesLegitimatelyUse(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
+    /// `-M` used to be subtracted from the fragment union globally, to spare one `diff-tree`
+    /// argument list. The carve-out is now that list's own shape — a fragment carrying
+    /// `--no-commit-id`, which is not an option `branch` or `switch` has — so `-M` appended to
+    /// anything else is caught again.
+    @Test(arguments: [
+        #"var a = ["branch"]; a.append("-M")"#,
+        #"var a = ["branch"]; a += ["-M", old, new]"#,
+        #"_ = try await run([repoFlag, "branch", "-M", old, new], cwd: root)"#,
+    ])
+    func theRenameDetectionCarveOutNoLongerCoversEveryFragment(source: String) {
+        #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// A trailing comma left an empty phantom element at the end of the vector, so the one
+    /// positional rule read `["reset", "--merge",]` as three elements and reported `--merge`
+    /// for not being last. A false positive on a vector that is exactly the allowed one.
+    @Test(arguments: [
+        #"_ = try await run(["reset", "--merge",], cwd: root)"#,
+        """
+        _ = try await run([
+            "reset",
+            "--merge",
+        ], cwd: root)
+        """,
+    ])
+    func aTrailingCommaDoesNotMakeTheLastElementLookLikeAnArgument(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
+    /// The lexer pairs `"` characters, so one unpaired quote inside a multi-line or raw literal
+    /// shifts every element boundary after it for the rest of the file — and the failure is
+    /// silent, which is the worst shape a safety check can take. It now refuses to judge such a
+    /// file at all. `GitCore/Sources` contains neither construct today
+    /// (`containsOnlyLexableStringLiterals` below), so the rule costs nothing.
+    @Test(arguments: [
+        "let s = \"\"\"\n  a \" b\n  \"\"\"\nlet fine = [\"switch\", branch]\n",
+        "let s = #\"a \" b\"#\nlet fine = [\"switch\", branch]\n",
+        "let s = ##\"a\"##\n",
+    ])
+    func refusesToScanAFileItCannotLex(source: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(findings.count == 1, "expected exactly the refusal, got \(findings)")
+        #expect(findings.first?.contains("cannot be scanned") == true, "\(findings)")
+    }
+
+    /// And the refusal is not simply "any file with a quote in it".
+    @Test func stillScansOrdinaryFiles() {
+        #expect(ForceFlagScanner.findings(in: #"let a = ["switch", "--no-guess", b]"#).isEmpty)
+        #expect(!ForceFlagScanner.findings(in: #"let a = ["switch", "--force", b]"#).isEmpty)
+    }
+
+    /// The premise of the refusal above: no source it has to scan uses either construct, so
+    /// the rule is a guard against a future file rather than a standing failure.
+    @Test func gitCoreSourcesContainOnlyLexableStringLiterals() throws {
+        let sources = try ForceFlagScanner.gitCoreSources(root: Self.sourcesRoot)
+        #expect(sources.count >= 10)
+        for (path, text) in sources.sorted(by: { $0.key < $1.key }) {
+            #expect(!text.contains("\"\"\""), "\(path) has a multi-line string literal")
+            #expect(!text.contains("#\""), "\(path) has a raw string literal")
+        }
+    }
+
     @Test func doesNotConfuseElementsOfNestedExpressions() {
         let source = #"""
             _ = try await run(["branch", "--end-of-options", name] + (start.map { [$0] } ?? []), cwd: root)
