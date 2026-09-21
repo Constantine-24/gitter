@@ -55,12 +55,22 @@ extension CLIGitBackend {
         let stdout = String(decoding: streamed.stdout, as: UTF8.self)
         guard let outcome = PushPorcelainParser.parse(stdout: stdout, destinationRef: remoteRef)
         else {
-            // git exited 0 or 1 and said nothing about the ref it was given. In practice that is
-            // the exit-1 shape `error: src refspec <x> does not match any` — a push that never
-            // reached the server — so 1 is the code reported; an exit 0 with no line for an
-            // explicit refspec has never been observed and would be a git this code does not
-            // know. Either way it is a failure: a push that went through always prints a line.
-            throw diagnosed(exitCode: 1, stderr: streamed.stderr)
+            // git exited 0 or 1 and said nothing about the ref it was given. Either way it is a
+            // failure — a push that went through always prints a line — and the code reported
+            // is git's own rather than an assumed one. Three shapes reach here, measured on git
+            // 2.54 (a fourth, an unreadable remote, exits 128 and is caught above):
+            //
+            // | shape | stdout | stderr | exit |
+            // |---|---|---|---|
+            // | `push origin refs/heads/ghost:…` | empty | `error: src refspec refs/heads/ghost does not match any` | 1 |
+            // | a local `pre-push` hook that exits 1 | empty | the hook's own words, then `error: failed to push some refs to …` | 1 |
+            // | an unreadable remote (caught above) | empty | `fatal: '…' does not appear to be a git repository` | 128 |
+            //
+            // The hook's words are on stderr with **no** `remote:` prefix — it ran here, not on
+            // the server — so they reach the user through this error rather than through
+            // `remoteMessages`. An exit 0 with no line for an explicit refspec has never been
+            // observed and would be a git this code does not know; it is still a failure here.
+            throw diagnosed(exitCode: streamed.exitCode, stderr: streamed.stderr)
         }
         return PushResult(
             outcome: outcome,

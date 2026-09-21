@@ -120,6 +120,41 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(segments == ["noted"])
     }
 
+    /// The status the process really ended with, carried on the result.
+    ///
+    /// It exists because a caller that *allows* a non-zero code has no other way to ask what
+    /// happened: `CLIGitBackend.push` allows exit 1 so that a rejection's stdout survives, and
+    /// when git prints no porcelain line for the ref it was given, the code is the only thing
+    /// left to report. That path used to assume a 1 — true for `src refspec … does not match
+    /// any`, and a guess everywhere else.
+    @Test func reportsTheProcessesRealExitStatus() async throws {
+        let (zero, _) = try await runScript("echo fine")
+        #expect(zero.exitCode == 0)
+
+        let (allowed, _) = try await runScript("echo kept; echo noted >&2; exit 7",
+                                               allowedExitCodes: [7])
+        #expect(allowed.exitCode == 7)
+        // Non-vacuous: the run really did produce its output as well as its code, so the 7 is
+        // this process's status and not a default on an empty result.
+        #expect(String(decoding: allowed.stdout, as: UTF8.self) == "kept\n")
+        #expect(allowed.stderr == "noted\n")
+    }
+
+    /// A code that is *not* allowed is still a throw, and the error carries the same number:
+    /// the new field is a second way of reading one status, never a second status.
+    @Test func aThrownFailureStillCarriesItsCode() async throws {
+        let (allowed, _) = try await runScript("exit 9", allowedExitCodes: [9])
+        #expect(allowed.exitCode == 9)
+
+        await #expect {
+            _ = try await ProcessRunner().runStreaming(
+                "/bin/sh", ["-c", "echo nope >&2; exit 9"], cwd: Self.root, onStderr: { _ in })
+        } throws: { error in
+            guard case let GitError.commandFailed(code, _) = error else { return false }
+            return code == 9
+        }
+    }
+
     @Test func throwsLaunchFailedWhenTheExecutableIsMissing() async {
         await #expect(throws: GitError.self) {
             _ = try await ProcessRunner().runStreaming(

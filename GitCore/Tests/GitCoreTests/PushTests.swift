@@ -392,6 +392,62 @@ import Testing
         #expect(!(thrown is RemoteOperationError))
     }
 
+    /// A **local** `pre-push` hook that says no. Measured on git 2.54, and the third shape that
+    /// reaches the "no result line" path:
+    ///
+    /// ```
+    /// $ git push --porcelain --progress --end-of-options origin refs/heads/hooky:refs/heads/hooky
+    /// stdout: (empty)
+    /// stderr: pre-push: not today
+    ///         error: failed to push some refs to '../origin.git'
+    /// EXIT=1
+    /// ```
+    ///
+    /// Nothing about it is a `remote:` line, because no server was ever spoken to — the hook
+    /// runs on this machine, before the transport. So the words survive into the thrown error
+    /// rather than into `remoteMessages`, and the outcome must never be a success: a caller
+    /// that read this as `.upToDate` would tell the user their work is on the server when the
+    /// server has not heard of it.
+    @Test func aLocalPrePushHookThatDeclinesIsAnErrorCarryingItsWords() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        try await repo.git(["switch", "-q", "-c", "hooky"])
+        try repo.write("hooky.txt", "hooky\n")
+        try await repo.commitAll("hooky")
+        try repo.writeExecutable(".git/hooks/pre-push", """
+            #!/bin/sh
+            echo "pre-push: not today" >&2
+            exit 1
+
+            """)
+
+        let localBefore = try await RepoState.capture(repo)
+        let worktreeBefore = worktreeSnapshot(repo)
+        let serverBefore = try await RemoteState.capture(origin)
+
+        var thrown: Error?
+        do {
+            _ = try await CLIGitBackend().push(
+                "hooky", to: "origin", remoteRef: "refs/heads/hooky", setUpstream: false,
+                at: repo.root, progress: { _ in })
+        } catch {
+            thrown = error
+        }
+
+        guard case .commandFailed(let code, let stderr)? = thrown as? GitError else {
+            Issue.record("expected GitError.commandFailed, got \(String(describing: thrown))")
+            return
+        }
+        #expect(code == 1, "git's own status, not an assumed one")
+        #expect(stderr.contains("pre-push: not today"), "\(stderr)")
+        #expect(try await repo.gitRefExists("refs/remotes/origin/hooky") == false)
+        try await assertRepoUnchanged(repo, since: localBefore, worktree: worktreeBefore)
+        try await assertRemoteUnchanged(origin, since: serverBefore)
+    }
+
     // MARK: - Progress
 
     /// `--progress` is on the vector because git prints none without a tty, and the segments

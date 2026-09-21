@@ -7,10 +7,20 @@ extension ProcessRunner {
     public struct StreamedResult: Sendable {
         public let stdout: Data
         public let stderr: String
+        /// The status the process really ended with: `0`, or one of `allowedExitCodes` — any
+        /// other code is a `GitError.commandFailed` and never reaches here.
+        ///
+        /// It is on the result because a caller that allows a non-zero code has no other way
+        /// to ask what happened. `CLIGitBackend.push` allows exit 1 so that a rejection's
+        /// stdout survives (every rejection exits 1, and the outcome lives on stdout); when
+        /// git then prints no porcelain line for the ref it was given, the code is all that is
+        /// left to report, and reporting an assumed one would be inventing evidence.
+        public let exitCode: Int32
 
-        public init(stdout: Data, stderr: String) {
+        public init(stdout: Data, stderr: String, exitCode: Int32) {
             self.stdout = stdout
             self.stderr = stderr
+            self.exitCode = exitCode
         }
     }
 
@@ -129,7 +139,8 @@ extension ProcessRunner {
                         let text = String(decoding: err, as: UTF8.self)
                         if status == 0 || allowedExitCodes.contains(status) {
                             continuation.resume(
-                                returning: StreamedResult(stdout: out, stderr: text))
+                                returning: StreamedResult(
+                                    stdout: out, stderr: text, exitCode: status))
                         } else {
                             continuation.resume(
                                 throwing: GitError.commandFailed(
