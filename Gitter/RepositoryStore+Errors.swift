@@ -84,6 +84,36 @@ struct RepositoryMovedOn: LocalizedError {
     var errorDescription: String? { "The repository changed; nothing was aborted." }
 }
 
+/// The detached-HEAD warning was answered after the repository had moved on underneath it.
+///
+/// The warning names a commit and a number of commits that hang on it alone; confirming it means
+/// agreeing to leave *those* behind. HEAD can move while the sheet is up — a terminal, a second
+/// Gitter window — and acting then would strand commits nobody was warned about, or refuse to
+/// act on a warning that no longer applies. So it fails closed and says what it found instead,
+/// the way a force delete against a moved tip does.
+struct DetachedHeadMovedOn: LocalizedError {
+    /// What git says now, read immediately before the action would have run.
+    let now: UnreferencedCommits
+
+    var errorDescription: String? {
+        guard let sha = now.headSha else {
+            return "The repository changed since that warning. Nothing happened. Ask again to "
+                + "see what it would cost now."
+        }
+        return "The repository changed since that warning — HEAD is now at \(sha.prefix(7)), "
+            + "\(Self.holding(now.count)). Nothing happened. Ask again to see what it would "
+            + "cost now."
+    }
+
+    private static func holding(_ count: Int) -> String {
+        switch count {
+        case 0: "and nothing hangs on it alone any more"
+        case 1: "holding 1 commit on no branch, tag or remote"
+        default: "holding \(count) commits on no branch, tag or remote"
+        }
+    }
+}
+
 extension BranchOperationError {
 
     /// This refusal as a banner sentence. `attempt` reads on from "Can't …" — "switch to

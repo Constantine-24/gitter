@@ -84,31 +84,33 @@ extension CLIGitBackend {
             ["rev-list", "--count", "--end-of-options", base + ".." + branch, "--"], at: root)
     }
 
-    public func unreferencedCommitCount(at root: URL) async throws -> Int {
+    public func unreferencedCommits(at root: URL) async throws -> UnreferencedCommits {
+        // An unborn HEAD is `--quiet`'s exit 1 with no output (verified on git 2.54), which is
+        // the one failure that is not a failure: no commits exist, so nothing can be stranded.
+        // Every other way this can go wrong — "not a git repository" is exit 128, with words —
+        // propagates, because this pair is the only input to the confirmation standing between
+        // the user and losing commits and a question that could not be asked must fail **closed**
+        // rather than answer 0 and skip the confirmation silently.
+        let data = try await run(
+            ["rev-parse", "--verify", "--quiet", "--end-of-options", "HEAD"], cwd: root,
+            allowedExitCodes: [1])
+        let sha = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sha.isEmpty else { return UnreferencedCommits(headSha: nil, count: 0) }
+
+        // Counted from the sha, not from `HEAD` a second time: the two commands are a process
+        // spawn apart, and a HEAD that moved in between would pair this count with a commit it
+        // is not about. The sha is git's own 40-character output, so it cannot be read as an
+        // option however the repository got into this state.
+        //
         // `--branches --tags --remotes` rather than `--all`: `--all` pretends HEAD is listed
         // too (verified on git 2.54 — see `commitsOnlyOn`'s doc comment), which would make this
         // answer 0 in exactly the situation it exists to detect. No `--end-of-options` for the
         // same reason as `commitsOnlyOn`: it would stop option parsing for the rest of the argv
-        // and turn `--not`/`--branches` into revisions. Nothing here is user input.
-        do {
-            return try await revListCount(
-                ["rev-list", "--count", "HEAD", "--not", "--branches", "--tags", "--remotes"],
-                at: root)
-        } catch GitError.commandFailed(exitCode: 128, let stderr)
-            where stderr.contains("ambiguous argument 'HEAD'")
-        {
-            // An unborn HEAD, and only that: verified on git 2.54 under `LC_ALL=C` (which
-            // `ProcessRunner` sets), "fatal: ambiguous argument 'HEAD': unknown revision or path
-            // not in the working tree." No commits exist, so nothing can be stranded and the
-            // honest answer is 0.
-            //
-            // Every other exit 128 is rethrown on purpose. "not a git repository" is one of
-            // them, with different words. This number is the only input to the confirmation
-            // standing between the user and losing commits, so a question that could not be
-            // asked must fail **closed** — the caller declines to act and shows the error —
-            // rather than answering 0 and skipping the confirmation silently.
-            return 0
-        }
+        // and turn `--not`/`--branches` into revisions.
+        let count = try await revListCount(
+            ["rev-list", "--count", sha, "--not", "--branches", "--tags", "--remotes"], at: root)
+        return UnreferencedCommits(headSha: sha, count: count)
     }
 
     // MARK: - Helpers

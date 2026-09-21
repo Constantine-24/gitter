@@ -110,8 +110,9 @@ public protocol GitBranchBackend: Sendable {
     ///   thrown, nothing changes — and the result carries `.notFullyMerged(uniqueCommits:tip:)`:
     ///   `uniqueCommits` from `commitsOnlyOn(branch:)` and `tip` from `rev-parse --verify
     ///   refs/heads/<name>`, both read *after* git refused and therefore before anything was
-    ///   deleted (which, on this path, is nothing at all). That `tip` is the full 40-character
-    ///   object name, and it is what `forceDeleteBranch` must later be given.
+    ///   deleted (which, on this path, is nothing at all). That `tip` is the full object name
+    ///   (40 characters in a sha1 repository), and it is what `forceDeleteBranch` must later be
+    ///   given.
     ///
     /// A name that does not exist throws `.noSuchBranch`; an invalid one throws `.invalidName`
     /// before git runs, same as every other method here.
@@ -140,8 +141,9 @@ public protocol GitBranchBackend: Sendable {
     /// 2. `.cannotDeleteCurrent` for the branch HEAD is on, *before* the tip is even read: it is
     ///    refused whatever the tip says, and "the branch moved" would be the wrong explanation.
     /// 3. `rev-parse --verify refs/heads/<name>` — `.noSuchBranch` when it is gone, and
-    ///    `.branchMoved(name:expected:actual:)` when the full 40-character object name differs
-    ///    from `expectedTip` by so much as a character. Both leave the repository untouched.
+    ///    `.branchMoved(name:expected:actual:)` when the full object name (40 characters in a
+    ///    sha1 repository) differs from `expectedTip` by so much as a character. Both leave the
+    ///    repository untouched.
     /// 4. `git branch -D`, which can still refuse on its own (a linked worktree holds it).
     ///
     /// **The residual window is one read plus one process spawn wide, and it is honest to say
@@ -154,7 +156,7 @@ public protocol GitBranchBackend: Sendable {
     /// - it accepts an **abbreviated** `<oldvalue>` (verified: a 7-character prefix deleted the
     ///   ref), which is a weaker check than this one makes;
     /// - it leaves every `branch.<name>.*` config entry behind (verified: description and
-    ///   `rebase` survived, where `branch -D` removes them) along with the branch's reflog;
+    ///   `rebase` survived, where `branch -D` removes them);
     /// - and, decisively, it will happily delete the branch **HEAD is on** (verified: exit 0,
     ///   HEAD left pointing at a ref that no longer exists, `git status` reporting "No commits
     ///   yet" in a repository full of them), where `branch -D` refuses that and a checked-out
@@ -231,18 +233,27 @@ public protocol GitBranchBackend: Sendable {
     /// wrong one.
     func commitCount(in branch: String, notIn base: String, at root: URL) async throws -> Int
 
-    /// How many commits are reachable from HEAD but from **no branch, tag or remote-tracking
-    /// ref** — the commits a move of HEAD would strand.
+    /// Where HEAD is, and how many commits are reachable from there but from **no branch, tag or
+    /// remote-tracking ref** — the commits a move of HEAD would strand.
     ///
-    /// `git rev-list --count HEAD --not --branches --tags --remotes`. Meaningful only while HEAD
-    /// is detached: on a branch the branch itself references HEAD, so the answer is 0 by
-    /// construction, and an unborn HEAD is 0 because there is nothing there at all.
+    /// `git rev-parse --verify --quiet HEAD`, then `git rev-list --count <sha> --not --branches
+    /// --tags --remotes`. The count is asked about the **sha just read**, never about `HEAD`
+    /// again, so the two halves describe one state of the repository even if HEAD moves between
+    /// the two commands: that is what lets the confirmation sheet name a sha *and* a count and
+    /// mean them together. Meaningful only while HEAD is detached: on a branch the branch itself
+    /// references HEAD, so the count is 0 by construction, and an unborn HEAD is 0 because there
+    /// is nothing there at all.
     ///
-    /// **It throws rather than guessing.** An unborn HEAD is recognised by git's own words
-    /// ("ambiguous argument 'HEAD'", exit 128); every other failure — including the other exit
-    /// 128, "not a git repository" — propagates. This number is the only input to the
-    /// confirmation that stands between the user and losing commits, so a question that could
-    /// not be asked must fail closed, never answer 0.
+    /// **It throws rather than guessing.** An unborn HEAD is recognised by git's own exit 1 from
+    /// `rev-parse --verify --quiet` (verified on git 2.54: empty output, where a directory that
+    /// is not a repository exits 128 with "fatal: not a git repository"); every failure other
+    /// than that propagates. This pair is the only input to the confirmation that stands between
+    /// the user and losing commits, so a question that could not be asked must fail closed, never
+    /// answer 0.
+    ///
+    /// The caller asks again, and compares, before acting on an answer the user has confirmed: a
+    /// warning is about the commits it named, and a repository that moved underneath it must not
+    /// be acted on as if it had not (see `Gitter`'s `confirmLeaveDetached`).
     ///
     /// This backs the fourth loss-capable action in the design doc. `deleteBranch`'s doc comment
     /// describes how the state is reached: detached exactly at a branch's tip, `git branch -d`
@@ -253,7 +264,7 @@ public protocol GitBranchBackend: Sendable {
     ///
     /// Deliberately not `--all`: that would include HEAD itself (and the stash), making the
     /// answer always 0. The three ref namespaces are named explicitly instead.
-    func unreferencedCommitCount(at root: URL) async throws -> Int
+    func unreferencedCommits(at root: URL) async throws -> UnreferencedCommits
 
     /// Merge `branch` into whatever HEAD is (a branch, or a detached HEAD — git allows both and
     /// so does this), the way `mode` says.

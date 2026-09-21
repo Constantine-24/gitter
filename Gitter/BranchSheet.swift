@@ -39,15 +39,26 @@ enum PendingBranchAction: Hashable {
     case createAndSwitch(name: String, startPoint: String?)
 
     /// Whether leaving a detached HEAD for this action could strand commits.
-    var canStrandCommits: Bool {
+    ///
+    /// `sha` is the commit HEAD is really on, when it has been read. Passing nil answers the
+    /// cheaper question — "could this ever need asking about?" — which is what decides whether to
+    /// spend a `rev-list` on finding out; the answer is then re-taken with the sha in hand, and
+    /// only a `true` there opens the confirmation.
+    func canStrandCommits(leavingHeadAt sha: String? = nil) -> Bool {
         switch self {
         case .switchTo, .track, .detach: true
         // A merge only ever moves HEAD forward, so whatever HEAD reaches now it still reaches.
         case .merge: false
         // `switch -c <new>` with no start point creates the branch where HEAD already is, which
         // is the *cure* for a detached HEAD, not a way to lose it. With a start point it moves
-        // HEAD somewhere else like any switch.
-        case .createAndSwitch(_, let startPoint): startPoint != nil
+        // HEAD somewhere else like any switch — **unless** that start point is the very commit
+        // HEAD is on, spelled out in full. That is what the warning's own "Create Branch Here…"
+        // passes, and a branch created there holds exactly what the detached HEAD held, so
+        // warning about it again would be asking the user to confirm the cure. Compared as
+        // strings against git's own 40-character output: a start point that is anything else —
+        // a name, an abbreviation, a sha HEAD has since left — is not proof of anything and
+        // still asks.
+        case .createAndSwitch(_, let startPoint): startPoint != nil && startPoint != sha
         }
     }
 

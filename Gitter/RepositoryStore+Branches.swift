@@ -49,10 +49,16 @@ extension RepositoryStore {
 
     /// Runs the action a `.leaveDetached` sheet was asked about. Nothing ran when the sheet went
     /// up, so this is the first and only attempt.
+    ///
+    /// What the sheet showed travels with it, and `perform` re-reads it from git before acting:
+    /// the warning is about *those* commits at *that* HEAD, and a terminal can move HEAD while
+    /// the sheet is up. Acting on a repository that has moved would strand commits nobody was
+    /// warned about — the same hole the force delete had, closed the same way, by verifying
+    /// inside the mutation that the state still matches and refusing if it does not.
     func confirmLeaveDetached() {
-        guard case .leaveDetached(_, _, let action) = activeSheet else { return }
+        guard case .leaveDetached(let count, let sha, let action) = activeSheet else { return }
         activeSheet = nil
-        perform(action, confirmed: true)
+        perform(action, confirming: UnreferencedCommits(headSha: sha, count: count))
     }
 
     // MARK: - Actions that do not move HEAD
@@ -125,7 +131,9 @@ extension RepositoryStore {
     /// If that question cannot be answered, the action does **not** run: the error propagates
     /// out of `mutate` into the banner, and nothing has moved. A guard whose input failed must
     /// fail closed.
-    private func perform(_ action: PendingBranchAction, confirmed: Bool = false) {
+    private func perform(
+        _ action: PendingBranchAction, confirming warned: UnreferencedCommits? = nil
+    ) {
         if let reason = branchSwitchingBlockedReason {
             // Through `mutate` rather than straight into `lastError`: that is what makes the
             // message sticky against the reload the watcher is probably about to trigger, and
@@ -134,22 +142,33 @@ extension RepositoryStore {
             return
         }
 
-        let asksFirst = !confirmed && action.canStrandCommits
         mutate(result: { backend, root -> BranchActionResult in
-            if asksFirst {
-                let stranded = try await backend.unreferencedCommitCount(at: root)
-                if stranded > 0 { return .confirm(stranded) }
+            if let warned {
+                // Answering a warning: it named a sha and a count, and both must still hold.
+                // Read here, inside the mutation, immediately before the action — the closest
+                // this side of the app can get to the ref itself. What remains is one process
+                // spawn's worth of window against another process, the same residual the force
+                // delete documents.
+                let now = try await backend.unreferencedCommits(at: root)
+                guard now == warned else { throw DetachedHeadMovedOn(now: now) }
+            } else if action.canStrandCommits() {
+                let now = try await backend.unreferencedCommits(at: root)
+                // `headSha` is non-nil whenever the count is: the count was taken *of* that sha.
+                if now.count > 0, let sha = now.headSha,
+                    action.canStrandCommits(leavingHeadAt: sha)
+                {
+                    return .confirm(sha: sha, stranded: now.count)
+                }
             }
             return .acted(try await Self.run(action, backend: backend, at: root))
         }, onSuccess: { [self] result in
             switch result {
-            case .confirm(let stranded):
-                // The sha comes from the reload `mutate` has just finished, which is newer than
-                // the count above and newer than anything the watcher had seen — not from the
-                // snapshot this action started under. A non-zero count means HEAD is detached
-                // (on a branch it cannot be anything but 0), so there is always a commit here.
+            case .confirm(let sha, let stranded):
+                // Both halves come from one read of git, taken together (see
+                // `UnreferencedCommits`) — not from the snapshot, which the watcher leaves up to
+                // 300 ms behind, and not from two reads that could describe two moments.
                 activeSheet = .leaveDetached(
-                    unreferencedCommits: stranded, headSha: headSha ?? "HEAD", then: action)
+                    unreferencedCommits: stranded, headSha: sha, then: action)
             case .acted(let message):
                 // The detail pane may be showing a commit that the new HEAD's log no longer
                 // lists, and after a merge the working copy is what the user needs to look at.
@@ -235,9 +254,9 @@ extension RepositoryStore {
     }
 }
 
-/// What `perform` found: either the action ran (with an optional notice), or this many commits
-/// would be stranded and nothing has happened yet.
+/// What `perform` found: either the action ran (with an optional notice), or HEAD is at `sha`
+/// holding `stranded` commits on no ref and nothing has happened yet.
 private enum BranchActionResult {
     case acted(String?)
-    case confirm(Int)
+    case confirm(sha: String, stranded: Int)
 }

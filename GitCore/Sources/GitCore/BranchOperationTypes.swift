@@ -58,8 +58,9 @@ public enum BranchOperationError: Error, Sendable, Equatable {
     /// silently. So the delete fails closed and the user is asked again against the new numbers.
     ///
     /// `expected` is what the sheet showed, `actual` what `refs/heads/<name>` resolves to now.
-    /// Both are full 40-character object names: an abbreviation is not accepted on either side,
-    /// since a prefix match is a weaker promise than the one the sheet makes.
+    /// Both are full object names (40 characters in a sha1 repository): an abbreviation is not
+    /// accepted on either side, since a prefix match is a weaker promise than the one the sheet
+    /// makes.
     case branchMoved(name: String, expected: String, actual: String)
     /// No local branch of that name exists — git said `branch '<name>' not found` (verified on
     /// git 2.54) to a `branch -d`/`-D` for a name that was never created, or already deleted by
@@ -168,4 +169,29 @@ public enum MergeOutcome: Sendable, Hashable {
 public enum BranchDeletion: Sendable, Hashable {
     case deleted
     case notFullyMerged(uniqueCommits: Int, tip: String)
+}
+
+/// What `unreferencedCommits(at:)` found: the commit HEAD is on, and how many commits hang on it
+/// and on nothing else.
+///
+/// One value rather than two calls because the confirmation sheet shows both and is later
+/// answered against both. A sha read at one moment and a count read at another could describe two
+/// different states of the repository, and the sheet would then promise something that was never
+/// true at once. The count is asked *about the sha*, not about `HEAD`, so the pair holds together
+/// however HEAD wanders afterwards.
+///
+/// Comparing two of these is the whole of the staleness check the store makes before it acts on
+/// the answer: equal means the repository still holds what the user was warned about.
+public struct UnreferencedCommits: Sendable, Hashable {
+    /// The full object name HEAD resolves to, or nil in a repository with no commits (an unborn
+    /// HEAD, where `count` is 0 because there is nothing there at all).
+    public let headSha: String?
+    /// Commits reachable from `headSha` and from no branch, tag or remote-tracking ref: the ones
+    /// a move of HEAD away from here would leave to the reflog.
+    public let count: Int
+
+    public init(headSha: String?, count: Int) {
+        self.headSha = headSha
+        self.count = count
+    }
 }
