@@ -204,14 +204,16 @@ import Testing
     /// $ git rev-list --count refs/remotes/origin/topic --not --branches --tags \
     ///       --exclude=origin/topic --remotes
     /// 0
-    /// $ …  --exclude=origin/topic --exclude='*/HEAD' --remotes
+    /// $ …  --exclude=origin/topic --exclude=origin/HEAD --remotes
     /// 3
     /// ```
     ///
-    /// So `*/HEAD` is excluded too. It costs nothing: `HEAD` is not a valid branch name
-    /// (measured: `git branch HEAD` → `fatal: 'HEAD' is not a valid branch name`), so no real
-    /// remote branch is ever excluded by it, and another remote's `HEAD` only ever points at a
-    /// branch of that remote which `--remotes` already lists in its own right.
+    /// So the symbolic refs under `refs/remotes` are excluded too — **listed and named**, one
+    /// `--exclude` each. `--exclude=*/HEAD` gives 3 here as well and was what stood in the code
+    /// until Task 6's fix round, on the claim that it "costs nothing, since `HEAD` is not a
+    /// valid branch name". The two tests below are why that claim is gone: it costs an
+    /// over-count for a real branch called `x/HEAD`, and an **under**-count for a symref that
+    /// is not called `HEAD` at all.
     @Test func theRemotesOwnHeadSymrefDoesNotCoverTheBranchItPointsAt() async throws {
         let repo = try await TestRepo.makeBranched()
         defer { repo.cleanUp() }
@@ -235,6 +237,95 @@ import Testing
                 == "refs/remotes/origin/topic")
         #expect(try await CLIGitBackend().commitsOnlyOnRemoteBranch("origin/topic", at: repo.root)
                 == 3)
+    }
+
+    /// **A real remote branch whose last component is `HEAD` is a holder like any other.**
+    ///
+    /// The `*/HEAD` glob this exclusion used to be spelled with rested on a claim that was
+    /// false: that it "costs nothing, because `HEAD` is not a valid branch name". Only a
+    /// **whole-name** `HEAD` is refused — measured on git 2.54:
+    ///
+    /// ```
+    /// $ git check-ref-format --branch HEAD      → fatal: 'HEAD' is not a valid branch name
+    /// $ git check-ref-format --branch x/HEAD    → x/HEAD          (exit 0)
+    /// $ git branch x/HEAD                       → (exit 0)
+    /// ```
+    ///
+    /// — and `*` in an `--exclude` pattern crosses `/`, so `*/HEAD` matched
+    /// `refs/remotes/other/x/HEAD`, an ordinary remote-tracking ref for an ordinary branch
+    /// somebody pushed. The commits it holds were counted as held by nothing: 3 where the truth
+    /// is 0, a sheet warning about work that is in fact safe on a second remote.
+    ///
+    /// The exclusion now names the symbolic refs it means, one `--exclude` each, so this is the
+    /// **true** answer rather than an over-count that was tolerated.
+    @Test func aRemoteBranchWhoseLastComponentIsHeadStillHoldsItsCommits() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+        let other = try await repo.addEmptyRemote(named: "other")
+        defer { try? FileManager.default.removeItem(at: other) }
+
+        try await repo.git(["switch", "-q", "-c", "topic"])
+        for step in 1...3 {
+            try repo.write("t\(step).txt", "\(step)\n")
+            try await repo.commitAll("topic \(step)")
+        }
+        try await repo.git(["push", "-q", "origin", "refs/heads/topic:refs/heads/topic"])
+        try await repo.git(["fetch", "-q", "origin"])
+        try await repo.git(["switch", "-q", "main"])
+        try await repo.git(["branch", "-q", "-D", "topic"])
+
+        let backend = CLIGitBackend()
+        // A baseline that can fail: with nothing else holding them the answer really is 3, so
+        // the 0 below is the second remote being seen and not an exclusion swallowing the ref.
+        #expect(try await backend.commitsOnlyOnRemoteBranch("origin/topic", at: repo.root) == 3)
+
+        // A branch literally called `x/HEAD`, pushed to a second remote and fetched back — not
+        // a contrivance with `update-ref`, a real branch reached the ordinary way.
+        try await repo.git(["push", "-q", "other", "refs/remotes/origin/topic:refs/heads/x/HEAD"])
+        try await repo.git(["fetch", "-q", "other"])
+        #expect(try await repo.gitRefExists("refs/remotes/other/x/HEAD"))
+        #expect(try await repo.symbolicRef("refs/remotes/other/x/HEAD") == nil,
+                "it must be a real ref, or this tests the symref rule instead")
+
+        #expect(try await backend.commitsOnlyOnRemoteBranch("origin/topic", at: repo.root) == 0,
+                "a second remote holds every one of them")
+    }
+
+    /// The mirror image, and the reason the glob was not merely over-cautious: a symbolic ref
+    /// under `refs/remotes` **need not be called `HEAD`**, and `*/HEAD` missed every other one —
+    /// under-counting, which is the direction that costs work.
+    ///
+    /// Measured on git 2.54 with `refs/remotes/origin/default → refs/remotes/origin/topic`:
+    /// `--exclude=origin/topic --exclude='*/HEAD' --remotes` answers **0** (the symref covers
+    /// the branch's own commits) where the truth is 3. Excluding the symrefs by name answers 3.
+    @Test func aRemoteSymrefThatIsNotCalledHeadIsStillNotAHolder() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        try await repo.git(["switch", "-q", "-c", "topic"])
+        for step in 1...3 {
+            try repo.write("t\(step).txt", "\(step)\n")
+            try await repo.commitAll("topic \(step)")
+        }
+        try await repo.git(["push", "-q", "origin", "refs/heads/topic:refs/heads/topic"])
+        try await repo.git(["fetch", "-q", "origin"])
+        try await repo.git(["switch", "-q", "main"])
+        try await repo.git(["branch", "-q", "-D", "topic"])
+
+        let backend = CLIGitBackend()
+        #expect(try await backend.commitsOnlyOnRemoteBranch("origin/topic", at: repo.root) == 3)
+
+        try await repo.git(
+            ["symbolic-ref", "refs/remotes/origin/default", "refs/remotes/origin/topic"])
+        #expect(try await repo.symbolicRef("refs/remotes/origin/default")
+                == "refs/remotes/origin/topic")
+
+        #expect(try await backend.commitsOnlyOnRemoteBranch("origin/topic", at: repo.root) == 3,
+                "a pointer at the branch is not a second holder of its commits")
     }
 
     /// A name that would be read as an option, or as a glob the exclusion cannot mean. `*`,

@@ -107,18 +107,83 @@ extension CLIGitBackend: GitRemoteBackend {
         // document's `--exclude=refs/remotes/origin/topic` matches nothing: measured, it returned
         // 0 against a fixture whose true answer is 3.
         //
-        // `*/HEAD` is excluded as well, because `refs/remotes/<r>/HEAD` is a **symbolic ref** and
-        // a symref is not an independent holder of anything. Measured: `--remotes` lists it as a
-        // ref of its own, so when it points at the branch being asked about it covers that
-        // branch's commits and the answer comes back 0 for a deletion that would strand them.
-        // Deleting the branch leaves it dangling; it was never holding the commits. The
-        // exclusion costs nothing — `HEAD` is not a valid branch name (`git branch HEAD` →
-        // `fatal: 'HEAD' is not a valid branch name`), and another remote's HEAD only points at
-        // a branch `--remotes` already lists in its own right.
-        return try await revListCount(
-            ["rev-list", "--count", "refs/remotes/" + remoteBranch, "--not", "--branches",
-             "--tags", "--exclude=" + remoteBranch, "--exclude=*/HEAD", "--remotes"],
-            at: root)
+        // The symbolic refs are excluded too, and they are **named** rather than globbed. See
+        // `symbolicRemoteRefs` for why a symref must be excluded at all and what the `*/HEAD`
+        // glob that used to stand here got wrong in both directions.
+        var arguments = [
+            "rev-list", "--count", "refs/remotes/" + remoteBranch, "--not", "--branches",
+            "--tags", "--exclude=" + remoteBranch,
+        ]
+        for symref in try await symbolicRemoteRefs(at: root) {
+            arguments.append("--exclude=" + symref)
+        }
+        // Last, because every `--exclude` above applies to the `--branches`/`--tags`/`--remotes`
+        // that *follows* it — and these ones are all about the remote-tracking namespace.
+        arguments.append("--remotes")
+        return try await revListCount(arguments, at: root)
+    }
+
+    /// Every symbolic ref under `refs/remotes`, as an `--exclude` pattern in the `--remotes`
+    /// namespace (`origin/HEAD`, not `refs/remotes/origin/HEAD`).
+    ///
+    /// **Why any of them must be excluded.** `rev-list --remotes` lists a symref as a ref of its
+    /// own, so `refs/remotes/origin/HEAD` pointing at `refs/remotes/origin/topic` *covers*
+    /// `origin/topic`'s commits: measured on git 2.54, the count came back **0** for a deletion
+    /// that would strand three commits. A symref holds nothing on its own — delete the branch
+    /// and it dangles — so it is never a second holder.
+    ///
+    /// **Why by name and not `--exclude=*/HEAD`, which is what used to stand here.** That glob
+    /// was defended with "it costs nothing, `HEAD` is not a valid branch name". Only a
+    /// **whole-name** `HEAD` is refused. Measured on git 2.54:
+    ///
+    /// ```
+    /// $ git check-ref-format --branch HEAD    → fatal: 'HEAD' is not a valid branch name
+    /// $ git check-ref-format --branch x/HEAD  → x/HEAD      (exit 0)
+    /// $ git branch x/HEAD                     → (exit 0)
+    /// ```
+    ///
+    /// and `*` in an `--exclude` pattern crosses `/`. So the glob was wrong **both** ways, and
+    /// only one of them is the safe direction:
+    ///
+    /// | fixture (true answer) | `--exclude=*/HEAD` | one `--exclude` per symref |
+    /// |---|---|---|
+    /// | `origin/HEAD` → the branch (3) | 3 | 3 |
+    /// | a real `refs/remotes/other/x/HEAD` holding them (0) | **3** — over-counts | 0 |
+    /// | a symref `refs/remotes/origin/default` → the branch (3) | **0** — *under*-counts | 3 |
+    ///
+    /// The third row is the one that decided it. An over-count only over-warns; an under-count
+    /// tells the user nothing will be lost when three commits will be, and `*/HEAD` gives that
+    /// answer for any symref whose last component is not `HEAD` — which `git symbolic-ref` will
+    /// happily make. Naming the symrefs is exact in all three rows, costs one `for-each-ref`,
+    /// and is what this does.
+    ///
+    /// A dangling symref (its target deleted) is simply **not listed** by `for-each-ref`
+    /// (measured), which is the right answer: it holds nothing, so there is nothing to exclude.
+    /// A ref name cannot contain `*`, `?` or `[` (git's own `check-ref-format` forbids them), so
+    /// a name read back from here is always a literal pattern and never a glob of its own.
+    private func symbolicRemoteRefs(at root: URL) async throws -> [String] {
+        // `%(symref)` is empty for an ordinary ref and holds the target for a symbolic one. The
+        // two fields are separated by a NUL because a ref name may contain neither that nor a
+        // newline, so both splits below are exact.
+        //
+        // The separator is written as git's own `%00` escape and **not** as a Swift `"\u{0}"`:
+        // a process argument is a C string, so a NUL inside one cannot survive the exec — it is
+        // an `NSInvalidArgumentException` out of `Process` rather than a truncated argument
+        // (seen, in this very function, before this comment existed). `%00` is an argument of
+        // four printable characters that git expands into the byte, on its side.
+        let data = try await run(
+            ["for-each-ref", "--format=%(refname)%00%(symref)", "--end-of-options",
+             "refs/remotes"],
+            cwd: root)
+        let prefix = "refs/remotes/"
+        return String(decoding: data, as: UTF8.self).split(separator: "\n").compactMap { line in
+            let fields = line.split(separator: "\u{0}", maxSplits: 1, omittingEmptySubsequences: false)
+            guard fields.count == 2, !fields[1].isEmpty, fields[0].hasPrefix(prefix) else {
+                return nil
+            }
+            let pattern = fields[0].dropFirst(prefix.count)
+            return pattern.isEmpty ? nil : String(pattern)
+        }
     }
 
     /// Refuses a remote name before git runs. See `GitRemoteBackend.fetch` for what git does

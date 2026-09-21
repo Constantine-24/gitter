@@ -346,18 +346,38 @@ public protocol GitRemoteBackend: Sendable {
     /// to `refs/remotes/`; `--exclude=refs/remotes/origin/topic` matches nothing and was
     /// measured returning 0 where the truth is 3.
     ///
-    /// **`refs/remotes/<r>/HEAD` is excluded as well, because a symbolic ref is not an
-    /// independent holder.** Measured: `--remotes` lists it as a ref of its own, so when it
-    /// points at the branch being asked about it covers that branch's commits and the count
-    /// comes back 0 for a deletion that would strand them. It holds nothing on its own —
-    /// deleting the branch leaves it dangling — and excluding `*/HEAD` costs nothing, since
-    /// `HEAD` is not a valid branch name (`git branch HEAD` → `fatal: 'HEAD' is not a valid
-    /// branch name`) and another remote's HEAD only ever points at a branch that `--remotes`
-    /// already lists in its own right.
+    /// **The symbolic refs under `refs/remotes` are excluded as well, by name, because a symref
+    /// is not an independent holder.** Measured: `--remotes` lists `refs/remotes/<r>/HEAD` as a
+    /// ref of its own, so when it points at the branch being asked about it covers that
+    /// branch's commits and the count comes back 0 for a deletion that would strand them. It
+    /// holds nothing on its own — deleting the branch leaves it dangling.
     ///
-    /// The name is refused before git runs when it is empty, begins with `-`, or contains a
-    /// glob character (`*`, `?`, `[`): git's own `check-ref-format` forbids all three in a ref
-    /// name, and one of them in the `--exclude=` argument would exclude refs nobody named and
-    /// **inflate** the count — a sheet warning about commits that are in fact safe elsewhere.
+    /// **They are listed (`for-each-ref --format='%(refname)%00%(symref)' refs/remotes`) and
+    /// excluded one by one, not matched with `--exclude=*/HEAD`.** That glob stood here until
+    /// Task 6's fix round, defended by "`HEAD` is not a valid branch name, so it costs
+    /// nothing". Only a *whole-name* `HEAD` is refused: measured on git 2.54,
+    /// `git check-ref-format --branch x/HEAD` prints `x/HEAD` and `git branch x/HEAD` succeeds,
+    /// and `*` in an `--exclude` pattern crosses `/`. So the glob was wrong in **both**
+    /// directions — it excluded a real `refs/remotes/other/x/HEAD` (3 where the truth is 0,
+    /// over-warning) and missed every symref not called `HEAD`, such as one `git symbolic-ref
+    /// refs/remotes/origin/default` makes (0 where the truth is 3, which is the direction that
+    /// costs work). Naming them is exact in every case and costs one extra `for-each-ref`.
+    ///
+    /// **What is *not* treated as a holder, said plainly, because Task 8's sheet has to word
+    /// this.** The question asked is "held by no branch, tag or other remote-tracking ref" —
+    /// `--branches`, `--tags` and `--remotes`, and nothing else. It is **not** "unreachable"
+    /// and must never be worded that way: `refs/stash`, `refs/notes/*` and any other ref
+    /// outside those three namespaces are not consulted, nor is a **detached HEAD**, nor
+    /// another **worktree's** HEAD or index, nor the **reflog** — which keeps a deleted
+    /// branch's commits alive for `gc.reflogExpire` (90 days by default) and is exactly why a
+    /// commit this count calls stranded is usually still recoverable by hand. The truthful
+    /// phrase for a sheet is **"held by no branch, tag or other remote"**.
+    ///
+    /// The name is refused before git runs when it is empty, begins with `-`, contains a glob
+    /// character (`*`, `?`, `[`), or is a revision rather than a ref name (see
+    /// `commits(in:notIn:limit:)` for the accepted forms). Git's own `check-ref-format` forbids
+    /// the globs in a ref name, and one of them in the `--exclude=` argument would exclude refs
+    /// nobody named and **inflate** the count — a sheet warning about commits that are in fact
+    /// safe elsewhere.
     func commitsOnlyOnRemoteBranch(_ remoteBranch: String, at root: URL) async throws -> Int
 }
