@@ -193,6 +193,50 @@ import Testing
         #expect(PushPorcelainParser.parse(stdout: stdout, destinationRef: "refs/heads/main") == nil)
     }
 
+    // MARK: - Whatever separates the lines
+
+    /// The same up-to-date push, CRLF-terminated. Swift reads a CR immediately followed by an
+    /// LF as **one** `Character`, equal to neither `"\r"` nor `"\n"`, so a split on `"\n"`
+    /// alone did not split this text at all: the whole of stdout became one "line", its first
+    /// tab-separated field was `To ../origin.git\r\n=`, the destination still matched — and an
+    /// up-to-date push came back as `.rejected(.other(<the whole output>))`, a rejection
+    /// invented out of a line separator. `remoteMessages` already split on all three; this is
+    /// the same rule in the same file.
+    @Test(arguments: ["\r\n", "\r", "\n"])
+    func readsAResultLineWhateverSeparatesTheLines(separator: String) {
+        let stdout = ["To ../origin.git",
+                      "=\trefs/heads/main:refs/heads/main\t[up to date]",
+                      "Done", ""].joined(separator: separator)
+        #expect(PushPorcelainParser.parse(stdout: stdout, destinationRef: "refs/heads/main")
+                == .upToDate)
+    }
+
+    // MARK: - Destinations that are not ref names
+
+    /// A destination that is not a full ref name is matched against nothing at all.
+    ///
+    /// The empty one is why: a delete's result line has an **empty source side**
+    /// (`-\t:refs/heads/topic\t[deleted]`), and a line whose *destination* side is empty is the
+    /// same shape seen from the other end — so `parse(stdout:destinationRef: "")` matched
+    /// `=\t:\t[up to date]` and answered `.upToDate` for a ref nobody named. `CLIGitBackend`
+    /// refuses such a destination before git runs (`requirePushDestination`), so this is a
+    /// backstop rather than a reachable path; a parser that is pure and total should not need
+    /// its caller to have been careful.
+    @Test func aDestinationThatIsNotARefNameMatchesNothing() {
+        #expect(PushPorcelainParser.parse(stdout: "=\t:\t[up to date]\n", destinationRef: "")
+                == nil)
+        #expect(PushPorcelainParser.parse(
+            stdout: "*\trefs/heads/main:main\t[new branch]\n", destinationRef: "main") == nil)
+        #expect(PushPorcelainParser.parse(
+            stdout: "*\trefs/heads/main:heads/main\t[new branch]\n",
+            destinationRef: "heads/main") == nil)
+        // Non-vacuous: a real ref name is still matched, and it need not be a branch — a tag's
+        // line is read the same way (see `aRejectedExtraRefDoesNotMakeOurPushARejection`).
+        #expect(PushPorcelainParser.parse(
+            stdout: "*\trefs/heads/main:refs/heads/main\t[new branch]\n",
+            destinationRef: "refs/heads/main") == .created)
+    }
+
     // MARK: - Lines it cannot read
 
     /// A line for our ref whose flag or summary this version of Gitter does not know is

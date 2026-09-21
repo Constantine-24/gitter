@@ -54,8 +54,18 @@ public enum PushPorcelainParser {
     /// `nil` and `.rejected` are different answers and must never be conflated: `nil` means git
     /// said nothing at all about this ref — it failed before it got that far, and stderr is
     /// where the reason is — while a `.rejected` is the server having considered it and refused.
+    ///
+    /// **`destinationRef` must be a full ref name**, and anything else matches nothing at all.
+    /// The empty string is why the rule is written down: a delete's result line has an empty
+    /// *source* side (`-\t:refs/heads/topic\t[deleted]`), and a line whose *destination* side is
+    /// empty is that shape seen from the other end — so an empty destination matched
+    /// `=\t:\t[up to date]` and answered `.upToDate` for a ref nobody had named.
+    /// `CLIGitBackend.push` refuses such a destination before git runs, so this is a backstop;
+    /// a parser that claims to be total should not need its caller to have been careful. The
+    /// prefix is `refs/` rather than `refs/heads/` because a tag's line is read the same way.
     public static func parse(stdout: String, destinationRef: String) -> PushOutcome? {
-        for line in stdout.split(separator: "\n", omittingEmptySubsequences: false) {
+        guard destinationRef.hasPrefix("refs/") else { return nil }
+        for line in lines(of: stdout) {
             let fields = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
             // Three fields is what a result line has. `To …`, `Done` and the `-u` notice
             // (`branch 'topic' set up to track 'origin/topic'.`) have no tabs at all, which is
