@@ -133,6 +133,45 @@ import Testing
         #expect(try await repo.gitFileExists("SQUASH_MSG") == false, "no squash was started")
     }
 
+    /// A squash asked for while conflicts are still unresolved. Carried out of Task 5 as
+    /// "correct by inspection"; this is the inspection made into a fact.
+    ///
+    /// Written expecting `.indexNotClean` — unmerged entries do make the index differ from HEAD
+    /// — and it failed, which is the point of writing it. `requireACleanIndexForASquash` steps
+    /// aside for unmerged entries on purpose, so this refusal comes from **git**: measured on
+    /// git 2.54, `merge --ff --squash` there exits 128 with "error: Merging is not possible
+    /// because you have unmerged files." and the parser turns that into
+    /// `.operationInProgress("resolving conflicts")` — the sentence that says what to do, where
+    /// "your index is not clean" would have described the symptom.
+    ///
+    /// The refusal is still typed, so the UI reads it as "nothing changed", and `Self.refusal`
+    /// proves that byte for byte.
+    @Test func aSquashIsRefusedWhileAnEarlierMergeIsStillConflicted() async throws {
+        let repo = try await TestRepo.makeConflicting()
+        defer { repo.cleanUp() }
+        // A third branch to squash, off the root so it neither conflicts nor is already in.
+        try await repo.git(["switch", "-q", "-c", "third", "main~1"])
+        try repo.write("c.txt", "third\n")
+        try await repo.commitAll("third")
+        try await repo.git(["switch", "-q", "main"])
+        let backend = CLIGitBackend()
+        #expect(
+            try await backend.merge("feature", mode: .alwaysMergeCommit, at: repo.root)
+                == .conflicts)
+        #expect(try await repo.unmergedEntries().contains("a.txt"))
+
+        let error = try await Self.refusal(repo) { backend in
+            _ = try await backend.merge("third", mode: .squash, at: repo.root)
+        }
+
+        #expect(
+            error as? BranchOperationError == .operationInProgress("resolving conflicts"))
+        // The conflicted merge is untouched and no second operation was started on top of it.
+        #expect(try await repo.gitFileExists("MERGE_HEAD"))
+        #expect(try await repo.gitFileExists("SQUASH_MSG") == false)
+        #expect(try await repo.unmergedEntries().contains("a.txt"))
+    }
+
     /// The other half of the same verification: a **fast-forward** does not go through the
     /// merge strategy at all, so git allows it and the staged change rides along untouched.
     /// Recorded as a test so the asymmetry is a known fact rather than a surprise.
