@@ -5,13 +5,13 @@ import GitCore
 /// Kept out of `GitCore`, which has no opinion about wording, and out of the views that need
 /// it, which would otherwise have to agree on six strings each by hand.
 ///
-/// Every message names a way *forward* and a way out, because the app offers neither an abort
-/// nor a `--continue` button: the only honest advice for those is a terminal. A merge,
-/// cherry-pick and revert are finished by committing. A rebase is only advanced by it — the
-/// commit lands and `git rebase --continue` then moves on to the next one. `git am` is not
-/// advanced by it at all: `git am --continue` does the commit itself. A pending squash is
-/// finished by committing too; its way out is `git reset --merge`, which undoes it and removes
-/// `SQUASH_MSG` (see the design doc's evidence table).
+/// Every message names a way *forward* and a way out. The way forward differs per operation: a
+/// merge, cherry-pick and revert are finished by committing; a rebase is only advanced by it —
+/// the commit lands and `git rebase --continue` then moves on to the next one, which still needs
+/// a terminal; `git am` is not advanced by a commit at all (`git am --continue` does the commit
+/// itself); a pending squash is finished by committing too. The way *out* is the same for all
+/// six and no longer a terminal: the button in the operation note, which opens `AbortSheet` and
+/// runs `GitBranchBackend.abort` (see the design doc's evidence table for what each one keeps).
 extension RepositoryOperation {
 
     /// Sentence-initial: every use of it starts a line.
@@ -93,14 +93,45 @@ extension RepositoryOperation {
 
     private var wayOut: String {
         switch self {
-        case .merge: "Commit to complete it, or run `git merge --abort` in a terminal."
-        case .cherryPick: "Commit to complete it, or run `git cherry-pick --abort` in a terminal."
-        case .revert: "Commit to complete it, or run `git revert --abort` in a terminal."
-        case .rebase: "Commit the resolution, or run `git rebase --abort` in a terminal."
+        case .merge, .cherryPick, .revert: "Commit to complete it, or use \(abortActionName)."
+        case .rebase: "Commit the resolution, or use \(abortActionName)."
         case .applyingPatches:
-            "Run `git am --continue` to carry on, or `git am --abort`, in a terminal."
-        case .squash:
-            "Commit to finish it, or run `git reset --merge` in a terminal to undo the squash."
+            "Run `git am --continue` in a terminal to carry on, or use \(abortActionName)."
+        case .squash: "Commit to finish it, or use \(abortActionName)."
+        }
+    }
+
+    /// What the button that ends this operation is called, without its ellipsis: the title case
+    /// a sentence can point at ("…or use Abort Merge.") as well as name a control.
+    ///
+    /// Not built from `noun`, which would give "Abort Patch application", and not one word for
+    /// all six: what `reset --merge` does to a pending squash is an undo, not an abort, and the
+    /// rest of the UI already calls that state "Squash pending" rather than an operation in
+    /// progress. `git am` stops rather than aborts, because what it undoes — patches already
+    /// committed — is not work the user did here.
+    var abortActionName: String {
+        switch self {
+        case .merge: "Abort Merge"
+        case .cherryPick: "Abort Cherry-Pick"
+        case .revert: "Abort Revert"
+        case .rebase: "Abort Rebase"
+        case .applyingPatches: "Stop Applying Patches"
+        case .squash: "Undo Squash"
+        }
+    }
+
+    /// The trailing button in the operation note. The ellipsis is the promise that it asks first,
+    /// and every one of these does: it opens `AbortSheet` and runs nothing.
+    var abortButtonTitle: String {
+        abortActionName + "…"
+    }
+
+    /// The notice after the abort has run and git has come back without complaint.
+    var abortedNotice: String {
+        switch self {
+        case .squash: "Squash undone."
+        case .applyingPatches: "Stopped applying patches."
+        case .merge, .cherryPick, .revert, .rebase: "\(noun) aborted."
         }
     }
 }
