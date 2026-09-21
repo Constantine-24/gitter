@@ -135,8 +135,11 @@ public enum RemoteFailureParser {
     ///
     /// **What counts as userinfo**, in the three shapes git and ssh produce:
     ///
-    /// - `scheme://userinfo@host/…` — always stripped, whatever the userinfo looks like,
-    ///   because a token is routinely the *whole* of it (`https://ghp_s3cr3t@github.com/…`).
+    /// - `scheme://userinfo@host/…` — always stripped, whatever the userinfo *and the host* look
+    ///   like, because a token is routinely the *whole* of it
+    ///   (`https://ghp_s3cr3t@github.com/…`). "Whatever the host looks like" includes an IP
+    ///   literal in square brackets (`ssh://u:p@[::1]:22/x`): that shape used to come back
+    ///   unchanged, credential and all — see `isRunDelimiter`.
     /// - `user:secret@host` with no scheme — stripped: a two-part userinfo is a credential
     ///   whatever surrounds it.
     /// - `user@host:path`, scp-style — stripped, recognised by the `:` and a non-empty path
@@ -150,6 +153,20 @@ public enum RemoteFailureParser {
     /// the shape of an email address, which a hook's output may well contain. Nothing is lost
     /// by keeping it: a bare ssh username carries no credential, and a token can only reach
     /// that position through a scheme URL, which the first rule already covers.
+    ///
+    /// **Where this stops, stated out loud.** Only the *userinfo* is a credential to this
+    /// function, so two other places a secret can sit in git's output survive it untouched:
+    ///
+    /// - a **query string** — `https://host/r.git?token=ghp_s3cr3t` comes back whole. Cutting
+    ///   the query off every URL would throw away the ordinary parameters a hosting service
+    ///   puts there, and telling a secret parameter from a harmless one needs a list of names
+    ///   nobody can finish.
+    /// - a **header value** — `http.extraHeader=Authorization: Bearer …` is how a CI token is
+    ///   usually passed, and git quotes the configuration back in some diagnostics.
+    ///
+    /// Both are in `docs/BACKLOG.md`. Neither is reachable from anything Gitter itself writes:
+    /// it never builds a URL and never sets a header, so a secret can only arrive there through
+    /// the user's own configuration.
     ///
     /// Pure, total, and unanchored to any particular message: it walks the text in runs of
     /// URL-ish characters, so quotes, brackets and punctuation around an address survive.
@@ -244,9 +261,16 @@ public enum RemoteFailureParser {
 
     /// Characters that cannot be inside a URL or an scp-style address, and so end one:
     /// whitespace and the punctuation git, ssh and hooks quote addresses with.
+    ///
+    /// **`[` is not one of them, and that is the whole of the IPv6 fix.** A URL's host may be an
+    /// IP literal, which RFC 3986 writes in square brackets (`ssh://u:p@[::1]:22/x`); with `[`
+    /// ending the run, the run handed to `redactingUserinfo` was `ssh://u:p@`, whose host is
+    /// empty — so it bailed and the credential was returned untouched. `]` stays a delimiter,
+    /// which costs nothing: it can only appear after the host, so the run that carries the
+    /// userinfo is intact, and the walk puts the `]` back itself.
     private static func isRunDelimiter(_ character: Character) -> Bool {
         character.isWhitespace
-            || "'\"<>`()[]".contains(character)
+            || "'\"<>`()]".contains(character)
     }
 
     /// One run of URL-ish text with its userinfo removed — see `redactingCredentials` for which
@@ -272,17 +296,27 @@ public enum RemoteFailureParser {
         }
 
         guard let at = run.lastIndex(of: "@") else { return run }
-        let userinfo = run[..<at]
+        var userinfo = run[..<at]
         let host = run[run.index(after: at)...]
+        // A `[` before the `@` is punctuation the message was written with rather than part of
+        // the credential: RFC 3986 excludes `[` from userinfo, and only `]` ends a run here, so
+        // a run like `[u:p@host:path` is a bracketed sentence and not an address that begins
+        // with a bracket. Everything up to the last one is kept and handed back untouched, so
+        // `[u:p@host:path]` redacts to `[host:path]` rather than to `host:path]`.
+        var prefix = Substring("")
+        if let bracket = userinfo.lastIndex(of: "[") {
+            prefix = userinfo[...bracket]
+            userinfo = userinfo[userinfo.index(after: bracket)...]
+        }
         // A `/` in the userinfo means this is not an authority at all but a path git is
         // quoting — `/tmp/gitter-test/a:b@origin.git` is a directory, not a credential.
         guard !userinfo.isEmpty, !host.isEmpty, !userinfo.contains("/") else { return run }
         // `user:secret@host` — a credential whatever surrounds it.
-        if userinfo.contains(":") { return String(host) }
+        if userinfo.contains(":") { return String(prefix + host) }
         // `user@host:path`, scp-style: a `:` with something after it. Without that something
         // this is `git@github.com` in a sentence, or an email address, and neither is redacted.
         if let colon = host.firstIndex(of: ":"), host.index(after: colon) < host.endIndex {
-            return String(host)
+            return String(prefix + host)
         }
         return run
     }

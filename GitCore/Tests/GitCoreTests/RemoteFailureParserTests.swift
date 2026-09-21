@@ -281,6 +281,60 @@ import Testing
         #expect(RemoteFailureParser.redactingCredentials(text) == expected)
     }
 
+    /// The doc comment promises that a scheme URL loses its userinfo **whatever the userinfo
+    /// looks like**, and it did not: a host written as an IP literal is bracketed
+    /// (`scheme://user:pass@[::1]:22/x`, RFC 3986's `IP-literal`), the run walk ended the run at
+    /// the `[`, and what was left — `ssh://u:p@` — had an empty host, so it was handed back
+    /// **unchanged, credential and all**. Every shape below is one that used to survive or that
+    /// guards the fix's edges: a bracketed host, a password with a `%40` or a literal `@` in it,
+    /// a URL inside quotes or parentheses, two on one line, and one that a sentence's own
+    /// punctuation follows.
+    @Test(arguments: [
+        ("ssh://u:p@[::1]:22/x", "ssh://[::1]:22/x"),
+        ("https://tok@[2001:db8::1]:8443/r.git", "https://[2001:db8::1]:8443/r.git"),
+        ("https://alice:hunter2@[fe80::1%25en0]/r.git", "https://[fe80::1%25en0]/r.git"),
+        // Percent-encoded `@` in the password: the *last* `@` in the authority is the separator.
+        ("https://user:p%40ss@host/", "https://host/"),
+        // A literal `@` in the password, with no scheme at all — the same rule, same reason.
+        ("user:p@ss@host:path", "host:path"),
+        ("'https://u:p@[::1]/x'", "'https://[::1]/x'"),
+        ("(https://u:p@[::1]/x)", "(https://[::1]/x)"),
+        ("<ssh://u:p@[::1]/x>", "<ssh://[::1]/x>"),
+        (
+            "tried https://a:b@[::1]/x and https://c:d@[::2]/y",
+            "tried https://[::1]/x and https://[::2]/y"
+        ),
+        ("see https://u:p@[::1]/x.", "see https://[::1]/x."),
+        ("see https://u:p@[::1]/x,", "see https://[::1]/x,"),
+        ("see 'https://u:p@[::1]/x'", "see 'https://[::1]/x'"),
+        // A bracketed host with nothing to redact is not mangled either.
+        ("ssh://[::1]:22/x", "ssh://[::1]:22/x"),
+        ("[::1]", "[::1]"),
+        // Prose in square brackets: the `@` is an ssh login or an email, and neither is a
+        // credential — see the rule about `user@host` with nothing after it.
+        ("[git@github.com]", "[git@github.com]"),
+        ("[see alice@example.invalid]", "[see alice@example.invalid]"),
+        // …but a two-part userinfo inside brackets is one, and the bracket survives the strip.
+        ("[https://u:p@host/x]", "[https://host/x]"),
+        ("[u:p@host:path]", "[host:path]"),
+        // Ragged bracket input: nothing to crash on.
+        ("[", "["), ("]", "]"), ("[@]", "[@]"), ("[:@]", "[:@]"),
+    ])
+    func redactionStripsUserinfoWhateverTheHostLooksLike(text: String, expected: String) {
+        #expect(RemoteFailureParser.redactingCredentials(text) == expected)
+    }
+
+    /// A bracketed host inside the message git actually prints: the whole point of the fix is
+    /// that a payload built from such a line carries no secret.
+    @Test func aCredentialBeforeABracketedHostNeverReachesThePayload() {
+        let line =
+            "fatal: Authentication failed for 'https://alice:ghp_s3cr3t@[2001:db8::1]:8443/acme/p.git/'"
+        let parsed = RemoteFailureParser.parse(stderr: line + "\n")
+        #expect(parsed == .authenticationFailed(
+            url: "https://[2001:db8::1]:8443/acme/p.git/"))
+        #expect(!"\(String(describing: parsed))".contains("s3cr3t"))
+    }
+
     /// Multi-line stderr is what Task 8 will hand it: every line is treated, the line structure
     /// is kept, and a line with nothing to redact comes back identical.
     @Test func redactionWorksOverWholeStderr() {
