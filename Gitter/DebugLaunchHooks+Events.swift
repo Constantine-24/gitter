@@ -13,7 +13,7 @@
     /// tracking loop on mouse-down and pulls the matching mouse-up out of the queue itself, so a
     /// synchronous send would spin in that loop with no up-event to find.
     ///
-    ///   GITTER_DEBUG_CLICK="x,y[:2|:shift][;…]"  click those points (see `point(from:)`),
+    ///   GITTER_DEBUG_CLICK="x,y[:2|:shift|:right][;…]"  click those points (see `point(from:)`),
     ///                                            or `type=text` to type in the middle of it
     ///   GITTER_DEBUG_KEYS=space,return,cmd+return,tab   then press those keys
     ///   GITTER_DEBUG_TYPE=text                   then type that text, character by character
@@ -51,7 +51,7 @@
             // `activate()` returns long before the window is key, and a click that lands first
             // is the *inactive*-window case, which AppKit treats differently.
             for _ in 0..<50 {
-                if window.isKeyWindow { break }
+                if window.isKeyWindow || window.attachedSheet != nil { break }
                 try? await Task.sleep(for: .milliseconds(100))
             }
             try? await Task.sleep(for: .milliseconds(300))
@@ -63,20 +63,22 @@
                 // button — and that needs the two ordered against each other. `type=` with
                 // nothing after it types nothing, rather than typing the word.
                 if spec.hasPrefix(typeStep) {
-                    for character in spec.dropFirst(typeStep.count) { type(character, in: window) }
+                    for character in spec.dropFirst(typeStep.count) {
+                        type(character, in: target(of: window))
+                    }
                 } else {
-                    click(String(spec), in: window)
+                    click(String(spec), in: target(of: window))
                 }
                 try? await Task.sleep(for: .milliseconds(400))
-                if dump != nil { dumpResponders(of: window, after: "\(spec)") }
+                if dump != nil { dumpResponders(of: target(of: window), after: "\(spec)") }
             }
             for name in env[Variable.keys, default: ""].split(separator: ",") {
-                press(String(name), in: window)
+                press(String(name), in: target(of: window))
                 try? await Task.sleep(for: .milliseconds(400))
-                if dump != nil { dumpResponders(of: window, after: "key \(name)") }
+                if dump != nil { dumpResponders(of: target(of: window), after: "key \(name)") }
             }
             for character in env[Variable.typing, default: ""] {
-                type(character, in: window)
+                type(character, in: target(of: window))
                 try? await Task.sleep(for: .milliseconds(120))
             }
             // A count rather than a flag: focus can be handed back a moment later (a reload
@@ -84,10 +86,24 @@
             // list from a list that lost focus again.
             if let dump {
                 for _ in 0..<max(1, Int(dump) ?? 1) {
-                    dumpResponders(of: window, after: "settled")
+                    dumpResponders(of: target(of: window), after: "settled")
                     try? await Task.sleep(for: .milliseconds(200))
                 }
             }
+        }
+
+        /// The window an event must be aimed at: the sheet on screen, if there is one.
+        ///
+        /// A sheet is its own `NSWindow`. Events posted with the *parent's* window number are
+        /// delivered to a window a sheet has made modal, so they land on nothing — which is
+        /// exactly what a click on the merge sheet's radio buttons did until this existed
+        /// (the radio never moved; verified by screenshot, twice). Re-read before every step
+        /// rather than captured once, because a step can open or close a sheet.
+        ///
+        /// Coordinates in a click step are therefore relative to whichever window is in front:
+        /// the sheet's own content area while one is up, the main window's otherwise.
+        private static func target(of window: NSWindow) -> NSWindow {
+            window.attachedSheet ?? window
         }
 
         /// The prefix that turns a click-script step into a typing step.
@@ -107,6 +123,13 @@
                 return
             }
             let modifiers: NSEvent.ModifierFlags = parts.contains("shift") ? .shift : []
+            // `:right` is what opens a context menu: a right-click is the only way to reach the
+            // sidebar's and the commit list's menus, and nothing outside the process may click.
+            // AppKit turns a right mouse-down into `menu(for:)` and pops the menu up itself.
+            if parts.contains("right") {
+                send(rightClick: location, in: window)
+                return
+            }
             send(click: 1, at: location, modifiers: modifiers, in: window)
             // AppKit reads a double click off `clickCount`, and it only ever sees a 2 after it
             // has seen a 1 — so the second pair follows the first rather than replacing it.
@@ -133,6 +156,28 @@
                         timestamp: ProcessInfo.processInfo.systemUptime,
                         windowNumber: window.windowNumber, context: nil, eventNumber: 0,
                         clickCount: count, pressure: type == .leftMouseDown ? 1 : 0)
+                else { continue }
+                NSApp.postEvent(event, atStart: false)
+            }
+        }
+
+        /// A right mouse-down/up pair, which is what an `NSView` turns into a context menu.
+        ///
+        /// **It does not open one here, and that is a recorded result rather than a bug to fix
+        /// later.** Tried both ways on macOS 26 (Task 8): down alone and the down/up pair, on a
+        /// sidebar row where a *left* click posted the same way demonstrably selects the row —
+        /// no menu appeared either time, and the responder dump printed straight away, so no
+        /// menu tracking loop was ever entered. A posted right-click is delivered, but SwiftUI's
+        /// `.contextMenu` is not reached by it. Kept so the next attempt starts from what has
+        /// already been ruled out; the menus themselves still need a real pointer.
+        private static func send(rightClick location: NSPoint, in window: NSWindow) {
+            for type in [NSEvent.EventType.rightMouseDown, .rightMouseUp] {
+                guard
+                    let event = NSEvent.mouseEvent(
+                        with: type, location: location, modifierFlags: [],
+                        timestamp: ProcessInfo.processInfo.systemUptime,
+                        windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                        clickCount: 1, pressure: type == .rightMouseDown ? 1 : 0)
                 else { continue }
                 NSApp.postEvent(event, atStart: false)
             }
