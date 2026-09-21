@@ -99,24 +99,19 @@ public protocol GitBranchBackend: Sendable {
     /// follows it and the worktree is untouched. Throws `.branchExists` when `new` is taken.
     func renameBranch(_ old: String, to new: String, at root: URL) async throws
 
-    /// `git branch -d --end-of-options <name>`, or `-D` when `force`. One of only three actions
-    /// in Gitter that can lose work — the other two are aborting an operation and undoing a
-    /// pending squash — so the contract is deliberately narrow:
+    /// `git branch -d --end-of-options <name>`: the delete that cannot lose anything.
     ///
-    /// - The **current branch is always refused**, force or not, and detected twice: before git
-    ///   ever runs (`symbolic-ref --short -q HEAD` compared against `name`, so nothing is even
-    ///   attempted), and again by reading git's own refusal (see `.cannotDeleteCurrent`), which
-    ///   is what also catches a branch checked out in a *linked* worktree — a case Gitter has no
-    ///   cheap way to detect up front without listing every worktree.
-    /// - **Without `force`,** a branch git considers not fully merged is left exactly as it
-    ///   found it — nothing is thrown, nothing changes — and the result carries
-    ///   `.notFullyMerged(uniqueCommits:tip:)`: `uniqueCommits` from `commitsOnlyOn(branch:)`
-    ///   and `tip` from `rev-parse --verify refs/heads/<name>`, both captured before this call
-    ///   does anything destructive (which, on this path, is nothing at all).
-    /// - **With `force`,** the branch is deleted outright. The commit at its former tip is not
-    ///   lost: git keeps the object (verified — `cat-file -e <tip>` still succeeds right after),
-    ///   so a user who sees the warning's tip sha can recreate the branch with
-    ///   `git branch <name> <tip>`.
+    /// - The **current branch is refused**, and detected twice: before git ever runs
+    ///   (`symbolic-ref --short -q HEAD` compared against `name`, so nothing is even attempted),
+    ///   and again by reading git's own refusal (see `.cannotDeleteCurrent`), which is what also
+    ///   catches a branch checked out in a *linked* worktree — a case Gitter has no cheap way to
+    ///   detect up front without listing every worktree.
+    /// - A branch git considers **not fully merged** is left exactly as it found it — nothing is
+    ///   thrown, nothing changes — and the result carries `.notFullyMerged(uniqueCommits:tip:)`:
+    ///   `uniqueCommits` from `commitsOnlyOn(branch:)` and `tip` from `rev-parse --verify
+    ///   refs/heads/<name>`, both read *after* git refused and therefore before anything was
+    ///   deleted (which, on this path, is nothing at all). That `tip` is the full 40-character
+    ///   object name, and it is what `forceDeleteBranch` must later be given.
     ///
     /// A name that does not exist throws `.noSuchBranch`; an invalid one throws `.invalidName`
     /// before git runs, same as every other method here.
@@ -128,7 +123,50 @@ public protocol GitBranchBackend: Sendable {
     /// detached HEAD alone, reachable from no other ref, until the next checkout moves HEAD away
     /// and leaves them to the reflog. Warning about *that* is the switching code's job, before it
     /// ever leaves HEAD detached there (see the spec).
-    func deleteBranch(_ name: String, force: Bool, at root: URL) async throws -> BranchDeletion
+    func deleteBranch(_ name: String, at root: URL) async throws -> BranchDeletion
+
+    /// `git branch -D --end-of-options <name>`, and **only** against the tip the user was
+    /// warned about. One of only four actions in Gitter that can lose work.
+    ///
+    /// `expectedTip` is not optional and there is no unchecked spelling of this call: that is
+    /// the point of it being its own method rather than a `force: true` on the one above. The
+    /// caller has to have a tip to supply, and the only place one comes from is the refusal that
+    /// produced the warning (`.notFullyMerged(uniqueCommits:tip:)`), so "delete whatever is
+    /// there now" cannot be expressed at all.
+    ///
+    /// The order of the checks is the contract:
+    ///
+    /// 1. `.invalidName` for a name that would be read as an option — before git runs.
+    /// 2. `.cannotDeleteCurrent` for the branch HEAD is on, *before* the tip is even read: it is
+    ///    refused whatever the tip says, and "the branch moved" would be the wrong explanation.
+    /// 3. `rev-parse --verify refs/heads/<name>` — `.noSuchBranch` when it is gone, and
+    ///    `.branchMoved(name:expected:actual:)` when the full 40-character object name differs
+    ///    from `expectedTip` by so much as a character. Both leave the repository untouched.
+    /// 4. `git branch -D`, which can still refuse on its own (a linked worktree holds it).
+    ///
+    /// **The residual window is one read plus one process spawn wide, and it is honest to say
+    /// so.** This is a check-then-act, not an atomic compare-and-delete, and a branch moved in
+    /// the few milliseconds between step 3 and step 4 is deleted at its new tip.
+    /// `git update-ref -d refs/heads/<name> <oldvalue>` *would* be atomic — it verifies the old
+    /// value under the ref lock — and was evaluated and rejected on git 2.54, because it is not
+    /// the same command:
+    ///
+    /// - it accepts an **abbreviated** `<oldvalue>` (verified: a 7-character prefix deleted the
+    ///   ref), which is a weaker check than this one makes;
+    /// - it leaves every `branch.<name>.*` config entry behind (verified: description and
+    ///   `rebase` survived, where `branch -D` removes them) along with the branch's reflog;
+    /// - and, decisively, it will happily delete the branch **HEAD is on** (verified: exit 0,
+    ///   HEAD left pointing at a ref that no longer exists, `git status` reporting "No commits
+    ///   yet" in a repository full of them), where `branch -D` refuses that and a checked-out
+    ///   linked worktree besides.
+    ///
+    /// Trading a real refusal and a complete delete for a window measured in milliseconds is not
+    /// a trade worth making, so this verifies and then runs `branch -D`.
+    ///
+    /// On success the commit at the former tip is not lost: git keeps the object (verified —
+    /// `cat-file -e <tip>` still succeeds right after), so the warning's
+    /// `git branch <name> <tip>` really does bring the branch back.
+    func forceDeleteBranch(_ name: String, expectedTip: String, at root: URL) async throws
 
     /// How many commits are reachable from `name` and from **no other ref** — what the "Delete"
     /// warning shows as "N commits exist only on this branch".

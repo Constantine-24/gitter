@@ -46,6 +46,21 @@ public enum BranchOperationError: Error, Sendable, Equatable {
     /// would either move HEAD out from under the checkout or corrupt the other worktree, so
     /// both are refused identically.
     case cannotDeleteCurrent(String)
+    /// A force delete was asked for against a tip the branch no longer has.
+    ///
+    /// `forceDeleteBranch` is the only place this is thrown, and it is the whole reason that
+    /// method takes an `expectedTip`. The warning the user answered named a commit count and a
+    /// tip sha; `refs/heads/<name>` is a live ref that a terminal (or a second Gitter window)
+    /// can move between the warning going up and the button being clicked — a commit, a
+    /// `git update-ref`, or a rename plus a fresh branch under the old name. Deleting whatever
+    /// the ref points at *now* would orphan commits the warning never mentioned, and the
+    /// recreate command it printed would put back only the tip it did name, losing the rest
+    /// silently. So the delete fails closed and the user is asked again against the new numbers.
+    ///
+    /// `expected` is what the sheet showed, `actual` what `refs/heads/<name>` resolves to now.
+    /// Both are full 40-character object names: an abbreviation is not accepted on either side,
+    /// since a prefix match is a weaker promise than the one the sheet makes.
+    case branchMoved(name: String, expected: String, actual: String)
     /// No local branch of that name exists — git said `branch '<name>' not found` (verified on
     /// git 2.54) to a `branch -d`/`-D` for a name that was never created, or already deleted by
     /// someone else since Gitter last listed branches, or `merge: <name> - not something we can

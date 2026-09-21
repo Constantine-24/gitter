@@ -1,35 +1,58 @@
 import Foundation
 
-/// `deleteBranch` and the three `rev-list --count` readers the confirmations are built on
+/// `deleteBranch`, `forceDeleteBranch` and the three `rev-list --count` readers the
+/// confirmations are built on
 /// (`commitsOnlyOn`, `commitCount(in:notIn:)`, `unreferencedCommitCount`). Split out of
 /// `CLIGitBackend+Branches.swift` for length, not for any difference in the rules it follows —
 /// see that file's header comment (no force flag outside `branch -D`, names are never
 /// pathspecs) and `GitBranchBackend`'s doc comments on each method for exactly what each
 /// command does and why.
 extension CLIGitBackend {
-    public func deleteBranch(_ name: String, force: Bool, at root: URL) async throws -> BranchDeletion {
+    public func deleteBranch(_ name: String, at root: URL) async throws -> BranchDeletion {
         try requireName(name)
         if try await currentBranchName(at: root) == name {
             throw BranchOperationError.cannotDeleteCurrent(name)
         }
 
-        let arguments: [String]
-        if force {
-            arguments = ["branch", "-D", "--end-of-options", name]
-        } else {
-            arguments = ["branch", "-d", "--end-of-options", name]
-        }
-
         do {
-            try await runBranchCommand(arguments, at: root)
+            try await runBranchCommand(["branch", "-d", "--end-of-options", name], at: root)
             return .deleted
-        } catch GitError.commandFailed(_, let stderr) where !force && stderr.contains("is not fully merged") {
+        } catch GitError.commandFailed(_, let stderr) where stderr.contains("is not fully merged") {
             // `-d` refused and changed nothing — the branch is exactly where it was, so reading
             // its tip and unique-commit count now is still "before any deletion".
             let tip = try await tipSHA(of: name, at: root)
             let uniqueCommits = try await commitsOnlyOn(branch: name, at: root)
             return .notFullyMerged(uniqueCommits: uniqueCommits, tip: tip)
         }
+    }
+
+    public func forceDeleteBranch(_ name: String, expectedTip: String, at root: URL) async throws {
+        try requireName(name)
+        // Before the tip is read: the current branch is refused whatever it points at, and
+        // "the branch moved" would be the wrong thing to tell the user about it.
+        if try await currentBranchName(at: root) == name {
+            throw BranchOperationError.cannotDeleteCurrent(name)
+        }
+
+        // The whole safety of this method. `refs/heads/<name>` is live, and the warning the user
+        // is answering was drawn from a read that has already happened; see
+        // `GitBranchBackend.forceDeleteBranch` for why this is a verify-then-delete rather than
+        // `update-ref -d <ref> <oldvalue>`, and for how wide the remaining window is.
+        let actual: String
+        do {
+            actual = try await tipSHA(of: name, at: root)
+        } catch GitError.commandFailed(exitCode: 128, stderr: _) {
+            // `rev-parse --verify` on a ref that is not there: exit 128, "fatal: Needed a single
+            // revision" (verified on git 2.54). Nothing else about this call can fail that way,
+            // and `branch -D` would have said "branch '<name>' not found" for the same state.
+            throw BranchOperationError.noSuchBranch(name)
+        }
+        guard actual == expectedTip else {
+            throw BranchOperationError.branchMoved(
+                name: name, expected: expectedTip, actual: actual)
+        }
+
+        try await runBranchCommand(["branch", "-D", "--end-of-options", name], at: root)
     }
 
     public func commitsOnlyOn(branch: String, at root: URL) async throws -> Int {
