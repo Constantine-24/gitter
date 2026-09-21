@@ -37,6 +37,28 @@ extension RepositoryStore {
         return "no commits yet"
     }
 
+    /// Where HEAD is, as a noun phrase that reads inside a sentence: `"main"` with its quotes,
+    /// or `the detached HEAD at 1a2b3c4`.
+    ///
+    /// `headLabel` is a *label* — it is what a button says on its own, and "detached at 1a2b3c4"
+    /// is not something a sentence can be built around. This is the other half, and it is one
+    /// property because three places need the same phrase: what a merge merges into
+    /// (`MergeSheet`, `LocalBranchMenu`) and what `git branch -d` compared a branch against
+    /// (`DeleteBranchSheet`). They had three copies, and only two of them said anything sensible
+    /// about a detached HEAD — the menu's simply said "HEAD", so the same merge was described
+    /// two different ways depending on where the user started it.
+    ///
+    /// The menu item that uses it is therefore longer while HEAD is detached
+    /// ("Merge into the detached HEAD at 1a2b3c4…"). That is the honest length: on a branch —
+    /// which is where the menu is nearly always used — it is just the quoted name.
+    ///
+    /// A repository with no commits has nothing to name, so it falls back to the bare word.
+    var headPhrase: String {
+        if let currentBranch { return "\"\(currentBranch)\"" }
+        if let shortHeadSha { return "the detached HEAD at \(shortHeadSha)" }
+        return "HEAD"
+    }
+
     // MARK: - Refs
 
     var localBranches: [Branch] {
@@ -69,8 +91,8 @@ extension RepositoryStore {
     /// say "Already up to date"), or deleted (the backend refuses, twice over).
     ///
     /// Deliberately one sentence for all three. A disabled menu item shows no tooltip on macOS,
-    /// so these reasons are rendered *in* the menu (see `BranchContextMenu`), and three wordings
-    /// for one fact would be three grey lines explaining the same thing.
+    /// so these reasons are rendered *in* the menu (see `MenuReasons` and `LocalBranchMenu`),
+    /// and three wordings for one fact would be three grey lines explaining the same thing.
     static let currentBranchReason = "This is the branch you are on."
 
     /// Why switching to `branch` is off right now, or nil when it is available. Detaching at it
@@ -165,9 +187,12 @@ extension RepositoryStore {
             .flatMap(MergeMode.init(rawValue:)) ?? .fastForwardIfPossible
     }
 
-    /// Recorded the moment the merge is actually attempted, never when one is merely asked for:
-    /// a sheet the user cancelled, a merge refused because something is in progress, and one
-    /// parked behind the detached-HEAD confirmation all leave the remembered mode alone.
+    /// Recorded once git has actually merged with it, never when one is merely asked for: a
+    /// sheet the user cancelled, a merge refused because something is in progress, one parked
+    /// behind the detached-HEAD confirmation, and — the case this used to get wrong — one git
+    /// itself refused over a dirty worktree or a staged change all leave the remembered mode
+    /// alone. Every refusal is a throw, so "the call returned" is exactly the line between them;
+    /// see `+Branches`' `run(_:backend:at:)` for which outcomes that covers.
     ///
     /// `static` because that is where it is called from — the merge's own argument vector, in
     /// `+Branches`' `run` — and because it touches nothing but `UserDefaults`.

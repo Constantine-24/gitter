@@ -38,12 +38,9 @@ struct MergeSheet: View {
     private var canMerge: Bool { !store.isMutating && blockedReason == nil }
 
     /// What the merge merges *into*, in words. A detached HEAD is a legal target — git allows
-    /// it and so does the backend — and it has no branch name to quote.
-    private var into: String {
-        if let current = store.currentBranch { return "\"\(current)\"" }
-        if let sha = store.shortHeadSha { return "the detached HEAD at \(sha)" }
-        return "HEAD"
-    }
+    /// it and so does the backend — and it has no branch name to quote, which is why the phrase
+    /// comes from the store: the delete warning and the sidebar menu need the same one.
+    private var into: String { store.headPhrase }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

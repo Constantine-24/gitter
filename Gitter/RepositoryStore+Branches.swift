@@ -40,9 +40,9 @@ extension RepositoryStore {
         perform(.detach(revision))
     }
 
-    /// Merge `branch` into HEAD. The mode is remembered where the merge is actually run (see
-    /// `rememberMergeMode`), not here: a merge this gate refuses never happened, and must not
-    /// change what the next sheet comes up on.
+    /// Merge `branch` into HEAD. The mode is remembered where the merge actually came back (see
+    /// `rememberMergeMode`), not here and not before git runs: a merge this gate refuses — or
+    /// one git refuses — never happened, and must not change what the next sheet comes up on.
     func merge(_ branch: String, mode: MergeMode) {
         perform(.merge(branch, mode))
     }
@@ -186,11 +186,17 @@ extension RepositoryStore {
             }
             return "Created \"\(name)\" and switched to it."
         case .merge(let branch, let mode):
-            // Here and nowhere earlier: every gate has let go, and git is about to be run.
-            rememberMergeMode(mode)
             let outcome = try await reporting(.merge, branch) {
                 try await backend.merge(branch, mode: mode, at: root)
             }
+            // Here and nowhere earlier — not before `merge`, which was where this used to sit.
+            // Every refusal leaves by way of a throw, and a merge git refused did not happen:
+            // it must not rewrite what the next sheet comes up on. Reaching this line means git
+            // ran the merge the user asked for and did not refuse it, which is true of all five
+            // outcomes including `.conflicts` (a half-done merge is in the worktree) and
+            // `.alreadyUpToDate` (nothing to do, but the mode was accepted and the user's choice
+            // was a real one — silently declining to remember it would be its own small lie).
+            rememberMergeMode(mode)
             return notice(for: outcome, branch: branch)
         }
     }

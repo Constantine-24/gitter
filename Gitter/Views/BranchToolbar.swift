@@ -19,9 +19,8 @@ struct BranchMenu: View {
         Menu {
             // The reason, as a disabled item rather than only as a tooltip: a disabled menu
             // item shows no tooltip of its own, and "why is this grey?" should not need a hover.
-            if let blockedReason {
-                Text(blockedReason)
-            }
+            // `MenuReasons` is the sidebar menus' version of exactly this, divider and all.
+            MenuReasons(reasons: [blockedReason])
             Section {
                 // A picker, not a row of buttons: an inline picker in a macOS menu is what puts
                 // the checkmark against the branch HEAD is on, and picking another is the

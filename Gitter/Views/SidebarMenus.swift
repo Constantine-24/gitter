@@ -41,12 +41,6 @@ struct LocalBranchMenu: View {
 
     @Environment(RepositoryStore.self) private var store
 
-    /// What a merge of this branch would merge *into*. A detached HEAD is a legal target, and
-    /// has no name to quote.
-    private var mergeTarget: String {
-        store.currentBranch.map { "\"\($0)\"" } ?? "HEAD"
-    }
-
     var body: some View {
         let switchReason = store.switchBlockedReason(for: branch)
         let mergeReason = store.mergeBlockedReason(for: branch)
@@ -56,7 +50,10 @@ struct LocalBranchMenu: View {
 
         Button("Switch") { store.switchTo(branch: branch) }
             .disabled(switchReason != nil)
-        Button("Merge into \(mergeTarget)…") { store.requestMerge(branch) }
+        // `headPhrase`, not a quoted branch name: this item and the merge sheet describe the
+        // same merge, and a bare "HEAD" here where the sheet says "the detached HEAD at 1a2b3c4"
+        // was the two of them disagreeing.
+        Button("Merge into \(store.headPhrase)…") { store.requestMerge(branch) }
             .disabled(mergeReason != nil)
 
         Divider()
