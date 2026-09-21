@@ -67,9 +67,10 @@ final class RepositoryStore {
     // Direct writes stay in this file; see `clearSticky()` / `clearErrorUnlessSticky()` below.
     private var errorIsSticky = false
 
-    /// Everything the store can ask git to do: reads, index and commit writes, and branch,
-    /// checkout and merge writes. Three protocols so a fake can implement any one on its own.
-    typealias Backend = any GitBackend & GitWorkingCopyBackend & GitBranchBackend
+    /// Everything the store can ask git to do: reads, index and commit writes, branch,
+    /// checkout and merge writes, and the network. Four protocols so a fake can implement any
+    /// one on its own.
+    typealias Backend = any GitBackend & GitWorkingCopyBackend & GitBranchBackend & GitRemoteBackend
 
     let backend: Backend
     // internal (not private): used by +Opening.swift's `checkGitAvailability()`

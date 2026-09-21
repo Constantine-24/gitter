@@ -101,6 +101,36 @@ public struct CLIGitBackend: GitBackend {
         try await runner.run(gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes)
     }
 
+    /// `run`'s cancellable, streaming twin, for the network operations: the same git and the
+    /// same environment, with stderr reported as it arrives and the whole of it returned
+    /// (`remote:` lines and a hosting service's pull-request URL live there even on success).
+    ///
+    /// This lives here rather than in `CLIGitBackend+Remotes.swift` because `gitPath` and
+    /// `runner` are private to this file, and they stay private: one file owns how git is
+    /// invoked. It is the single seam every remote operation in this milestone goes through.
+    ///
+    /// **What it adds over `ProcessRunner.runStreaming` is the trim, and only the trim.** git
+    /// pads each progress line with spaces to erase the longer one before it
+    /// (`remote: Counting objects: 100% (12/12)        \r`, measured), and an empty segment is
+    /// not an update worth reporting. Both are dealt with here so that no caller — and no view
+    /// — has to know that git does it.
+    ///
+    /// `progress` is called on the pipe's readability queue, **not** the caller's executor, and
+    /// the pipe is not drained while it runs; the work done on that queue is therefore kept to
+    /// one `trimmingCharacters` and one `isEmpty`. See `ProcessRunner.runStreaming` for the
+    /// full threading contract, and `GitRemoteBackend.fetch` for what a caller may do with it.
+    func runStreaming(
+        _ arguments: [String], cwd: URL, allowedExitCodes: Set<Int32> = [],
+        progress: @escaping @Sendable (String) -> Void
+    ) async throws -> ProcessRunner.StreamedResult {
+        try await runner.runStreaming(
+            gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes,
+            onStderr: { segment in
+                let trimmed = segment.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty { progress(trimmed) }
+            })
+    }
+
     /// Turns a path into a pathspec that means exactly that one path.
     ///
     /// Everything git takes after `--` is a *pathspec*, not a file name: it is glob-matched,
