@@ -338,6 +338,158 @@ import Testing
         }
     }
 
+    // MARK: - Remotes: push, fetch, rebase, leases and refspecs
+
+    /// The deny tables this milestone adds. `push` can delete a branch on the server
+    /// (`--delete`/`-d`), replace every ref on it (`--mirror`), or push refs the user never
+    /// named (`--all`, `--tags`); `fetch --prune` deletes remote-tracking refs behind the
+    /// user's back; `rebase --autostash`/`--skip`/`--quit` each move or drop work without a
+    /// confirmation; and `pull` is not a command Gitter runs at all — the store fetches and
+    /// then merges or rebases itself, so that the sheet can say what will happen first.
+    @Test(arguments: [
+        #"_ = try await run(["push", "--force-with-lease", r, s], cwd: root)"#,
+        #"_ = try await run(["switch", "--force-with-lease=x:y", b], cwd: root)"#,
+        #"let l = "--force-with-lease""#,
+        #"_ = try await run(["push", r, "+refs/heads/a:refs/heads/a"], cwd: root)"#,
+        #"var a = ["push"]; a.append("+refs/heads/a:refs/heads/a")"#,
+        #"_ = try await run(["push", "--mirror", r], cwd: root)"#,
+        #"_ = try await run(["push", "--delete", r, b], cwd: root)"#,
+        #"_ = try await run(["push", "-d", r, b], cwd: root)"#,
+        #"_ = try await run(["push", "--all", r], cwd: root)"#,
+        #"_ = try await run(["push", "--no-verify", r, s], cwd: root)"#,
+        #"_ = try await run(["push", "--force-if-includes", r, s], cwd: root)"#,
+        #"_ = try await run(["fetch", "--prune", r], cwd: root)"#,
+        #"_ = try await run(["fetch", "-p", r], cwd: root)"#,
+        #"_ = try await run(["fetch", "--prune-tags", "--tags", r], cwd: root)"#,
+        #"_ = try await run(["pull", r], cwd: root)"#,
+        #"_ = try await run(["rebase", "--autostash", u], cwd: root)"#,
+        #"_ = try await run(["rebase", "--force-rebase", u], cwd: root)"#,
+    ])
+    func catchesAForbiddenRemoteInvocation(source: String) {
+        #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// The mirror image: the vectors the remote work is actually going to write. A lease is how
+    /// this milestone makes a force push safe, so `--force-with-lease=<ref>:<sha>` has to be
+    /// spellable — in a `push` vector, and nowhere else.
+    @Test(arguments: [
+        #"_ = try await run(["push", "--porcelain", "--force-with-lease=" + lease, remote, spec], cwd: root)"#,
+        #"_ = try await run(["push", "--porcelain", "--force-with-lease=\(ref):\(sha)", r, s], cwd: root)"#,
+        #"_ = try await run(["push", "--porcelain", "-u", remote, refspec], cwd: root)"#,
+        #"_ = try await run(["push", "--porcelain", remote, "refs/heads/a:refs/heads/a"], cwd: root)"#,
+        #"_ = try await run(["fetch", "--progress", "--all"], cwd: root)"#,
+        #"_ = try await run(["fetch", "--progress", "--end-of-options", remote], cwd: root)"#,
+        #"_ = try await run(["rebase", "--end-of-options", upstream], cwd: root)"#,
+    ])
+    func allowsTheRemoteOperationsThisMilestoneNeeds(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
+    /// The lease rule is a *prefix* rule, and it is the only one: the permitted token is not a
+    /// fixed string but everything beginning `--force-with-lease=`, because the sha comes from
+    /// the sheet (`"--force-with-lease=\(ref):\(sha)"`, `"--force-with-lease=" + lease`).
+    /// Permitting a prefix is a hole unless the position is pinned too, so it is pinned to an
+    /// array literal classified `push`: any other vector, any fragment, any `.append`, and any
+    /// bare `let` is a finding.
+    ///
+    /// None of these literals is in `alwaysForbidden` — the bare token is, the `=<value>` form
+    /// cannot be, since it is not one token — so nothing here can pass by exact match.
+    @Test(arguments: [
+        (#"_ = try await run(["fetch", "--force-with-lease=\(ref):\(sha)", remote], cwd: root)"#,
+         #"--force-with-lease=\(ref):\(sha)"#),
+        (#"_ = try await run(["switch", "--force-with-lease=x:y", b], cwd: root)"#,
+         "--force-with-lease=x:y"),
+        (#"var a = ["push"]; a.append("--force-with-lease=\(ref):\(sha)")"#,
+         #"--force-with-lease=\(ref):\(sha)"#),
+        (#"var a = ["push"]; a += ["--force-with-lease=" + lease]"#, "--force-with-lease="),
+        (#"let lease = "--force-with-lease=\(ref):\(sha)""#, #"--force-with-lease=\(ref):\(sha)"#),
+        (#"_ = try await run([remoteFlag, "push", "--force-with-lease=x:y"], cwd: root)"#,
+         "--force-with-lease=x:y"),
+    ])
+    func catchesALeaseOutsideAPushVector(source: String, literal: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains("--force-with-lease=") }, "\(findings)")
+        #expect(!ForceFlagScanner.alwaysForbidden.contains(literal),
+                "\(literal) is forbidden by exact match, so this proves nothing about the prefix rule")
+    }
+
+    /// The exemption is a *position*, not a token: one legitimate lease in a `push` vector must
+    /// not vouch for the identical text elsewhere in the same file. That is why the sweep asks
+    /// where the literal sits rather than which literals a push vector contains.
+    @Test func aLeaseInAPushVectorDoesNotExcuseTheSameTextElsewhere() {
+        let clean = #"_ = try await run(["push", "--porcelain", "--force-with-lease=x:y", r], cwd: root)"#
+        #expect(ForceFlagScanner.findings(in: clean).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: clean))")
+        let findings = ForceFlagScanner.findings(in: clean + "\nlet stray = \"--force-with-lease=x:y\"")
+        #expect(findings.count == 1, "expected exactly the stray lease, got \(findings)")
+        #expect(findings.first?.contains("--force-with-lease=x:y") == true, "\(findings)")
+    }
+
+    /// A refspec beginning `+` forces the update git would otherwise refuse — the same loss as
+    /// `--force`, spelled as data rather than as a flag, and it would sail past every table
+    /// here. The rule cannot be "any literal beginning with `+`": `PatchBuilder` and
+    /// `DiffParser` are full of them (`"+" + line.text`, `"+++ "`). It is narrowed to the
+    /// shapes a refspec actually has — see `isForceRefspec` — plus anything `+` inside a
+    /// `push`/`fetch` vector, where a leading `+` can only be a refspec.
+    @Test(arguments: [
+        #"_ = try await run(["push", remote, "+refs/heads/a:refs/heads/a"], cwd: root)"#,
+        #"_ = try await run(["push", remote, "+\(src):\(dst)"], cwd: root)"#,
+        #"_ = try await run(["fetch", remote, "+refs/heads/*:refs/remotes/origin/*"], cwd: root)"#,
+        #"_ = try await run(["push", remote, "+" + src + ":" + dst], cwd: root)"#,
+        #"_ = try await run(["push", remote, "+HEAD"], cwd: root)"#,
+        #"var a = [String](); a.append("+refs/heads/a:refs/heads/a")"#,
+        #"let spec = "+refs/heads/a""#,
+        #"let spec = "+\(branch):\(branch)""#,
+    ])
+    func catchesAForceRefspec(source: String) {
+        #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// And the `+` rule does not fire on the diff code, which is where every other `+` literal
+    /// in `GitCore/Sources` lives. Each of these is a line copied from a real source file; the
+    /// last is `commitDiff`'s fragment, whose `-p` is `diff-tree`'s patch option and not
+    /// `fetch -p`.
+    @Test(arguments: [
+        #"case .added: return "+" + text"#,
+        #"out.append("+" + line.text)"#,
+        #"} else if line.hasPrefix("+++ ") {"#,
+        #"if part.hasPrefix("+"), let n = Int(part.dropFirst()) {"#,
+        #"let marker = ["+", "-", " "]"#,
+        #"let arguments = ["--no-commit-id", "-p", "-U3", "-M", "-r"]"#,
+    ])
+    func doesNotFireOnTheDiffMarkersTheSourcesUse(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
+    /// What the lexer does with interpolation, pinned, because both new rules are prefix rules
+    /// and the real code will write the interpolated spelling: `\(…)` inside a literal is blanked
+    /// like any other content, so the literal stays *one* literal and its value is the raw
+    /// source text, interpolation marks and all. `hasPrefix` therefore works on it.
+    @Test func readsAnInterpolatedLiteralAsOneLiteralWithItsRawText() {
+        let source = #"let a = ["push", "--force-with-lease=\(ref):\(sha)", remote]"#
+        let code = ForceFlagScanner.strippingCommentsAndStringContents(source)
+        #expect(ForceFlagScanner.literals(in: source, code: code).map(\.1)
+                == ["push", #"--force-with-lease=\(ref):\(sha)"#])
+        let elements = ForceFlagScanner.argumentArrays(in: source, code: code).first?.elements
+        #expect(elements?.map(\.value) == ["push", #"--force-with-lease=\(ref):\(sha)"#, nil])
+    }
+
+    /// The limit that buys: a string literal *inside* an interpolation ends the outer literal as
+    /// far as this lexer is concerned, so a flag split across one is invisible. Recorded rather
+    /// than fixed — closing it needs a real Swift parser — and it is the same "only literals"
+    /// hole as `"--" + verb`, reached by a different road. Quote parity survives, so the rest of
+    /// the file is still lexed correctly; nothing desynchronises.
+    @Test func recordsThatAFlagSplitByAnInterpolatedLiteralIsInvisible() {
+        let source = #"_ = try await run(["switch", "--for\("ce")", b], cwd: root)"#
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "the limit has moved — update the doc comment, do not fix this quietly")
+        #expect(!ForceFlagScanner.findings(in: #"_ = try await run(["switch", "--force", b])"#)
+                .isEmpty, "the unsplit spelling must still be caught")
+    }
+
     @Test func doesNotConfuseElementsOfNestedExpressions() {
         let source = #"""
             _ = try await run(["branch", "--end-of-options", name] + (start.map { [$0] } ?? []), cwd: root)

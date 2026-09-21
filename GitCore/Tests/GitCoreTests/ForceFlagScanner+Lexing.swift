@@ -109,10 +109,24 @@ extension ForceFlagScanner {
         let literals: [String]
     }
 
+    /// One `[...]` array literal: its top-level elements, and where it sits in the source.
+    ///
+    /// The range is what the *prefix* rule needs and no other rule does. A rule that names one
+    /// exact token can be answered from the token alone, wherever it was found; a rule that
+    /// permits everything beginning `--force-with-lease=` cannot, because the permission is
+    /// conditional on the vector the literal stands in. The whole-file sweep has no vector — it
+    /// walks the literals — so it asks instead whether the literal's offset falls inside one of
+    /// the `push`-classified arrays. See `ForceFlagScanner.findings(in:)`.
+    struct ArrayLiteral {
+        /// Offsets in `source`, from the `[` to just past its matching `]`.
+        let range: Range<Int>
+        let elements: [ArrayElement]
+    }
+
     /// Each `[...]` array literal's top-level elements.
-    static func argumentArrays(in source: String, code: [Character]) -> [[ArrayElement]] {
+    static func argumentArrays(in source: String, code: [Character]) -> [ArrayLiteral] {
         let raw = Array(source)
-        var result: [[ArrayElement]] = []
+        var result: [ArrayLiteral] = []
 
         for open in code.indices where code[open] == "[" {
             var depth = 0
@@ -127,7 +141,10 @@ extension ForceFlagScanner {
                 close += 1
             }
             guard found, close > open + 1 else { continue }
-            result.append(elements(raw: raw, code: code, from: open + 1, to: close))
+            result.append(
+                ArrayLiteral(
+                    range: open..<(close + 1),
+                    elements: elements(raw: raw, code: code, from: open + 1, to: close)))
         }
         return result
     }

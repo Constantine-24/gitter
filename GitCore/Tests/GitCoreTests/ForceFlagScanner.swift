@@ -25,6 +25,26 @@ import Foundation
 ///   subcommand it belongs to, so it is checked against `fragmentForbidden`, the union of the
 ///   per-subcommand rules.
 ///
+/// Every rule above keys on a *whole token*, which is all a flag ever is — until the remote
+/// milestone, where two of the things that can destroy work are not tokens at all:
+///
+/// - **A lease.** `--force-with-lease=refs/heads/x:<sha>` is what makes a force push safe (the
+///   server refuses if the branch moved since the sheet showed that sha), and its tail is data.
+///   So there is one *prefix* rule — `flagPrefixesAllowedOnlyAfter` — and, because permitting a
+///   prefix promises much more than permitting a token, it is pinned to a position as well:
+///   only inside an array literal classified `push`. Everywhere else, including the whole-file
+///   sweep, it is a finding. The bare `--force-with-lease` — leasing against whatever the last
+///   fetch left behind, which nobody was shown — stays in `alwaysForbidden` and is a finding
+///   everywhere, this rule notwithstanding.
+/// - **A force refspec.** `+refs/heads/x:refs/heads/x` discards the other side's commits with
+///   no flag involved. `isForceRefspec` reads it out of the literal's shape; the narrowing it
+///   needs, and the spellings it cannot see, are written up there.
+///
+/// Both work on the interpolated spelling, because the lexer keeps a literal's *raw* text:
+/// `"+\(src):\(dst)"` and `"--force-with-lease=\(ref):\(sha)"` are single literals whose values
+/// still contain the `+`, the `=` and the `:`. That is what the real code will write, and
+/// `readsAnInterpolatedLiteralAsOneLiteralWithItsRawText` pins it.
+///
 /// Known limits, stated so nobody mistakes this for a proof:
 ///
 /// - **Only literals.** This is the remaining hole, and it is now the *only* structural one:
@@ -41,6 +61,14 @@ import Foundation
 ///   checked (`catchesAFlagHiddenInsideATernaryElement`). `CLIGitBackend+Merge.swift` still
 ///   spells each mode's vector as one complete literal chosen by a `switch`, because reading
 ///   what reaches git should not depend on the scanner being clever.
+///
+///   **Interpolation reaches the same hole by a second road.** A plain `"\(x)"` is fine — the
+///   contents are blanked like any other, the literal stays one literal — but a *string literal
+///   inside* an interpolation ends the outer literal as far as this lexer is concerned, so
+///   `"--for\("ce")"` is read as the two literals `--for\(` and `)` and matches nothing. A flag
+///   can hide there. Quote parity survives, so the rest of the file is still lexed correctly and
+///   nothing desynchronises; `recordsThatAFlagSplitByAnInterpolatedLiteralIsInvisible` pins the
+///   limit so that closing it is a deliberate act rather than an accident.
 /// - **`-M` is exempt in one fragment shape**: `commitDiff`'s legitimate
 ///   `["--no-commit-id", "-p", "-U3", "-M", "-r"]` is itself a fragment and `-M` there means
 ///   rename detection, so an *array literal* carrying `--no-commit-id` — an option no `branch`
@@ -62,6 +90,17 @@ import Foundation
 ///   brackets — the same blind spot `doesNotConfuseElementsOfNestedExpressions` records for
 ///   every other rule. `CLIGitBackend+Abort.swift` spells that vector as a complete literal
 ///   with nothing appended, which is what makes the rule meaningful there.
+///
+///   The prefix rule's exemption has the mirror-image shape: it covers the *whole* range of a
+///   `push` array literal, so a lease nested inside a sub-expression of one
+///   (`["push", extra(["--force-with-lease=x"])]`) is exempted by the sweep. That is why
+///   `fragmentFindings` checks the prefix rule too — the inner array is a fragment, and the
+///   fragment rule has no exemption. Two findings for one hazard, in the shapes both see.
+/// - **The `-d`/`--all`/`--tags`/`-p` group is subcommand-scoped, not file-wide.** Each is
+///   dangerous after `push` or `fetch` and innocent after `branch`, `rev-list`, `log` or
+///   `diff-tree`, and `GitCore/Sources` uses all four innocently today, so they are in the
+///   per-subcommand tables and the fragment union but struck from the sweep (`sweepExempt`).
+///   A vector that hides its subcommand from the scanner hides them too.
 /// - **`--skip` is in `fileWideForbidden`, and `git log --skip` exists.** Nothing in
 ///   `GitCore/Sources` pages a log today; when something does, it will spell the option
 ///   `--skip=<n>` (one token, which does not match) or else be a false positive to resolve
@@ -85,13 +124,38 @@ enum ForceFlagScanner {
         }
 
         let code = strippingCommentsAndStringContents(source)
+        let arrays = argumentArrays(in: source, code: code)
         var findings: [String] = []
 
-        for (token, literal) in literals(in: source, code: code) where fileWideForbidden.contains(literal) {
-            findings.append("forbidden literal \(literal.debugDescription) (offset \(token))")
+        // Where each classified vector sits, which only the prefix rule needs: it is the one
+        // rule whose answer depends on the literal's surroundings rather than on the literal.
+        let classified: [(range: Range<Int>, subcommand: String)] = arrays.compactMap {
+            guard let first = $0.elements.first?.value, !first.hasPrefix("-") else { return nil }
+            return (range: $0.range, subcommand: first)
         }
 
-        for arguments in argumentArrays(in: source, code: code) {
+        for (token, literal) in literals(in: source, code: code) {
+            if fileWideForbidden.contains(literal) {
+                findings.append("forbidden literal \(literal.debugDescription) (offset \(token))")
+            }
+            if let rule = prefixRule(matching: literal),
+                !classified.contains(where: {
+                    $0.range.contains(token) && rule.subcommands.contains($0.subcommand)
+                })
+            {
+                findings.append(
+                    "forbidden literal \(literal.debugDescription) (offset \(token)): "
+                        + rule.reason)
+            }
+            if isForceRefspec(literal) {
+                findings.append(
+                    "forbidden force refspec \(literal.debugDescription) (offset \(token)): "
+                        + forceRefspecReason)
+            }
+        }
+
+        for array in arrays {
+            let arguments = array.elements
             // Every literal in every element, not one per element: a flag chosen by a ternary
             // (`cond ? "--squash" : "--merge"`) lives in an element that has no single value,
             // and used to be skipped entirely. Order is preserved, and a classified array's
@@ -126,6 +190,21 @@ enum ForceFlagScanner {
                         findings += rule.findings(
                             for: flag, after: subcommand,
                             isLastElement: index == arguments.count - 1)
+                    } else if let rule = prefixRule(matching: flag),
+                        !rule.subcommands.contains(subcommand)
+                    {
+                        findings.append("forbidden `git \(subcommand) \(flag)`: \(rule.reason)")
+                    }
+                    // Inside a vector that talks to a server, a leading `+` can only be a
+                    // refspec — git has no `+`-leading option — so the narrowing
+                    // `isForceRefspec` needs elsewhere (where `"+"` is a diff marker) is off
+                    // here, and `["push", r, "+" + src + ":" + dst]` is caught by its `"+"`.
+                    if refspecSubcommands.contains(subcommand), flag.hasPrefix("+"),
+                        !isForceRefspec(flag)
+                    {
+                        findings.append(
+                            "forbidden force refspec \(flag.debugDescription) in a "
+                                + "`git \(subcommand)` vector: \(forceRefspecReason)")
                     }
                 }
             }
@@ -156,14 +235,29 @@ enum ForceFlagScanner {
         // withholding it costs nothing; a future one must spell its vector as a literal.
         let forbidden =
             isOneVector && literals.contains(diffTreeMarker)
-            ? fragmentForbidden.subtracting(["-M"]) : fragmentForbidden
-        return literals.filter(forbidden.contains).map {
+            ? fragmentForbidden.subtracting(diffTreeExempt) : fragmentForbidden
+        var result = literals.filter(forbidden.contains).map {
             "forbidden flag \($0.debugDescription) in an argument fragment"
         }
+        // A prefixed flag in a fragment. The whole-file sweep catches most of these already —
+        // a fragment's literals are the file's literals — but not one nested *inside* a
+        // classified vector (`["push", extra(["--force-with-lease=x"])]`), which the sweep
+        // exempts by offset. Saying it twice for the shapes both see is the cheaper mistake.
+        result += literals.compactMap { literal in
+            guard let rule = prefixRule(matching: literal) else { return nil }
+            return "forbidden flag \(literal.debugDescription) in an argument fragment: "
+                + rule.reason
+        }
+        return result
     }
 
     /// The option that identifies a `diff-tree` argument fragment. See `fragmentFindings`.
     private static let diffTreeMarker = "--no-commit-id"
+
+    /// What that fragment is excused: `-M` is rename detection there and `-p` is the patch
+    /// option, not `branch -M` and not `fetch -p`. Both tokens are dangerous under their own
+    /// subcommands, which is why they are in the union at all.
+    private static let diffTreeExempt: Set<String> = ["-M", "-p"]
 
     /// What the lexer provably cannot read, found in the raw source.
     ///
@@ -211,10 +305,15 @@ enum ForceFlagScanner {
     /// Subcommands Gitter must never run at all. `checkout` is here because `git checkout --
     /// <path>` overwrites a file with no confirmation and no recovery; `switch` and `restore
     /// --staged` cover everything Gitter legitimately needs.
+    /// `pull` is here from the remote milestone: it fetches and then merges or rebases in one
+    /// step decided by config Gitter did not write, so the user is told afterwards what
+    /// happened to their work. The store fetches, re-reads tracking, shows a sheet and then
+    /// merges or rebases itself, which is the only way the sheet can say what will happen.
     static let forbiddenSubcommands: [String: String] = [
         "clean": "deletes untracked files outright",
         "stash": "moves the user's changes somewhere they did not ask for",
         "checkout": "`checkout -- <path>` discards a file's changes with no undo",
+        "pull": "fetches and then merges or rebases in one step the user was never shown",
     ]
 
     /// Per-subcommand flags. The allow-list is what is *absent* here: `branch -D` (behind a
@@ -242,6 +341,40 @@ enum ForceFlagScanner {
             "--strategy-option": "resolves conflicts by discarding one side",
             "--autostash": "moves the user's changes somewhere they did not ask for",
             "--allow-unrelated-histories": "overrides a refusal the user should see instead",
+        ],
+        // The server-side tables. What is *absent* is again the point: `--porcelain`, `-u` and
+        // an explicit `<src>:<dst>` refspec are how every push this milestone makes is written,
+        // and `--force-with-lease=<ref>:<sha>` is permitted here and only here (see
+        // `flagPrefixesAllowedOnlyAfter`).
+        "push": [
+            "--force": "discards commits on the remote branch with no lease and no confirmation",
+            "-f": "discards commits on the remote branch with no lease and no confirmation",
+            "--mirror": "replaces every ref on the remote with the local ones, deletions included",
+            "--prune": "deletes remote branches that have no local counterpart",
+            "--all": "pushes branches the user never named",
+            "--tags": "pushes tags the user never named",
+            "--delete": "deletes a remote branch; Gitter does that behind its own confirmation",
+            "-d": "deletes a remote branch; Gitter does that behind its own confirmation",
+            "--no-verify": "skips the hooks the user installed to stop exactly this",
+            "--force-if-includes":
+                "weakens a lease into 'force unless I have not fetched', which is not the "
+                + "sha the confirmation sheet showed",
+        ],
+        "fetch": [
+            "--force": "overwrites remote-tracking refs that are not ancestors",
+            "-f": "overwrites remote-tracking refs that are not ancestors",
+            "--prune": "deletes remote-tracking refs behind the user's back",
+            "-p": "deletes remote-tracking refs behind the user's back",
+            "--prune-tags": "deletes local tags",
+            "--tags": "fetches refs the user never asked for, and can clobber local tags",
+        ],
+        "rebase": [
+            "--autostash": "moves the user's changes somewhere they did not ask for",
+            "--skip": "throws away the commit git stopped on",
+            "--quit": "leaves the rebase's half-applied result behind with no way to abort it",
+            "-f": "force",
+            "--force-rebase": "rewrites commits that did not need rewriting",
+            "--no-verify": "skips the hooks the user installed to stop exactly this",
         ],
     ]
 
@@ -296,6 +429,81 @@ enum ForceFlagScanner {
         "--merge": PositionalRule(subcommands: ["reset"], mustBeLast: true),
     ]
 
+    /// A flag whose *beginning* is fixed and whose tail is data, safe only after certain
+    /// subcommands.
+    ///
+    /// `PositionalRule` cannot express this: it keys on the whole token, and the whole token
+    /// here is `--force-with-lease=refs/heads/x:<40 hex>`, built from the sha the confirmation
+    /// sheet showed. Permitting a prefix is a much larger promise than permitting a token, so
+    /// it is paid for by pinning the position: only inside an array literal classified `push`.
+    struct PrefixRule {
+        let prefix: String
+        let subcommands: Set<String>
+
+        var reason: String {
+            "\(prefix)… is allowed only as an element of a vector classified "
+                + subcommands.sorted().joined(separator: ", ")
+        }
+    }
+
+    /// The one prefix rule, and the reason it has to exist.
+    ///
+    /// A force push is this milestone's most destructive action, and the lease is what makes it
+    /// safe: `--force-with-lease=<ref>:<sha>` tells the server "only if that branch is still at
+    /// the sha my sheet showed", so a branch that moved while the sheet was open is refused by
+    /// git itself rather than overwritten. The bare `--force-with-lease` is the opposite — it
+    /// leases against whatever the last fetch happened to leave in the remote-tracking ref,
+    /// which may be minutes stale and was never shown to anyone — so it stays in
+    /// `alwaysForbidden` and is a finding wherever it appears, this table notwithstanding.
+    ///
+    /// Only `push` can be vouched for. `git fetch --force-with-lease` is not a thing git has;
+    /// a literal beginning `--force-with-lease=` anywhere else is either a flag about to be
+    /// handed to the wrong command or a lease travelling too far from the vector that will use
+    /// it to be read in one place, and both are findings.
+    static let flagPrefixesAllowedOnlyAfter: [PrefixRule] = [
+        PrefixRule(prefix: "--force-with-lease=", subcommands: ["push"])
+    ]
+
+    /// The prefix rule a literal falls under, if any.
+    static func prefixRule(matching literal: String) -> PrefixRule? {
+        flagPrefixesAllowedOnlyAfter.first { literal.hasPrefix($0.prefix) }
+    }
+
+    /// Whether a literal is a *force refspec* — `+<src>:<dst>`, which tells the server to
+    /// update the ref even when the update is not a fast-forward. The same loss as `--force`,
+    /// spelled as data, and no flag table can see it.
+    ///
+    /// "Any literal beginning `+`" would be the rule, and it is the rule the spec asks for, but
+    /// `GitCore/Sources` is full of innocent ones: `PatchBuilder+Markers` writes `"+" + text`
+    /// for an added line, `DiffParser` tests `hasPrefix("+++ ")` and `hasPrefix("+")`,
+    /// `StatusParser` reads `"+N"` from an ahead count (`git grep '"+'`: six of them, all in
+    /// diff and status code). So the rule is narrowed to the two shapes a refspec has and an
+    /// ordinary diff marker does not — a `:` separating the two sides, or an explicit
+    /// `+refs/…`/`+HEAD` source — and widened again inside `push`/`fetch` vectors, where a
+    /// leading `+` cannot be anything else (see `refspecSubcommands`, and `findings(in:)`).
+    ///
+    /// The interpolated spelling is covered because the lexer keeps a literal's raw text:
+    /// `"+\(src):\(dst)"` is the value `+\(src):\(dst)`, which contains a `:`.
+    ///
+    /// What it cannot catch, stated plainly: `"+" + spec` or `arguments.append("+" + ref)`
+    /// *outside* a `push`/`fetch` vector — the literal is just `"+"`, indistinguishable from a
+    /// diff marker; a one-sided `"+\(branch)"` in the same place; and anything where the `+`
+    /// itself is not a literal (`"\(sign)refs/heads/x"`, `String(plus) + spec`). The vectors
+    /// that talk to a server are written as array literals beginning with their subcommand
+    /// precisely so the wider rule applies to them.
+    static func isForceRefspec(_ literal: String) -> Bool {
+        guard literal.hasPrefix("+") else { return false }
+        return literal.contains(":") || literal.hasPrefix("+refs/") || literal.hasPrefix("+HEAD")
+    }
+
+    /// Where *any* leading `+` is a refspec rather than a diff marker. Git has no `+`-leading
+    /// option, so inside these two vectors the narrowing above is not needed.
+    static let refspecSubcommands: Set<String> = ["push", "fetch"]
+
+    static let forceRefspecReason =
+        "a refspec beginning `+` forces the update git would otherwise refuse, discarding "
+        + "commits on the other side with no lease and no confirmation"
+
     /// What a *fragment* is checked against: the union of every table above, because a
     /// fragment by definition cannot say which subcommand it will be appended to.
     ///
@@ -323,22 +531,36 @@ enum ForceFlagScanner {
     /// - **`--abort` and `--merge`** are exactly what `CLIGitBackend+Abort.swift` runs. They
     ///   stay dangerous everywhere the *positional* rule can see them, which is the whole
     ///   point of `flagsAllowedOnlyAfter`; a sweep over them would fail on correct code.
-    /// - **`-M`** is `diff-tree`'s rename detection in three argument lists. Same reasoning as
-    ///   `fragmentFindings`' carve-out, which is narrower but cannot help here: the sweep has
-    ///   no array to look at.
+    /// - **`-M`, `-p`, `-d`, `--all` and `--tags`** each mean something harmless under a
+    ///   subcommand `GitCore/Sources` really uses, and the sweep cannot see the subcommand:
+    ///   `-M`/`-p` are `diff-tree`'s rename detection and patch output (`CLIGitBackend.swift`),
+    ///   `-d` is `git branch -d`, the safe delete (`+BranchDelete.swift`), and `--all`/`--tags`
+    ///   are `rev-list`/`log` selectors in the "would this commit be unreferenced" counts. Each
+    ///   was checked with `git grep '"<token>"' -- GitCore/Sources` before the token joined the
+    ///   union, and each of those five call sites is an array literal *beginning with its
+    ///   subcommand*, so the per-subcommand rules still see them for what they are. Same
+    ///   reasoning as `fragmentFindings`' carve-out, which is narrower but cannot help here:
+    ///   the sweep has no array to look at.
     ///
-    /// Say the consequence plainly, because these two subtractions are the sweep's price and it
-    /// is not zero: `let flag = "--abort"`, `let flag = "--merge"` or `let flag = "-M"`, used as
-    /// a non-literal array element, is seen by **no rule at all** — the sweep skips the token
-    /// and the array rules see an element with no literal in it. That is three tokens wide
-    /// rather than the whole union it used to be, but it is narrower, not closed.
+    /// Say the consequence plainly, because these subtractions are the sweep's price and it
+    /// is not zero: `let flag = "--abort"`, `"--merge"`, `"-M"`, `"-p"`, `"-d"`, `"--all"` or
+    /// `"--tags"`, used as a non-literal array element, is seen by **no rule at all** — the
+    /// sweep skips the token and the array rules see an element with no literal in it. Seven
+    /// tokens wide rather than the whole union it used to be, but narrower, not closed.
     ///
-    /// Everything else in the union — `checkout`, `clean`, `stash`, `--ours`, `-C`, `-X`,
-    /// `--autostash` and the rest — appears in no source file, so widening onto them produced
-    /// no false positive (`gitCoreSourcesContainNoForceFlags` is the standing proof).
+    /// Everything else in the union — `checkout`, `clean`, `stash`, `pull`, `--ours`, `-C`,
+    /// `-X`, `--autostash`, `--mirror`, `--prune`, `--prune-tags`, `--delete`, `--no-verify`,
+    /// `--force-if-includes`, `--force-rebase` and the rest — appears in no source file, so
+    /// widening onto them produced no false positive
+    /// (`gitCoreSourcesContainNoForceFlags` is the standing proof).
     static let fileWideForbidden: Set<String> =
         fragmentForbidden
         .subtracting(flagsAllowedOnlyAfter.keys)
-        .subtracting(["-M"])
+        .subtracting(sweepExempt)
         .union(forbiddenSubcommands.keys)
+
+    /// Tokens the sweep must skip because `GitCore/Sources` uses each of them legitimately,
+    /// under a subcommand the sweep cannot see. Every entry is a fact about this codebase,
+    /// checked with `git grep`, not a softening of the rule — see `fileWideForbidden`.
+    static let sweepExempt: Set<String> = ["-M", "-p", "-d", "--all", "--tags"]
 }
