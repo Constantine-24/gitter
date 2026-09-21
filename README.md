@@ -53,8 +53,17 @@ goes and what stays:
 | Force-delete an unmerged branch | `git branch -d` runs first and either deletes or refuses *without changing anything*; only its refusal opens a warning naming the unique-commit count and the tip sha, and "Delete Anyway" is refused unless the branch still points at exactly that tip |
 | Leave a detached HEAD holding commits on no branch, tag or remote | a warning naming the count and the full sha, with "Create Branch Here…" as the safe answer; leaving anyway prints the command that brings the commits back |
 
-The staging claim is verified by tests that `shasum` every worktree file before and after
-each staging operation and require the bytes to be identical; every branch refusal is
+Amending is unavailable while any of those operations is in progress, and that is not
+belt-and-braces: git refuses `git commit --amend` during a merge and a cherry-pick and
+**accepts** it during a revert, a rebase, a `git am` and a pending squash (measured on git
+2.54). Each of those four rewrites the commit the operation was standing on, leaving it
+reachable from no branch, tag or remote, with nothing on screen to say so — the same kind of
+loss the table above confirms, and one nobody would have been asked about. So Gitter refuses
+all six itself, before git runs, and the Amend toggle says which operation is in the way.
+
+The staging claim is verified by tests that read **every byte of every worktree file** before
+and after each staging operation and require them to be identical (`worktreeSnapshot` keeps
+the file contents, not a digest, so a failure can print what changed); every branch refusal is
 tested the same way, with the index, HEAD and every ref compared as well.
 
 ## Design decisions
@@ -90,51 +99,79 @@ xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -config
 cd GitCore && swift test
 ```
 
-392 tests in 35 suites, 4 known issues (pre-existing, tracked skips — not failures). Most
-of them run real `git` against a temporary repository rather than a fake, including one
-that greps `GitCore`'s own sources for forbidden force flags.
+403 tests in 36 suites. Most of them run real `git` against a temporary repository rather
+than a fake, including one that greps `GitCore`'s own sources for forbidden force flags.
+
+The run also reports **4 known issues, and they are meant to be there** — please do not
+"fix" them. They are the two negative controls in `WorktreeAssertions.swift`, which change a
+file and then pass an empty baseline to `assertWorktreeUnchanged` inside `withKnownIssue`,
+recording two failures each. That is what proves the helper *can* fail. Every "nothing was
+touched" claim in this suite rests on that one function, and a bug once made it silently
+vacuous (it compared resolved symlink paths, so every snapshot came back empty and every
+assertion passed). Deleting these two tests would take the proof away and the suite would go
+on looking green.
 
 ## Project layout
+
+Every `.swift` file in both targets, so the tree can be checked against `find . -name
+'*.swift'` rather than believed.
 
 ```
 GitCore/                  SwiftPM package, no SwiftUI dependency
   Sources/GitCore/
-    Models/                RepoSnapshot, Commit, FileStatus, Diff, Branch, Graph
-    Parsers/                Status, Log, Ref, Diff parsers over git CLI output
-    GraphLayout.swift        gitk-style commit lane assignment
-    CLIGitBackend.swift       GitBackend implementation over /usr/bin/git
-    PatchBuilder.swift        Builds a hunk- or line-level patch from a parsed diff
-    GitWorkingCopyBackend.swift  Staging/commit/amend protocol, implemented over the CLI
-      in CLIGitBackend+WorkingCopy.swift
-    GitBranchBackend.swift    Branch/merge/abort protocol and its contract, implemented in
-      CLIGitBackend+Branches / +BranchDelete / +Merge / +Abort / +Operation
+    GitBackend.swift            Read-only protocol: snapshot, log, refs, diffs
+    GitWorkingCopyBackend.swift Staging/commit/amend protocol and its contract
+    GitBranchBackend.swift      Branch/merge/abort protocol and its contract
+    GitError.swift              commandFailed, launchFailed, and the two pre-flight refusals
     BranchOperationTypes.swift  MergeMode, MergeOutcome, BranchDeletion, the typed refusals
-  Tests/GitCoreTests/
+    CLIGitBackend.swift         The implementation over /usr/bin/git, plus
+      +WorkingCopy.swift          staging, commit, amend (and the amend-mid-operation refusal)
+      +Branches.swift             create, switch, detach, track, rename
+      +BranchDelete.swift         `branch -d`, and `-D` only against an expected tip
+      +Merge.swift                the three merge modes and the name/tag comparison
+      +Abort.swift                the five `--abort`s and `reset --merge`
+      +Operation.swift            which of the six operations is part-way through
+    ProcessRunner.swift         Process spawning with LC_ALL=C and captured stderr
+    GraphLayout.swift           gitk-style commit lane assignment
+    PatchBuilder.swift          Builds a hunk- or line-level patch from a parsed diff, with
+      +Markers.swift / +Paths.swift
+    Models/                     RepoSnapshot, Commit, FileStatus, Diff, Branch, Graph
+    Parsers/                    Status, Log, Ref, Diff (+Paths) and BranchRefusal parsers
+  Tests/GitCoreTests/           36 suites; ForceFlagScanner(+Lexing) is the force-flag grep
 
 Gitter/                   macOS app (SwiftUI)
   GitterApp.swift            App entry point, commands, Open Recent
   RepositoryStore.swift      @Observable @MainActor store: snapshot + selection state
-  RepositoryStore+Staging.swift  Staging, commit and amend actions on the store
-  RepositoryStore+Branches.swift Switch, track, detach, create, rename, merge
+  RepositoryStore+Opening.swift   Opening a repository, checking git is there
+  RepositoryStore+Refresh.swift   Debounced, coalesced snapshot reloading
+  RepositoryStore+Detail.swift    Loading the detail pane's files and diff
+  RepositoryStore+Staging.swift   Stage/unstage whole files, hunks and lines; `mutate`
+  RepositoryStore+Commit.swift    Commit, amend, and the amend gates
+  RepositoryStore+WorkingCopyState.swift  Derived staged/unstaged state and button titles
+  RepositoryStore+Branches.swift  Switch, track, detach, create, rename, merge
   RepositoryStore+BranchSheets.swift  Opening the sheets, delete, abort, name validation
   RepositoryStore+BranchState.swift   HEAD, refs and what is allowed right now
+  RepositoryStore+Errors.swift    Turning a refusal into the sentence the banner shows
   BranchSheet.swift          Which confirmation or form the store wants on screen
   CommitDraft.swift          The commit message + amend toggle being edited
   RepositoryWatcher.swift    FSEvents-based debounced refresh trigger
   OperationWording.swift     Every sentence the UI says about an operation in progress,
                               including the abort confirmation's five wordings
-  DebugLaunchHooks.swift     Debug-only launch hooks for screenshot verification (see below)
-  Views/                     SidebarView, SidebarMenus, CommitListView, CommitGraphCell,
-                              DetailView, WorkingCopyFileList, CommitComposerView, DiffView,
-                              DiffHunkView, DiffLineSelection, Banners, BranchToolbar,
-                              BranchSheetHost and the six sheets (NewBranch, Rename, Merge,
-                              DeleteBranch, Abort, LeaveDetached)
+  DebugLaunchHooks.swift     Debug-only launch hooks for screenshot verification (see below),
+    +Events.swift              posted clicks, keys and the responder dump
+    +Branches.swift            the `GITTER_DEBUG_BRANCH_ACTION` step list
+  Views/                     MainWindow, SidebarView, SidebarMenus, CommitListView,
+                              CommitGraphCell, DetailView, WorkingCopyFileList,
+                              CommitComposerView, DiffView, DiffHunkView, DiffLineSelection,
+                              Banners, BranchToolbar, BranchNameValidator, BranchSheetHost
+                              and the six sheets (NewBranch, Rename, Merge, DeleteBranch,
+                              Abort, LeaveDetached)
 ```
 
 ## Debug launch hooks
 
-`Gitter/DebugLaunchHooks.swift` and `DebugLaunchHooks+Events.swift` exist only in Debug
-builds (`#if DEBUG`, compiled out of Release) and drive the UI from environment variables,
+`Gitter/DebugLaunchHooks.swift`, `DebugLaunchHooks+Events.swift` and
+`DebugLaunchHooks+Branches.swift` exist only in Debug builds (`#if DEBUG`, compiled out of Release) and drive the UI from environment variables,
 read once at startup. They exist because the verification environment has Screen Recording
 but not Accessibility, so nothing outside the process can click — without these, a diff can
 never be put on screen from a script, and a focus bug can never be reproduced.

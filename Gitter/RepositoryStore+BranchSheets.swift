@@ -73,7 +73,11 @@ extension RepositoryStore {
     /// screen, and deleting *that* orphans commits nobody was warned about.
     ///
     /// The tip also lets the notice name it: git keeps the commit object (verified), so a user
-    /// who changes their mind can recreate the branch.
+    /// who changes their mind can recreate the branch. It goes into that command **in full**
+    /// rather than abbreviated: once the warning and the branch are both gone, this notice is
+    /// the only copy of the sha anywhere, and a seven-character prefix is a command that works
+    /// today and may not work in the repository this is pasted into next month — git refuses an
+    /// ambiguous abbreviation rather than picking one.
     func confirmForceDelete(_ name: String) {
         guard case .deleteUnmerged(let warned, _, let tip) = activeSheet, warned == name else {
             return
@@ -87,8 +91,7 @@ extension RepositoryStore {
                 try await backend.forceDeleteBranch(name, expectedTip: tip, at: root)
             }
         }, onSuccess: { [self] in
-            showNotice(
-                "Deleted \"\(name)\". Recreate it with: git branch \(name) \(tip.prefix(7))")
+            showNotice("Deleted \"\(name)\". Recreate it with: git branch \(name) \(tip)")
         })
     }
 

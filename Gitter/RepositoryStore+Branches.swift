@@ -194,14 +194,21 @@ extension RepositoryStore {
     /// leave HEAD's old commit exactly where it was, which is why the sha is the warned one and
     /// not one read afterwards. `<name>` is a placeholder the user fills in: these commits were
     /// on no branch, so there is no name to suggest.
+    ///
+    /// The *command* carries the whole object name, not the seven characters the sentence reads
+    /// with. This notice is the only copy of that sha once it has been shown — the warning is
+    /// gone, and nothing on screen refers to commits that are on no ref — so it has to be a
+    /// command that still works when it is pasted somewhere else weeks later, into a repository
+    /// that has grown enough objects to make seven characters ambiguous. Git resolves an
+    /// ambiguous abbreviation by refusing, not by guessing, which would make the one recovery
+    /// route fail exactly when the user has most to lose.
     private static func leftBehindNotice(_ warned: UnreferencedCommits) -> String? {
         guard warned.count > 0, let sha = warned.headSha else { return nil }
-        let short = sha.prefix(7)
         let what =
             warned.count == 1
-            ? "Left 1 commit behind at \(short). Recover it with:"
-            : "Left \(warned.count) commits behind at \(short). Recover them with:"
-        return "\(what) git branch <name> \(short)"
+            ? "Left 1 commit behind at \(sha.prefix(7)). Recover it with:"
+            : "Left \(warned.count) commits behind at \(sha.prefix(7)). Recover them with:"
+        return "\(what) git branch <name> \(sha)"
     }
 
     private static func run(

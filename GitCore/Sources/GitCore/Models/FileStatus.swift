@@ -89,9 +89,20 @@ public enum RepositoryOperation: Sendable, Hashable {
     /// (hunk/line unstage) both leave `.git/SQUASH_MSG` untouched. But "Unstage All" does not
     /// use either of those — it runs plain `git reset -q` — and *that*, verified the same way,
     /// deletes `SQUASH_MSG` even though the worktree keeps every line unstaged rather than
-    /// discarded. That is a real loss, not a cosmetic one: with `SQUASH_MSG` present, plain
-    /// `git commit` opens pre-filled with "Squashed commit of the following:" plus the
-    /// squashed commits' own messages (verified); with it gone, there is nothing to prefill.
+    /// discarded.
+    ///
+    /// Two things go with it, and only the first is Gitter's own. `SQUASH_MSG` is *the* marker
+    /// a pending squash is detected by (there is no pseudo-ref), so deleting it ends the
+    /// squash as far as the app can tell: the note, the "Commit Squash" button and "Undo
+    /// Squash…" all vanish, the staged changes stay staged with nothing to say where they came
+    /// from, and the next commit is an ordinary one. The second is a loss only outside Gitter:
+    /// with the file present, a plain `git commit` *in a terminal* opens pre-filled with
+    /// "Squashed commit of the following:" and the squashed commits' own messages (verified on
+    /// git 2.54 by capturing `COMMIT_EDITMSG` from a fake `GIT_EDITOR`). Gitter never shows
+    /// that text — every commit it makes passes `-F <the draft>`, so the composer is whatever
+    /// the user typed — so this half is not a loss the app could have shown either way. It is
+    /// recorded because the state does not belong to Gitter alone.
+    ///
     /// Since this one property gates both the safe commands and the destructive one, the
     /// destructive one decides it — contrary to this milestone's design doc, which expected
     /// `git reset -q` to leave `SQUASH_MSG` alone and marked that expectation itself as

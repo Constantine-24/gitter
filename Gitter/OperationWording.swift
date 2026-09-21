@@ -201,10 +201,16 @@ extension RepositoryOperation {
             return "Stopping discards every conflict resolution and anything you staged since it "
                 + "began, and removes the patches that were already applied."
         case .squash:
+            // The last sentence is literally true — `git reset --merge` removes `SQUASH_MSG`
+            // (verified on git 2.54) — and it is kept because the message is git's, not
+            // Gitter's: the app never shows it (every commit goes through `-F <the draft>`),
+            // but a plain `git commit` in a terminal opens pre-filled with it, and a user who
+            // was about to do that is losing something real. It does not promise a prefill
+            // Gitter has; "git's" is what says whose it is.
             return "Undoing discards everything currently staged — the squashed changes, any "
                 + "conflict resolutions, and anything else in the index, including work you "
-                + "staged before the squash if the squash was started outside Gitter. The "
-                + "prepared \"Squashed commit of the following:\" message goes too."
+                + "staged before the squash if the squash was started outside Gitter. Git's "
+                + "\"Squashed commit of the following:\" message goes too."
         }
     }
 
@@ -253,7 +259,7 @@ extension RepositoryOperation {
         switch self {
         case .squash:
             "Nothing is staged, so no file in your working copy changes — the pending squash and "
-                + "its prepared message are all that go."
+                + "git's message for it are all that go."
         case .merge, .cherryPick, .revert, .rebase, .applyingPatches:
             "No tracked file is staged or conflicted, so no file in your working copy changes."
         }
