@@ -66,7 +66,10 @@ struct DetailView: View {
             Text(operation.note(hasConflicts: store.hasUnmergedFiles))
                 .font(.callout)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                // Two, not one: the button takes about a fifth of the strip, and the longest
+                // note (a rebase with conflicts, which also names `git rebase --continue`) was
+                // truncated mid-sentence at 1200 points once it was there.
+                .lineLimit(2)
             Spacer(minLength: 8)
             Button(operation.abortButtonTitle) { store.requestAbort() }
                 .font(.callout)

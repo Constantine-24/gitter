@@ -33,7 +33,10 @@ struct LeaveDetachedSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("They start at the commit HEAD is on now:")
+                Text(
+                    isOne
+                        ? "It is the commit HEAD is on now:"
+                        : "They start at the commit HEAD is on now:")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 // Selectable and in full: an abbreviation is enough to read and not always
@@ -45,8 +48,8 @@ struct LeaveDetachedSheet: View {
             }
 
             Text(
-                "Creating a branch here keeps them. It does not \(action.summary) — ask for that "
-                    + "again afterwards.")
+                "Creating a branch here keeps \(them). It does not \(action.summary) — ask for "
+                    + "that again afterwards.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -55,7 +58,9 @@ struct LeaveDetachedSheet: View {
                 Button("Create Branch Here…") { createBranch() }
                 Spacer()
                 // No shortcut on the half that strands commits.
-                Button("Leave Them Behind", role: .destructive) { leave() }
+                Button(isOne ? "Leave It Behind" : "Leave Them Behind", role: .destructive) {
+                    leave()
+                }
                     .foregroundStyle(.red)
                     .disabled(store.isMutating)
                 Button("Cancel") { store.activeSheet = nil }
@@ -68,17 +73,20 @@ struct LeaveDetachedSheet: View {
         .onExitCommand { store.activeSheet = nil }
     }
 
+    /// One commit is the case every sentence here has to bend for, so it is asked once.
+    private var isOne: Bool { unreferencedCommits == 1 }
+
+    private var them: String { isOne ? "it" : "them" }
+
     private var title: String {
-        unreferencedCommits == 1
-            ? "Leave 1 commit behind?" : "Leave \(unreferencedCommits) commits behind?"
+        isOne ? "Leave 1 commit behind?" : "Leave \(unreferencedCommits) commits behind?"
     }
 
     private var consequence: String {
         let they =
-            unreferencedCommits == 1
+            isOne
             ? "1 commit is on no branch, tag or remote"
             : "\(unreferencedCommits) commits are on no branch, tag or remote"
-        let them = unreferencedCommits == 1 ? "it" : "them"
         return "You are not on a branch, and \(they) — only this detached HEAD. If you "
             + "\(action.summary), nothing but the reflog will reach \(them)."
     }
