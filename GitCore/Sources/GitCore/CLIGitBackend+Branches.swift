@@ -138,7 +138,9 @@ extension CLIGitBackend: GitBranchBackend {
         guard isPlausibleName(name) else { throw BranchOperationError.invalidName(name) }
     }
 
-    private func requireRevision(_ revision: String) throws {
+    // Not `private` — see `runBranchCommand`'s doc comment: `CLIGitBackend+BranchDelete.swift`
+    // checks both sides of `commitCount(in:notIn:)`'s range with it.
+    func requireRevision(_ revision: String) throws {
         guard isPlausibleName(revision) else { throw BranchOperationError.invalidName(revision) }
     }
 }

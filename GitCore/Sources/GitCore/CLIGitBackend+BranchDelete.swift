@@ -1,9 +1,11 @@
 import Foundation
 
-/// `deleteBranch` and `commitsOnlyOn`. Split out of `CLIGitBackend+Branches.swift` for length,
-/// not for any difference in the rules it follows — see that file's header comment (no force
-/// flag outside `branch -D`, names are never pathspecs) and `GitBranchBackend`'s doc comments
-/// on these two methods for exactly what each command does and why.
+/// `deleteBranch` and the three `rev-list --count` readers the confirmations are built on
+/// (`commitsOnlyOn`, `commitCount(in:notIn:)`, `unreferencedCommitCount`). Split out of
+/// `CLIGitBackend+Branches.swift` for length, not for any difference in the rules it follows —
+/// see that file's header comment (no force flag outside `branch -D`, names are never
+/// pathspecs) and `GitBranchBackend`'s doc comments on each method for exactly what each
+/// command does and why.
 extension CLIGitBackend {
     public func deleteBranch(_ name: String, force: Bool, at root: URL) async throws -> BranchDeletion {
         try requireName(name)
@@ -39,13 +41,24 @@ extension CLIGitBackend {
         // `refs/heads/<name>`, a string that cannot begin with `-` regardless of `name`, so it
         // can never be misread as an option.
         let ref = "refs/heads/" + branch
-        let data = try await run(
-            ["rev-list", "--count", ref, "--not", "--exclude=" + ref, "--all"], cwd: root)
-        let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let count = Int(text) else {
-            throw GitError.commandFailed(exitCode: -1, stderr: "unexpected rev-list --count output: \(text)")
-        }
-        return count
+        return try await revListCount(
+            ["rev-list", "--count", ref, "--not", "--exclude=" + ref, "--all"], at: root)
+    }
+
+    public func commitCount(in branch: String, notIn base: String, at root: URL) async throws -> Int {
+        try requireRevision(branch)
+        try requireRevision(base)
+        // `--end-of-options` *is* usable here, unlike in the two counts around it: the range is
+        // the last argument, so stopping option parsing costs nothing (verified on git 2.54 —
+        // accepted, and not echoed the way `rev-parse` echoes it without `--verify`).
+        //
+        // The trailing `--` says "no pathspecs follow", which is what keeps a revision git
+        // cannot resolve from being tried as a file name: with it the failure is a clean
+        // "fatal: bad revision 'HEAD..nope'", without it the longer "ambiguous argument …
+        // unknown revision or path not in the working tree". Both exit 128 and both throw; the
+        // first is the honest description of what went wrong.
+        return try await revListCount(
+            ["rev-list", "--count", "--end-of-options", base + ".." + branch, "--"], at: root)
     }
 
     public func unreferencedCommitCount(at root: URL) async throws -> Int {
@@ -55,16 +68,9 @@ extension CLIGitBackend {
         // same reason as `commitsOnlyOn`: it would stop option parsing for the rest of the argv
         // and turn `--not`/`--branches` into revisions. Nothing here is user input.
         do {
-            let data = try await run(
+            return try await revListCount(
                 ["rev-list", "--count", "HEAD", "--not", "--branches", "--tags", "--remotes"],
-                cwd: root)
-            let text = String(decoding: data, as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let count = Int(text) else {
-                throw GitError.commandFailed(
-                    exitCode: -1, stderr: "unexpected rev-list --count output: \(text)")
-            }
-            return count
+                at: root)
         } catch GitError.commandFailed(exitCode: 128, let stderr)
             where stderr.contains("ambiguous argument 'HEAD'")
         {
@@ -83,6 +89,22 @@ extension CLIGitBackend {
     }
 
     // MARK: - Helpers
+
+    /// Runs a `rev-list --count …` and returns the number it printed.
+    ///
+    /// Output that is not a number is never rounded down to 0: every one of these counts feeds
+    /// a confirmation or a warning, so an answer that cannot be read has to be an error the
+    /// caller sees, not a reassuring zero.
+    private func revListCount(_ arguments: [String], at root: URL) async throws -> Int {
+        let data = try await run(arguments, cwd: root)
+        let text = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let count = Int(text) else {
+            throw GitError.commandFailed(
+                exitCode: -1, stderr: "unexpected rev-list --count output: \(text)")
+        }
+        return count
+    }
 
     /// The branch HEAD is on, or nil when HEAD is detached. `--short -q`: quiet so a detached
     /// HEAD is a silent exit 1 rather than an error, matching `TestRepo.currentBranch()`.

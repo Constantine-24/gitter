@@ -170,6 +170,29 @@ public protocol GitBranchBackend: Sendable {
     ///   as "safe to delete".
     func commitsOnlyOn(branch: String, at root: URL) async throws -> Int
 
+    /// How many commits are in `branch` that `base` cannot reach — what the merge sheet shows as
+    /// "N commits in <branch> are not in <current>", and exactly what a merge of `branch` into
+    /// `base` would bring over.
+    ///
+    /// `git rev-list --count --end-of-options <base>..<branch> --`. One direction only: commits
+    /// `base` has and `branch` does not are a different question and are never counted here.
+    ///
+    /// Not the same question as `commitsOnlyOn(branch:)`, and the two answer differently on
+    /// purpose (both verified on git 2.54): a branch already merged into some *other* branch is
+    /// 0 there — nothing would be lost by deleting it — while here it still counts every commit
+    /// `base` is missing, because merging really would bring them in.
+    ///
+    /// `base` is usually `"HEAD"`, which works whether HEAD is on a branch or detached (git
+    /// allows a merge into a detached HEAD and so does `merge`). Either side may be any
+    /// revision git can resolve.
+    ///
+    /// **It throws rather than guessing.** A revision git cannot resolve is a `commandFailed`
+    /// (exit 128, "bad revision" — the trailing `--` is what makes it that rather than a
+    /// could-be-a-path "ambiguous argument"), and a name that would be read as an option is
+    /// `.invalidName` before git runs. The caller must show no number at all rather than a
+    /// wrong one.
+    func commitCount(in branch: String, notIn base: String, at root: URL) async throws -> Int
+
     /// How many commits are reachable from HEAD but from **no branch, tag or remote-tracking
     /// ref** — the commits a move of HEAD would strand.
     ///
