@@ -406,6 +406,74 @@ import Testing
         #expect(findings.contains { $0.contains("--force-with-lease=") }, "\(findings)")
     }
 
+    /// Two ways a lease can satisfy the shape rule and still not be the lease it looks like.
+    ///
+    /// `isPermittedLease` asked only that the part after the separator *begin* `\(` and *end*
+    /// `)`, so anything between the interpolation's closing parenthesis and the end of the
+    /// literal rode along: `--force-with-lease=<ref>:\(sha)extra)` is the expected object name
+    /// `<sha>extra)`, which is not what any sheet showed, and `--force-with-lease=x:\()`
+    /// interpolates nothing at all.
+    ///
+    /// And the separator was the **last** `:`, where git takes the **first** — measured:
+    /// `git push --force-with-lease=refs/heads/feature:a:b` answers `error: cannot parse
+    /// expected object name 'a:b'`. So a literal with a second `:` outside the interpolation is
+    /// not a lease git will honour, and reading it as one (ref `…feature:a`, expectation
+    /// `\(c)`) let a shape through that git itself rejects.
+    @Test(arguments: [
+        #"_ = try await run(["push", "--force-with-lease=\(ref):\(sha)extra)", r, s], cwd: root)"#,
+        #"_ = try await run(["push", "--force-with-lease=\(ref):\(sha) ", r, s], cwd: root)"#,
+        #"_ = try await run(["push", "--force-with-lease=x:\()", r, s], cwd: root)"#,
+        #"_ = try await run(["push", "--force-with-lease=\(a):\(b):\(c)", r, s], cwd: root)"#,
+    ])
+    func catchesALeaseWhoseShapeOnlyLooksRight(source: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains("--force-with-lease=") }, "\(findings)")
+    }
+
+    /// A lease vouches for a delete refspec — the one permission in this scanner that lets a
+    /// destructive literal through — and `carriesLease` used to read *every* literal anywhere in
+    /// an element. So a lease in one arm of a ternary vouched for a refspec that deletes the
+    /// branch whichever way the condition falls: on the other arm nothing leases it at all.
+    ///
+    /// Reading every literal is right for a deny table (both arms can reach git, so both must be
+    /// checked) and wrong for a rule that *grants* permission, which has to read the value the
+    /// element really has. A lease therefore counts only as a lone-literal element of the vector
+    /// — which is the only shape `allowsTheRemoteOperationsThisMilestoneNeeds` writes anyway.
+    @Test(arguments: [
+        #"_ = try await run(["push", force ? "--force-with-lease=\(ref):\(tip)" : "--dry-run", remote, ":refs/heads/\(b)"], cwd: root)"#,
+        #"_ = try await run(["push", ok ? "--force-with-lease=\(ref):\(tip)" : "--quiet", remote, ":"], cwd: root)"#,
+    ])
+    func aLeaseInOneArmOfATernaryVouchesForNoDeleteRefspec(source: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains("delete refspec") }, "\(findings)")
+    }
+
+    /// The lease's own permission is bounded the same way and for the same reason: the other arm
+    /// of `ok ? lease : "--quiet"` is a push with no lease on it, so the element cannot be read
+    /// as "a lease". The permitted spelling is one whole literal standing as an element of the
+    /// `push` vector — not a literal buried in an expression that may evaluate to something else.
+    @Test func aLeaseInOneArmOfATernaryIsNotAPermittedLease() {
+        let source = #"_ = try await run(["push", "--porcelain", ok ? "--force-with-lease=\(ref):\(tip)" : "--quiet", remote, spec], cwd: root)"#
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains("--force-with-lease=") }, "\(findings)")
+    }
+
+    /// The delete-refspec sweep stands down inside a `push` vector because only there can a
+    /// lease in the same array vouch for the refspec. That stand-down covered the vector's whole
+    /// *range*, so a `:refs/…` nested in a sub-expression of a leased push escaped both rules at
+    /// once: the sweep by offset, and the array rule by the lease. The inner array is classified
+    /// by its own first element, so it is not a fragment either. The stand-down is now the
+    /// vector's own lone-literal elements, which is exactly what the lease can speak for.
+    @Test func aDeleteRefspecNestedInsideALeasedPushVectorIsStillAFinding() {
+        let source = #"_ = try await run(["push", "--force-with-lease=\(ref):\(tip)", extra([":refs/heads/main"])], cwd: root)"#
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains(":refs/heads/main") }, "\(findings)")
+    }
+
     /// Deleting a branch on the server is spelled as data, not as a flag: a refspec whose source
     /// side is empty (`:refs/heads/x`) tells the server to delete that ref. `--delete` and `-d`
     /// are already findings, so this is the same command written the way that walks past them.
@@ -487,6 +555,69 @@ import Testing
         #expect(findings.contains { $0.contains("remote") }, "\(findings) should name remote")
     }
 
+    /// The allowed-shape rule above runs on *classified* arrays only, and one leading
+    /// non-literal is all it takes to lose it: `[repoFlag, "remote", "rm", r]` is a fragment,
+    /// and a fragment is checked against a union of flag tables that no word can be in. So
+    /// `git remote rm` was clean by the same route the flag rules were taught about in fix
+    /// round 1 — plus a second one the append pool opens, since an appended literal belongs to
+    /// no vector at all.
+    ///
+    /// Two rules answer it, and the split between them is a fact about this codebase rather
+    /// than a principle. `remote`'s destructive words — `prune`, `remove`, `set-url`, `rename`,
+    /// `set-head`, `set-branches`, `update` — appear in `GitCore/Sources` **zero** times, so
+    /// they are findings file-wide, wherever a literal holds one; that is also what catches
+    /// `a += ["prune", r]`, whose array reads as a vector named `prune`. `remote` and `rm` are
+    /// written in the sources as the first element of a classified vector, so they are
+    /// findings in a fragment or the append pool only, where the shape rule cannot reach.
+    @Test(arguments: [
+        (#"_ = try await run([repoFlag, "remote", "rm", r], cwd: root)"#, "remote"),
+        (#"_ = try await run([repoFlag, "remote", "set-branches", r, b], cwd: root)"#, "set-branches"),
+        (#"var a = ["remote", "-v"]; a.append("prune")"#, "prune"),
+        (#"var a = ["remote", "-v"]; a.append("remove")"#, "remove"),
+        (#"var a = [String](); a.append("set-url")"#, "set-url"),
+        (#"var a = ["remote"]; a += ["rename", old, new]"#, "rename"),
+        (#"var a = [String](); a.append("set-head")"#, "set-head"),
+        (#"var a = [String](); a.append("remote")"#, "remote"),
+        (#"let word = "set-url""#, "set-url"),
+    ])
+    func catchesARemoteVectorThatHidesItsShape(source: String, word: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains(word) }, "\(findings) should name \(word)")
+    }
+
+    /// And the word rules fire on none of the vectors the sources already build, which is the
+    /// survey they rest on: `git grep -nE
+    /// '"(prune|rm|remove|set-url|rename|set-head|set-branches|add|update)"' -- GitCore/Sources`
+    /// returns **four** hits, all in `CLIGitBackend+WorkingCopy.swift` — `["add", "--"] + …`
+    /// (:8), `["rm", "--cached", "-q", "--ignore-unmatch", "--"] + …` (:23), `["add", "-A"]`
+    /// (:29), `["rm", "--cached", "-r", "-q", "--", "."]` (:42). Every one is the first element
+    /// of a classified vector, so no fragment rule looks there; `add` is excluded from both
+    /// lists anyway, because `git remote add` adds a remote rather than destroying one and
+    /// `git add` is a command four lines away.
+    @Test(arguments: [
+        #"_ = try await run(["add", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"_ = try await run(["add", "-A"], cwd: root)"#,
+        #"_ = try await run(["rm", "--cached", "-q", "--ignore-unmatch", "--"] + paths, cwd: root)"#,
+        #"_ = try await run(["rm", "--cached", "-r", "-q", "--", "."], cwd: root)"#,
+        #"async let remoteData = run(["remote", "-v"], cwd: root)"#,
+    ])
+    func theRemoteWordsDoNotFireOnTheVectorsTheSourcesAlreadyBuild(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
+    /// Escapes are decoded before the tables are consulted — but the *classifying* first element
+    /// was read raw, so `["\u{72}emote", "rm", r]` named the subcommand `\u{72}emote`, which no
+    /// table holds, and the allowed-shape rule never ran. Git reads that literal as `remote`,
+    /// because Swift does; so does classification now.
+    @Test func decodesEscapesBeforeClassifyingTheSubcommand() {
+        let source = #"_ = try await run(["\u{72}emote", "rm", r], cwd: root)"#
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains("remote") }, "\(findings) should name remote")
+    }
+
     /// A flag spelled with unicode escapes matches no table, because the lexer keeps a literal's
     /// *raw* text: `"\u{2d}\u{2d}force"` is the value `\u{2d}\u{2d}force`. Every `\u{…}` in
     /// `GitCore/Sources` is `"\u{0}"`, git's `-z` record separator (`git grep`: four of them,
@@ -516,10 +647,14 @@ import Testing
                 "false positive: \(ForceFlagScanner.findings(in: source))")
     }
 
-    /// The mirror image, and a **contract**: these are the seven argument vectors the remote
-    /// work is going to write, spelled exactly as it will write them. Nothing here may become a
+    /// The mirror image, and a **contract**: these are the argument vectors the remote work is
+    /// going to write, spelled exactly as it will write them. Nothing here may become a
     /// finding — a rule that turns one of them red has to be narrowed here, before the code
     /// that writes it exists, rather than argued about afterwards.
+    ///
+    /// Seven arguments holding **eight** vectors, not seven: the fifth is a two-line source
+    /// with both `fetch` vectors in it (one remote, and `--all`). This comment and the design
+    /// doc both said "seven vectors" until fix round 2 — count them below.
     ///
     /// Read them as the shape the scanner demands in return for what it permits: one complete
     /// array literal, its subcommand first, the lease carrying an interpolated expected sha,

@@ -111,22 +111,32 @@ extension ForceFlagScanner {
     /// literals appear anywhere in here?", which is what has to be checked against the rules.
     /// For a plain `"switch"` the two agree; for `cond ? "--squash" : "--merge"` the value is
     /// nil and `literals` holds both.
+    ///
+    /// Which question a rule asks is not a matter of taste. A rule that *denies* reads
+    /// `literals`, because every literal in the element can be the one that reaches git. A rule
+    /// that *grants* — the lease's permission, and the lease vouching for a delete refspec —
+    /// must read `value`, because `force ? lease : "--dry-run"` is a lease only when `force` is
+    /// true while the refspec it was vouching for is pushed either way. See
+    /// `ForceFlagScanner.vouchingLease`.
     struct ArrayElement {
         let value: String?
+        /// Where `value`'s opening `"` sits in `source`, for the rules that have to say *which*
+        /// literal an element is rather than what it contains. Nil exactly when `value` is.
+        let valueOffset: Int?
         let literals: [String]
     }
 
-    /// One `[...]` array literal: its top-level elements, and where it sits in the source.
+    /// One `[...]` array literal, as its top-level elements.
     ///
-    /// The range is what the *prefix* rule needs and no other rule does. A rule that names one
-    /// exact token can be answered from the token alone, wherever it was found; a rule that
-    /// permits everything beginning `--force-with-lease=` cannot, because the permission is
-    /// conditional on the vector the literal stands in. The whole-file sweep has no vector — it
-    /// walks the literals — so it asks instead whether the literal's offset falls inside one of
-    /// the `push`-classified arrays. See `ForceFlagScanner.findings(in:)`.
+    /// The two position-dependent rules (a lease's permission, and a delete refspec's
+    /// stand-down inside a leased `push`) used to be answered from the array's whole *range*:
+    /// the whole-file sweep walks literals rather than vectors, so it asked whether a literal's
+    /// offset fell between a `push` array's brackets. That is too generous by exactly one shape
+    /// — a literal nested in a sub-expression of the vector (`["push", lease,
+    /// extra([":refs/heads/x"])]`) is inside the range while being no element of the vector at
+    /// all — so both rules now ask for `ArrayElement.valueOffset` instead, and the range is
+    /// gone. See `ForceFlagScanner.findings(in:)`.
     struct ArrayLiteral {
-        /// Offsets in `source`, from the `[` to just past its matching `]`.
-        let range: Range<Int>
         let elements: [ArrayElement]
     }
 
@@ -149,9 +159,7 @@ extension ForceFlagScanner {
             }
             guard found, close > open + 1 else { continue }
             result.append(
-                ArrayLiteral(
-                    range: open..<(close + 1),
-                    elements: elements(raw: raw, code: code, from: open + 1, to: close)))
+                ArrayLiteral(elements: elements(raw: raw, code: code, from: open + 1, to: close)))
         }
         return result
     }
@@ -162,6 +170,7 @@ extension ForceFlagScanner {
         var elements: [ArrayElement] = []
         var current: [Character] = []
         var found: [String] = []
+        var foundOffsets: [Int] = []
         var depth = 0
         var index = start
 
@@ -178,9 +187,13 @@ extension ForceFlagScanner {
             let isLoneLiteral =
                 found.count == 1 && trimmed.hasPrefix("\"") && trimmed.hasSuffix("\"")
             elements.append(
-                ArrayElement(value: isLoneLiteral ? found[0] : nil, literals: found))
+                ArrayElement(
+                    value: isLoneLiteral ? found[0] : nil,
+                    valueOffset: isLoneLiteral ? foundOffsets[0] : nil,
+                    literals: found))
             current = []
             found = []
+            foundOffsets = []
         }
 
         while index < end {
@@ -193,8 +206,11 @@ extension ForceFlagScanner {
                 while stop < end, code[stop] != "\"" { stop += 1 }
                 guard stop < end else { break }
                 // Every literal in the element is kept, not just the last one: a ternary
-                // between two flags puts two here, and both must be checked.
+                // between two flags puts two here, and both must be checked. The offset is the
+                // opening quote's, which is what `literals(in:code:)` reports for the same
+                // literal — the two have to agree for a rule to match them up.
                 found.append(String(raw[(index + 1)..<stop]))
+                foundOffsets.append(index)
                 current += ["\"", "\""]
                 index = stop + 1
                 continue

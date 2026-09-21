@@ -33,23 +33,29 @@ import Foundation
 ///   So there is one *prefix* rule — `flagPrefixesAllowedOnlyAfter` — and, because permitting a
 ///   prefix promises much more than permitting a token, both the literal's **shape** and its
 ///   **position** are pinned: `isPermittedLease` demands one literal with a non-empty ref, a
-///   `:`, and an *interpolated* expected value, and `findings(in:)` demands that it stand
-///   inside an array literal classified `push`. Everything else beginning
+///   `:` where git splits on one, and an expected value that is exactly one interpolation, and
+///   `findings(in:)` demands that it stand as a **lone-literal element** of an array literal
+///   classified `push`. Everything else beginning
 ///   `--force-with-lease=` — a bare `=<ref>` leasing against the remote-tracking ref this app's
 ///   own fetch rewrites, an empty `=<ref>:` meaning "must not exist", a hard-coded sha that
-///   cannot have come from the sheet, a concatenated `"--force-with-lease=" + x` — is a
+///   cannot have come from the sheet, a concatenated `"--force-with-lease=" + x`, a lease that
+///   is one arm of a ternary and so a lease only half the time — is a
 ///   finding. The bare `--force-with-lease` stays in `alwaysForbidden` on top of that.
 /// - **A force refspec.** `+refs/heads/x:refs/heads/x` discards the other side's commits with
 ///   no flag involved. `isForceRefspec` reads it out of the literal's shape; the narrowing it
 ///   needs, and the spellings it cannot see, are written up there.
 /// - **A delete refspec.** `:refs/heads/x` deletes the branch on the server — `push --delete`
-///   with no flag to deny. `deleteRefspecPrefix` catches it file-wide; inside a `push` vector
-///   *any* leading `:` counts, unless that same vector carries a permitted lease, which is how
-///   Gitter's own "Delete on <remote>" is written. See `deleteRefspecReason`.
+///   with no flag to deny. `deleteRefspecPrefix` catches it file-wide; as an *element* of a
+///   `push` vector *any* leading `:` counts, unless that same vector carries a permitted lease
+///   of its own, which is how Gitter's own "Delete on <remote>" is written. See
+///   `deleteRefspecReason`.
 /// - **A word.** `git remote prune|remove|rm|set-url|rename|add|update|set-head|set-branches`
-///   rewrites the user's remotes, and not one of them is a flag. `allowedShapes` inverts the
-///   rule for such a subcommand: the permitted vectors are listed whole, and `["remote", "-v"]`
-///   is the only one.
+///   rewrites the user's remotes, and not one of them is a flag. Two rules, because one cannot
+///   do it: `allowedShapes` inverts the rule for a vector the scanner managed to classify —
+///   the permitted vectors are listed whole, and `["remote", "-v"]` is the only one — while
+///   `remoteWordsForbiddenEverywhere` and `remoteWordsForbiddenInFragments` forbid the words
+///   themselves, because a vector that hides its shape (`[repoFlag, "remote", "rm", r]`, or a
+///   word appended on its own) is beyond any shape rule by construction.
 /// - **A hiding place.** `["-c", "push.default=matching", "push", r]` is a complete git command
 ///   that this scanner reads as a fragment, losing every per-subcommand rule at once. An array
 ///   literal beginning with one of `globalOptionsBeforeSubcommand` is therefore a finding
@@ -125,11 +131,14 @@ import Foundation
 ///   every other rule. `CLIGitBackend+Abort.swift` spells that vector as a complete literal
 ///   with nothing appended, which is what makes the rule meaningful there.
 ///
-///   The prefix rule's exemption has the mirror-image shape: it covers the *whole* range of a
-///   `push` array literal, so a lease nested inside a sub-expression of one
-///   (`["push", extra(["--force-with-lease=x"])]`) is exempted by the sweep. That is why
-///   `fragmentFindings` checks the prefix rule too — the inner array is a fragment, and the
-///   fragment rule has no exemption. Two findings for one hazard, in the shapes both see.
+///   The two *permissions* used to have the mirror-image shape, and no longer do. Each covered
+///   the whole offset range of a `push` array literal, so anything nested in a sub-expression
+///   of one — a lease in `["push", extra(["--force-with-lease=x"])]`, a delete refspec in
+///   `["push", lease, extra([":refs/heads/x"])]` — was exempted by the sweep while being no
+///   element of the vector at all (and the inner array, classified by its own first element,
+///   is not even a fragment). Both now ask for a lone-literal *element* of the vector, which is
+///   the only thing a vector can speak for. `fragmentFindings` still checks the prefix rule as
+///   well: two findings for one hazard, in the shapes both see, is the cheaper mistake.
 /// - **The `-M`/`-p`/`-d`/`--all`/`--tags` group is subcommand-scoped, not file-wide.** Five
 ///   tokens, one per entry in `sweepExempt`. Each is dangerous after one subcommand (`branch
 ///   -M`, `fetch -p`, `push -d`, `push --all`, `push --tags`) and innocent after another
@@ -163,30 +172,33 @@ enum ForceFlagScanner {
         let arrays = argumentArrays(in: source, code: code)
         var findings: [String] = []
 
-        // Where each classified vector sits, which only the position-dependent rules need: the
-        // lease and the delete refspec are the two whose answer depends on the literal's
-        // surroundings rather than on the literal. `carriesLease` is what makes a delete
-        // refspec conditional on the sha the sheet showed.
-        let classified: [(range: Range<Int>, subcommand: String, carriesLease: Bool)] =
-            arrays.compactMap {
-                guard let first = $0.elements.first?.value, !first.hasPrefix("-") else { return nil }
-                return (
-                    range: $0.range, subcommand: first,
-                    carriesLease: $0.elements.flatMap(\.literals).contains(where: isPermittedLease)
-                )
-            }
+        // Which literals a `push` vector can speak for, which is what the two position-dependent
+        // rules need: the lease's permission, and the delete refspec's stand-down in favour of
+        // the array rule that can see the lease guarding it.
+        //
+        // "Inside a `push` array literal" was the old answer, by offset range, and it is too
+        // generous by exactly one shape: a literal nested in a sub-expression of the vector
+        // (`["push", lease, extra([":refs/heads/x"])]`) sits inside the range while being no
+        // element of the vector at all, so the sweep stood down for it and the array rule
+        // excused it by the lease. Both rules are *permissions*, and a permission has to name
+        // the element it is given to — so it is the vector's own lone-literal elements.
+        let pushVectorElements: Set<Int> = Set(
+            arrays
+                .filter { $0.elements.first?.value.map(decoded) == "push" }
+                .flatMap { $0.elements.compactMap(\.valueOffset) })
 
         for (token, literal) in literals(in: source, code: code) {
-            let inAPushVector = classified.contains {
-                $0.range.contains(token) && $0.subcommand == "push"
-            }
+            let isAPushElement = pushVectorElements.contains(token)
             for spelling in spellings(of: literal) {
                 if fileWideForbidden.contains(spelling) {
+                    let why =
+                        remoteWordsForbiddenEverywhere.contains(spelling)
+                        ? ": \(remoteWordReason)" : ""
                     findings.append(
-                        "forbidden literal \(spelling.debugDescription) (offset \(token))")
+                        "forbidden literal \(spelling.debugDescription) (offset \(token))\(why)")
                 }
                 if prefixRule(matching: spelling) != nil,
-                    !(inAPushVector && isPermittedLease(spelling))
+                    !(isAPushElement && isPermittedLease(spelling))
                 {
                     findings.append(
                         "forbidden literal \(spelling.debugDescription) (offset \(token)): "
@@ -197,10 +209,10 @@ enum ForceFlagScanner {
                         "forbidden force refspec \(spelling.debugDescription) (offset \(token)): "
                             + forceRefspecReason)
                 }
-                // A delete refspec outside a `push` vector. Inside one the array rule decides,
-                // because only there can a lease in the same array vouch for it; saying it here
-                // as well would report one hazard twice.
-                if spelling.hasPrefix(deleteRefspecPrefix), !inAPushVector {
+                // A delete refspec that is not an element of a `push` vector. For one that is,
+                // the array rule decides, because only there can a lease in the same array
+                // vouch for it; saying it here as well would report one hazard twice.
+                if spelling.hasPrefix(deleteRefspecPrefix), !isAPushElement {
                     findings.append(
                         "forbidden delete refspec \(spelling.debugDescription) (offset \(token)): "
                             + deleteRefspecReason)
@@ -222,12 +234,19 @@ enum ForceFlagScanner {
             // `["-C", dir, "switch", "--merge", b]`, `[cond ? "--ff" : "--no-ff", b]` — is a
             // FRAGMENT: it cannot be attributed to a subcommand, so it is checked against the
             // union instead.
-            guard let subcommand = arguments.first?.value, !subcommand.hasPrefix("-") else {
+            //
+            // `decoded` because classification has exactly one right answer and the escapes are
+            // part of it: `["\u{72}emote", "rm", r]` is `git remote rm`, and reading the raw
+            // text named the subcommand `\u{72}emote`, which is in no table, so every rule that
+            // keys on `remote` was lost. Elsewhere both spellings are checked; here the decoded
+            // one is simply what git receives.
+            guard let subcommand = arguments.first?.value.map(decoded), !subcommand.hasPrefix("-")
+            else {
                 // A *global* option before the subcommand is worse than an unclassified vector:
                 // it is the one shape that reliably turns a complete git command into one, and
                 // it does so silently. No vector in `GitCore/Sources` is written that way, so
                 // the rule is simply "don't" — see `globalOptionsBeforeSubcommand`.
-                if let first = arguments.first?.value,
+                if let first = arguments.first?.value.map(decoded),
                     globalOptionsBeforeSubcommand.contains(first)
                 {
                     findings.append(
@@ -245,7 +264,7 @@ enum ForceFlagScanner {
             // A subcommand whose dangerous forms are words rather than flags, so no table can
             // see them: the permitted vectors are listed whole. See `allowedShapes`.
             if let shapes = allowedShapes[subcommand] {
-                let tail = arguments.dropFirst().map(\.value)
+                let tail = arguments.dropFirst().map { $0.value.map(decoded) }
                 let matches = shapes.contains {
                     $0.count == tail.count && zip($0, tail).allSatisfy { $0 == $1 }
                 }
@@ -263,7 +282,7 @@ enum ForceFlagScanner {
             // element index can tell them apart. A classified array's first element holds
             // exactly one literal (the subcommand), so `dropFirst()` still drops it and
             // nothing else.
-            let carriesLease = literals.contains(where: isPermittedLease)
+            let carriesLease = arguments.contains(where: vouchingLease)
             for (index, element) in arguments.enumerated().dropFirst() {
                 for flag in element.literals.flatMap(spellings(of:)) {
                     if let reason = (forbiddenFlags[subcommand] ?? [:])[flag] {
@@ -273,7 +292,7 @@ enum ForceFlagScanner {
                             for: flag, after: subcommand,
                             isLastElement: index == arguments.count - 1)
                     } else if let rule = prefixRule(matching: flag),
-                        !rule.subcommands.contains(subcommand) || !isPermittedLease(flag)
+                        !rule.subcommands.contains(subcommand) || !vouchingLease(element)
                     {
                         findings.append("forbidden `git \(subcommand) \(flag)`: \(leaseReason)")
                     }
@@ -335,6 +354,7 @@ enum ForceFlagScanner {
         // fragment containing a subcommand name costs it nothing.
         let namesASubcommand = literals.contains {
             forbiddenFlags.keys.contains($0) || forbiddenSubcommands.keys.contains($0)
+                || allowedShapes.keys.contains($0)
         }
         let forbidden =
             isOneVector && literals.contains(diffTreeMarker) && !namesASubcommand
@@ -357,6 +377,16 @@ enum ForceFlagScanner {
             guard literal.hasPrefix(deleteRefspecPrefix) else { return nil }
             return "forbidden delete refspec \(literal.debugDescription) in an argument "
                 + "fragment: \(deleteRefspecReason)"
+        }
+        // And it can never prove its *shape*, which is the whole of the `remote` rule: the
+        // allowed-shape check runs on classified arrays only, so one leading non-literal
+        // (`[repoFlag, "remote", "rm", r]`) or one `.append("rm")` walked past it. The words
+        // that can only be `git remote`'s are findings file-wide instead (see
+        // `remoteWordsForbiddenEverywhere`); these two are the ones `GitCore/Sources` writes as
+        // the first element of a classified vector, where no fragment rule looks.
+        result += literals.filter(remoteWordsForbiddenInFragments.contains).map {
+            "forbidden literal \($0.debugDescription) in an argument fragment: "
+                + remoteFragmentReason
         }
         return result
     }
@@ -599,33 +629,109 @@ enum ForceFlagScanner {
     /// 1. **One string literal**, beginning `--force-with-lease=`. `"--force-with-lease=" + x`
     ///    is a finding: what is on the other side of the `+` is not something this scanner can
     ///    read, so it cannot be vouched for.
-    /// 2. A `:` in the remainder — the separator between the ref and the expected value.
+    /// 2. A `:` in the remainder — the separator between the ref and the expected value, and
+    ///    the **first** one outside an interpolation, because that is the one git splits on.
     /// 3. **Both sides non-empty.** `--force-with-lease=<ref>:` is a *legal and different*
     ///    command: an empty expected value means "only if that ref does not exist", which is
     ///    never what Gitter wants. `--force-with-lease=:<sha>` names no ref.
-    /// 4. The part after the **last** `:` is an interpolation — `\(…)`. A hard-coded sha cannot
-    ///    have come from the sheet the user just read, and the sheet is the whole mechanism: it
-    ///    shows a tip, the user agrees to overwrite *that* tip, and the lease is how git is told
-    ///    which tip that was. Only an interpolation can carry it.
+    /// 4. Everything after the **first** `:` — see `leaseSeparator(in:)`, which is where git
+    ///    splits — is exactly one interpolation, `\(…)`, and nothing else. A hard-coded sha
+    ///    cannot have come from the sheet the user just read, and the sheet is the whole
+    ///    mechanism: it shows a tip, the user agrees to overwrite *that* tip, and the lease is
+    ///    how git is told which tip that was. Only an interpolation can carry it.
     ///
-    /// Position is still pinned on top of all this (an array literal classified `push`), by
-    /// `findings(in:)` — permission to spell a prefix is much larger than permission to spell a
-    /// token, and shape alone does not say the literal is about to be handed to `git push`.
+    /// Position is still pinned on top of all this (a lone-literal element of an array literal
+    /// classified `push`), by `findings(in:)` — permission to spell a prefix is much larger than
+    /// permission to spell a token, and shape alone does not say the literal is about to be
+    /// handed to `git push`.
     static func isPermittedLease(_ literal: String) -> Bool {
         guard let rule = prefixRule(matching: literal) else { return false }
         let value = literal.dropFirst(rule.prefix.count)
-        guard let separator = value.lastIndex(of: ":") else { return false }
+        guard let separator = leaseSeparator(in: value) else { return false }
         let ref = value[value.startIndex..<separator]
-        let expected = value[value.index(after: separator)...]
-        guard !ref.isEmpty, !expected.isEmpty else { return false }
-        return expected.hasPrefix("\\(") && expected.hasSuffix(")")
+        guard !ref.isEmpty else { return false }
+        return isWholeInterpolation(value[value.index(after: separator)...])
+    }
+
+    /// Where git splits a lease: the **first** `:` that is not inside an interpolation.
+    ///
+    /// Measured rather than assumed. `git push --force-with-lease=refs/heads/feature:a:b`
+    /// answers `error: cannot parse expected object name 'a:b'` — git takes everything after
+    /// the first `:` as the expected value, and refuses when that is not an object name. This
+    /// scanner split on the *last* one, so it read that literal as a lease on the ref
+    /// `refs/heads/feature:a` with the expectation `b`, and a
+    /// `"--force-with-lease=\(a):\(b):\(c)"` that git will never honour was permitted.
+    ///
+    /// Interpolations are skipped because a `:` can legitimately sit inside one — a ternary, a
+    /// dictionary literal — and the lexer keeps the literal's raw text, so the `\(` and `)`
+    /// marks are there to be counted.
+    static func leaseSeparator(in value: Substring) -> Substring.Index? {
+        var depth = 0
+        var index = value.startIndex
+        while index < value.endIndex {
+            let next = value.index(after: index)
+            if value[index] == "\\", next < value.endIndex, value[next] == "(" {
+                depth += 1
+                index = value.index(after: next)
+                continue
+            }
+            if depth > 0 {
+                if value[index] == "(" { depth += 1 }
+                if value[index] == ")" { depth -= 1 }
+            } else if value[index] == ":" {
+                return index
+            }
+            index = next
+        }
+        return nil
+    }
+
+    /// Whether `text` is exactly one `\(…)` — balanced, non-empty inside, and with nothing
+    /// after the closing parenthesis.
+    ///
+    /// "Begins `\(` and ends `)`" was the old test, and it let the rest of the literal ride
+    /// along in between: `\(sha)extra)` satisfies it while handing git the expected object name
+    /// `<sha>extra)`, and `\()` satisfies it while interpolating nothing at all. Both were
+    /// permitted leases.
+    static func isWholeInterpolation(_ text: Substring) -> Bool {
+        guard text.hasPrefix("\\(") else { return false }
+        let inner = text.index(text.startIndex, offsetBy: 2)
+        var depth = 1
+        var index = inner
+        while index < text.endIndex {
+            if text[index] == "(" { depth += 1 }
+            if text[index] == ")" {
+                depth -= 1
+                if depth == 0 { return index > inner && text.index(after: index) == text.endIndex }
+            }
+            index = text.index(after: index)
+        }
+        return false
+    }
+
+    /// Whether an element of an argument vector is a lease this scanner will honour — which is
+    /// the one place it *grants* permission, so it is the one place that must read the element's
+    /// value rather than the literals inside it.
+    ///
+    /// `force ? "--force-with-lease=\(ref):\(tip)" : "--dry-run"` contains a permitted lease and
+    /// is a lease only when `force` is true; the delete refspec it was vouching for is pushed
+    /// either way. Reading every literal is right for a deny table — both arms can reach git —
+    /// and exactly wrong here. So a lease counts only as a lone-literal element, which is how
+    /// `allowsTheRemoteOperationsThisMilestoneNeeds` writes every one of them.
+    ///
+    /// Both sites that ask this question call it, so they cannot drift apart: the lease's own
+    /// permission inside a classified vector, and `carriesLease`.
+    static func vouchingLease(_ element: ArrayElement) -> Bool {
+        guard let value = element.value else { return false }
+        return spellings(of: value).contains(where: isPermittedLease)
     }
 
     static let leaseReason =
         "the only permitted lease is one string literal `--force-with-lease=<ref>:\\(sha)` — "
-        + "non-empty on both sides of the `:`, with the expected value interpolated from the "
-        + "sha the confirmation sheet showed — as an element of an array literal classified "
-        + "`push`. A bare `--force-with-lease=<ref>` leases against the remote-tracking ref "
+        + "non-empty before the first `:`, and after it exactly one interpolation carrying the "
+        + "sha the confirmation sheet showed — standing alone as an element of an array literal "
+        + "classified `push`. A bare `--force-with-lease=<ref>` leases against the "
+        + "remote-tracking ref "
         + "that this app's own fetch rewrites, an empty expected value means `must not exist`, "
         + "and a concatenated flag cannot be read here at all"
 
@@ -644,6 +750,17 @@ enum ForceFlagScanner {
     static func spellings(of literal: String) -> [String] {
         guard let decoded = decodingUnicodeEscapes(literal) else { return [literal] }
         return [literal, decoded]
+    }
+
+    /// The one spelling git will actually be handed: escapes decoded, since Swift decodes them
+    /// before the string ever reaches a process.
+    ///
+    /// The rules consult *both* spellings, because the raw text is what makes an interpolated
+    /// literal readable. Classification cannot: an array literal has one subcommand, and
+    /// `["\u{72}emote", "rm", r]` runs `git remote rm` however this scanner reads it. Reading it
+    /// raw named the subcommand `\u{72}emote` and lost every rule keyed on `remote` at once.
+    static func decoded(_ literal: String) -> String {
+        decodingUnicodeEscapes(literal) ?? literal
     }
 
     /// `literal` with every `\u{<hex>}` replaced by the character it denotes, or nil when there
@@ -708,17 +825,23 @@ enum ForceFlagScanner {
     /// Two rules, because the narrowing that is safe file-wide is not the one that is useful
     /// inside a vector:
     ///
-    /// - **File-wide and in fragments**, only a literal beginning `:refs/` counts. The other
-    ///   `:`-leading literal in `GitCore/Sources` is `CLIGitBackend`'s `":(literal)" + path`,
-    ///   pathspec magic rather than a refspec, and it must not be flagged
-    ///   (`git grep -E '"[:][^"]*"' -- GitCore/Sources`: those two, and nothing else).
-    /// - **Inside an array literal classified `push`**, *any* literal beginning `:` counts,
-    ///   including the bare `":"` of `":" + ref` — a leading colon there can only be a refspec
-    ///   — **unless the same array carries a permitted lease**. That exception is the whole
-    ///   design: Gitter deletes a remote branch with
-    ///   `["push", …, "--force-with-lease=refs/heads/x:\(tip)", …, ":refs/heads/x"]`, where the
-    ///   lease makes the deletion conditional on the tip the sheet showed, so a branch someone
-    ///   pushed to while the sheet was open is refused by git rather than deleted.
+    /// - **File-wide and in fragments**, only a literal beginning `:refs/` counts. The one
+    ///   `:`-leading literal in `GitCore/Sources` is `CLIGitBackend.swift:119`'s
+    ///   `":(literal)" + path`, pathspec magic rather than a refspec, and it must not be
+    ///   flagged. `git grep -nE '"[:][^"]*"' -- GitCore/Sources` returns **two** lines and this
+    ///   comment used to call them "those two" literals: the second, `Models/Commit.swift:10`,
+    ///   is a doc comment (`/// … split on ", ": e.g. "HEAD -> main" …`) and not a literal at
+    ///   all — the scanner never sees it, because comments are stripped before anything is
+    ///   lexed.
+    /// - **As an element of an array literal classified `push`**, *any* literal beginning `:`
+    ///   counts, including the bare `":"` of `":" + ref` — a leading colon there can only be a
+    ///   refspec — **unless the same array carries a permitted lease** as an element of its own
+    ///   (`vouchingLease`). That exception is the whole design: Gitter deletes a remote branch
+    ///   with `["push", …, "--force-with-lease=refs/heads/x:\(tip)", …, ":refs/heads/x"]`,
+    ///   where the lease makes the deletion conditional on the tip the sheet showed, so a
+    ///   branch someone pushed to while the sheet was open is refused by git rather than
+    ///   deleted. A `:refs/…` that is *not* an element of the vector — nested in a
+    ///   sub-expression of it — is left to the file-wide rule above, which no lease excuses.
     static let deleteRefspecPrefix = ":refs/"
 
     static let deleteRefspecReason =
@@ -732,11 +855,16 @@ enum ForceFlagScanner {
     /// loses the `push` table, the lease rule, the wide `+`/`:` rules and the positional rules
     /// all at once, and reads as clean.
     ///
-    /// `git grep -E '\[\s*"(-c|-C|--git-dir|--work-tree)"' -- GitCore/Sources Gitter` finds
-    /// none — the only `"-c"` in the sources is `["switch", "-c", name]`, where it is `switch`'s
-    /// create flag — so the rule can be a flat refusal rather than a "skip the pair and carry
-    /// on" that would have to understand each option's argument. Every backend call already
-    /// passes a working directory; a repository is named that way, not with `-C`.
+    /// `git grep -nE '\[\s*"(-c|-C|--git-dir|--work-tree)"' -- GitCore/Sources Gitter` finds
+    /// none, so the rule can be a flat refusal rather than a "skip the pair and carry on" that
+    /// would have to understand each option's argument. Every backend call already passes a
+    /// working directory; a repository is named that way, not with `-C`.
+    ///
+    /// `"-c"` itself appears **twice**, not once as this comment claimed until fix round 2, and
+    /// both are `switch`'s create flag rather than git's `-c`: `git grep -nE '"-c"' --
+    /// GitCore/Sources Gitter` gives `CLIGitBackend+Branches.swift:31` (`arguments = ["switch",
+    /// "-c", name]`) and `:67` (`["switch", "-c", local, "--track", "--end-of-options",
+    /// remoteBranch]`). Neither is the array's first element, which is all this rule looks at.
     static let globalOptionsBeforeSubcommand: Set<String> = [
         "-c", "-C", "--git-dir", "--work-tree", "--exec-path", "--namespace",
     ]
@@ -758,7 +886,72 @@ enum ForceFlagScanner {
     ///
     /// The shape is matched over element *values*, so a non-literal element never matches:
     /// `["remote", subcommand]` is a finding whatever `subcommand` holds.
+    ///
+    /// **What this rule does not reach, because saying "listed whole … and nothing else" was
+    /// the claim fix round 2 found untrue.** It runs on *classified* arrays only, and one
+    /// leading non-literal demotes a complete command to a fragment: `[repoFlag, "remote",
+    /// "rm", r]` was clean, and so was `var a = ["remote", "-v"]; a.append("prune")`, where the
+    /// word never shares a vector with anything. `remote` is not in `namesASubcommand` either,
+    /// so such a fragment could even collect the `diff-tree` carve-out. Three things close
+    /// that, and none of them is this table: `allowedShapes`' keys now join `namesASubcommand`;
+    /// `remoteWordsForbiddenInFragments` makes `remote` and `rm` findings in any fragment or
+    /// append; and `remoteWordsForbiddenEverywhere` makes the rest of the words findings
+    /// file-wide. Read together: **the shape rule constrains a vector that names `remote`
+    /// first, and the word rules constrain everything that does not.**
     static let allowedShapes: [String: [[String]]] = ["remote": [["-v"]]]
+
+    /// `git remote`'s destructive words, as literals, anywhere in a file.
+    ///
+    /// The allowed-shape rule above can only speak for a vector it managed to classify. These
+    /// are the words that make such a vector destructive, and a survey says each one can simply
+    /// be forbidden outright here: `git grep -nE
+    /// '"(prune|rm|remove|set-url|rename|set-head|set-branches|add|update)"' -- GitCore/Sources`
+    /// returns **four** hits, all in `CLIGitBackend+WorkingCopy.swift` — `["add", "--"] + …`
+    /// (:8), `["rm", "--cached", "-q", "--ignore-unmatch", "--"] + …` (:23), `["add", "-A"]`
+    /// (:29) and `["rm", "--cached", "-r", "-q", "--", "."]` (:42) — so `prune`, `remove`,
+    /// `set-url`, `rename`, `set-head`, `set-branches` and `update` appear in `GitCore/Sources`
+    /// **zero** times and a file-wide rule on them costs nothing today.
+    ///
+    /// `add` and `rm` are the two that cost something, and they are not here. `git add` and
+    /// `git rm --cached` are commands this app really runs; both are written as the first
+    /// element of a classified vector, so `rm` is confined to the fragment list below and `add`
+    /// is left out altogether — `git remote add` adds a remote rather than destroying one, and
+    /// a word that names a subcommand the code uses four lines away is the wrong thing to make
+    /// fatal file-wide.
+    ///
+    /// The future false positive is `update` (or `rename` in a rename-detection parser), and it
+    /// resolves the way `--skip`'s does: move the word into the fragment list, with the grep
+    /// that made it necessary written down.
+    static let remoteWordsForbiddenEverywhere: Set<String> = [
+        "prune", "remove", "set-url", "rename", "set-head", "set-branches", "update",
+    ]
+
+    /// `remote`'s words that `GitCore/Sources` also uses legitimately as the **first** element
+    /// of a classified vector, which is a position no fragment rule looks at. So they are
+    /// forbidden there, and only there: in an argument fragment or the append pool, where the
+    /// shape rule cannot reach and nothing can prove what the vector is.
+    ///
+    /// `remote` itself is one of them — `["remote", "-v"]` is the vector Gitter runs, and
+    /// `[repoFlag, "remote", …]` is the shape that hid `git remote rm`.
+    ///
+    /// The price of keeping these two out of the sweep, said plainly: `var a = ["remote"];
+    /// a += ["rm", r]` puts `rm` in an array literal that is *classified* — by `rm` itself —
+    /// rather than in a fragment, so no word rule sees it. It is a finding anyway, because the
+    /// seed `["remote"]` fails the shape rule on its own, and so is every other literal
+    /// spelling of that seed (`[repoFlag, "remote"]` is a fragment holding `remote`;
+    /// `["remote", word]` fails the shape). What is left is the standing "only literals" hole:
+    /// a seed whose `remote` is not a literal at all.
+    static let remoteWordsForbiddenInFragments: Set<String> = ["remote", "rm"]
+
+    static let remoteWordReason =
+        "`git remote prune|remove|rm|set-url|rename|set-head|set-branches|update` each rewrite "
+        + "or delete the user's remote configuration, and not one of them is a flag any table "
+        + "can see. The only `remote` vector Gitter runs is [\"remote\", \"-v\"]"
+
+    static let remoteFragmentReason =
+        "a fragment cannot prove its shape, and `remote`'s permitted shape — [\"remote\", "
+        + "\"-v\"] and nothing else — is the whole rule. Spell the vector as one array literal "
+        + "beginning with its subcommand, so the shape can be read"
 
     private static func spelling(of subcommand: String, _ shapes: [[String]]) -> String {
         shapes.map { ([subcommand] + $0).map(\.debugDescription).joined(separator: ", ") }
@@ -830,6 +1023,7 @@ enum ForceFlagScanner {
         .subtracting(flagsAllowedOnlyAfter.keys)
         .subtracting(sweepExempt)
         .union(forbiddenSubcommands.keys)
+        .union(remoteWordsForbiddenEverywhere)
 
     /// Tokens the sweep must skip because `GitCore/Sources` uses each of them legitimately,
     /// under a subcommand the sweep cannot see. Every entry is a fact about this codebase,
