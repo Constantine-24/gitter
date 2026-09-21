@@ -57,14 +57,26 @@ struct DetailView: View {
     /// Why half the list's buttons are off, and what to do instead. The wording changes once
     /// the last conflict is staged: nothing is unmerged any more, but the operation is still
     /// open and only a commit ends it.
+    ///
+    /// The trailing button is the way *out*, and the only one in the app: everything else here
+    /// leads forward, to a commit. It asks before it does anything — that is what its ellipsis
+    /// promises — and the question it opens is `AbortSheet`.
     private func note(for operation: RepositoryOperation) -> some View {
-        Text(operation.note(hasConflicts: store.hasUnmergedFiles))
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(operation.note(hasConflicts: store.hasUnmergedFiles))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Button(operation.abortButtonTitle) { store.requestAbort() }
+                .font(.callout)
+                // Not while another git write is running: this one throws work away, and the
+                // sheet it opens would describe a repository mid-change.
+                .disabled(store.isMutating)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
     }
 
     // MARK: - Header

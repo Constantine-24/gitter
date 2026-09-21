@@ -149,8 +149,11 @@ extension RepositoryStore {
                 throw RepositoryMovedOn()
             }
         }, onSuccess: { [self] in
-            showNotice(
-                operation == .squash ? "Squash undone." : "\(operation.noun) aborted.")
+            // Like every other action that rewrites the worktree: what the user needs to look at
+            // afterwards is the working copy, and the detail pane may be showing a commit an
+            // aborted `am` has just rewound past.
+            select(.workingCopy)
+            showNotice(operation.abortedNotice)
         })
     }
 
