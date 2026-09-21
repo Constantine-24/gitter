@@ -197,6 +197,157 @@ import Testing
         #expect(RemoteFailureParser.parse(stderr: line + "\n") == .unreachable(payload))
     }
 
+    // MARK: - Credentials never reach a payload
+
+    /// A remote URL may carry the credential in it — `https://<user>:<token>@host/…` is what
+    /// every "clone with a personal access token" guide tells people to write — and git quotes
+    /// that URL back verbatim when the fetch fails. Every payload this parser produces is
+    /// therefore redacted, because a `RemoteOperationError` ends up in a banner, in a log and
+    /// in whatever the user copies out of one.
+    ///
+    /// Each fixture below is the measured wording with a credential substituted into the URL,
+    /// so what is being tested is the redaction and not a new wording.
+    @Test(arguments: [
+        (
+            "fatal: Authentication failed for 'https://alice:ghp_s3cr3t@github.com/acme/p.git/'",
+            RemoteOperationError.authenticationFailed(url: "https://github.com/acme/p.git/")
+        ),
+        (
+            "fatal: could not read Username for 'https://alice:ghp_s3cr3t@github.com/acme/p.git': terminal prompts disabled",
+            .authenticationNeeded(url: "https://github.com/acme/p.git")
+        ),
+        (
+            "fatal: could not read Password for 'https://ghp_s3cr3t@github.com/acme/p.git': terminal prompts disabled",
+            .authenticationNeeded(url: "https://github.com/acme/p.git")
+        ),
+        ("alice:hunter2@github.com: Permission denied (publickey).", .authenticationFailed(url: "github.com")),
+        (
+            "fatal: unable to access 'https://alice:hunter2@nope.invalid/r.git/': Could not resolve host: nope.invalid",
+            .unreachable("nope.invalid")
+        ),
+    ])
+    func aCredentialInTheURLNeverReachesThePayload(line: String, expected: RemoteOperationError) {
+        let parsed = RemoteFailureParser.parse(stderr: line + "\n")
+        #expect(parsed == expected)
+        #expect(!"\(String(describing: parsed))".contains("s3cr3t"))
+        #expect(!"\(String(describing: parsed))".contains("hunter2"))
+    }
+
+    /// The `.unreachable` fallback carries git's *whole line* when it can name no host, which
+    /// is the one payload that is not a URL — and it is exactly where a URL with a credential
+    /// in it rides along. The line survives; the secret does not.
+    @Test func theWholeLineFallbackIsRedactedToo() throws {
+        let line =
+            "fatal: unable to access 'https://alice:hunter2@example.invalid/r.git/': Failed to connect to example.invalid port 443: Network is unreachable"
+        guard case .unreachable(let payload)? = RemoteFailureParser.parse(stderr: line + "\n") else {
+            Issue.record("expected .unreachable")
+            return
+        }
+        #expect(!payload.contains("hunter2"))
+        #expect(!payload.contains("alice"))
+        #expect(payload.contains("Network is unreachable"), "\(payload)")
+        #expect(payload.contains("https://example.invalid/r.git/"), "\(payload)")
+    }
+
+    /// `redactingCredentials` is public because a banner built from raw stderr — which Task 8
+    /// shows when this parser recognises nothing — needs the same treatment as a payload, and
+    /// a second implementation of it would be a second thing to get wrong.
+    @Test(arguments: [
+        ("https://alice:ghp_s3cr3t@github.com/acme/p.git", "https://github.com/acme/p.git"),
+        ("ssh://alice:hunter2@example.com:22/acme/p.git", "ssh://example.com:22/acme/p.git"),
+        // A token as the *whole* userinfo: how GitHub's own instructions spell it.
+        ("https://ghp_s3cr3t@github.com/acme/p.git", "https://github.com/acme/p.git"),
+        ("'https://alice:hunter2@host/p.git/'", "'https://host/p.git/'"),
+        // scp-style, which has no scheme at all.
+        ("git@github.com:acme/p.git", "github.com:acme/p.git"),
+        ("alice:hunter2@github.com", "github.com"),
+        // Not addresses, and not to be mangled: an ssh login in prose, and an email.
+        ("git@github.com: Permission denied (publickey).", "git@github.com: Permission denied (publickey)."),
+        ("Author: Colleague <colleague@example.invalid>", "Author: Colleague <colleague@example.invalid>"),
+        ("https://github.com/acme/p.git", "https://github.com/acme/p.git"),
+        // Ragged input: nothing to redact, nothing to crash on.
+        ("@", "@"), ("a@", "a@"), ("@b", "@b"), ("", ""),
+    ])
+    func redactionStripsUserinfoAndLeavesEverythingElseAlone(text: String, expected: String) {
+        #expect(RemoteFailureParser.redactingCredentials(text) == expected)
+    }
+
+    /// Multi-line stderr is what Task 8 will hand it: every line is treated, the line structure
+    /// is kept, and a line with nothing to redact comes back identical.
+    @Test func redactionWorksOverWholeStderr() {
+        let stderr = """
+            Cloning into 'p'...
+            remote: Counting objects: 100% (12/12), done.
+            fatal: unable to access 'https://alice:ghp_s3cr3t@github.com/acme/p.git/': The requested URL returned error: 403
+            fatal: Authentication failed for 'https://alice:ghp_s3cr3t@github.com/acme/p.git/'
+
+            """
+        let redacted = RemoteFailureParser.redactingCredentials(stderr)
+        #expect(!redacted.contains("s3cr3t"))
+        #expect(!redacted.contains("alice"))
+        #expect(redacted.contains("remote: Counting objects: 100% (12/12), done."))
+        #expect(redacted.contains("fatal: Authentication failed for 'https://github.com/acme/p.git/'"))
+        #expect(redacted.split(separator: "\n").count == stderr.split(separator: "\n").count)
+    }
+
+    // MARK: - Words that are not a diagnosis
+
+    /// Everything after `remote:` is the *server* talking — a hook's output, a hosting
+    /// service's advice — and Tasks 5–7 push through this same parser, where such lines are
+    /// routine. A hook that prints `Permission denied (publickey)` is describing its own world,
+    /// not this connection, and reading it as a cause gave `.authenticationFailed(url:
+    /// "remote")`: a payload that is not even an address.
+    @Test(arguments: [
+        "remote: Permission denied (publickey).\n",
+        "remote: Host key verification failed.\n",
+        "remote: fatal: 'x' does not appear to be a git repository\n",
+        "remote: ssh: Could not resolve hostname deploy.internal: nodename nor servname provided, or not known\n",
+        "remote: error: Authentication failed for 'https://internal/x.git'\n",
+    ])
+    func aServersOwnOutputIsNeverReadAsThisConnectionsFailure(stderr: String) {
+        #expect(RemoteFailureParser.parse(stderr: stderr) == nil)
+    }
+
+    /// The refused-key rule took *everything* before `: Permission denied (publickey` as an
+    /// address, so any sentence that happened to end that way became one. An address is
+    /// `[user@]host`: one word, no spaces, no quotes, no path.
+    @Test(arguments: [
+        "Warning: the agent said something odd: Permission denied (publickey).\n",
+        "debug1: trying key '/x/y': Permission denied (publickey).\n",
+        ": Permission denied (publickey).\n",
+    ])
+    func aSentenceThatMerelyEndsInPermissionDeniedIsNotAnAddress(stderr: String) {
+        #expect(RemoteFailureParser.parse(stderr: stderr) == nil)
+    }
+
+    /// The unreachable rules read forwards from the first `Could not resolve host: ` in the
+    /// text — and a URL is part of that text, so a repository whose *path* contains the phrase
+    /// wrote the rest of the sentence into the payload. The payload stops at the first
+    /// whitespace or quote, which is where a host name stops.
+    @Test func aHostNameStopsWhereAHostNameStops() throws {
+        let line =
+            "fatal: unable to access 'https://real.invalid/Could not resolve host: sneaky.invalid/x.git/': Could not resolve host: real.invalid"
+        guard case .unreachable(let payload)? = RemoteFailureParser.parse(stderr: line + "\n") else {
+            Issue.record("expected .unreachable")
+            return
+        }
+        #expect(!payload.contains(" "), "\(payload)")
+        #expect(!payload.contains("'"), "\(payload)")
+        #expect(!payload.contains("Could not resolve"), "\(payload)")
+    }
+
+    /// The same for ssh's wording, which ends its host at a colon — unless the injected text
+    /// gets there first.
+    @Test func anSSHHostNameStopsAtWhitespaceAsWellAsAtItsColon() throws {
+        let line =
+            "ssh: Could not resolve hostname real.invalid extra words here: nodename nor servname provided, or not known"
+        guard case .unreachable(let payload)? = RemoteFailureParser.parse(stderr: line + "\n") else {
+            Issue.record("expected .unreachable")
+            return
+        }
+        #expect(payload == "real.invalid", "\(payload)")
+    }
+
     // MARK: - Everything else
 
     /// Total and honest: anything the tables do not cover is `nil`, and the caller rethrows

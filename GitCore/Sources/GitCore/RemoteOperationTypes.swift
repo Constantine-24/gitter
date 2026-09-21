@@ -20,6 +20,11 @@ import Foundation
 /// The wordings each case is recognised from are in `RemoteFailureParser`, with the measurement
 /// that produced them. Anything git says that the parser does not recognise stays
 /// `GitError.commandFailed`, in git's own words.
+///
+/// **No payload here carries a credential.** A remote URL can have one written into it
+/// (`https://<user>:<token>@host/repo.git`), and git quotes that URL back when it fails; every
+/// payload below has been through `RemoteFailureParser.redactingCredentials`. Anything that
+/// builds a sentence out of raw stderr instead of out of one of these cases must call it too.
 public enum RemoteOperationError: Error, Equatable, Sendable {
     /// The server wants a credential and git could not ask for one: `ProcessRunner` sets
     /// `GIT_TERMINAL_PROMPT=0` and gives git `/dev/null` for stdin, so an HTTPS remote with no
