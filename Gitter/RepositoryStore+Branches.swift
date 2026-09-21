@@ -16,7 +16,7 @@ import GitCore
 ///   refuses first, with a sentence that names the operation. Creating a branch without
 ///   switching, renaming and deleting stay available, since none of them touches the worktree.
 /// - **A detached HEAD holding commits on no ref.** Asked of git every time, and never of the
-///   snapshot: `unreferencedCommitCount` is 0 on a branch by construction, so there is no need
+///   snapshot: `unreferencedCommits` reports 0 on a branch by construction, so there is no need
 ///   to *decide* whether HEAD is detached before asking — and deciding from the snapshot would
 ///   mean a terminal that detached HEAD inside the watcher's 300 ms debounce could walk straight
 ///   past the guard. See `PendingBranchAction.canStrandCommits` for why a merge and a
@@ -173,9 +173,35 @@ extension RepositoryStore {
                 // The detail pane may be showing a commit that the new HEAD's log no longer
                 // lists, and after a merge the working copy is what the user needs to look at.
                 select(.workingCopy)
-                if let message { showNotice(message) }
+                let lines = [message, warned.flatMap(Self.leftBehindNotice)]
+                let notice = lines.compactMap { $0 }.joined(separator: " ")
+                if !notice.isEmpty { showNotice(notice) }
             }
         })
+    }
+
+    /// What to say once the user has answered "Leave It/Them Behind" and the action has run.
+    ///
+    /// Nothing else on screen holds the sha any more: the warning is gone, the toolbar names the
+    /// branch just switched to, and the commits are on no ref, so the sidebar and the graph
+    /// cannot show them either. Without this line the one string that brings them back leaves
+    /// with the sheet.
+    ///
+    /// Shaped like the force delete's notice ("Deleted "x". Recreate it with: git branch x
+    /// 1a2b3c4") because it is the same promise: the objects are still in the repository, and
+    /// this is the command that gives them a name again. True for every action that can be
+    /// parked here — switch, track, detach and a `switch -c` from somewhere other than HEAD all
+    /// leave HEAD's old commit exactly where it was, which is why the sha is the warned one and
+    /// not one read afterwards. `<name>` is a placeholder the user fills in: these commits were
+    /// on no branch, so there is no name to suggest.
+    private static func leftBehindNotice(_ warned: UnreferencedCommits) -> String? {
+        guard warned.count > 0, let sha = warned.headSha else { return nil }
+        let short = sha.prefix(7)
+        let what =
+            warned.count == 1
+            ? "Left 1 commit behind at \(short). Recover it with:"
+            : "Left \(warned.count) commits behind at \(short). Recover them with:"
+        return "\(what) git branch <name> \(short)"
     }
 
     private static func run(
