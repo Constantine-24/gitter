@@ -69,14 +69,42 @@ import Testing
         #expect(try await backend.commitCount(in: "feature", notIn: "HEAD", at: repo.root) == 1)
     }
 
+    /// A tag and a branch can share a name, and git's lookup order picks the **tag** — so the
+    /// sheet's number would describe a merge the user never asked for. The spelling the caller
+    /// uses is what settles it, which is why `incomingCommitCount` asks for `refs/heads/<name>`.
+    @Test func theBranchRefSpellingCountsTheBranchWhereTheBareNameCountsTheTag() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("a.txt", "one\n")
+        try await repo.commitAll("root")
+        try await repo.git(["switch", "-q", "-c", "dup"])
+        try repo.write("b.txt", "b\n")
+        try await repo.commitAll("branch commit 1")
+        try repo.write("b.txt", "bb\n")
+        try await repo.commitAll("branch commit 2")
+        try await repo.git(["switch", "-q", "-c", "elsewhere", "main"])
+        try repo.write("c.txt", "c\n")
+        try await repo.commitAll("tag commit")
+        try await repo.git(["tag", "dup"])
+        try await repo.git(["switch", "-q", "main"])
+
+        #expect(try await backend.commitCount(in: "refs/heads/dup", notIn: "HEAD", at: repo.root) == 2)
+        #expect(try await backend.commitCount(in: "dup", notIn: "HEAD", at: repo.root) == 1)
+    }
+
     /// The sheet must never show a made-up number, so a revision git cannot resolve throws
-    /// rather than counting 0.
+    /// rather than counting 0 — and it throws git's own words, with the exit code and the
+    /// "bad revision" wording the trailing `--` is there to produce.
     @Test func throwsForARevisionGitCannotResolve() async throws {
         let repo = try await TestRepo.makeBranched()
         defer { repo.cleanUp() }
 
-        await #expect(throws: (any Error).self) {
+        do {
             _ = try await backend.commitCount(in: "no-such-branch", notIn: "HEAD", at: repo.root)
+            Issue.record("expected a throw, but a count came back")
+        } catch GitError.commandFailed(let exitCode, let stderr) {
+            #expect(exitCode == 128)
+            #expect(stderr.contains("bad revision 'HEAD..no-such-branch'"), "\(stderr)")
         }
     }
 

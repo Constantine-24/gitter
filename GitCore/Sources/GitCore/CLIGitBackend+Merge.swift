@@ -8,6 +8,7 @@ extension CLIGitBackend {
         // A squash is the one mode git will start with a dirty index, and the one mode whose
         // only exit resets that index wholesale. See `requireACleanIndexForASquash`.
         if mode == .squash { try await requireACleanIndexForASquash(at: root) }
+        let target = try await unambiguousSpelling(of: branch, at: root)
         let headBefore = try await headSHA(at: root)
 
         // Each vector is a COMPLETE literal chosen by this switch — no flag is ever picked with
@@ -30,11 +31,11 @@ extension CLIGitBackend {
         let arguments: [String]
         switch mode {
         case .fastForwardIfPossible:
-            arguments = ["merge", "--ff", "--no-edit", "--end-of-options", branch]
+            arguments = ["merge", "--ff", "--no-edit", "--end-of-options", target]
         case .alwaysMergeCommit:
-            arguments = ["merge", "--no-ff", "--no-edit", "--end-of-options", branch]
+            arguments = ["merge", "--no-ff", "--no-edit", "--end-of-options", target]
         case .squash:
-            arguments = ["merge", "--ff", "--squash", "--end-of-options", branch]
+            arguments = ["merge", "--ff", "--squash", "--end-of-options", target]
         }
 
         do {
@@ -52,7 +53,42 @@ extension CLIGitBackend {
             guard (try? await hasUnmergedEntries(at: root)) == true else { throw error }
             return .conflicts
         }
-        return try await outcome(of: branch, mode: mode, headBefore: headBefore, at: root)
+        return try await outcome(of: target, mode: mode, headBefore: headBefore, at: root)
+    }
+
+    // MARK: - Which ref the name actually means
+
+    /// How to spell `name` so git merges what the user pointed at.
+    ///
+    /// A tag and a local branch may share a name, and git's lookup order puts `refs/tags/<name>`
+    /// **ahead** of `refs/heads/<name>`. Verified on git 2.54: with both present, `git merge dup`
+    /// fast-forwarded onto the *tag's* commit and said nothing about it beyond a "refname 'dup'
+    /// is ambiguous" warning on stderr — exit 0, so no banner, no refusal, and a branch the user
+    /// clicked in the sidebar quietly not merged. `git rev-list HEAD..dup` picks the tag for the
+    /// same reason, which is why the merge sheet's count asks for `refs/heads/<name>` outright.
+    ///
+    /// The full refname is **not** used unconditionally, because git builds the merge commit's
+    /// subject out of the string it was given: `git merge refs/heads/feature` writes
+    /// "Merge branch 'refs/heads/feature'" (verified), where the bare name writes
+    /// "Merge branch 'feature'" and, on any branch but `main`/`master`, " into <branch>" after
+    /// it. Gitter is not in the business of rewriting git's commit messages, so the bare name is
+    /// kept wherever it is unambiguous — which is every repository that does not have a tag and
+    /// a branch of the same name pointing at different commits.
+    ///
+    /// Compared by **value**, not by name: a tag sitting on the very commit the branch is at
+    /// merges the same thing either way, so that case keeps the nicer message too.
+    ///
+    /// Ambiguity is re-read here rather than taken from the snapshot, but this is still a check
+    /// followed by an act: a tag created in between is merged as before. That is a
+    /// wrong-thing-merged, not a loss — a merge commit is a commit, and nothing uncommitted is
+    /// touched — so it does not fail closed the way `unreferencedCommitCount` does.
+    private func unambiguousSpelling(of name: String, at root: URL) async throws -> String {
+        let branchRef = "refs/heads/" + name
+        let tip = try await revision(branchRef, at: root)
+        // Not a local branch at all (a remote-tracking branch, a tag, a raw sha): `name` is the
+        // only spelling there is, and git's own lookup is the right answer.
+        guard !tip.isEmpty else { return name }
+        return (try await revision(name, at: root)) == tip ? name : branchRef
     }
 
     // MARK: - The one refusal Gitter makes that git does not

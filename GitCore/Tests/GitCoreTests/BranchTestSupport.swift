@@ -66,6 +66,12 @@ extension TestRepo {
         return FileManager.default.fileExists(atPath: url.path)
     }
 
+    /// The subject line of `rev`'s commit message — what a merge commit is judged by.
+    func subject(of rev: String) async throws -> String {
+        let data = try await git(["log", "--format=%s", "-1", rev])
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// The parent shas of `rev`, in git's order.
     func parents(of rev: String) async throws -> [String] {
         let data = try await git(["rev-list", "--parents", "-n", "1", rev])

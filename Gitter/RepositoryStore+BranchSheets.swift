@@ -170,9 +170,14 @@ extension RepositoryStore {
     /// merge target. Like `validateNewBranchName` this takes no mutation lock and writes
     /// nothing, so it cannot deadlock behind one.
     ///
+    /// Spelled `refs/heads/<branch>`, never the bare name: git resolves `refs/tags/<name>`
+    /// ahead of `refs/heads/<name>` (verified on git 2.54), so a repository holding a tag and a
+    /// branch of the same name would have this sheet count the tag's commits while the merge
+    /// brought in the branch's. `merge` disambiguates the same way, by value — see
+    /// `CLIGitBackend.unambiguousSpelling`.
     func incomingCommitCount(for branch: String) async -> Int? {
         guard let root else { return nil }
-        return try? await backend.commitCount(in: branch, notIn: "HEAD", at: root)
+        return try? await backend.commitCount(in: "refs/heads/" + branch, notIn: "HEAD", at: root)
     }
 
     // MARK: - Live name validation
