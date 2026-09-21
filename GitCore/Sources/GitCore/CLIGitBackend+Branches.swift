@@ -118,8 +118,14 @@ extension CLIGitBackend: GitBranchBackend {
     /// would be parsed as an option in the one position (`switch -c <name>`) where
     /// `--end-of-options` cannot be used. Everything else is left to git, whose rules for what
     /// a ref may contain are the only ones that matter.
+    ///
+    /// Both questions are asked of the **trimmed** name. This used to ask the untrimmed one
+    /// about the leading `-` and the trimmed one about emptiness, so `" -x"` walked past the
+    /// check — the same hole `requireRemoteName` had, found the same way: a push of `" -x"`
+    /// reached git, which answered `error: src refspec refs/heads/ -x does not match any`.
     private func isPlausibleName(_ name: String) -> Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !name.hasPrefix("-")
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && !trimmed.hasPrefix("-")
     }
 
     /// Names `git check-ref-format --branch` accepts but that do not mean what the user typed.
