@@ -7,9 +7,16 @@ import Foundation
 /// members are internal rather than private only because they now live in a second file.
 extension ForceFlagScanner {
     /// `code` with every comment and every string literal's *contents* replaced by spaces, so
-    /// brackets, commas and quotes inside them cannot shift the parse. Offsets line up with
-    /// `source` byte for byte (UTF-8 scalar for scalar), so a literal's position in `code`
-    /// indexes straight back into `source`.
+    /// brackets, commas and quotes inside them cannot shift the parse.
+    ///
+    /// Offsets line up with `source` **Character for Character** — the unit is Swift's extended
+    /// grapheme cluster, not a UTF-8 byte, because every index here walks `Array(source)`. (The
+    /// comment said "byte for byte (UTF-8 scalar for scalar)" until fix round 1, which was
+    /// wrong three times over: a byte, a scalar and a Character are three different units.) It
+    /// matters only in that every offset this file produces or consumes — `literals`' first
+    /// tuple element, `ArrayLiteral.range` — must be read against `Array(source)` and nothing
+    /// else. The one substitution that is *not* one-for-one is deliberate and still balanced:
+    /// an escape pair (`\n`, `\"`, `\\`) becomes two spaces, and `/*`, `*/` likewise.
     static func strippingCommentsAndStringContents(_ source: String) -> [Character] {
         var out: [Character] = []
         out.reserveCapacity(source.count)

@@ -23,10 +23,17 @@ import Testing
         #expect(sources.count >= 10, "found no sources to scan, so this test would prove nothing")
         #expect(sources.keys.contains("CLIGitBackend.swift"))
 
+        // "No findings" is also what a lexer that quietly read nothing would report. Count the
+        // literals it actually saw, so an empty result is evidence rather than silence.
+        var literalCount = 0
         for (path, text) in sources.sorted(by: { $0.key < $1.key }) {
             let findings = ForceFlagScanner.findings(in: text)
             #expect(findings.isEmpty, "\(path): \(findings.joined(separator: "; "))")
+            let code = ForceFlagScanner.strippingCommentsAndStringContents(text)
+            literalCount += ForceFlagScanner.literals(in: text, code: code).count
         }
+        let counted = "\(literalCount) literals lexed out of \(sources.count) files"
+        #expect(literalCount > 200, "\(counted): a scan that sees nothing cannot prove an absence")
     }
 
     /// The whole-tree path — `gitCoreSources` + `findings` together — really fails when a
@@ -364,22 +371,170 @@ import Testing
         #"_ = try await run(["pull", r], cwd: root)"#,
         #"_ = try await run(["rebase", "--autostash", u], cwd: root)"#,
         #"_ = try await run(["rebase", "--force-rebase", u], cwd: root)"#,
+        // `--follow-tags` pushes tags the user never named; `--no-force-with-lease` cancels a
+        // lease written earlier in the same vector, leaving a plain force push behind.
+        #"_ = try await run(["push", "--follow-tags", r], cwd: root)"#,
+        #"_ = try await run(["push", "--force-with-lease=\(ref):\(sha)", "--no-force-with-lease", r], cwd: root)"#,
     ])
     func catchesAForbiddenRemoteInvocation(source: String) {
         #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
     }
 
-    /// The mirror image: the vectors the remote work is actually going to write. A lease is how
-    /// this milestone makes a force push safe, so `--force-with-lease=<ref>:<sha>` has to be
-    /// spellable — in a `push` vector, and nowhere else.
+    /// A lease with no expected value is the failure the lease rule exists to prevent.
+    /// `--force-with-lease=<ref>` with no `:<sha>` leases against the *remote-tracking* ref —
+    /// which this app's own auto-fetch rewrites, seconds before the push, with a value nobody
+    /// was shown. `--force-with-lease=<ref>:` (an empty expectation) means "only if that ref
+    /// does not exist", which is never what Gitter wants. And a literal sha is not the sha the
+    /// sheet showed unless it came from the sheet, which only an interpolation can do.
+    ///
+    /// So the permitted spelling is one string literal beginning `--force-with-lease=`, whose
+    /// remainder has a non-empty part on both sides of a `:`, and whose part after the last `:`
+    /// is an interpolation. The concatenated `"--force-with-lease=" + lease` is a finding for
+    /// the same reason: the scanner cannot see what is on the other side of the `+`.
     @Test(arguments: [
+        #"_ = try await run(["push", "--porcelain", "--force-with-lease=\(remoteRef)", r, s], cwd: root)"#,
+        #"_ = try await run(["push", "--force-with-lease=refs/heads/main", r, s], cwd: root)"#,
+        #"_ = try await run(["push", "--force-with-lease=", r, s], cwd: root)"#,
+        #"_ = try await run(["push", "--force-with-lease=refs/heads/main:", r, s], cwd: root)"#,
+        #"_ = try await run(["push", "--force-with-lease=:\(tip)", r, s], cwd: root)"#,
+        #"_ = try await run(["push", "--force-with-lease=\(ref):0123456789abcdef", r, s], cwd: root)"#,
         #"_ = try await run(["push", "--porcelain", "--force-with-lease=" + lease, remote, spec], cwd: root)"#,
-        #"_ = try await run(["push", "--porcelain", "--force-with-lease=\(ref):\(sha)", r, s], cwd: root)"#,
-        #"_ = try await run(["push", "--porcelain", "-u", remote, refspec], cwd: root)"#,
-        #"_ = try await run(["push", "--porcelain", remote, "refs/heads/a:refs/heads/a"], cwd: root)"#,
-        #"_ = try await run(["fetch", "--progress", "--all"], cwd: root)"#,
-        #"_ = try await run(["fetch", "--progress", "--end-of-options", remote], cwd: root)"#,
+    ])
+    func catchesALeaseThatNamesNoExpectedValue(source: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains("--force-with-lease=") }, "\(findings)")
+    }
+
+    /// Deleting a branch on the server is spelled as data, not as a flag: a refspec whose source
+    /// side is empty (`:refs/heads/x`) tells the server to delete that ref. `--delete` and `-d`
+    /// are already findings, so this is the same command written the way that walks past them.
+    ///
+    /// Inside a `push` vector it is permitted only when that same vector carries a *permitted*
+    /// lease, which is what makes the deletion conditional on the sha the sheet showed. Outside
+    /// one, a literal beginning `:refs/` is a finding wherever it sits. The narrowing to
+    /// `:refs/` is a fact about this codebase: `CLIGitBackend`'s `":(literal)" + path` is the
+    /// only other `:`-leading literal in `GitCore/Sources`, and pathspec magic is not a refspec.
+    @Test(arguments: [
+        #"_ = try await run(["push", remote, ":refs/heads/\(b)"], cwd: root)"#,
+        #"_ = try await run(["push", "--porcelain", "--end-of-options", remote, ":refs/heads/main"], cwd: root)"#,
+        #"_ = try await run(["push", "--force-with-lease=x:y", remote, ":refs/heads/main"], cwd: root)"#,
+        #"_ = try await run(["push", remote, ":" + ref], cwd: root)"#,
+        #"_ = try await run(["fetch", remote, ":refs/heads/main"], cwd: root)"#,
+        #"let spec = ":refs/heads/main""#,
+        #"var a = [String](); a.append(":refs/heads/main")"#,
+    ])
+    func catchesAnUnleasedDeleteRefspec(source: String) {
+        #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// A global option before the subcommand demotes the whole vector to a fragment: the array
+    /// no longer begins with a literal that names a subcommand, so every per-subcommand table,
+    /// the positional rules, the lease rule and the wide `+`/`:` rules are all lost at once.
+    /// `["-c", "push.default=matching", "push", r]` was clean.
+    ///
+    /// No vector in `GitCore/Sources` begins with one (`git grep`: `"-c"` appears only as
+    /// `["switch", "-c", name]`), so the rule can simply be "don't": pass a working directory
+    /// instead. The finding must name the option, or this passes for the wrong reason.
+    @Test(arguments: [
+        (#"_ = try await run(["-c", "push.default=matching", "push", r], cwd: root)"#, "-c"),
+        (#"_ = try await run(["-C", dir, "push", "--force-with-lease=\(ref):\(sha)", r], cwd: root)"#, "-C"),
+        (#"_ = try await run(["--git-dir", dir, "branch", "--end-of-options", name], cwd: root)"#, "--git-dir"),
+        (#"_ = try await run(["--work-tree", dir, "status", "--porcelain"], cwd: root)"#, "--work-tree"),
+    ])
+    func catchesAGlobalOptionBeforeTheSubcommand(source: String, option: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains(option) }, "\(findings) should name \(option)")
+    }
+
+    /// The `--no-commit-id` carve-out excuses `-M`/`-p` in a `diff-tree` argument list. It must
+    /// not excuse them in a fragment that names a subcommand of its own: `[repoFlag, "branch",
+    /// "--no-commit-id", "-M", a, b]` is a `branch -M` with a decoy in it, and it was clean —
+    /// while the scanner's own doc comment claimed that could not happen.
+    @Test(arguments: [
+        (#"_ = try await run([repoFlag, "branch", "--no-commit-id", "-M", a, b], cwd: root)"#, "-M"),
+        (#"_ = try await run([repoFlag, "fetch", "--no-commit-id", "-p", r], cwd: root)"#, "-p"),
+        (#"_ = try await run([repoFlag, "switch", "--no-commit-id", "-M", a, b], cwd: root)"#, "-M"),
+    ])
+    func theDiffTreeCarveOutDoesNotCoverAFragmentThatNamesASubcommand(source: String, flag: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains(flag) }, "\(findings) should name \(flag)")
+    }
+
+    /// `git remote`'s destructive forms are *words*, not flags — `remote prune`, `remote
+    /// remove`, `remote set-url` — so no flag table can see them, and `remote` was an
+    /// unconstrained subcommand. The one form Gitter runs is `git remote -v`; the rule is an
+    /// allowed *shape* rather than a deny list, because the list of words git may add to
+    /// `remote` in a future release is not knowable here.
+    @Test(arguments: [
+        #"_ = try await run(["remote", "prune", r], cwd: root)"#,
+        #"_ = try await run(["remote", "remove", r], cwd: root)"#,
+        #"_ = try await run(["remote", "rm", r], cwd: root)"#,
+        #"_ = try await run(["remote", "set-url", r, url], cwd: root)"#,
+        #"_ = try await run(["remote", "rename", old, new], cwd: root)"#,
+        #"_ = try await run(["remote", "add", name, url], cwd: root)"#,
+        #"_ = try await run(["remote", "update"], cwd: root)"#,
+        #"_ = try await run(["remote", "set-head", r, b], cwd: root)"#,
+        #"_ = try await run(["remote", "set-branches", r, b], cwd: root)"#,
+        #"_ = try await run(["remote", "-v", extra], cwd: root)"#,
+        #"_ = try await run(["remote"], cwd: root)"#,
+    ])
+    func constrainsTheRemoteSubcommandToTheOneShapeGitterRuns(source: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains("remote") }, "\(findings) should name remote")
+    }
+
+    /// A flag spelled with unicode escapes matches no table, because the lexer keeps a literal's
+    /// *raw* text: `"\u{2d}\u{2d}force"` is the value `\u{2d}\u{2d}force`. Every `\u{…}` in
+    /// `GitCore/Sources` is `"\u{0}"`, git's `-z` record separator (`git grep`: four of them,
+    /// in `CLIGitBackend` and three parsers), and NUL matches no rule — so the escapes can be
+    /// decoded and the decoded spelling checked as well, at no cost in false positives.
+    @Test(arguments: [
+        #"_ = try await run(["switch", "\u{2d}\u{2d}force", b], cwd: root)"#,
+        #"let flag = "\u{2d}\u{2d}force""#,
+        #"_ = try await run(["push", remote, "\u{2b}refs/heads/a:refs/heads/a"], cwd: root)"#,
+        #"var a = ["switch"]; a.append("\u{2d}\u{2d}discard-changes")"#,
+    ])
+    func catchesAFlagSpelledWithUnicodeEscapes(source: String) {
+        #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// Real lines from `GitCore/Sources` that each new rule above could have false-positived on:
+    /// the pathspec magic that is not a delete refspec, the record separator that is not a
+    /// flag, and the one `remote` vector Gitter runs.
+    @Test(arguments: [
+        #"":(literal)" + path"#,
+        #"let fields = text.split(separator: "\u{0}", omittingEmptySubsequences: true).map(String.init)"#,
+        #"async let remoteData = run(["remote", "-v"], cwd: root)"#,
+        #"arguments = ["switch", "-c", name]"#,
+    ])
+    func doesNotFireOnTheRealLinesTheseRulesPassOver(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
+    /// The mirror image, and a **contract**: these are the seven argument vectors the remote
+    /// work is going to write, spelled exactly as it will write them. Nothing here may become a
+    /// finding — a rule that turns one of them red has to be narrowed here, before the code
+    /// that writes it exists, rather than argued about afterwards.
+    ///
+    /// Read them as the shape the scanner demands in return for what it permits: one complete
+    /// array literal, its subcommand first, the lease carrying an interpolated expected sha,
+    /// and the delete refspec standing in the same literal as the lease that guards it.
+    @Test(arguments: [
+        #"_ = try await run(["push", "--porcelain", "--progress", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
+        #"_ = try await run(["push", "--porcelain", "--progress", "-u", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
+        #"_ = try await run(["push", "--porcelain", "--progress", "--force-with-lease=\(remoteRef):\(tip)", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
+        #"_ = try await run(["push", "--porcelain", "--progress", "--force-with-lease=refs/heads/\(b):\(tip)", "--end-of-options", remote, ":refs/heads/\(b)"], cwd: root)"#,
+        #"""
+        _ = try await run(["fetch", "--progress", "--end-of-options", remote], cwd: root)
+        _ = try await run(["fetch", "--progress", "--all"], cwd: root)
+        """#,
         #"_ = try await run(["rebase", "--end-of-options", upstream], cwd: root)"#,
+        #"_ = try await run(["remote", "-v"], cwd: root)"#,
     ])
     func allowsTheRemoteOperationsThisMilestoneNeeds(source: String) {
         #expect(ForceFlagScanner.findings(in: source).isEmpty,
@@ -419,12 +574,13 @@ import Testing
     /// not vouch for the identical text elsewhere in the same file. That is why the sweep asks
     /// where the literal sits rather than which literals a push vector contains.
     @Test func aLeaseInAPushVectorDoesNotExcuseTheSameTextElsewhere() {
-        let clean = #"_ = try await run(["push", "--porcelain", "--force-with-lease=x:y", r], cwd: root)"#
+        let clean = #"_ = try await run(["push", "--porcelain", "--force-with-lease=x:\(sha)", r], cwd: root)"#
         #expect(ForceFlagScanner.findings(in: clean).isEmpty,
                 "false positive: \(ForceFlagScanner.findings(in: clean))")
-        let findings = ForceFlagScanner.findings(in: clean + "\nlet stray = \"--force-with-lease=x:y\"")
+        let stray = #"let stray = "--force-with-lease=x:\(sha)""#
+        let findings = ForceFlagScanner.findings(in: clean + "\n" + stray)
         #expect(findings.count == 1, "expected exactly the stray lease, got \(findings)")
-        #expect(findings.first?.contains("--force-with-lease=x:y") == true, "\(findings)")
+        #expect(findings.first?.contains("--force-with-lease=x:") == true, "\(findings)")
     }
 
     /// A refspec beginning `+` forces the update git would otherwise refuse — the same loss as
