@@ -43,7 +43,7 @@ extension RepositoryStore {
     func requestDelete(_ name: String) {
         mutate(result: { backend, root in
             try await Self.reporting(.delete, name) {
-                try await backend.deleteBranch(name, force: false, at: root)
+                try await backend.deleteBranch(name, at: root)
             }
         }, onSuccess: { [self] deletion in
             switch deletion {
@@ -55,25 +55,36 @@ extension RepositoryStore {
         })
     }
 
-    /// `git branch -D`, and **only** as the answer to the warning that named this branch.
+    /// `git branch -D`, and **only** as the answer to the warning that named this branch, at the
+    /// tip that warning showed.
     ///
-    /// The guard is the point, not bookkeeping: this is one of the four actions that can lose
-    /// work, and the sheet is where the user was told how much. Without a matching
-    /// `.deleteUnmerged` on screen there is no warning this could be the answer to, so there is
-    /// nothing to force — a stale call, a mis-wired menu item or a debug hook reaching straight
-    /// for the destructive half all stop here.
+    /// Two guards, and they answer different questions. This one is about *which warning*: with
+    /// no matching `.deleteUnmerged` on screen there is nothing this could be the answer to, so
+    /// a stale call, a mis-wired menu item or a debug hook reaching straight for the destructive
+    /// half stops here. It is a UI-level check and it matches on the name alone, which is all
+    /// the sheet's identity is.
     ///
-    /// The tip sha comes off that sheet before it closes, so the notice can name it: git keeps
-    /// the commit object (verified), and a user who changes their mind can recreate the branch.
+    /// The second guard is about *which commits*, and it is not here — it is in the backend,
+    /// next to the delete, because that is the only place where "what the sheet said" and "what
+    /// the ref says now" can be compared with nothing in between. The tip is taken off the sheet
+    /// and handed down, and `forceDeleteBranch` refuses unless `refs/heads/<name>` still resolves
+    /// to exactly it. A name-only check here would not have been enough: the branch can gain a
+    /// commit, or be renamed away and recreated under the same name, while the warning is on
+    /// screen, and deleting *that* orphans commits nobody was warned about.
+    ///
+    /// The tip also lets the notice name it: git keeps the commit object (verified), so a user
+    /// who changes their mind can recreate the branch.
     func confirmForceDelete(_ name: String) {
         guard case .deleteUnmerged(let warned, _, let tip) = activeSheet, warned == name else {
             return
         }
+        // Closed before anything runs, which is also what a refusal needs: the numbers on it are
+        // the ones being disputed, so it must not stay up looking authoritative.
         activeSheet = nil
 
         mutate({ backend, root in
-            _ = try await Self.reporting(.delete, name) {
-                try await backend.deleteBranch(name, force: true, at: root)
+            try await Self.reporting(.delete, name) {
+                try await backend.forceDeleteBranch(name, expectedTip: tip, at: root)
             }
         }, onSuccess: { [self] in
             showNotice(
@@ -83,14 +94,24 @@ extension RepositoryStore {
 
     #if DEBUG
         /// Puts the unmerged-delete warning on screen **without deleting anything** — the count
-        /// and the tip are read (`commitsOnlyOn`, plus the branch's sha from the snapshot), not
-        /// obtained by letting `git branch -d` refuse.
+        /// is asked of git (`commitsOnlyOn`) and the tip comes from the **snapshot**, not from
+        /// `rev-parse`, which is the difference from the real flow and matters now that the tip
+        /// is load-bearing.
         ///
-        /// Only the debug hook wants this. The real flow has to be the other one: `-d` is the
-        /// authority on whether a branch is merged, it changes nothing when it refuses, and its
-        /// refusal is what the warning answers. This exists so `sheet:delete:<b>` can honestly
-        /// mean "open the sheet", where routing it through `requestDelete` would *delete* a
-        /// merged branch under a step documented as showing a sheet.
+        /// The snapshot is up to 300 ms behind the repository (the watcher debounces), so a
+        /// branch moved in the last instant gives this sheet a stale tip. That is safe but
+        /// visible: `confirmForceDelete` hands the tip to `forceDeleteBranch`, which refuses on
+        /// any mismatch, so the worst a stale preview can do is refuse a delete — never make one
+        /// against numbers the sheet did not show. A debug step whose tip came from the snapshot
+        /// can therefore fail where `delete:<b>` succeeds, and that is the honest behaviour, not
+        /// a bug to paper over. Reading the tip from git would need a tip-reading method on
+        /// `GitBranchBackend` that nothing else wants.
+        ///
+        /// Only the debug hook wants this at all. The real flow has to be the other one: `-d` is
+        /// the authority on whether a branch is merged, it changes nothing when it refuses, and
+        /// its refusal is what the warning answers. This exists so `sheet:delete:<b>` can
+        /// honestly mean "open the sheet", where routing it through `requestDelete` would
+        /// *delete* a merged branch under a step documented as showing a sheet.
         func previewDeleteWarning(_ name: String) {
             guard let root, let branch = localBranches.first(where: { $0.name == name }) else {
                 return
@@ -148,6 +169,7 @@ extension RepositoryStore {
     /// `HEAD` is also the only spelling that works while HEAD is detached — which is a legal
     /// merge target. Like `validateNewBranchName` this takes no mutation lock and writes
     /// nothing, so it cannot deadlock behind one.
+    ///
     func incomingCommitCount(for branch: String) async -> Int? {
         guard let root else { return nil }
         return try? await backend.commitCount(in: branch, notIn: "HEAD", at: root)

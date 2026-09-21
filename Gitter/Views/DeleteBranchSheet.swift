@@ -8,9 +8,12 @@ import SwiftUI
 /// button (Return leaves the branch alone), "Delete Anyway" carries the destructive role and no
 /// shortcut, and the tip sha is selectable so the branch can be put back afterwards.
 ///
-/// It does **not** clear `activeSheet` before confirming: `confirmForceDelete` checks that this
-/// very sheet is the one on screen before it runs `branch -D`, and clears it itself. That guard
-/// is what keeps a force-delete from being reachable without the warning it answers.
+/// It does **not** clear `activeSheet` before confirming: `confirmForceDelete` reads this very
+/// sheet — the name it warned about *and the tip it showed* — and clears it itself. The name
+/// match is what keeps a force-delete from being reachable without the warning it answers; the
+/// tip is what keeps it from answering a warning that has since gone out of date, since
+/// `forceDeleteBranch` refuses unless `refs/heads/<name>` still resolves to it. Neither check
+/// lives here: a sheet cannot promise anything about a ref it read some time ago.
 struct DeleteBranchSheet: View {
     let name: String
     /// From `commitsOnlyOn`: commits reachable from this branch and from no other ref. It can
@@ -23,12 +26,9 @@ struct DeleteBranchSheet: View {
     @Environment(RepositoryStore.self) private var store
 
     /// What `git branch -d` compared this branch against, in words, for the 0 case — the one
-    /// case where the refusal needs explaining rather than the loss.
-    private var head: String {
-        if let current = store.currentBranch { return "\"\(current)\"" }
-        if let sha = store.shortHeadSha { return "the detached HEAD at \(sha)" }
-        return "HEAD"
-    }
+    /// case where the refusal needs explaining rather than the loss. The same phrase the merge
+    /// sheet and the sidebar menu use, from the store.
+    private var head: String { store.headPhrase }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

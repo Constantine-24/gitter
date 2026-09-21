@@ -119,6 +119,13 @@ extension BranchOperationError {
         case .cannotDeleteCurrent(let name):
             return "\"\(name)\" is checked out, so it can't be deleted. "
                 + "Switch to another branch first."
+        case .branchMoved(let name, _, let actual):
+            // Names neither sha in full and neither side of the comparison: what the user needs
+            // is that the warning they just read is out of date and that nothing was deleted.
+            // The short sha is there so "it moved" is checkable against a terminal.
+            return "\"\(name)\" changed since that warning — it now points at "
+                + "\(actual.prefix(7)). Nothing was deleted. Try Delete again to see what it "
+                + "would cost now."
         case .noSuchBranch(let name):
             return "There is no branch named \"\(name)\" — it may have been deleted since this "
                 + "list was loaded."
