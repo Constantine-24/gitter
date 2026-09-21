@@ -16,10 +16,17 @@
     ///     merge:<branch>:<ff|noff|squash>
     ///     abort                        confirmleave
     ///     sheet:new | sheet:rename:<b> | sheet:merge:<b> | sheet:delete:<b> | sheet:abort
+    ///     wait:<seconds>
     ///
     /// Steps run in order, each waiting for the mutation the one before it started. `abort`,
     /// `forcedelete` and `confirmleave` answer a confirmation, which is why several steps in one
     /// launch matter: those sheets cannot be reached any other way.
+    ///
+    /// `wait:<seconds>` does nothing but hold the sheet on screen, and it exists for one kind of
+    /// check that cannot be made any other way: what the app does when the repository changes
+    /// **underneath a confirmation that is already up**. The script opens the sheet, waits here
+    /// while a terminal moves a branch, and the clicks in `GITTER_DEBUG_CLICK` — which run after
+    /// every step — then answer a warning that has gone out of date.
     ///
     /// `delete:` and `forcedelete:` **act** — they run `git branch -d`/`-D`. Every `sheet:` step
     /// only opens a sheet; `sheet:delete:<b>` in particular reads the warning's numbers instead
@@ -104,6 +111,10 @@
                     store.confirmAbort(operation)
                 }
             case "confirmleave": store.confirmLeaveDetached()
+            case "wait":
+                // Seconds, not milliseconds: what this is for is giving a shell time to change
+                // the repository, and a step measured in milliseconds could not.
+                try? await Task.sleep(for: .seconds(Double(first ?? "") ?? 1))
             case "sheet": await sheet(first, second, store: store)
             default: log("unknown step: \(step)")
             }
