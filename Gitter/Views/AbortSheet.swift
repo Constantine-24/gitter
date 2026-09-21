@@ -49,19 +49,19 @@ struct AbortSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(Self.question(operation))
+            Text(operation.abortQuestion)
                 .font(.headline)
 
-            Text(Self.discarded(operation))
+            Text(operation.abortDiscards)
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text(Self.kept(operation))
+            Text(operation.abortKeeps)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text(history)
+            Text(operation.abortHistory(rewindsCommits: store.abortRewindsCommits))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -100,11 +100,13 @@ struct AbortSheet: View {
     ///
     /// A fixed height computed from the row count rather than a bare `ScrollView`: a scroll view
     /// takes every point it is offered, which would leave a sheet listing one file as tall as one
-    /// listing forty. Twenty rows is where it stops growing and starts scrolling.
+    /// listing forty. Eight rows is where it stops growing and starts scrolling — which is why
+    /// the heading carries the count: past the eighth row the list is clipped, and a user who
+    /// does not scroll would otherwise have no way to tell six files from sixty.
     @ViewBuilder
     private var fileList: some View {
         if files.isEmpty {
-            Text(Self.nothingToRevert(operation))
+            Text(operation.abortRevertsNothing)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -133,96 +135,22 @@ struct AbortSheet: View {
         }
     }
 
+    /// The count is in the heading, not implied by the rows: the box stops growing at eight, so
+    /// a longer list is clipped, and "These 14 files" is the only thing on the sheet that says
+    /// how much is below the fold.
     private var listHeading: String {
-        store.abortAlsoDiscardsUnstagedEdits
-            ? "These files go back to their committed state, staged edits and unstaged alike:"
-            : "These files go back to their committed state:"
-    }
-
-    /// What happens to commits, which is the half of the table a file list cannot show.
-    private var history: String {
-        if store.abortRewindsCommits {
-            return "The patches already applied leave the branch: nothing but the reflog will "
-                + "reach those commits afterwards."
-        }
-        switch operation {
-        case .squash: return "No commit is created or removed."
-        case .rebase:
-            // Not "\"<branch>\" goes back…", which the design's draft wording had: git detaches
-            // HEAD for the duration of a rebase (verified — `status --porcelain=v2` reports
-            // `# branch.head (detached)`), so there is no branch name on screen to quote.
-            return "Your branch goes back to the commit it was on before the rebase."
-        case .merge, .cherryPick, .revert, .applyingPatches:
-            return "Your branch and history go back to exactly where they were."
-        }
+        let clause =
+            files.count == 1
+            ? "This file goes back to its committed state"
+            : "These \(files.count) files go back to their committed state"
+        return store.abortAlsoDiscardsUnstagedEdits
+            ? clause + ", staged edits and unstaged alike:"
+            : clause + ":"
     }
 
     private func confirm() {
         guard !store.isMutating else { return }
         // `confirmAbort` closes the sheet itself, before anything runs.
         store.confirmAbort(operation)
-    }
-
-    // MARK: - The five wordings
-
-    private static func question(_ operation: RepositoryOperation) -> String {
-        switch operation {
-        case .merge: "Abort the merge?"
-        case .cherryPick: "Abort the cherry-pick?"
-        case .revert: "Abort the revert?"
-        case .rebase: "Abort the rebase?"
-        case .applyingPatches: "Stop applying patches?"
-        case .squash: "Undo the pending squash?"
-        }
-    }
-
-    private static func discarded(_ operation: RepositoryOperation) -> String {
-        switch operation {
-        case .merge, .cherryPick, .revert:
-            let it = operation.noun.lowercased()
-            return "Aborting discards the \(it)'s changes, every conflict resolution — including "
-                + "the ones you already staged — and anything else you staged since the \(it) "
-                + "began."
-        case .rebase:
-            return "Aborting discards everything the rebase has replayed, every conflict "
-                + "resolution, anything you staged since it began — and any uncommitted edits "
-                + "you have made since the rebase started, anywhere in the working copy."
-        case .applyingPatches:
-            return "Stopping discards every conflict resolution and anything you staged since it "
-                + "began, and removes the patches that were already applied."
-        case .squash:
-            return "Undoing discards everything currently staged — the squashed changes, any "
-                + "conflict resolutions, and anything else in the index, including work you "
-                + "staged before the squash if the squash was started outside Gitter. The "
-                + "prepared \"Squashed commit of the following:\" message goes too."
-        }
-    }
-
-    private static func kept(_ operation: RepositoryOperation) -> String {
-        switch operation {
-        case .merge, .cherryPick, .revert:
-            return "Kept: uncommitted edits you had before, edits you have made since to files "
-                + "the \(operation.noun.lowercased()) did not touch, and all untracked files."
-        case .applyingPatches:
-            return "Kept: uncommitted edits you had before, edits you have made since to files "
-                + "the patches did not touch, and all untracked files."
-        case .rebase:
-            return "Kept: untracked files, and nothing else — `git rebase --abort` restores the "
-                + "working copy completely."
-        case .squash:
-            return "Kept: unstaged edits and all untracked files."
-        }
-    }
-
-    /// The empty list. It is a real state, not a sign that something went wrong: a squash whose
-    /// net diff was empty stages nothing at all, and removing `SQUASH_MSG` is then the entire job.
-    private static func nothingToRevert(_ operation: RepositoryOperation) -> String {
-        switch operation {
-        case .squash:
-            "Nothing is staged, so no file in your working copy changes — the pending squash and "
-                + "its prepared message are all that go."
-        case .merge, .cherryPick, .revert, .rebase, .applyingPatches:
-            "No tracked file is staged or conflicted, so no file in your working copy changes."
-        }
     }
 }

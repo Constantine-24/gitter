@@ -134,4 +134,102 @@ extension RepositoryOperation {
         case .merge, .cherryPick, .revert, .rebase: "\(noun) aborted."
         }
     }
+
+    // MARK: - The abort confirmation
+
+    /// The five sentences `AbortSheet` is built from.
+    ///
+    /// They live here rather than in the view for the same reason as everything above: they are
+    /// pure functions of the operation, the app has no test target to pin a view with, and the
+    /// wording is the safety promise — six operations' worth of "what goes, what stays", each
+    /// line traceable to one cell of the kept/lost table in `GitBranchBackend.abort`. A view is
+    /// the one place where that is neither readable next to its siblings nor reachable from
+    /// anywhere else.
+
+    /// The headline. A pending squash is undone, not aborted, and `git am` stops — the same
+    /// distinction `abortActionName` makes, for the same reason.
+    var abortQuestion: String {
+        switch self {
+        case .merge: "Abort the merge?"
+        case .cherryPick: "Abort the cherry-pick?"
+        case .revert: "Abort the revert?"
+        case .rebase: "Abort the rebase?"
+        case .applyingPatches: "Stop applying patches?"
+        case .squash: "Undo the pending squash?"
+        }
+    }
+
+    /// What this abort throws away.
+    var abortDiscards: String {
+        switch self {
+        case .merge, .cherryPick, .revert:
+            let it = noun.lowercased()
+            return "Aborting discards the \(it)'s changes, every conflict resolution — including "
+                + "the ones you already staged — and anything else you staged since the \(it) "
+                + "began."
+        case .rebase:
+            return "Aborting discards everything the rebase has replayed, every conflict "
+                + "resolution, anything you staged since it began — and any uncommitted edits "
+                + "you have made since the rebase started, anywhere in the working copy."
+        case .applyingPatches:
+            return "Stopping discards every conflict resolution and anything you staged since it "
+                + "began, and removes the patches that were already applied."
+        case .squash:
+            return "Undoing discards everything currently staged — the squashed changes, any "
+                + "conflict resolutions, and anything else in the index, including work you "
+                + "staged before the squash if the squash was started outside Gitter. The "
+                + "prepared \"Squashed commit of the following:\" message goes too."
+        }
+    }
+
+    /// What survives it.
+    var abortKeeps: String {
+        switch self {
+        case .merge, .cherryPick, .revert:
+            return "Kept: uncommitted edits you had before, edits you have made since to files "
+                + "the \(noun.lowercased()) did not touch, and all untracked files."
+        case .applyingPatches:
+            return "Kept: uncommitted edits you had before, edits you have made since to files "
+                + "the patches did not touch, and all untracked files."
+        case .rebase:
+            return "Kept: untracked files, and nothing else — `git rebase --abort` restores the "
+                + "working copy completely."
+        case .squash:
+            return "Kept: unstaged edits and all untracked files."
+        }
+    }
+
+    /// What happens to commits, which is the half of the table a file list cannot show.
+    ///
+    /// `rewindsCommits` is the store's `abortRewindsCommits` — read live, because it is a fact
+    /// about the repository (an `am` that has already committed something) rather than about the
+    /// operation's name.
+    func abortHistory(rewindsCommits: Bool) -> String {
+        if rewindsCommits {
+            return "The patches already applied leave the branch: nothing but the reflog will "
+                + "reach those commits afterwards."
+        }
+        switch self {
+        case .squash: return "No commit is created or removed."
+        case .rebase:
+            // Not "\"<branch>\" goes back…", which the design's draft wording had: git detaches
+            // HEAD for the duration of a rebase (verified — `status --porcelain=v2` reports
+            // `# branch.head (detached)`), so there is no branch name on screen to quote.
+            return "Your branch goes back to the commit it was on before the rebase."
+        case .merge, .cherryPick, .revert, .applyingPatches:
+            return "Your branch and history go back to exactly where they were."
+        }
+    }
+
+    /// The empty list. It is a real state, not a sign that something went wrong: a squash whose
+    /// net diff was empty stages nothing at all, and removing `SQUASH_MSG` is then the entire job.
+    var abortRevertsNothing: String {
+        switch self {
+        case .squash:
+            "Nothing is staged, so no file in your working copy changes — the pending squash and "
+                + "its prepared message are all that go."
+        case .merge, .cherryPick, .revert, .rebase, .applyingPatches:
+            "No tracked file is staged or conflicted, so no file in your working copy changes."
+        }
+    }
 }
