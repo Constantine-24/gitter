@@ -57,6 +57,25 @@ public protocol GitWorkingCopyBackend: Sendable {
     /// A rejection — nothing to commit, a signing failure, a failing hook — throws
     /// `GitError.commandFailed` with git's stderr unchanged, and leaves HEAD and the index
     /// exactly as they were.
+    ///
+    /// **`amend` is refused outright while an operation is in progress**, with
+    /// `GitError.amendDuringOperation`, thrown before git runs. What is in progress is re-read
+    /// from the repository at that moment, not taken from a snapshot, so a merge a terminal
+    /// started a fraction of a second ago still counts. Git's own rule covers only two of the
+    /// six (measured on git 2.54, conflicts resolved and staged so nothing else could refuse):
+    ///
+    /// | in progress | `git commit --amend` |
+    /// |---|---|
+    /// | merge | refused, exit 128, "You are in the middle of a merge -- cannot amend." |
+    /// | cherry-pick | refused, exit 128, "…in the middle of a cherry-pick…" |
+    /// | revert | accepted — tip rewritten, `REVERT_HEAD` deleted, the revert vanishes |
+    /// | rebase | accepted — tip rewritten, the rebase left standing on a commit now on no ref |
+    /// | `git am` | accepted — tip rewritten, `rebase-apply/` left behind |
+    /// | pending squash | accepted — tip rewritten, `SQUASH_MSG` deleted, the squash folded in |
+    ///
+    /// In those four the previous tip ends up reachable from no ref, with nothing said about
+    /// it. All six are refused here, so the answer does not depend on which of git's own checks
+    /// happens to exist; `AmendDuringOperationTests` pins every cell.
     func commit(message: String, amend: Bool, allTracked: Bool, at root: URL) async throws -> String
 
     /// `git log -1 --format=%B`, with trailing whitespace and newlines trimmed.

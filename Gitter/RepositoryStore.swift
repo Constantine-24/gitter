@@ -193,6 +193,10 @@ final class RepositoryStore {
     /// internal (not private(set) write): used by +Refresh.swift
     func setSnapshot(_ newSnapshot: RepoSnapshot?) {
         snapshot = newSnapshot
+        // Here rather than in `+Refresh` because this is the one place the snapshot is written,
+        // and "an operation has begun" is only ever learned from a new one. See
+        // `reconcileAmendWithOperation` for why a ticked Amend cannot be left ticked.
+        reconcileAmendWithOperation()
     }
 
     /// internal (not private(set) write): used by +Refresh.swift

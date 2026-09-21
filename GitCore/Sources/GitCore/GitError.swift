@@ -9,4 +9,8 @@ public enum GitError: Error, Sendable, Equatable {
     /// `commit(message:...)` was called with a message that is empty or contains only
     /// whitespace. Thrown before git runs at all.
     case emptyCommitMessage
+    /// `commit(message:amend: true, ...)` was called while the repository is part-way through
+    /// `operation`. Thrown before git runs at all — see `GitWorkingCopyBackend.commit` for the
+    /// measured table of which four of the six git would otherwise have gone through with.
+    case amendDuringOperation(RepositoryOperation)
 }

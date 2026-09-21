@@ -68,6 +68,17 @@ extension CLIGitBackend: GitWorkingCopyBackend {
             throw GitError.emptyCommitMessage
         }
 
+        // Amending while an operation is in progress rewrites the commit that operation is
+        // standing on, and git only refuses two of the six (see the protocol's table). The
+        // other four leave the previous tip on no ref at all — the one thing this milestone
+        // promises never to happen without a confirmation naming it. Asked of git here, at the
+        // moment of the write, rather than taken from a caller's snapshot: a terminal can start
+        // a merge between a refresh and this call, and a guard fed stale state is not a guard.
+        // If the question cannot be answered the error propagates and nothing is committed.
+        if amend, let operation = try await operationInProgress(at: root) {
+            throw GitError.amendDuringOperation(operation)
+        }
+
         // Outside the repository on purpose, same as `applyToIndex`'s patch file: a message
         // file inside the worktree would itself show up as an untracked change while it exists.
         let file = FileManager.default.temporaryDirectory

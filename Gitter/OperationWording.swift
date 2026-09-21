@@ -91,6 +91,32 @@ extension RepositoryOperation {
         "Unstaging would abandon the \(noun.lowercased()). \(wayOut)"
     }
 
+    /// The tooltip on the disabled Amend toggle, and the banner if a commit reaches the store
+    /// with Amend still ticked.
+    ///
+    /// Per operation rather than one sentence, because what amending destroys is different in
+    /// each: git itself refuses only the merge and the cherry-pick, and in the other four the
+    /// commit the operation was standing on ends up on no ref with nothing said about it. See
+    /// `GitWorkingCopyBackend.commit` for the measured table.
+    var amendBlockedHelp: String {
+        "\(amendWouldDo) \(wayOut)"
+    }
+
+    private var amendWouldDo: String {
+        switch self {
+        case .merge, .cherryPick, .revert:
+            "Amending would rewrite the commit this \(noun.lowercased()) is being built on and "
+                + "take the \(noun.lowercased()) with it."
+        case .rebase:
+            "Amending would rewrite the commit the rebase stopped on and leave the rebase "
+                + "standing on one that is on no branch."
+        case .applyingPatches:
+            "Amending would rewrite the commit the last patch made and leave it on no branch."
+        case .squash:
+            "Amending now would fold the squash into the previous commit."
+        }
+    }
+
     private var wayOut: String {
         switch self {
         case .merge, .cherryPick, .revert: "Commit to complete it, or use \(abortActionName)."

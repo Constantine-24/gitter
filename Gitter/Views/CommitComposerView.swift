@@ -46,10 +46,20 @@ struct CommitComposerView: View {
             HStack(spacing: 8) {
                 // Deliberately not disabled while mutating: amending only edits the draft, and
                 // the draft stays editable while a git write is in flight.
+                //
+                // It *is* disabled while an operation is in progress, which is a different
+                // question: amending there rewrites the commit the operation is standing on, and
+                // git goes through with it in four of the six cases (see
+                // `GitWorkingCopyBackend.commit`). The tooltip names which operation and the way
+                // out; the store and the backend refuse it as well, since ⌘↩ never passes
+                // through this control.
                 Toggle(
                     "Amend",
                     isOn: Binding(get: { store.draft.amend }, set: { store.setAmend($0) })
                 )
+                .disabled(
+                    store.operationInProgress != nil,
+                    help: store.operationInProgress?.amendBlockedHelp)
                 if store.isMutating {
                     ProgressView().controlSize(.small)
                 }

@@ -23,6 +23,11 @@ extension RepositoryStore {
                 return "Failed to launch: \(path)"
             case .emptyCommitMessage:
                 return "Enter a commit message."
+            case .amendDuringOperation(let operation):
+                // The backend's own refusal, reached only when the store's gate did not see the
+                // operation yet (a terminal started one between two refreshes). Same sentence as
+                // the disabled toggle's tooltip, so the two never describe the state differently.
+                return operation.amendBlockedHelp
             }
         }
         // A refusal that reached here without the action that provoked it. Every throw site in

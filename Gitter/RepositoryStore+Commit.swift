@@ -8,6 +8,25 @@ extension RepositoryStore {
         guard draft.canCommit else { return }
         let message = draft.message
         let amend = draft.amend
+
+        // Amending part-way through an operation rewrites the commit that operation is standing
+        // on, and in four of the six git goes through with it: the previous tip ends up on no
+        // ref, and the merge/revert/squash it belonged to either vanishes or is left pointing at
+        // nothing. `CLIGitBackend.commit` refuses all six outright; this refuses first so the
+        // banner names the operation and the way out instead of repeating a backend error.
+        //
+        // Not redundant with the disabled toggle, either: ⌘↩ commits from either text field, and
+        // `reconcileAmendWithOperation` only catches an operation the store has already seen. A
+        // merge started in a terminal a moment ago has not reached the snapshot yet, and this is
+        // the last gate on this side of the process.
+        if amend, let operation = operationInProgress {
+            // Through `mutate` rather than straight into `lastError`, like `perform`'s own
+            // refusal: that is what makes the message sticky against the reload the watcher is
+            // about to trigger. No git write runs.
+            mutate { _, _ in throw BranchActionBlocked(reason: operation.amendBlockedHelp) }
+            return
+        }
+
         // With nothing staged, commit every tracked modification and deletion (`git commit
         // -a`), which never sweeps in untracked files. Amending keeps HEAD's tree instead.
         // When there is nothing to commit at all, git says so and that becomes the banner.
@@ -44,6 +63,11 @@ extension RepositoryStore {
     /// while a mutation is in flight. Turning amend back off takes the prefill away again,
     /// but only while it is still untouched — see `clearPrefillIfUntouched`.
     func setAmend(_ on: Bool) {
+        // Ticking it while an operation is in progress is a no-op: the commit it describes
+        // cannot be made (see `commit()` and `GitWorkingCopyBackend.commit`), and a box that
+        // ticks and then refuses is worse than one that will not tick. Unticking always works —
+        // that is the way out of the state `reconcileAmendWithOperation` cannot reach.
+        if on, operationInProgress != nil { return }
         draft.amend = on
         if !on { draft.clearPrefillIfUntouched() }
         guard on, draft.subject.isEmpty, draft.body.isEmpty, let root else { return }
@@ -55,5 +79,26 @@ extension RepositoryStore {
             guard draft.amend, self.generation == generation else { return }
             draft.prefill(from: message)
         }
+    }
+
+    /// Takes Amend back off when the repository turns out to be part-way through an operation.
+    ///
+    /// The toggle is disabled while one is in progress, but the operation can begin *after*
+    /// Amend was ticked — a merge from the sheet, a rebase started in a terminal — and a control
+    /// that becomes disabled keeps whatever value it had. Left alone the draft would still say
+    /// "Amend Commit" over a commit that cannot be amended, and HEAD's prefilled message would
+    /// sit there as if it were the merge commit's.
+    ///
+    /// The draft is restored exactly the way unticking restores it, and by the same call:
+    /// `clearPrefillIfUntouched` takes back the message Gitter offered and nothing else. Text
+    /// the user typed over that offer is theirs and stays — an earlier milestone fixed "untick
+    /// doesn't clear the amend message", and this must not undo either half of it.
+    ///
+    /// Called from `setSnapshot`, the one place the snapshot is written.
+    // internal (not private): used by RepositoryStore.swift's `setSnapshot(_:)`
+    func reconcileAmendWithOperation() {
+        guard draft.amend, operationInProgress != nil else { return }
+        draft.amend = false
+        draft.clearPrefillIfUntouched()
     }
 }
