@@ -17,11 +17,17 @@ import Foundation
 ///   work already done — measured, for `fetch --all`, in `fetch`'s own doc comment. Only the
 ///   errors thrown *before git runs* promise a no-op, and they say so in
 ///   `RemoteOperationError`. A caller must re-read the repository rather than infer.
-/// - **No force flag, no refspec beginning with `+`, never a prune, and never `git pull`.** The
-///   same rule the branch protocol lives under, enforced the same way: `ForceFlagScannerTests`
-///   fails the build if one appears anywhere in `GitCore/Sources`, and the exact argument
-///   vectors this protocol's implementation writes are pinned there as a contract before the
-///   code that writes them exists.
+/// - **No bare force flag, no refspec beginning with `+`, never a prune, and never `git
+///   pull`.** The same rule the branch protocol lives under, enforced the same way:
+///   `ForceFlagScannerTests` fails the build if one appears anywhere in `GitCore/Sources`, and
+///   the exact argument vectors this protocol's implementation writes are pinned there as a
+///   contract before the code that writes them exists. Since Task 6 two of those vectors do
+///   carry a force — `forcePush` and `deleteRemoteBranch` each send
+///   `--force-with-lease=<ref>:<tip>`, and it is the *only* force this package permits. A
+///   lease is a claim about what the destination holds, made with the sha a confirmation sheet
+///   showed, so the server refuses rather than overwrites when the branch has moved. The bare
+///   `--force`, `-f` and `--force-with-lease` (which leases against a remote-tracking ref this
+///   app's own fetch rewrites) stay findings everywhere.
 public protocol GitRemoteBackend: Sendable {
     /// Bring the remote-tracking refs up to date with the server, changing nothing local:
     /// `git fetch --progress --no-prune <remote>`, or `git fetch --progress --no-prune --all`
@@ -181,7 +187,10 @@ public protocol GitRemoteBackend: Sendable {
     /// set up to track '…'.` notice is absent, and the explanation is two `error:` lines on
     /// stderr with no `remote:` prefix — which neither the porcelain parser nor
     /// `remoteMessages` reads. Every implementation therefore reads the configuration back
-    /// after a `setUpstream: true` push and answers in `PushResult.upstreamWasSet`; git's own
+    /// after a `setUpstream: true` push and answers in `PushResult.upstream`, which
+    /// distinguishes `.set`, `.notSet` and `.unknown` (the read-back itself could not be run —
+    /// a state that occurs *with* the upstream correctly written, so it must never be worded
+    /// as "not set"); git's own
     /// `error:` lines come back in `PushResult.errorLines` so the caller can quote them.
     ///
     /// **Names are refused before git runs**, and the refusal really is a no-op: `branch` by
@@ -247,8 +256,8 @@ public protocol GitRemoteBackend: Sendable {
     /// Everything else is `push`'s: the outcome is read from `--porcelain` stdout and never
     /// from the exit code, a rejection is an outcome rather than an error, `remoteMessages`
     /// carries the server's words for every outcome, and the names are refused before git runs
-    /// by the same three checks. `PushResult.upstreamWasSet` is always `nil` — a force push is
-    /// never asked to write an upstream.
+    /// by the same three checks. `PushResult.upstream` is always `.notRequested` — a force
+    /// push is never asked to write an upstream.
     ///
     /// **A cancelled force push says nothing about the server**, exactly as a cancelled `push`
     /// does, and here the stakes are higher: it may have been cancelled after the server
@@ -326,9 +335,17 @@ public protocol GitRemoteBackend: Sendable {
     /// nothing is at stake — the one wrong answer this pair must never give. A visibly
     /// incomplete list is recoverable; a false reassurance is not.
     ///
-    /// Both revisions are refused before git runs by `requireRevision`'s rules: they are the
-    /// two halves of one `<base>..<revision>` argument. A revision git cannot resolve throws
-    /// (`fatal: bad revision …`) rather than answering with an empty list, for the same reason.
+    /// **Both parameters are ref names, not revisions**, despite what they are called, and both
+    /// are refused before git runs when they carry revision syntax. They are the two halves of
+    /// one `<base>..<revision>` argument, so `base = "refs/heads/main."` would silently make it
+    /// `refs/heads/main...<revision>` — the **symmetric** difference — and `revision = "a..b"`
+    /// a range nobody chose. `..`, `^`, `~`, `:`, `@{…}` and a leading or trailing `.` are
+    /// `BranchOperationError.invalidName`; see `requireRefNameOrObjectName` for the table.
+    ///
+    /// The accepted forms are a full ref name (`refs/heads/main`,
+    /// `refs/remotes/origin/main`), a short remote-tracking name (`origin/main`), `HEAD`, and a
+    /// full object name. A name git cannot resolve throws (`fatal: bad revision …`) rather than
+    /// answering with an empty list, for the same reason the limit is clamped.
     func commits(
         in revision: String, notIn base: String, limit: Int, at root: URL
     ) async throws -> [Commit]

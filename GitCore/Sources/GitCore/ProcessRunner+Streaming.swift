@@ -7,14 +7,29 @@ extension ProcessRunner {
     public struct StreamedResult: Sendable {
         public let stdout: Data
         public let stderr: String
-        /// The status the process really ended with: `0`, or one of `allowedExitCodes` — any
-        /// other code is a `GitError.commandFailed` and never reaches here.
+        /// `Process.terminationStatus`: `0`, or one of `allowedExitCodes` — any other value is
+        /// a `GitError.commandFailed` and never reaches here.
         ///
         /// It is on the result because a caller that allows a non-zero code has no other way
         /// to ask what happened. `CLIGitBackend.push` allows exit 1 so that a rejection's
         /// stdout survives (every rejection exits 1, and the outcome lives on stdout); when
         /// git then prints no porcelain line for the ref it was given, the code is all that is
         /// left to report, and reporting an assumed one would be inventing evidence.
+        ///
+        /// **It is not always an exit status.** For a child killed by a signal,
+        /// `terminationStatus` is the **signal number** and only `terminationReason` says so —
+        /// measured on macOS 27 / Foundation: `SIGTERM` gives 15, `SIGHUP` gives **1**, and
+        /// `exit 3` gives 3, all through this same field. So a git killed by `SIGHUP` arrives
+        /// here as `exitCode == 1`, indistinguishable from the ordinary rejection code, and a
+        /// signal whose number is not allowed is a `commandFailed` carrying that number as if
+        /// it were a status.
+        ///
+        /// That is left as it is, deliberately, because nothing reads this field as a *cause*:
+        /// it is reported alongside git's stderr on a path that is already a failure whatever
+        /// ended the child (`CLIGitBackend+Push.swift`'s "no porcelain line for the ref we
+        /// asked about"). A caller that ever needs to tell a signal from an exit must have
+        /// `terminationReason` carried here too — it is not derivable from this number.
+        /// `aSignalledChildsStatusIsTheSignalNumber` pins the measurement.
         public let exitCode: Int32
 
         public init(stdout: Data, stderr: String, exitCode: Int32) {

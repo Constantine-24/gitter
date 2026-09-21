@@ -373,7 +373,7 @@ import Testing
         let tip = try await repo.headSha()
         #expect(try await RemoteState.capture(origin).refs.contains("refs/heads/topic\u{0}\(tip)"))
         // And the upstream it was asked to write is not there.
-        #expect(result.upstreamWasSet == false)
+        #expect(result.upstream == .notSet)
         #expect(result.errorLines.contains {
             $0.contains("unable to write upstream branch configuration")
         }, "\(result.errorLines)")
@@ -399,13 +399,57 @@ import Testing
             at: repo.root, progress: { _ in })
 
         #expect(result.outcome == .created)
-        #expect(result.upstreamWasSet == true)
+        #expect(result.upstream == .set)
         #expect(result.errorLines == [])
         #expect(try await repo.upstream(of: "topic") == "origin/topic")
     }
 
-    /// The question was not asked, so there is no answer to give: `nil` rather than `false`,
-    /// which would read as "the upstream is wrong" for every ordinary push.
+    /// **"git did not write it" and "Gitter could not read it back" are different sentences,
+    /// and `Bool?` could only say one of them.**
+    ///
+    /// The field used to answer `false` for both, documented as "not confirmed". But the two
+    /// states call for opposite wording: one is *the branch is not tracking what you asked
+    /// for*, the other is *the branch may well be tracking it and this could not be checked* —
+    /// and here the upstream really **is** written, so `false` was a false statement about the
+    /// repository.
+    ///
+    /// Reached with a client-side `reference-transaction` hook, which git runs when the push
+    /// updates `refs/remotes/origin/topic` — after `-u` has written the configuration — and
+    /// which leaves `.git/config` unparseable. `git config --get` then exits **128** with
+    /// `fatal: bad config line …`, which is neither a value nor the "key not set" exit 1.
+    @Test func anUpstreamThatCannotBeReadBackIsUnknownAndNotUnset() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        try await repo.git(["switch", "-q", "-c", "topic"])
+        try repo.write("topic.txt", "topic\n")
+        try await repo.commitAll("topic")
+        try repo.writeExecutable(".git/hooks/reference-transaction", """
+            #!/bin/sh
+            [ "$1" = committed ] && printf '\\n[bad\\n' >> .git/config
+            exit 0
+            """)
+
+        let result = try await CLIGitBackend().push(
+            "topic", to: "origin", remoteRef: "refs/heads/topic", setUpstream: true,
+            at: repo.root, progress: { _ in })
+
+        #expect(result.outcome == .created)
+        // The baseline that makes `.unknown` mean something: git really did write the upstream,
+        // read off the file rather than through a `git config` that can no longer parse it. So
+        // the old `false` was not merely unhelpful, it was untrue.
+        let config = try String(
+            contentsOf: repo.root.appendingPathComponent(".git/config"), encoding: .utf8)
+        #expect(config.contains("[branch \"topic\"]"), "\(config)")
+        #expect(config.contains("remote = origin"), "\(config)")
+
+        #expect(result.upstream == .unknown)
+    }
+
+    /// The question was not asked, so there is no answer to give: `.notRequested` rather than
+    /// `.notSet`, which would read as "the upstream is wrong" for every ordinary push.
     @Test func aPushThatWasNotAskedToSetAnUpstreamReportsNothingAboutOne() async throws {
         let repo = try await TestRepo.makeBranched()
         defer { repo.cleanUp() }
@@ -419,7 +463,7 @@ import Testing
             "main", to: "origin", remoteRef: "refs/heads/main", setUpstream: false,
             at: repo.root, progress: { _ in })
 
-        #expect(result.upstreamWasSet == nil)
+        #expect(result.upstream == .notRequested)
     }
 
     /// A push the server refused wrote no upstream and was never going to, so there is nothing
@@ -444,7 +488,7 @@ import Testing
             at: repo.root, progress: { _ in })
 
         #expect(result.outcome == .rejected(.fetchFirst))
-        #expect(result.upstreamWasSet == nil)
+        #expect(result.upstream == .notRequested)
         // git's own summary of the failure is carried, and it is not the server's words.
         #expect(result.errorLines.contains { $0.contains("failed to push some refs") },
                 "\(result.errorLines)")

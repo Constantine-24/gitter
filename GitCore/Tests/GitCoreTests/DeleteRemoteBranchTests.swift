@@ -48,7 +48,7 @@ import Testing
             "topic", on: "origin", expectedTip: tip, at: repo.root)
 
         #expect(result.outcome == .deleted)
-        #expect(result.upstreamWasSet == nil)
+        #expect(result.upstream == .notRequested)
         #expect(try await bareGit(
             origin, ["rev-parse", "--verify", "-q", "refs/heads/topic"], allowedExitCodes: [1]
         ).isEmpty, "the branch is still on the server")

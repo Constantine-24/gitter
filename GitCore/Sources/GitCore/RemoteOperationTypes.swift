@@ -157,22 +157,8 @@ public struct PushResult: Equatable, Sendable {
     /// renders this shows it as plain text — escapes and control characters stripped, length
     /// capped — never as anything a terminal or a formatter would interpret.
     public let remoteMessages: [String]
-    /// Whether the branch's upstream is now what `setUpstream: true` asked for, or `nil` when
-    /// there is nothing to report: the push did not ask for one, or the server refused it, in
-    /// which case git had no occasion to write one.
-    ///
-    /// **`-u` is best-effort in git, and Gitter reads it back.** Measured on git 2.54 with
-    /// `.git/config` made unwritable: the push succeeds and exits **0**, the branch appears on
-    /// the server, the `branch '…' set up to track '…'.` notice is simply absent, and the
-    /// failure is two `error:` lines on stderr that `remoteMessages` does not carry because
-    /// they are not the server's. A caller that trusted `-u` would show a published branch with
-    /// an upstream it does not have — so the upstream is read back out of
-    /// `branch.<name>.remote` / `branch.<name>.merge` and reported here.
-    ///
-    /// `false` means "not confirmed" rather than "definitely not written": it is also what a
-    /// read-back that could not be run answers, because in both cases Gitter cannot say the
-    /// branch is tracking what it was asked to track.
-    public let upstreamWasSet: Bool?
+    /// What became of the upstream `setUpstream: true` asked for. See `UpstreamResult`.
+    public let upstream: UpstreamResult
     /// git's own `error:` lines from stderr, whole and redacted — the ones that are *not* the
     /// server talking. See `PushPorcelainParser.errorLines`.
     ///
@@ -184,14 +170,47 @@ public struct PushResult: Equatable, Sendable {
     public let errorLines: [String]
 
     public init(
-        outcome: PushOutcome, remoteMessages: [String], upstreamWasSet: Bool? = nil,
+        outcome: PushOutcome, remoteMessages: [String], upstream: UpstreamResult = .notRequested,
         errorLines: [String] = []
     ) {
         self.outcome = outcome
         self.remoteMessages = remoteMessages
-        self.upstreamWasSet = upstreamWasSet
+        self.upstream = upstream
         self.errorLines = errorLines
     }
+}
+
+/// What became of the upstream a `setUpstream: true` push asked git to write.
+///
+/// **`-u` is best-effort in git, and Gitter reads it back.** Measured on git 2.54 with
+/// `.git/config` made unwritable: the push succeeds and exits **0**, the branch appears on the
+/// server, the `branch '…' set up to track '…'.` notice is simply absent, and the explanation
+/// is two `error:` lines on stderr that `remoteMessages` does not carry because they are not
+/// the server's. A caller that trusted `-u` would show a published branch with an upstream it
+/// does not have — so the configuration is read back out of `branch.<name>.remote` /
+/// `branch.<name>.merge` and answered here.
+///
+/// **Four cases and not three, because the read-back can fail too.** This was `Bool?`, where
+/// `false` meant both "git did not write it" and "the read-back could not be run", documented
+/// as "not confirmed". The two need opposite sentences — one says *the branch is not tracking
+/// what you asked for*, the other says *it may well be and this could not be checked* — and
+/// the second can occur with the upstream **correctly written**, which makes a `false` there a
+/// false statement about the repository. Measured: a client-side `reference-transaction` hook
+/// that leaves `.git/config` unparseable makes `git config --get` exit 128 after `-u` has
+/// already succeeded (`anUpstreamThatCannotBeReadBackIsUnknownAndNotUnset`).
+public enum UpstreamResult: Equatable, Sendable {
+    /// Nothing to report. Either `setUpstream` was false, or the server refused the push — in
+    /// which case git had no occasion to write an upstream and the words belong to the
+    /// refusal. Both lease methods always answer this: neither asks for an upstream.
+    case notRequested
+    /// Read back, and the branch is tracking exactly what the push asked for.
+    case set
+    /// Read back, and it is **not**. The push itself may well have succeeded; this is the
+    /// notice beside it, and git's own words for why are in `errorLines`.
+    case notSet
+    /// The read-back could not be run at all, so nothing is known either way. Never word this
+    /// as "the upstream was not set": say that it could not be checked.
+    case unknown
 }
 
 /// Why Gitter will not push a branch even though git might.

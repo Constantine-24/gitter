@@ -145,6 +145,30 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(allowed.stderr == "noted\n")
     }
 
+    /// **A signalled child's `exitCode` is the signal number, not an exit status** — and for
+    /// `SIGHUP` that number is **1**, which is a code `CLIGitBackend.push` allows.
+    ///
+    /// Measured on macOS 27 / Foundation: `Process.terminationStatus` is the signal for a child
+    /// killed by one (`SIGTERM` → 15, `SIGHUP` → 1) and only `terminationReason` tells the two
+    /// apart. `runStreaming` records `terminationStatus`, so a git killed by `SIGHUP` comes
+    /// back as an ordinary `exitCode == 1` rather than throwing.
+    ///
+    /// Pinned here rather than fixed, and `StreamedResult.exitCode`'s doc comment now says so
+    /// instead of promising "the status the process really ended with". Nothing reads the field
+    /// as a cause: `push` reaches it only on the path where git printed **no** porcelain line
+    /// for the ref it was given, which is a failure however the child ended, and the number is
+    /// reported rather than interpreted. A caller that ever needs to tell a signal from an exit
+    /// must carry `terminationReason` too.
+    @Test func aSignalledChildsStatusIsTheSignalNumber() async throws {
+        let (hangup, _) = try await runScript("kill -HUP $$", allowedExitCodes: [1])
+        #expect(hangup.exitCode == 1, "SIGHUP is signal 1, and so indistinguishable from exit 1")
+
+        // Non-vacuous: another signal gives its own number through the same path, so the 1
+        // above is this child's status and not a default.
+        let (terminated, _) = try await runScript("kill -TERM $$", allowedExitCodes: [15])
+        #expect(terminated.exitCode == 15)
+    }
+
     /// A code that is *not* allowed is still a throw, and the error carries the same number:
     /// the new field is a second way of reading one status, never a second status.
     @Test func aThrownFailureStillCarriesItsCode() async throws {

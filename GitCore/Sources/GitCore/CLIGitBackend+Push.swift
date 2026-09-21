@@ -76,7 +76,9 @@ extension CLIGitBackend {
         // whose name resembles an option still be read as a remote.
         //
         // **`--no-follow-tags` is on all four vectors, and it is not decoration either.** See
-        // `noFollowTags` below for what it is defending against and what it was measured to do.
+        // this file's own doc comment for what it defends against and what it was measured to
+        // do: without it, `push.followTags=true` made every one of the four create tags on the
+        // server.
         //
         // The refspec is explicit and full on both sides, and never begins with `+`: the force
         // this package permits is a lease, and a lease is a flag with a sha in it rather than a
@@ -92,7 +94,7 @@ extension CLIGitBackend {
             arguments, destinationRef: remoteRef, at: root, progress: progress)
         return result(
             outcome, streamed,
-            upstreamWasSet: await upstreamWasSet(
+            upstream: await upstreamResult(
                 asked: setUpstream, outcome: outcome, branch: branch, remote: remote,
                 remoteRef: remoteRef, at: root))
     }
@@ -124,9 +126,9 @@ extension CLIGitBackend {
 
         let (outcome, streamed) = try await pushing(
             arguments, destinationRef: remoteRef, at: root, progress: progress)
-        // `nil`, not `false`: nothing asked for an upstream here, so there is nothing to report
-        // about one. See `PushResult.upstreamWasSet`.
-        return result(outcome, streamed, upstreamWasSet: nil)
+        // `.notRequested`, not `.notSet`: nothing asked for an upstream here, so there is
+        // nothing to report about one. See `UpstreamResult`.
+        return result(outcome, streamed, upstream: .notRequested)
     }
 
     public func deleteRemoteBranch(
@@ -155,7 +157,7 @@ extension CLIGitBackend {
         // so — and a cancelled deletion says nothing about whether the server carried it out.
         let (outcome, streamed) = try await pushing(
             arguments, destinationRef: "refs/heads/" + b, at: root, progress: { _ in })
-        return result(outcome, streamed, upstreamWasSet: nil)
+        return result(outcome, streamed, upstream: .notRequested)
     }
 
     /// Runs one push vector and reads its outcome off `--porcelain` stdout.
@@ -206,12 +208,13 @@ extension CLIGitBackend {
 
     /// The outcome and everything the server said, assembled the same way for every push.
     private func result(
-        _ outcome: PushOutcome, _ streamed: ProcessRunner.StreamedResult, upstreamWasSet: Bool?
+        _ outcome: PushOutcome, _ streamed: ProcessRunner.StreamedResult,
+        upstream: UpstreamResult
     ) -> PushResult {
         PushResult(
             outcome: outcome,
             remoteMessages: PushPorcelainParser.remoteMessages(stderr: streamed.stderr),
-            upstreamWasSet: upstreamWasSet,
+            upstream: upstream,
             errorLines: PushPorcelainParser.errorLines(stderr: streamed.stderr))
     }
 
@@ -253,24 +256,27 @@ extension CLIGitBackend {
     /// a name that does not match while the upstream really is what was asked for. `-u` writes
     /// exactly these two keys (measured, Task 5), so these two are what is compared.
     ///
-    /// `nil` when nothing was asked, and when the server refused — a rejected push wrote no
-    /// upstream and was never going to, and the banner is about the refusal. `false` also
-    /// covers a read-back that could not be run: either way Gitter cannot say the branch
-    /// tracks what it was asked to track, and saying so is the point.
-    private func upstreamWasSet(
+    /// `.notRequested` when nothing was asked, and when the server refused — a rejected push
+    /// wrote no upstream and was never going to, and the banner is about the refusal.
+    ///
+    /// A read-back that **could not be run** is `.unknown` and not `.notSet`, which is the
+    /// whole reason this returns `UpstreamResult` rather than `Bool?`: the two call for
+    /// opposite sentences, and the failing read-back can happen with the upstream correctly
+    /// written (measured — see `UpstreamResult`).
+    private func upstreamResult(
         asked: Bool, outcome: PushOutcome, branch: String, remote: String, remoteRef: String,
         at root: URL
-    ) async -> Bool? {
-        guard asked else { return nil }
-        if case .rejected = outcome { return nil }
+    ) async -> UpstreamResult {
+        guard asked else { return .notRequested }
+        if case .rejected = outcome { return .notRequested }
         do {
             // A branch name reaching here has been through `requireRefspecSide`, so it cannot
             // begin with a `-` and the key cannot be read as an option.
             let configuredRemote = try await configValue("branch.\(branch).remote", at: root)
             let configuredMerge = try await configValue("branch.\(branch).merge", at: root)
-            return configuredRemote == remote && configuredMerge == remoteRef
+            return configuredRemote == remote && configuredMerge == remoteRef ? .set : .notSet
         } catch {
-            return false
+            return .unknown
         }
     }
 

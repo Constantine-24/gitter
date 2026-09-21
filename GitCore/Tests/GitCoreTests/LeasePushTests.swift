@@ -49,7 +49,7 @@ import Testing
         }
         #expect(!from.isEmpty && theirs.hasPrefix(from), "\(from) is not an abbreviation of \(theirs)")
         #expect(!to.isEmpty && ours.hasPrefix(to), "\(to) is not an abbreviation of \(ours)")
-        #expect(result.upstreamWasSet == nil, "a force push was never asked to write an upstream")
+        #expect(result.upstream == .notRequested, "a force push never asks for an upstream")
 
         #expect(try await RemoteState.capture(origin).refs.contains("refs/heads/main\u{0}\(ours)"))
         let reachable = try await bareGit(origin, ["rev-list", "refs/heads/main"])
