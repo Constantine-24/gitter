@@ -50,17 +50,25 @@ struct SidebarView: View {
                 }
             }
 
-            if !refs.remoteNames.isEmpty {
+            // The groups come from the configured remotes, not from splitting a branch name on
+            // "/": a remote nothing has been fetched from still gets a (empty) group of its
+            // own, and a remote whose name contains a slash keeps its branches.
+            if !refs.remotes.isEmpty || !refs.branchesWithoutRemote.isEmpty {
                 Section("Remotes") {
-                    ForEach(refs.remoteNames, id: \.self) { remote in
-                        DisclosureGroup(remote) {
-                            ForEach(refs.remoteBranches.filter { $0.name.hasPrefix(remote + "/") }) { branch in
-                                branchRow(branch, showCheck: false)
-                                    .contextMenu { RemoteBranchMenu(branch: branch.name) }
-                                    .simultaneousGesture(
-                                        TapGesture(count: 2).onEnded {
-                                            store.track(remoteBranch: branch.name)
-                                        })
+                    ForEach(refs.remotes) { remote in
+                        DisclosureGroup(remote.name) {
+                            ForEach(refs.branches(of: remote)) { branch in
+                                remoteBranchRow(branch)
+                            }
+                        }
+                    }
+                    // Refs under `refs/remotes/` that no configured remote claims — left over
+                    // from a removed remote, or written by hand. They are shown rather than
+                    // dropped: the commits they hold may be reachable from nowhere else.
+                    if !refs.branchesWithoutRemote.isEmpty {
+                        DisclosureGroup("Other") {
+                            ForEach(refs.branchesWithoutRemote) { branch in
+                                remoteBranchRow(branch)
                             }
                         }
                     }
@@ -85,6 +93,16 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .navigationTitle(store.root?.lastPathComponent ?? "Gitter")
+    }
+
+    @ViewBuilder
+    private func remoteBranchRow(_ branch: Branch) -> some View {
+        branchRow(branch, showCheck: false)
+            .contextMenu { RemoteBranchMenu(branch: branch.name) }
+            .simultaneousGesture(
+                TapGesture(count: 2).onEnded {
+                    store.track(remoteBranch: branch.name)
+                })
     }
 
     @ViewBuilder

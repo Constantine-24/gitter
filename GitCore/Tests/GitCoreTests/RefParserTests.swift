@@ -36,9 +36,14 @@ import Testing
         #expect(!collection.remoteBranches.contains { $0.name == "origin/HEAD" })
     }
 
-    @Test func remoteNamesContainsOrigin() throws {
+    /// `for-each-ref` says nothing about which remotes are configured — that comes from
+    /// `git remote -v` — so the parser leaves the list empty and the remote branches
+    /// unattached rather than inventing a remote by splitting their names on "/".
+    @Test func theParserAloneKnowsOfNoRemotes() throws {
         let collection = RefParser.parse(try Self.fixtureData())
-        #expect(collection.remoteNames == ["origin"])
+        #expect(collection.remotes == [])
+        #expect(collection.remoteNames == [])
+        #expect(collection.branchesWithoutRemote.count == collection.remoteBranches.count)
     }
 
     @Test func tagsParsedWithAnnotationFlag() throws {

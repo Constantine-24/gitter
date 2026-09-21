@@ -74,11 +74,34 @@ func refCollectionConstruction() {
     let refs = RefCollection(
         localBranches: [local1, local2],
         remoteBranches: [remote1, remote2, remote3],
-        tags: []
+        tags: [],
+        remotes: [Remote(name: "origin", fetchURL: "/tmp/o.git", pushURL: "/tmp/o.git"),
+                  Remote(name: "upstream", fetchURL: "/tmp/u.git", pushURL: "/tmp/u.git")]
     )
 
     let remoteNames = refs.remoteNames
     #expect(remoteNames == ["origin", "upstream"])
+    #expect(refs.remote(of: remote3)?.name == "upstream")
+    #expect(refs.branches(of: refs.remotes[0]).map(\.name) == ["origin/main", "origin/dev"])
+    #expect(refs.branchesWithoutRemote == [])
+}
+
+@Test
+func remoteOfPrefersTheLongestMatchingRemoteName() {
+    let branch = Branch(name: "up/stream/main", sha: "abc", isHead: false, upstream: nil)
+    let orphan = Branch(name: "ghost/x", sha: "def", isHead: false, upstream: nil)
+    let refs = RefCollection(
+        localBranches: [],
+        remoteBranches: [branch, orphan],
+        tags: [],
+        remotes: [Remote(name: "up", fetchURL: "/tmp/up.git", pushURL: "/tmp/up.git"),
+                  Remote(name: "up/stream", fetchURL: "/tmp/us.git", pushURL: "/tmp/us.git")]
+    )
+
+    #expect(refs.remote(of: branch)?.name == "up/stream")
+    #expect(refs.branches(of: refs.remotes[0]) == [])
+    #expect(refs.remote(of: orphan) == nil)
+    #expect(refs.branchesWithoutRemote == [orphan])
 }
 
 @Test

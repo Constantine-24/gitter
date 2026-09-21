@@ -33,6 +33,9 @@ public struct CLIGitBackend: GitBackend {
     public func snapshot(at root: URL) async throws -> RepoSnapshot {
         async let statusData = run(["status", "--porcelain=v2", "-z", "--branch"], cwd: root)
         async let refData = run(["for-each-ref", "--format=\(Self.refFormat)"], cwd: root)
+        // Which remotes exist is configuration, not refs: a remote nothing has been fetched
+        // from has no `refs/remotes/<name>/…` at all, and a remote's name may contain a slash.
+        async let remoteData = run(["remote", "-v"], cwd: root)
         async let commits = commitLog(at: root)
         // Porcelain v2 says nothing about a merge, cherry-pick, revert or rebase that is
         // part-way through, so that comes from its own commands alongside these.
@@ -41,6 +44,7 @@ public struct CLIGitBackend: GitBackend {
         let status = StatusParser.parse(try await statusData)
             .with(operationInProgress: try await operation)
         let refs = RefParser.parse(try await refData)
+            .with(remotes: RemoteParser.parse(String(decoding: try await remoteData, as: UTF8.self)))
         let log = try await commits
         let graph = GraphLayout.layout(log)
 
