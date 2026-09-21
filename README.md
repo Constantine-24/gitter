@@ -244,4 +244,5 @@ Stages files, hunks and lines; commits, amends and commits all tracked changes; 
 switches, merges, renames and deletes branches, checks out remote branches and tags, and
 aborts an operation or undoes a pending squash. Next up: push, pull and fetch. Later:
 stash, discard, and conflict resolution inside the app (today you resolve in your editor
-and Gitter stages and commits the result).
+and Gitter stages and commits the result). Everything wanted and deliberately deferred is
+kept in [`docs/BACKLOG.md`](docs/BACKLOG.md), with what is already known about each item.
