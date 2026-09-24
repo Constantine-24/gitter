@@ -499,6 +499,32 @@ import Testing
         try await assertRepoUnchanged(repo, since: state, worktree: worktree)
     }
 
+    /// A hook's words are the hook's, whatever they look like. One that prints git's own
+    /// dirty-tree sentence and says no must not come back as `.treeNotClean` — the tree is
+    /// clean, and "commit or stash your changes" would send the user after changes that do not
+    /// exist. git names the hook on the line after (`The pre-rebase hook refused to rebase.`,
+    /// measured on git 2.54), and only a hook's refusal carries that line: git's own dirty-tree
+    /// check runs before the hook, and when it refuses the hook never runs (also measured).
+    @Test func aPreRebaseHookPrintingARefusalIsStillTheHooksRefusal() async throws {
+        let lab = try await Self.makeLab()
+        defer { lab.cleanUp() }
+        let repo = lab.repo
+        try repo.writeExecutable(
+            ".git/hooks/pre-rebase",
+            "#!/bin/sh\necho 'error: cannot rebase: You have unstaged changes.' >&2\nexit 1\n")
+        let state = try await RepoState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+
+        await #expect {
+            _ = try await CLIGitBackend().rebase(onto: "origin/main", at: repo.root)
+        } throws: { error in
+            guard case GitError.commandFailed(_, let stderr) = error else { return false }
+            return stderr.contains("error: cannot rebase: You have unstaged changes.")
+                && stderr.contains("The pre-rebase hook refused to rebase.")
+        }
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+    }
+
     /// `rebase.updateRefs=true` would make git move every *other* local branch that points
     /// into the commits being rewritten — measured on git 2.54, "Updated the following refs
     /// with --update-refs: refs/heads/side". The vector carries `--no-update-refs`, which

@@ -27,11 +27,13 @@ extension CLIGitBackend {
         // the rebase, "Applied autostash", exit 0. That is `--autostash`, forbidden in this
         // package, reached from the user's configuration the way `fetch.prune` reaches a prune.
         // The vector below carries `--no-autostash`, which defeats the setting, so **git's own
-        // check is the authoritative one**: made by the process that rebases, at the moment it
-        // rebases, it has no window for a change to slip through (a change made after the
-        // check below is refused by git and parsed back into `.treeNotClean`; tested with a
-        // wrapper that dirties the tree as git starts). This check stays as defence in depth,
-        // and because it answers without starting a rebase at all.
+        // check is the authoritative one**: it is made by the process that rebases, so a change
+        // made after the check below is refused by git and parsed back into `.treeNotClean`
+        // (tested with a wrapper that dirties the tree as git starts). It is not atomic with
+        // the rebase — git checks, then checks out, two steps inside one process — but that
+        // gap is git's own, and far narrower than the one between this check and git's start.
+        // This check stays as defence in depth, and because it answers without starting a
+        // rebase at all.
         //
         // `git diff --quiet` and not `status`: it exits 1 on a difference and runs no external
         // diff driver (measured with `diff.external` set), and a file whose stat is stale but
@@ -71,13 +73,24 @@ extension CLIGitBackend {
             // refusal what it claims to be: git did nothing (an untracked file in the way of
             // the first checkout). Anything else — a `pre-rebase` hook saying no, an upstream
             // that resolves to nothing — is git's own words.
+            //
+            // A hook's refusal is never parsed at all. Its stderr is the hook's own text, which
+            // can be shaped like anything — a hook that prints "cannot rebase: You have
+            // unstaged changes." would read as `.treeNotClean` over a clean tree. git names the
+            // hook on a line of its own, and prints it only when the hook said no: its
+            // dirty-tree check runs first, and when that refuses the hook is never run
+            // (measured on git 2.54).
             guard case .commandFailed(_, let stderr) = error else { throw error }
             if try await operationInProgress(at: root) == .rebase { return .conflicts }
+            if stderr.contains(Self.preRebaseHookRefused) { throw error }
             if let refusal = BranchRefusalParser.parse(stderr: stderr) { throw refusal }
             throw error
         }
         return try await outcome(onto: upstream, headBefore: headBefore, at: root)
     }
+
+    /// The line git prints when a `pre-rebase` hook exits non-zero (git 2.54, `LC_ALL=C`).
+    private static let preRebaseHookRefused = "The pre-rebase hook refused to rebase."
 
     /// Read back, in the order that cannot mislead: a rebase still in progress first (whatever
     /// git exited with), then whether HEAD moved at all, then whether it merely moved forward.
