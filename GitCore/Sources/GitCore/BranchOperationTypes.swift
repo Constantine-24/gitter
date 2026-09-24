@@ -88,6 +88,19 @@ public enum BranchOperationError: Error, Sendable, Equatable {
     /// destroys whatever was staged beforehand along with the squash. `merge(_:mode:at:)`
     /// checks the index itself before running a squash; see `requireACleanIndexForASquash`.
     case indexNotClean
+    /// A **rebase** was refused because something tracked is uncommitted — staged or not, and
+    /// whether or not the rebase would touch it. Stricter than a merge, and measured on git
+    /// 2.54 with a change to a file neither side changes: `error: cannot rebase: You have
+    /// unstaged changes.` / `error: cannot rebase: Your index contains uncommitted changes.`
+    /// (both at once add an `additionally, your index…` line), each with `error: Please commit
+    /// or stash them.`, exit 1, nothing changed. An untracked file does not count.
+    ///
+    /// **Usually Gitter's own refusal, made before git runs**, because git's can be switched
+    /// off from configuration: `rebase.autoStash=true` makes git stash the change, rebase, and
+    /// re-apply it without a word of refusal (measured) — the forbidden `--autostash` reached
+    /// through the user's config. See `CLIGitBackend.rebase(onto:at:)`. git's own sentences
+    /// still map here, for a change made between that check and the rebase.
+    case treeNotClean
     /// `abort` was asked to end an operation while the repository is in the middle of nothing.
     /// Thrown before git runs, and not merely for tidiness: verified on git 2.54, the command
     /// `abort(.squash)` would have run — `git reset --merge` — exits **0** in a clean

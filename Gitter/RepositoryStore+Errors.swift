@@ -145,6 +145,10 @@ extension BranchOperationError {
             // Not a file list on purpose: git prints those names space-joined on one line, so a
             // name containing a space could not be told from two names. See the case's own doc.
             return "Can't \(attempt): commit or unstage your staged changes first."
+        case .treeNotClean:
+            // Stricter than a merge, and the sentence says so: a change to a file the rebase
+            // never touches refuses it too, staged or not. Untracked files do not count.
+            return "Can't \(attempt): a rebase needs every change committed first, staged or not."
         case .operationInProgress(let phrase):
             return "Can't \(attempt) while \(phrase). Commit or abort it first."
         case .invalidName(let name):

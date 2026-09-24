@@ -67,6 +67,14 @@ public enum BranchRefusalParser {
         // surfaces as `GitError.commandFailed` with git's own words rather than as an empty
         // file list the UI would render as a blank refusal.
         for line in lines {
+            // `git rebase` over any uncommitted change, related or not (verified on git 2.54).
+            // When both kinds are present git prints the unstaged sentence first and adds
+            // "additionally, your index contains uncommitted changes." on the next line; either
+            // first line is enough.
+            if line.contains("cannot rebase: You have unstaged changes.")
+                || line.contains("cannot rebase: Your index contains uncommitted changes.") {
+                return .treeNotClean
+            }
             if let operation = operationInProgress(in: line) {
                 return .operationInProgress(operation)
             }

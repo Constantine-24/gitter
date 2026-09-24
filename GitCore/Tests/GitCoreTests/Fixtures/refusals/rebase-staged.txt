@@ -1,0 +1,2 @@
+error: cannot rebase: Your index contains uncommitted changes.
+error: Please commit or stash them.

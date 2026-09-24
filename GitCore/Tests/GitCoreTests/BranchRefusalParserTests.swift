@@ -203,3 +203,33 @@ import Testing
         )
     }
 }
+
+/// `git rebase`'s refusals, captured verbatim from git 2.54 (`LC_ALL=C`) into
+/// `Fixtures/refusals/rebase-*.txt`. See `task-7-report.md` for the command behind each.
+@Suite struct RebaseRefusalParserTests {
+    /// Both of git's sentences, and the one it prints when it has both to say: the first line
+    /// names the unstaged change and an `additionally,` line adds the index.
+    @Test(arguments: ["rebase-unstaged", "rebase-staged", "rebase-unstaged-and-staged"])
+    func anUncommittedChangeIsTreeNotClean(fixture: String) throws {
+        #expect(try BranchRefusalParserTests.parseFixture(fixture) == .treeNotClean)
+    }
+
+    /// An untracked file the rebase would have to write over is refused by the checkout that
+    /// starts the rebase, under the checkout's own header — so it is the existing
+    /// `.wouldOverwrite`, not a rebase-specific case.
+    @Test func anUntrackedFileInTheWayIsWouldOverwrite() throws {
+        #expect(
+            try BranchRefusalParserTests.parseFixture("rebase-untracked-overwritten")
+                == .wouldOverwrite(tracked: [], untracked: ["new.txt"]))
+    }
+
+    /// A `pre-rebase` hook's refusal is not a shape Gitter can describe better than git did.
+    @Test func aHookRefusalStaysGitsOwnWords() throws {
+        #expect(try BranchRefusalParserTests.parseFixture("rebase-pre-rebase-hook") == nil)
+    }
+
+    /// The match is on the sentence, not on "cannot rebase" alone.
+    @Test func anotherCannotRebaseLineIsNotTreeNotClean() {
+        #expect(BranchRefusalParser.parse(stderr: "error: cannot rebase: something new\n") == nil)
+    }
+}
