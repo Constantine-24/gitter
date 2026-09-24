@@ -275,6 +275,77 @@ import Testing
         #expect(try await repo.headSha() == lab.oldTip)
     }
 
+    // MARK: - Stopped part-way, whatever git printed
+
+    /// A rebase that stops *after* it has started can print text shaped exactly like a
+    /// refusal. Here the second local commit deletes `y.txt` that the first one added, and an
+    /// untracked `y.txt` sits in the worktree: replaying the first commit trips over it
+    /// ("untracked working tree files would be overwritten") — with `rebase-merge/` already in
+    /// place and HEAD detached. That is a stopped rebase, not a refusal that changed nothing.
+    @Test func anOverwriteRefusalPrintedMidRebaseIsAStopNotARefusal() async throws {
+        let lab = try await Self.makeLab()
+        defer { lab.cleanUp() }
+        let repo = lab.repo
+        try repo.write("y.txt", "added\n")
+        try await repo.commitAll("adds y")
+        try await repo.git(["rm", "-q", "y.txt"])
+        try await repo.git(["commit", "-q", "-m", "removes y"])
+        try repo.write("y.txt", "mine, untracked\n")
+        let tip = try await repo.headSha()
+        let backend = CLIGitBackend()
+
+        let outcome = try await backend.rebase(onto: "origin/main", at: repo.root)
+
+        #expect(outcome == .conflicts)
+        #expect(try await backend.operationInProgress(at: repo.root) == .rebase)
+        #expect(try await repo.gitFileExists("rebase-merge"))
+        #expect(try await repo.currentBranch() == nil)
+        #expect(try await repo.revParse("refs/heads/main") == tip)
+        #expect(try repo.fileContents("y.txt") == "mine, untracked\n")
+        try await backend.abort(.rebase, at: repo.root)
+        #expect(try await repo.headSha() == tip)
+    }
+
+    /// git echoes the stopped commit's subject ("Could not apply 1a2b3c… <subject>"), so a
+    /// subject that reads like a refusal is on stderr beside the conflict. It is still a
+    /// conflict.
+    @Test func aRefusalShapedCommitSubjectOnAConflictIsAStopNotARefusal() async throws {
+        let lab = try await Self.makeLab(conflicting: true)
+        defer { lab.cleanUp() }
+        let repo = lab.repo
+        try await repo.git(["commit", "-q", "--amend", "-m", "error: cannot rebase: You have unstaged changes."])
+        let tip = try await repo.headSha()
+        let backend = CLIGitBackend()
+
+        let outcome = try await backend.rebase(onto: "origin/main", at: repo.root)
+
+        #expect(outcome == .conflicts)
+        #expect(try await backend.operationInProgress(at: repo.root) == .rebase)
+        #expect(!(try await repo.unmergedEntries()).isEmpty)
+        #expect(try await repo.revParse("refs/heads/main") == tip)
+    }
+
+    /// `.conflicts` means *stopped*, and a stop needs no conflict: a commit that cannot be
+    /// signed (`commit.gpgSign=true` with a `gpg.program` that fails) stops the rebase with
+    /// nothing unmerged. The rebase is in progress all the same, and that is the outcome.
+    @Test func aRebaseStoppedWithoutAConflictIsStillStopped() async throws {
+        let lab = try await Self.makeLab()
+        defer { lab.cleanUp() }
+        let repo = lab.repo
+        try await repo.git(["config", "commit.gpgSign", "true"])
+        try await repo.git(["config", "gpg.program", "/bin/false"])
+        let backend = CLIGitBackend()
+
+        let outcome = try await backend.rebase(onto: "origin/main", at: repo.root)
+
+        #expect(outcome == .conflicts)
+        #expect(try await backend.operationInProgress(at: repo.root) == .rebase)
+        #expect(try await repo.unmergedEntries().isEmpty)
+        #expect(try await repo.revParse("refs/heads/main") == lab.oldTip)
+        try await backend.abort(.rebase, at: repo.root)
+        #expect(try await repo.headSha() == lab.oldTip)
+    }
+
     // MARK: - Another operation in progress
 
     /// git's own answer here would be the *tree* refusal ("You have unstaged changes." /

@@ -335,7 +335,10 @@ public protocol GitRemoteBackend: Sendable {
     /// git runs when it is anything else, by the same guard as `commits(in:notIn:)`. git reads
     /// the argument as a revision, so `origin/main~1` would otherwise be accepted.
     ///
-    /// **Refusals, all before anything changes:**
+    /// **Refusals, all before anything changes** — and only ever thrown when no rebase is in
+    /// progress after git ran. A rebase that stopped part-way can print refusal-shaped text
+    /// (an untracked file in the way of a replayed commit, or a commit subject git echoes in
+    /// "Could not apply …"); that is `.conflicts`, never one of these:
     /// - `.operationInProgress` while a merge, cherry-pick, revert, rebase, `am` or squash is
     ///   under way — asked of the repository, because git's own answer then is the tree
     ///   refusal, which names the wrong problem.

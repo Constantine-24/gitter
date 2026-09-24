@@ -51,14 +51,21 @@ extension CLIGitBackend {
         do {
             _ = try await run(["rebase", "--end-of-options", upstream], cwd: root)
         } catch let error as GitError {
-            // A refusal first: git did nothing (an untracked file in the way, or a change made
-            // since the check above). Then a stopped rebase, which is an outcome. Anything else
-            // — a `pre-rebase` hook saying no, an upstream that resolves to nothing — is git's
-            // own words.
+            // A stopped rebase FIRST, then a refusal. The guard above proved no operation was
+            // in progress before git ran, so a rebase in progress now is this one — and a rebase
+            // that stopped part-way can print text shaped exactly like a refusal: replaying a
+            // commit that adds a file an untracked one is sitting on says "untracked working
+            // tree files would be overwritten", and git echoes the stopped commit's subject
+            // ("Could not apply 1a2b3c… <subject>"), which can read like anything. Parsing
+            // first would report "refused, nothing changed" with `rebase-merge/` in place and
+            // HEAD detached (both measured). Only with no rebase in progress is a parsed
+            // refusal what it claims to be: git did nothing (an untracked file in the way of
+            // the first checkout). Anything else — a `pre-rebase` hook saying no, an upstream
+            // that resolves to nothing — is git's own words.
             guard case .commandFailed(_, let stderr) = error else { throw error }
+            if try await operationInProgress(at: root) == .rebase { return .conflicts }
             if let refusal = BranchRefusalParser.parse(stderr: stderr) { throw refusal }
-            guard try await operationInProgress(at: root) == .rebase else { throw error }
-            return .conflicts
+            throw error
         }
         return try await outcome(onto: upstream, headBefore: headBefore, at: root)
     }

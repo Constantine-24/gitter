@@ -338,10 +338,17 @@ public enum RebaseOutcome: Equatable, Sendable {
     /// tip is then *not* an ancestor of the new one — a commit left the branch — which is why
     /// the ancestry, and not the landing place alone, decides `.fastForwarded`.
     case rebased
-    /// The rebase stopped on a conflict: `rebase-merge/` (or, under `rebase.backend=apply`,
-    /// `rebase-apply/`) is in place, the snapshot reports `RepositoryOperation.rebase`, HEAD is
-    /// **detached** on the last commit that applied, and the branch itself has not moved yet.
-    /// `abort(.rebase)` puts the branch and the index back.
+    /// The rebase **stopped** part-way — usually on a conflict, but not only: `rebase-merge/`
+    /// (or, under `rebase.backend=apply`, `rebase-apply/`) is in place, the snapshot reports
+    /// `RepositoryOperation.rebase`, HEAD is **detached** on the last commit that applied, and
+    /// the branch itself has not moved yet. `abort(.rebase)` puts the branch and the index back.
+    ///
+    /// The name says "conflicts" because that is the common case, but the meaning is "a rebase
+    /// is in progress after the call" and nothing more. Measured stops with **no unmerged
+    /// entry**: a commit that cannot be signed (`commit.gpgSign=true`, `gpg.program` failing),
+    /// and an untracked file in the way of a commit replayed part-way (git prints the
+    /// "would be overwritten" refusal text, but it prints it mid-rebase). A caller must not
+    /// promise the user a conflict to resolve; it can promise a rebase to continue or abort.
     case conflicts
 }
 
