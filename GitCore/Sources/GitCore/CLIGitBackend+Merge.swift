@@ -137,7 +137,7 @@ extension CLIGitBackend {
     /// an untracked file alone both exit 0 (neither is in the index), unmerged entries exit 1,
     /// and an **unborn HEAD** is handled without a special case — exit 0 with an empty index,
     /// exit 1 once something is staged, never the 128 a bare `rev-parse HEAD` would give.
-    private func indexDiffersFromHead(at root: URL) async throws -> Bool {
+    func indexDiffersFromHead(at root: URL) async throws -> Bool {
         do {
             _ = try await run(["diff", "--cached", "--quiet"], cwd: root)
             return false
@@ -183,7 +183,10 @@ extension CLIGitBackend {
 
     /// `git merge-base --is-ancestor <rev> <other>`: exit 0 yes, exit 1 no. Any other failure
     /// propagates rather than being read as "no".
-    private func isAncestor(_ revision: String, of other: String, at root: URL) async throws -> Bool {
+    ///
+    /// Not `private`, like `revision`, `headSHA` and `indexDiffersFromHead`: `rebase`
+    /// (`CLIGitBackend+Rebase.swift`) reads its outcome back with the same questions.
+    func isAncestor(_ revision: String, of other: String, at root: URL) async throws -> Bool {
         do {
             _ = try await run(
                 ["merge-base", "--is-ancestor", "--end-of-options", revision, other], cwd: root)
@@ -202,7 +205,7 @@ extension CLIGitBackend {
     /// HEAD would report a plain single-parent fast-forward as `.merged`. Verified on git 2.54:
     /// the peel is applied after `--end-of-options` (the suffix is part of the revision, not an
     /// option), and it is a no-op for a branch, a lightweight tag or a raw sha.
-    private func revision(_ revision: String, at root: URL) async throws -> String {
+    func revision(_ revision: String, at root: URL) async throws -> String {
         try await revParse(revision + "^{commit}", at: root)
     }
 
@@ -224,7 +227,7 @@ extension CLIGitBackend {
         }
     }
 
-    private func headSHA(at root: URL) async throws -> String {
+    func headSHA(at root: URL) async throws -> String {
         try await revision("HEAD", at: root)
     }
 }

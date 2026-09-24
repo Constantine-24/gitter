@@ -304,3 +304,81 @@ public enum PushTarget: Equatable, Sendable {
         return .push(remote: pushRemote, ref: ownRef)
     }
 }
+
+
+/// What `rebase(onto:at:)` did, read back from the repository afterwards — from
+/// `operationInProgress` and from where HEAD ended up — never from git's exit code or its prose.
+///
+/// Four cases where the design document had three. **`.fastForwarded` was added in Task 7**
+/// because git words two different things the same way: measured on git 2.54, a branch with
+/// nothing of its own that is behind its upstream is *moved* by `git rebase` to the upstream's
+/// tip — "Successfully rebased and updated refs/heads/main." — without a single commit being
+/// rewritten. Calling that `.rebased` would have the store tell the user their commits were
+/// rewritten when none were.
+///
+/// `.conflicts` is an outcome, not an error, exactly as it is for `MergeOutcome`: the rebase
+/// has stopped in the existing `.rebase` operation, with the existing note and Abort sheet.
+public enum RebaseOutcome: Equatable, Sendable {
+    /// HEAD did not move: git said "Current branch <b> is up to date." and wrote nothing.
+    ///
+    /// **"The upstream is already underneath" does not guarantee this.** Measured: a branch
+    /// whose own commits above the upstream include a merge commit is *flattened* by a plain
+    /// rebase — the merge dropped, the commits under it replayed — so HEAD moves and the answer
+    /// is `.rebased`. Only HEAD standing still is read as "up to date".
+    case upToDate
+    /// HEAD moved forward to exactly the upstream's tip, and the old HEAD is an ancestor of it:
+    /// nothing was rewritten and nothing is off the branch.
+    case fastForwarded
+    /// HEAD moved anywhere else. The branch's own commits are new objects now; the old tip is in
+    /// `ORIG_HEAD` and the reflog.
+    ///
+    /// **It can have rewritten zero commits and still be this.** A local commit whose change the
+    /// upstream already carries is dropped ("skipped previously applied commit"), and when every
+    /// local commit is, HEAD lands on the upstream's tip just as a fast-forward's does. The old
+    /// tip is then *not* an ancestor of the new one — a commit left the branch — which is why
+    /// the ancestry, and not the landing place alone, decides `.fastForwarded`.
+    case rebased
+    /// The rebase stopped on a conflict: `rebase-merge/` (or, under `rebase.backend=apply`,
+    /// `rebase-apply/`) is in place, the snapshot reports `RepositoryOperation.rebase`, HEAD is
+    /// **detached** on the last commit that applied, and the branch itself has not moved yet.
+    /// `abort(.rebase)` puts the branch and the index back.
+    case conflicts
+}
+
+/// What a pull does after its fetch, decided from the branch's tracking alone — the design
+/// document's "Pull, as the store performs it" table.
+///
+/// **The tracking must be the one read after the fetch.** Before it, `behind` is whatever the
+/// last fetch saw, and "nothing to do" could be a statement about yesterday.
+public enum PullPlan: Equatable, Sendable {
+    /// Nothing to bring in: level, or ahead only. A pull never pushes.
+    case nothingToDo
+    /// Behind only: `merge(upstream, .fastForwardIfPossible)`, with every existing refusal.
+    case fastForward
+    /// Both sides have commits the other lacks: the pull sheet, Merge or Rebase, with these
+    /// counts.
+    case askHowToIntegrate(ahead: Int, behind: Int)
+    /// The branch has no upstream (Pull is disabled with a reason).
+    case noUpstream
+    /// The upstream is configured but its remote-tracking ref is gone.
+    case upstreamGone
+
+    /// Pure and total. A **negative** count is read as 0: git never prints one, but
+    /// `Tracking.parse` reads the number with `Int(_:)`, which would accept `-1`, and "nothing
+    /// on that side" is the reading that never asks the user to integrate commits that do not
+    /// exist.
+    public static func decide(_ tracking: Tracking) -> PullPlan {
+        switch tracking {
+        case .none:
+            return .noUpstream
+        case .gone:
+            return .upstreamGone
+        case .counts(let rawAhead, let rawBehind):
+            let ahead = max(0, rawAhead)
+            let behind = max(0, rawBehind)
+            if behind == 0 { return .nothingToDo }
+            if ahead == 0 { return .fastForward }
+            return .askHowToIntegrate(ahead: ahead, behind: behind)
+        }
+    }
+}

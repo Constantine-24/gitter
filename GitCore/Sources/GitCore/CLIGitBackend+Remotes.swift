@@ -225,7 +225,10 @@ extension CLIGitBackend: GitRemoteBackend {
     ///
     /// `BranchOperationError.invalidName`, thrown before git runs, so the refusal is a true
     /// no-op and the caller is told which argument was wrong.
-    private func requireRefNameOrObjectName(_ name: String) throws {
+    ///
+    /// Not `private`: `rebase(onto:at:)` asks the same question of its upstream, which git
+    /// would otherwise read as a revision (`origin/main~1` is accepted, measured).
+    func requireRefNameOrObjectName(_ name: String) throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !Self.revisionOperators.contains(where: trimmed.contains),
             !trimmed.hasPrefix("."), !trimmed.hasSuffix(".")

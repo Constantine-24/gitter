@@ -322,6 +322,52 @@ public protocol GitRemoteBackend: Sendable {
         _ branch: String, on remote: String, expectedTip: String, at root: URL
     ) async throws -> PushResult
 
+    /// Replay the current branch's own commits on top of `upstream`:
+    /// `git rebase --end-of-options <upstream>`. The "Rebase" answer in the pull sheet.
+    ///
+    /// **It is the one method here that talks to no remote.** `upstream` is whatever the fetch
+    /// before it left in `refs/remotes/*`; it is on this protocol because a pull is, and it is
+    /// not cancellable in any sense that matters — a rebase is local and quick, and killing one
+    /// half-way would leave a rebase in progress rather than nothing.
+    ///
+    /// `upstream` is a **ref name or a full object name** — `origin/main`,
+    /// `refs/remotes/origin/main`, a sha — refused as `BranchOperationError.invalidName` before
+    /// git runs when it is anything else, by the same guard as `commits(in:notIn:)`. git reads
+    /// the argument as a revision, so `origin/main~1` would otherwise be accepted.
+    ///
+    /// **Refusals, all before anything changes:**
+    /// - `.operationInProgress` while a merge, cherry-pick, revert, rebase, `am` or squash is
+    ///   under way — asked of the repository, because git's own answer then is the tree
+    ///   refusal, which names the wrong problem.
+    /// - `.treeNotClean` over **any** uncommitted tracked change, staged or not, related or not
+    ///   — Gitter's own check, because `rebase.autoStash=true` would otherwise have git stash
+    ///   and re-apply it silently. See `BranchOperationError.treeNotClean`.
+    /// - `.wouldOverwrite(tracked: [], untracked: […])` when an untracked file is where the
+    ///   upstream has a tracked one: the checkout that starts the rebase refuses under its own
+    ///   header ("could not detach HEAD"), and nothing moves (measured). Any other untracked
+    ///   file is left alone and does not refuse.
+    ///
+    /// Anything else git says — a `pre-rebase` hook refusing, "fatal: invalid upstream" — is
+    /// `GitError.commandFailed` in git's own words.
+    ///
+    /// **The outcome is read back, never taken from the exit code**: see `RebaseOutcome`.
+    ///
+    /// **Two things the user's configuration can add, measured on git 2.54 and not
+    /// prevented**, because the vector is pinned by the scanner's contract test and carries no
+    /// flag against them: `rebase.updateRefs=true` also moves every *other* local branch that
+    /// points into the rewritten commits ("Updated the following refs with --update-refs"), and
+    /// `rebase.backend=apply` keeps the stopped state in `rebase-apply/` rather than
+    /// `rebase-merge/` (which `operationInProgress` already reads as `.rebase`). A plain rebase
+    /// also **drops merge commits** among the branch's own commits, replaying what was under
+    /// them — the sheet's "rewrites N commits" is true of the commits, not of their shape.
+    ///
+    /// **While it is stopped on a conflict, HEAD is detached.** `status --porcelain=v2 --branch`
+    /// says `# branch.head (detached)`, so the snapshot's `status.branch` is nil, and HEAD may
+    /// be a rewritten commit no ref holds yet — while `refs/heads/<b>` and its tracking counts
+    /// have not moved at all. The operation guard is what keeps the detached-HEAD confirmation
+    /// from being asked about that state.
+    func rebase(onto upstream: String, at root: URL) async throws -> RebaseOutcome
+
     /// The commits reachable from `revision` but not from `base`, newest first, at most
     /// `limit` of them: `git log -n <limit> -z --format=… <base>..<revision> --`.
     ///
