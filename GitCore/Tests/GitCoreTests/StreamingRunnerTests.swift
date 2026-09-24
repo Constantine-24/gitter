@@ -416,6 +416,195 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(errno == ESRCH)
     }
 
+    // MARK: - Cancellation: a grandchild that survives the SIGTERM
+
+    /// A `sleep` duration unique to one test, between 41 and 49 seconds: long enough that a
+    /// call waiting for it fails every bound below by a wide margin. The script receives it as
+    /// `$2` and runs `sleep "$2"`, so `pgrep -f "sleep <duration>"` (`sleepToken`) matches the
+    /// `sleep` alone — never the shell, whose command line holds `sleep "$2"` and the number
+    /// apart.
+    private static func uniqueDuration() -> String {
+        "4\(Int.random(in: 1...8)).\(Int.random(in: 100_000...999_999))"
+    }
+
+    private static func sleepToken(_ duration: String) -> String { "sleep \(duration)" }
+
+    /// Starts `script` under `/bin/sh -c` through `runStreaming`, and returns once the script
+    /// has created `marker` (passed to it as `$1`) — the point from which the premise the test
+    /// is about holds. `duration` is `$2`.
+    private func startScript(
+        _ script: String, duration: String, killGracePeriod: Duration,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws -> TrappedChild {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitter-orphan-\(UUID().uuidString)")
+        let runner = ProcessRunner()
+        let pid = Locked<Int32?>(nil)
+        let task = Task { () -> Error? in
+            do {
+                _ = try await runner.runStreaming(
+                    "/bin/sh", ["-c", script, "sh", marker.path, duration],
+                    cwd: Self.root, killGracePeriod: killGracePeriod,
+                    onLaunch: { launched in pid.mutate { $0 = launched } },
+                    onStderr: { _ in })
+                return nil
+            } catch {
+                return error
+            }
+        }
+        // Both: the script can write its marker before the launching thread has got as far as
+        // `onLaunch` (seen once under a full parallel suite).
+        for _ in 0..<1000
+        where !FileManager.default.fileExists(atPath: marker.path) || pid.current == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(
+            FileManager.default.fileExists(atPath: marker.path),
+            "the script never reached its marker", sourceLocation: sourceLocation)
+        try? FileManager.default.removeItem(at: marker)
+        guard let launched = pid.current else {
+            Issue.record("the runner never reported a launch", sourceLocation: sourceLocation)
+            // Never leave the script running behind a failed test.
+            task.cancel()
+            _ = await task.value
+            throw CancellationError()
+        }
+        return TrappedChild(task: task, pid: launched)
+    }
+
+    /// The leader dies on its SIGTERM; a grandchild that ignores SIGTERM does not, and it holds
+    /// the inherited stderr. Measured before the fix: the call waited for the grandchild's
+    /// whole `sleep`, because the escalation stood down the moment the leader was reaped and
+    /// the call then waited for an EOF only the grandchild could give. Now the escalation stays
+    /// armed until the call has resumed, and a reaped leader with a pipe still open gets its
+    /// remembered process group killed.
+    ///
+    /// A lower bound too: the grandchild ignores SIGTERM, so nothing but the escalation can end
+    /// it, and the call cannot come back before the grace period is up.
+    @Test func aGrandchildThatSurvivesTheLeadersSIGTERMIsKilledAfterTheGrace() async throws {
+        let duration = Self.uniqueDuration()
+        let sleep = Self.sleepToken(duration)
+        let clock = ContinuousClock()
+        let started = try await startScript(
+            "( trap '' TERM; : > \"$1\"; exec sleep \"$2\" ) & wait", duration: duration,
+            killGracePeriod: .milliseconds(500))
+        // Baselines that can fail: the leader and the grandchild are both alive, in one group.
+        #expect(kill(started.pid, 0) == 0)
+        #expect(getpgid(started.pid) == started.pid)
+        #expect(await Self.waitForExactlyOneProcess(matching: sleep))
+
+        let cancelledAt = clock.now
+        started.task.cancel()
+        let error = await started.task.value
+        let elapsed = clock.now - cancelledAt
+
+        #expect(error is CancellationError)
+        #expect(elapsed > .milliseconds(450), "returned before the escalation could act: \(elapsed)")
+        #expect(elapsed < .seconds(5), "waited for the grandchild: \(elapsed)")
+        #expect(await Self.waitForNoProcess(matching: sleep), "the grandchild outlived the call")
+        #expect(await Self.groupIsGone(started.pid))
+    }
+
+    /// The same, when the leader had already exited *before* the cancel: it ran a grandchild in
+    /// the background and ended. The call is waiting for the grandchild's EOF, and a cancel must
+    /// still end it — by the remembered group, since the leader's pid is reaped.
+    @Test func aCancelAfterTheLeaderExitedStillEndsAGrandchildHoldingThePipe() async throws {
+        let duration = Self.uniqueDuration()
+        let sleep = Self.sleepToken(duration)
+        let clock = ContinuousClock()
+        let started = try await startScript(
+            "( trap '' TERM; exec sleep \"$2\" ) & : > \"$1\"; exit 0", duration: duration,
+            killGracePeriod: .milliseconds(500))
+        // The leader is gone and reaped, and the grandchild is still running: the premise.
+        var leaderGone = false
+        for _ in 0..<200 {
+            errno = 0
+            if kill(started.pid, 0) == -1, errno == ESRCH { leaderGone = true; break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(leaderGone)
+        #expect(await Self.waitForExactlyOneProcess(matching: sleep))
+
+        let cancelledAt = clock.now
+        started.task.cancel()
+        let error = await started.task.value
+        let elapsed = clock.now - cancelledAt
+
+        #expect(error is CancellationError)
+        #expect(elapsed < .seconds(5), "waited for the grandchild: \(elapsed)")
+        #expect(await Self.waitForNoProcess(matching: sleep), "the grandchild outlived the call")
+    }
+
+    /// A leader forking helpers as fast as it can. A process that is *being forked* when the
+    /// group's SIGTERM is sent misses it (measured on macOS by the reviewer: 28 in 100), so it
+    /// outlives a leader that died, holding the pipes. Every cancel must still come back within
+    /// about the grace period, and leave nothing behind.
+    ///
+    /// Non-vacuous: at least one cancel must have needed the escalation — taken longer than the
+    /// grace — or the race this test is about never happened. The race is hit in roughly 4–10
+    /// of 100 here, and once in 30 suite runs in none of them, so the loop runs a hundred
+    /// cancels and then goes on, up to five hundred, until one has.
+    @Test func aForkStormLeaderCancelledAHundredTimesNeverWaitsForAnOrphan() async throws {
+        let duration = Self.uniqueDuration()
+        let sleep = Self.sleepToken(duration)
+        let grace = Duration.milliseconds(300)
+        let clock = ContinuousClock()
+        var escalated = 0
+        for attempt in 0..<500 where attempt < 100 || escalated == 0 {
+            let started = try await startScript(
+                ": > \"$1\"; while :; do sleep \"$2\" & kill $! 2>/dev/null; wait $! 2>/dev/null; done",
+                duration: duration, killGracePeriod: grace)
+            #expect(kill(started.pid, 0) == 0)
+            try await Task.sleep(for: .microseconds(Int.random(in: 0...20_000)))
+
+            let cancelledAt = clock.now
+            started.task.cancel()
+            let error = await started.task.value
+            let elapsed = clock.now - cancelledAt
+
+            #expect(error is CancellationError)
+            if elapsed >= grace { escalated += 1 }
+            guard elapsed < .seconds(5) else {
+                Issue.record("attempt \(attempt) waited for an orphan: \(elapsed)")
+                break
+            }
+        }
+        #expect(escalated > 0, "no cancel ever raced a fork, so nothing was proved")
+        #expect(await Self.waitForNoProcess(matching: sleep), "an orphan outlived its call")
+    }
+
+    /// A grandchild that has **left the process group** — here a background job of a shell with
+    /// job control on (`set -m`), which gets a group of its own; `setsid` does the same, and
+    /// macOS has no `setsid` command — is out of reach of every signal the runner sends. The
+    /// call must not wait for it anyway: a second grace after the escalation it stops waiting,
+    /// closes its ends of the pipes and throws `CancellationError`.
+    ///
+    /// The grandchild is then still alive, which is the honest part: the runner cannot reach
+    /// it, and this test kills it itself.
+    @Test func aGrandchildOutsideTheGroupIsAbandonedAfterASecondGrace() async throws {
+        let duration = Self.uniqueDuration()
+        let sleep = Self.sleepToken(duration)
+        let clock = ContinuousClock()
+        let started = try await startScript(
+            "set -m; sleep \"$2\" & : > \"$1\"; wait", duration: duration,
+            killGracePeriod: .milliseconds(500))
+        #expect(kill(started.pid, 0) == 0)
+        #expect(await Self.waitForExactlyOneProcess(matching: sleep))
+
+        let cancelledAt = clock.now
+        started.task.cancel()
+        let error = await started.task.value
+        let elapsed = clock.now - cancelledAt
+
+        #expect(error is CancellationError)
+        #expect(elapsed > .milliseconds(900), "abandoned before two graces: \(elapsed)")
+        #expect(elapsed < .seconds(6), "waited for the grandchild: \(elapsed)")
+        // Out of the runner's reach, as the doc comment says — and cleaned up here.
+        #expect(Self.processCount(matching: sleep) == 1)
+        Self.killProcesses(matching: sleep)
+        #expect(await Self.waitForNoProcess(matching: sleep))
+    }
+
     /// A process that has already exited when the cancel arrives: whichever side wins, the call
     /// returns exactly once — either the result or `CancellationError`, never a hang and never
     /// a `commandFailed` invented from a signal.
@@ -541,6 +730,25 @@ private final class Locked<Value>: @unchecked Sendable {
             try? await Task.sleep(for: .milliseconds(10))
         }
         return false
+    }
+
+    /// Polled for up to two seconds: the `sleep` is exec'd a moment after the marker exists.
+    private static func waitForExactlyOneProcess(matching token: String) async -> Bool {
+        for _ in 0..<200 {
+            if processCount(matching: token) == 1 { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
+    }
+
+    private static func killProcesses(matching token: String) {
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        probe.arguments = ["-f", token]
+        probe.standardOutput = FileHandle.nullDevice
+        probe.standardError = FileHandle.nullDevice
+        guard (try? probe.run()) != nil else { return }
+        probe.waitUntilExit()
     }
 
     /// How many live processes have `token` on their command line. `pgrep` never matches
