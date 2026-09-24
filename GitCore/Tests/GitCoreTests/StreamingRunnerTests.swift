@@ -432,8 +432,12 @@ private final class Locked<Value>: @unchecked Sendable {
     /// Starts `script` under `/bin/sh -c` through `runStreaming`, and returns once the script
     /// has created `marker` (passed to it as `$1`) — the point from which the premise the test
     /// is about holds. `duration` is `$2`.
+    ///
+    /// `reapedGroupWindow` and `onReapedGroupSignal` are passed through to the runner.
     private func startScript(
         _ script: String, duration: String, killGracePeriod: Duration,
+        reapedGroupWindow: Duration = .seconds(5),
+        onReapedGroupSignal: (@Sendable (pid_t, Int32) -> Void)? = nil,
         sourceLocation: SourceLocation = #_sourceLocation
     ) async throws -> TrappedChild {
         let marker = FileManager.default.temporaryDirectory
@@ -445,7 +449,9 @@ private final class Locked<Value>: @unchecked Sendable {
                 _ = try await runner.runStreaming(
                     "/bin/sh", ["-c", script, "sh", marker.path, duration],
                     cwd: Self.root, killGracePeriod: killGracePeriod,
+                    reapedGroupWindow: reapedGroupWindow,
                     onLaunch: { launched in pid.mutate { $0 = launched } },
+                    onReapedGroupSignal: onReapedGroupSignal,
                     onStderr: { _ in })
                 return nil
             } catch {
@@ -512,17 +518,13 @@ private final class Locked<Value>: @unchecked Sendable {
         let duration = Self.uniqueDuration()
         let sleep = Self.sleepToken(duration)
         let clock = ContinuousClock()
+        let signals = Locked<[[Int32]]>([])
         let started = try await startScript(
             "( trap '' TERM; exec sleep \"$2\" ) & : > \"$1\"; exit 0", duration: duration,
-            killGracePeriod: .milliseconds(500))
+            killGracePeriod: .milliseconds(500),
+            onReapedGroupSignal: { group, signal in signals.mutate { $0.append([group, signal]) } })
         // The leader is gone and reaped, and the grandchild is still running: the premise.
-        var leaderGone = false
-        for _ in 0..<200 {
-            errno = 0
-            if kill(started.pid, 0) == -1, errno == ESRCH { leaderGone = true; break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(leaderGone)
+        #expect(await Self.waitForReap(started.pid))
         #expect(await Self.waitForExactlyOneProcess(matching: sleep))
 
         let cancelledAt = clock.now
@@ -533,6 +535,85 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(error is CancellationError)
         #expect(elapsed < .seconds(5), "waited for the grandchild: \(elapsed)")
         #expect(await Self.waitForNoProcess(matching: sleep), "the grandchild outlived the call")
+        // What makes the seam's silence in the two tests below mean something: here, with the
+        // group still holding the grandchild, it saw the SIGTERM and then the SIGKILL go out.
+        #expect(signals.current == [[started.pid, SIGTERM], [started.pid, SIGKILL]])
+    }
+
+    /// The reviewer's case, in-suite. The leader backgrounds a job **out of its group**
+    /// (`set -m`) and exits: the job holds the pipes, and the leader's group is empty from the
+    /// moment of the reap — so its id is free, and a process that later reuses the leader's
+    /// pid may create a group with it and leave that group behind (measured by the Task 7
+    /// re-reviewer with a pid-cycling C program: the runner SIGTERMed and SIGKILLed that
+    /// foreign group's `sleep`). Waiting 59 s for the pids to wrap is not a test; what is
+    /// asserted instead is the cause: the runner never asks to signal that number at all.
+    ///
+    /// The call still returns — by the abandonment, a second grace after the escalation — and
+    /// the job, out of every reach, is still running; the test kills it.
+    @Test func aGroupAlreadyEmptyAtTheReapIsNeverSignalled() async throws {
+        let duration = Self.uniqueDuration()
+        let sleep = Self.sleepToken(duration)
+        let signals = Locked<[[Int32]]>([])
+        let clock = ContinuousClock()
+        let started = try await startScript(
+            "set -m; sleep \"$2\" & : > \"$1\"; exit 0", duration: duration,
+            killGracePeriod: .milliseconds(300),
+            onReapedGroupSignal: { group, signal in signals.mutate { $0.append([group, signal]) } })
+        // The premise, each part able to fail: the leader is reaped, its group is empty, and
+        // the out-of-group job is alive (holding the pipes, or the call would have returned).
+        #expect(await Self.waitForReap(started.pid))
+        #expect(await Self.groupIsGone(started.pid))
+        #expect(await Self.waitForExactlyOneProcess(matching: sleep))
+
+        let cancelledAt = clock.now
+        started.task.cancel()
+        let error = await started.task.value
+        let elapsed = clock.now - cancelledAt
+
+        #expect(error is CancellationError)
+        #expect(signals.current.isEmpty, "signalled a group that was empty at the reap: \(signals.current)")
+        #expect(elapsed > .milliseconds(550), "returned before the abandonment: \(elapsed)")
+        #expect(elapsed < .seconds(6), "\(elapsed)")
+        #expect(Self.processCount(matching: sleep) == 1)
+        Self.killProcesses(matching: sleep)
+        #expect(await Self.waitForNoProcess(matching: sleep))
+    }
+
+    /// The bound on what is left. A group that still had a member at the reap may empty later
+    /// while a holder outside it keeps the call waiting, and then its id is free for a pid
+    /// reuse too; the runner cannot see that happen without asking the very number that may no
+    /// longer be its own. So it signals a reaped leader's group only within
+    /// `reapedGroupWindow` of the reap. Past it, a cancel sends nothing by that number and is
+    /// ended by the abandonment — here with the group's own member still alive, which is the
+    /// price, and which the test cleans up.
+    @Test func aReapedGroupIsNotSignalledPastTheWindow() async throws {
+        let duration = Self.uniqueDuration()
+        let sleep = Self.sleepToken(duration)
+        let signals = Locked<[[Int32]]>([])
+        let clock = ContinuousClock()
+        let started = try await startScript(
+            "sleep \"$2\" & : > \"$1\"; exit 0", duration: duration,
+            killGracePeriod: .milliseconds(300), reapedGroupWindow: .milliseconds(200),
+            onReapedGroupSignal: { group, signal in signals.mutate { $0.append([group, signal]) } })
+        #expect(await Self.waitForReap(started.pid))
+        // Unlike the test above, the group is NOT empty: the `sleep` is in it.
+        #expect(kill(-started.pid, 0) == 0)
+        #expect(await Self.waitForExactlyOneProcess(matching: sleep))
+        // Well past the window, measured from a reap that has already happened.
+        try await Task.sleep(for: .seconds(1))
+
+        let cancelledAt = clock.now
+        started.task.cancel()
+        let error = await started.task.value
+        let elapsed = clock.now - cancelledAt
+
+        #expect(error is CancellationError)
+        #expect(signals.current.isEmpty, "signalled a reaped group past the window: \(signals.current)")
+        #expect(elapsed > .milliseconds(550), "returned before the abandonment: \(elapsed)")
+        #expect(elapsed < .seconds(6), "\(elapsed)")
+        #expect(Self.processCount(matching: sleep) == 1)
+        Self.killProcesses(matching: sleep)
+        #expect(await Self.waitForNoProcess(matching: sleep))
     }
 
     /// A leader forking helpers as fast as it can. A process that is *being forked* when the
@@ -719,6 +800,17 @@ private final class Locked<Value>: @unchecked Sendable {
         for _ in 0..<100 {
             errno = 0
             if kill(-group, 0) == -1, errno == ESRCH { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
+    }
+
+    /// Whether `pid` is gone — reaped, so `kill(pid, 0)` is ESRCH — polled for up to two
+    /// seconds.
+    private static func waitForReap(_ pid: Int32) async -> Bool {
+        for _ in 0..<200 {
+            errno = 0
+            if kill(pid, 0) == -1, errno == ESRCH { return true }
             try? await Task.sleep(for: .milliseconds(10))
         }
         return false

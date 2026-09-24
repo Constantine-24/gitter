@@ -74,6 +74,9 @@ extension ProcessRunner {
     /// process group: through the child while it is unreaped, and through the group id
     /// remembered at launch once it is reaped but a pipe is still open.
     ///
+    /// (Within `reapedGroupWindow` of the reap, and only if the group still had a member then;
+    /// `signalReapedLeadersGroup` says why and what is left.)
+    ///
     /// That second half matters because the SIGTERM does not reach every descendant, and the
     /// call waits for the pipes' EOF, which any descendant holding them can withhold. Measured
     /// on macOS in Task 7's review: a process that is *being forked* at the instant the group
@@ -85,12 +88,14 @@ extension ProcessRunner {
     /// a 500 ms grace; the fork storm's worst of 100, 0.32 s with 300 ms).
     ///
     /// A descendant that has **left the group** (`setsid`, or a job-control shell's background
-    /// job) is out of every signal's reach. For that, a second `killGracePeriod` after the
-    /// SIGKILL the call stops waiting: it closes its ends of the pipes and throws
-    /// `CancellationError` (measured 1.01–1.05 s with a 500 ms grace). That descendant is left
-    /// running — the runner cannot reach it — and a write of its to the closed pipe fails. So
-    /// **a cancelled call returns within about two grace periods**, whatever its descendants do
-    /// (unless `onStderr` itself blocks).
+    /// job) is out of every signal's reach, and so is a member of the group once the window
+    /// has passed. For those, a second `killGracePeriod` after the SIGKILL the call stops
+    /// waiting: it closes its ends of the pipes and throws `CancellationError` (measured
+    /// 1.01–1.05 s with a 500 ms grace). That descendant is left running — the runner cannot
+    /// reach it — and a write of its to the closed pipe gets what a pipe with no reader gives:
+    /// SIGPIPE, which kills it by default, or EPIPE if it ignores SIGPIPE. So **a cancelled call
+    /// returns within about two grace periods**, whatever its descendants do (unless `onStderr`
+    /// itself blocks).
     ///
     /// A cancelled call throws, which discards the stdout captured so far. A caller that
     /// cancelled a WRITE therefore knows nothing about how much of it happened: it must re-read
@@ -123,17 +128,31 @@ extension ProcessRunner {
     /// - Parameter onLaunch: called with the child's pid once `run()` has succeeded, from
     ///   whatever thread started it. It exists so a cancellation test can ask the kernel
     ///   whether the process is really gone; production callers use the public overload.
+    /// - Parameter reapedGroupWindow: how long after the leader's reap its remembered process
+    ///   group may still be signalled; see `signalReapedLeadersGroup`. Five seconds in
+    ///   production: longer than the two-second grace, so the usual case — git dies on its
+    ///   SIGTERM and a grandchild that survived it is SIGKILLed a grace later — is inside it
+    ///   with three seconds to spare, and far shorter than the 59 s a deliberate pid reuse
+    ///   was measured to take. Tests pass a short one to reach the case past it.
+    /// - Parameter onReapedGroupSignal: called with the group id and the signal immediately
+    ///   before a reaped leader's group is signalled — the one `kill(-pgid, …)` the runner
+    ///   makes by a remembered number rather than through a live child. A test records it to
+    ///   prove when that call is *not* made.
     func runStreaming(
         _ executable: String, _ arguments: [String], cwd: URL,
         allowedExitCodes: Set<Int32> = [],
         killGracePeriod: Duration = .seconds(2),
+        reapedGroupWindow: Duration = .seconds(5),
         onLaunch: (@Sendable (Int32) -> Void)?,
+        onReapedGroupSignal: (@Sendable (pid_t, Int32) -> Void)? = nil,
         onStderr: @escaping @Sendable (String) -> Void
     ) async throws -> StreamedResult {
         // Built before the cancellation handler is installed, because `onCancel` can run at
         // any moment from any thread — including before the operation closure is entered, if
         // the task is cancelled already — and it has nowhere to record that but here.
-        let state = StreamingProcessState(killGracePeriod: killGracePeriod)
+        let state = StreamingProcessState(
+            killGracePeriod: killGracePeriod, reapedGroupWindow: reapedGroupWindow,
+            onReapedGroupSignal: onReapedGroupSignal)
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation {
@@ -221,7 +240,7 @@ extension ProcessRunner {
                 }
 
                 process.terminationHandler = { proc in
-                    state.recordTermination(proc.terminationStatus)
+                    state.recordTermination(proc.terminationStatus, pid: proc.processIdentifier)
                     finish()
                 }
 
@@ -329,6 +348,10 @@ private final class StreamingProcessState: @unchecked Sendable {
     /// Remembered because once the child is reaped its pid can no longer be asked about, and
     /// its group may still hold the grandchild that is keeping a pipe open.
     private var groupID: pid_t = 0
+    /// The group had no member left when the leader was reaped; see `recordTermination`.
+    private var groupEmptyAtReap = false
+    /// When the reap was recorded — the start of `reapedGroupWindow`.
+    private var reapedAt: ContinuousClock.Instant?
     private var terminateSent = false
     private var killSent = false
     private var killWork: DispatchWorkItem?
@@ -343,8 +366,16 @@ private final class StreamingProcessState: @unchecked Sendable {
     /// dropped at the resume to break the cycle.
     private var finishForAbandonment: (@Sendable () -> Void)?
 
-    init(killGracePeriod: Duration) {
+    private let reapedGroupWindow: Duration
+    private let onReapedGroupSignal: (@Sendable (pid_t, Int32) -> Void)?
+
+    init(
+        killGracePeriod: Duration, reapedGroupWindow: Duration,
+        onReapedGroupSignal: (@Sendable (pid_t, Int32) -> Void)?
+    ) {
         self.killGracePeriod = killGracePeriod
+        self.reapedGroupWindow = reapedGroupWindow
+        self.onReapedGroupSignal = onReapedGroupSignal
     }
 
     private var graceSeconds: Double {
@@ -430,10 +461,31 @@ private final class StreamingProcessState: @unchecked Sendable {
         return [tail]
     }
 
-    func recordTermination(_ terminationStatus: Int32) {
+    /// Records the reaped child's status, and whether the group it led was **already empty**
+    /// at that moment.
+    ///
+    /// An empty group means whatever still holds a pipe is outside it — a descendant that left
+    /// the group — and an empty group can never gain a member of ours again: its id is free,
+    /// and the next process to take the leader's pid may make a group of it (measured by the
+    /// Task 7 re-reviewer, whose pid-cycling program's `sleep` the runner then killed). So the
+    /// group is never signalled by number after that; the abandonment ends the call.
+    ///
+    /// Asked with the reaped pid rather than `groupID`, because this can run before
+    /// `registerLaunched` has stored the group — a child that exits at once. The probe is a
+    /// kernel call and is made outside the lock. Anything but ESRCH (members, or members we may
+    /// not signal) counts as not empty: the conservative answer is to keep the id, and the
+    /// window below bounds it.
+    func recordTermination(_ terminationStatus: Int32, pid: pid_t) {
+        var emptyAtReap = true
+        if pid > 1 {
+            errno = 0
+            emptyAtReap = kill(-pid, 0) == -1 && errno == ESRCH
+        }
         lock.lock()
         defer { lock.unlock() }
         status = terminationStatus
+        groupEmptyAtReap = emptyAtReap
+        reapedAt = .now
     }
 
     // MARK: Cancellation
@@ -476,8 +528,21 @@ private final class StreamingProcessState: @unchecked Sendable {
         // Not `Process.terminate()` after termination has been recorded: the pid is reaped by
         // then and SIGTERM would be aimed at whatever the system gave that number next.
         if status == nil { return .leader(process) }
-        if !stdoutFinished || !stderrFinished { return .reapedLeadersGroup(groupID) }
+        let group = reapedGroupLocked()
+        if group > 1 { return .reapedLeadersGroup(group) }
         return TerminationTarget.none
+    }
+
+    /// The group id a reaped leader's group may still be signalled by, or 0 when it may not:
+    /// not reaped, no pipe left open (the resume is imminent), no group remembered, the group
+    /// already empty at the reap, or the reap more than `reapedGroupWindow` ago. See
+    /// `signalReapedLeadersGroup` for why each is there.
+    private func reapedGroupLocked() -> pid_t {
+        guard status != nil, !stdoutFinished || !stderrFinished,
+            groupID > 1, !groupEmptyAtReap,
+            let reapedAt, ContinuousClock.now - reapedAt < reapedGroupWindow
+        else { return 0 }
+        return groupID
     }
 
     /// Sends the SIGTERM and arms the escalation behind it — whether or not there was anything
@@ -489,7 +554,7 @@ private final class StreamingProcessState: @unchecked Sendable {
         case .leader(let leader):
             if leader.isRunning { leader.terminate() }
         case .reapedLeadersGroup(let group):
-            Self.signalReapedLeadersGroup(group, SIGTERM)
+            signalReapedLeadersGroup(group, SIGTERM)
         case .none:
             break
         }
@@ -532,8 +597,7 @@ private final class StreamingProcessState: @unchecked Sendable {
         }
         killSent = true
         let leader: Process? = status == nil ? process : nil
-        let reapedGroup: pid_t =
-            (status != nil && (!stdoutFinished || !stderrFinished)) ? groupID : 0
+        let reapedGroup = reapedGroupLocked()
         let abandonment = DispatchWorkItem { [weak self] in self?.abandon() }
         abandonWork = abandonment
         lock.unlock()
@@ -541,7 +605,7 @@ private final class StreamingProcessState: @unchecked Sendable {
         if let leader {
             Self.killLeadersGroup(leader)
         } else if reapedGroup > 1 {
-            Self.signalReapedLeadersGroup(reapedGroup, SIGKILL)
+            signalReapedLeadersGroup(reapedGroup, SIGKILL)
         }
         // Scheduled even if the resume cancelled it in the meantime: a cancelled work item
         // never runs.
@@ -570,23 +634,45 @@ private final class StreamingProcessState: @unchecked Sendable {
         }
     }
 
-    /// Signals the group a reaped leader led, by the id remembered at launch.
+    /// Signals the group a reaped leader led, by the id remembered at launch — the one signal
+    /// the runner sends by a number rather than through a child it knows is alive, and so the
+    /// one that could reach a process that is not ours.
     ///
-    /// Why a reaped leader's group id is still safe to use: POSIX does not reuse a pid while a
-    /// process group with that id exists, so as long as a member of the child's group is alive
-    /// the number cannot have been given to anyone else. What a pipe held open does **not**
-    /// prove is that the holder is in the group — a descendant that called `setsid` holds it
-    /// just as well while the group itself is empty, and then the number *is* free to reuse.
-    /// So one more thing is asked first: no process may hold the pid itself. The leader is
-    /// reaped, so a live process with that pid is a new one — and whoever creates a group
-    /// with that id has to be that very process. With the pid free, a group of that id can
-    /// only be the child's own. (The two calls are not atomic; losing that race would need the
-    /// system to hand out this exact pid, which it does only after cycling through every other,
-    /// in the microseconds between them.)
-    private static func signalReapedLeadersGroup(_ group: pid_t, _ signal: Int32) {
+    /// What makes the number usable: POSIX does not reuse a pid while a process group with that
+    /// id has a member, so while the child's group keeps one, nobody else can own the id.
+    /// Nothing the runner observes proves that it still does. An open pipe does not — a
+    /// descendant that left the group (`setsid`, a job-control background job) holds it just
+    /// as well — and once the group is empty the id is free: a process that later takes the
+    /// leader's pid can create a group with it and exit, leaving that group alive with nobody
+    /// holding the pid (the Task 7 re-reviewer did exactly this, and the earlier "the pid is
+    /// free, so the group is ours" rule then signalled the foreign group). So the number is
+    /// used only while each of these holds, all decided in `reapedGroupLocked`:
+    ///
+    /// - it was checked at launch to be the child's own group (`getpgid(pid) == pid`), and is
+    ///   above 1 — never 0 (our own group) or -1 (every process we may signal);
+    /// - the group still had a member **at the reap** (`recordTermination`). One that was empty
+    ///   then is never signalled: whatever holds the pipe is outside it, and the abandonment
+    ///   ends the call;
+    /// - the reap was less than `reapedGroupWindow` ago (5 s in production);
+    /// - and, asked here, no live process holds the pid itself — one that does is a new process
+    ///   (the leader is reaped), and a group of that id may be its. Any answer but ESRCH,
+    ///   EPERM included, means nothing is sent.
+    ///
+    /// **The residual risk**, stated whole: the group had a member at the reap; that member
+    /// then exited while a holder *outside* the group kept a pipe open and the call waiting;
+    /// the system then handed the leader's pid to a new process; and that process created a
+    /// group with the id and left it behind, orphaned, before this signal. The window bounds
+    /// it: all of that has to happen within 5 s of the reap, and a reuse of one particular pid
+    /// needs the system to cycle through the others first — macOS hands pids out in order up
+    /// to 99 999, and the re-reviewer's program, forking as fast as it could, needed 59 s
+    /// to get the pid it wanted. A cancel past the window sends nothing by number: a member
+    /// of the child's group that is still alive then is left running, like a descendant
+    /// outside it.
+    private func signalReapedLeadersGroup(_ group: pid_t, _ signal: Int32) {
         guard group > 1 else { return }
         errno = 0
         guard kill(group, 0) == -1, errno == ESRCH else { return }
+        onReapedGroupSignal?(group, signal)
         kill(-group, signal)
     }
 
@@ -598,7 +684,8 @@ private final class StreamingProcessState: @unchecked Sendable {
     /// The read ends are closed only when no handler is between `beginRead` and `endRead`;
     /// otherwise the last such handler closes them in `endRead`. A closed handle is never read,
     /// because every later `beginRead` answers `false`. The descendant is left running — the
-    /// runner has no way to reach it — and a write of its to the closed pipe fails with EPIPE.
+    /// runner has no way to reach it — and a write of its to the closed pipe raises SIGPIPE,
+    /// which kills it by default (EPIPE instead, if it ignores SIGPIPE).
     private func abandon() {
         lock.lock()
         abandonWork = nil
