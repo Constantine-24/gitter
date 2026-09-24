@@ -758,8 +758,11 @@ import Testing
             #expect(thrown is CancellationError, "attempt \(attempt): \(String(describing: thrown))")
             // The bound proves the cancel ended the push rather than the push ending by
             // itself: the wrapper sleeps 53+ s before `receive-pack` starts, so a push the
-            // cancel did not stop cannot return in under that. 20 s is an order of magnitude
-            // below the sleep and far above any scheduling delay; it was 3 s.
+            // cancel did not stop cannot return in under that. 20 s is about 2.6× below the
+            // sleep (53–54 s against 20 s — not the "order of magnitude" this
+            // comment used to claim) and far above any scheduling delay; it was 3 s. The margin
+            // is enough for what the bound proves: a cancel that did not stop the push, or an
+            // orphan holding stderr for the whole sleep, fails it.
             //
             // **The old flake was not slowness.** Measured under load: the failing cancel took
             // 53.2 s — the whole sleep. The wrapper used to write its marker and *then* fork
@@ -767,7 +770,10 @@ import Testing
             // shell but not the child it was forking; the orphaned `sleep` then held the stderr
             // pipe open until it finished. The marker is now written by the process that
             // `exec`s into `sleep`, so it is a member of the group before the test can see it.
-            // The process, lock and fsck checks below are what prove the child is gone.
+            // Since Task 7's fix round the runner itself also kills such an orphan (its
+            // escalation now outlives git's reap), so the bound alone would no longer notice
+            // one: the `pgrep` for `sleep <marker>`, and the lock, fsck and state checks
+            // below, are what prove the child is gone and the repositories intact.
             #expect(clock.now - cancelledAt < .seconds(20), "attempt \(attempt)")
         }
 
