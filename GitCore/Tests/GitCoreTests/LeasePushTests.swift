@@ -635,8 +635,7 @@ import Testing
             script,
             """
             #!/bin/sh
-            : > "\(started.path)"
-            sleep \(marker)
+            /bin/sh -c ': > "$1"; exec sleep "$2"' sh "\(started.path)" "\(marker)"
             exec git-receive-pack "$@"
 
             """)
@@ -676,7 +675,19 @@ import Testing
             task.cancel()
             let thrown = await task.value
             #expect(thrown is CancellationError, "attempt \(attempt): \(String(describing: thrown))")
-            #expect(clock.now - cancelledAt < .seconds(3), "attempt \(attempt)")
+            // The bound proves the cancel ended the push rather than the push ending by
+            // itself: the wrapper sleeps 59+ s before `receive-pack` starts, so a push the
+            // cancel did not stop cannot return in under that. 20 s is an order of magnitude
+            // below the sleep and far above any scheduling delay; it was 3 s.
+            //
+            // **The old flake was not slowness.** Measured under load: the failing cancel took
+            // 53.2 s — the whole sleep. The wrapper used to write its marker and *then* fork
+            // `sleep`, and a SIGTERM to the process group landing in that window reached the
+            // shell but not the child it was forking; the orphaned `sleep` then held the stderr
+            // pipe open until it finished. The marker is now written by the process that
+            // `exec`s into `sleep`, so it is a member of the group before the test can see it.
+            // The process, lock and fsck checks below are what prove the child is gone.
+            #expect(clock.now - cancelledAt < .seconds(20), "attempt \(attempt)")
         }
 
         var leftovers = try await processesMatching("sleep \(marker)")
