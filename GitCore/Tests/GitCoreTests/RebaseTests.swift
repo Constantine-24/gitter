@@ -175,8 +175,9 @@ import Testing
 
     /// `rebase.autoStash=true` is git's own way round that refusal, and measured on git 2.54
     /// it takes it silently: "Created autostash", the rebase, "Applied autostash", exit 0. That
-    /// is `--autostash` — forbidden in this package — reached from the user's configuration,
-    /// so Gitter refuses before git can.
+    /// is `--autostash` — forbidden in this package — reached from the user's configuration.
+    /// Gitter refuses before git runs, and the vector's `--no-autostash` would make git refuse
+    /// too (see the next test, which gets past Gitter's check).
     @Test func aConfiguredAutoStashDoesNotGetRoundTheRefusal() async throws {
         let lab = try await Self.makeLab()
         defer { lab.cleanUp() }
@@ -193,6 +194,69 @@ import Testing
         #expect(error == .treeNotClean)
         try await assertRepoUnchanged(repo, since: state, worktree: worktree)
         #expect(try await repo.gitRefExists("refs/stash") == false)
+    }
+
+    /// The race Gitter's own check cannot close: a change made *after* it and before git
+    /// runs. A wrapper standing in for `/usr/bin/git` makes that change the moment it is asked
+    /// to rebase, then execs the real git — so Gitter's check saw a clean tree and git did not.
+    /// Under `rebase.autoStash=true` git would stash the change, rebase, and re-apply it
+    /// (measured). The vector's `--no-autostash` makes git's own refusal authoritative: it is
+    /// made by the process that rebases, at the moment it rebases, and nothing moves.
+    @Test func aChangeMadeAfterGittersCheckIsStillRefusedUnderAutoStash() async throws {
+        let lab = try await Self.makeLab()
+        defer { lab.cleanUp() }
+        let repo = lab.repo
+        try await repo.git(["config", "rebase.autoStash", "true"])
+        let wrapper = repo.root.deletingLastPathComponent()
+            .appendingPathComponent("git-dirtying-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: wrapper) }
+        let script = """
+            #!/bin/sh
+            if [ "$1" = rebase ]; then printf 'edited late\\n' > keep.txt; fi
+            exec /usr/bin/git "$@"
+            """
+        try script.write(to: wrapper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapper.path)
+        #expect(try repo.fileContents("keep.txt") != "edited late\n")
+
+        let error = await branchError {
+            _ = try await CLIGitBackend(gitPath: wrapper.path).rebase(onto: "origin/main", at: repo.root)
+        }
+
+        #expect(error == .treeNotClean)
+        #expect(try await repo.headSha() == lab.oldTip)
+        #expect(try await repo.currentBranch() == "main")
+        #expect(try await repo.gitRefExists("refs/stash") == false)
+        #expect(try await CLIGitBackend().operationInProgress(at: repo.root) == nil)
+        // The late change is where the user left it: not stashed, not re-applied, not lost.
+        #expect(try repo.fileContents("keep.txt") == "edited late\n")
+    }
+
+    /// **Stricter than git, deliberately.** A submodule with uncommitted content is ignored by
+    /// git's own check (measured on git 2.54: it rebases, and leaves the submodule as it was,
+    /// with or without `submodule.recurse`). Gitter's `git diff --quiet` sees it and refuses.
+    /// Submodules are outside this milestone; refusing is the answer that cannot lose work.
+    @Test func aDirtySubmoduleRefusesTheRebaseAlthoughGitWouldNot() async throws {
+        let lab = try await Self.makeLab()
+        defer { lab.cleanUp() }
+        let repo = lab.repo
+        let sub = try await TestRepo.makeBranched()
+        defer { sub.cleanUp() }
+        try await repo.git(["-c", "protocol.file.allow=always", "submodule", "add", "-q", sub.root.path, "sub"])
+        try await repo.git(["commit", "-q", "-m", "adds a submodule"])
+        let file = try #require(try FileManager.default.contentsOfDirectory(atPath: sub.root.path)
+            .filter { $0.hasSuffix(".txt") }.sorted().first)
+        try repo.write("sub/\(file)", "dirty inside the submodule\n")
+        #expect(try await repo.git(["status", "--porcelain"]).isEmpty == false)
+        let state = try await RepoState.capture(repo)
+
+        let error = await branchError {
+            _ = try await CLIGitBackend().rebase(onto: "origin/main", at: repo.root)
+        }
+
+        #expect(error == .treeNotClean)
+        #expect(try await RepoState.capture(repo) == state)
+        #expect(try repo.fileContents("sub/\(file)") == "dirty inside the submodule\n")
     }
 
     /// An untracked file is not uncommitted work in git's sense and does not refuse the
@@ -435,24 +499,25 @@ import Testing
         try await assertRepoUnchanged(repo, since: state, worktree: worktree)
     }
 
-    /// **Pinned, not endorsed.** `rebase.updateRefs=true` makes git move every *other* local
-    /// branch that points into the commits being rewritten — measured on git 2.54, "Updated
-    /// the following refs with --update-refs: refs/heads/side". The vector is pinned by the
-    /// scanner's contract test and carries no `--no-update-refs`, so a user with that setting
-    /// gets it. If the vector ever gains the flag, this test is the one to flip.
-    @Test func aConfiguredUpdateRefsAlsoMovesABranchInsideTheRewrittenRange() async throws {
+    /// `rebase.updateRefs=true` would make git move every *other* local branch that points
+    /// into the commits being rewritten — measured on git 2.54, "Updated the following refs
+    /// with --update-refs: refs/heads/side". The vector carries `--no-update-refs`, which
+    /// defeats the setting: `side` stays exactly where it was.
+    @Test func aConfiguredUpdateRefsDoesNotMoveABranchInsideTheRewrittenRange() async throws {
         let lab = try await Self.makeLab()
         defer { lab.cleanUp() }
         let repo = lab.repo
         try await repo.git(["branch", "side", "HEAD~1"])
         try await repo.git(["config", "rebase.updateRefs", "true"])
         let sideBefore = try await repo.revParse("side")
+        #expect(sideBefore != (try await repo.revParse("origin/main")))
 
         let outcome = try await CLIGitBackend().rebase(onto: "origin/main", at: repo.root)
 
         #expect(outcome == .rebased)
-        #expect(try await repo.revParse("side") != sideBefore)
-        #expect(try await repo.revParse("side") == (try await repo.revParse("HEAD~1")))
+        #expect(try await repo.revParse("side") == sideBefore)
+        // Non-vacuous: the commit `side` names *was* rewritten, so git had a reason to move it.
+        #expect(try await repo.revParse("HEAD~1") != sideBefore)
     }
 
     // MARK: - Support

@@ -95,11 +95,16 @@ public enum BranchOperationError: Error, Sendable, Equatable {
     /// (both at once add an `additionally, your index…` line), each with `error: Please commit
     /// or stash them.`, exit 1, nothing changed. An untracked file does not count.
     ///
-    /// **Usually Gitter's own refusal, made before git runs**, because git's can be switched
-    /// off from configuration: `rebase.autoStash=true` makes git stash the change, rebase, and
-    /// re-apply it without a word of refusal (measured) — the forbidden `--autostash` reached
-    /// through the user's config. See `CLIGitBackend.rebase(onto:at:)`. git's own sentences
-    /// still map here, for a change made between that check and the rebase.
+    /// **Usually Gitter's own refusal, made before git runs; git's is the authoritative one.**
+    /// `rebase.autoStash=true` would make git stash the change, rebase, and re-apply it without
+    /// a word of refusal (measured) — the forbidden `--autostash` reached through the user's
+    /// config — so the vector carries `--no-autostash`, and git's own check, made by the
+    /// process that rebases, cannot be switched off or raced. git's sentences map here for a
+    /// change made after Gitter's check. See `CLIGitBackend.rebase(onto:at:)`.
+    ///
+    /// **Gitter's check is slightly stricter than git's**: a submodule with uncommitted content
+    /// refuses here, and git ignores it (measured on git 2.54: `git diff --quiet` exits 1, git
+    /// rebases and leaves the submodule as it was, with or without `submodule.recurse`).
     case treeNotClean
     /// `abort` was asked to end an operation while the repository is in the middle of nothing.
     /// Thrown before git runs, and not merely for tidiness: verified on git 2.54, the command

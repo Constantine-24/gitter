@@ -25,18 +25,23 @@ extension CLIGitBackend {
         // git refuses over any uncommitted tracked change by itself — unless
         // `rebase.autoStash=true`, which it honours silently: measured, "Created autostash",
         // the rebase, "Applied autostash", exit 0. That is `--autostash`, forbidden in this
-        // package, reached from the user's configuration the way `fetch.prune` reaches a prune,
-        // and the vector cannot carry `--no-autostash` (it is pinned character for character by
-        // the scanner's contract test). So the refusal is made here, before git runs, and it
-        // is the same refusal git makes. What is left is a change made between this check and
-        // the rebase, under that config: git then stashes and re-applies it, and a failed
-        // re-apply leaves it in the stash ("Your changes are safe in the stash") — kept, not
-        // lost.
+        // package, reached from the user's configuration the way `fetch.prune` reaches a prune.
+        // The vector below carries `--no-autostash`, which defeats the setting, so **git's own
+        // check is the authoritative one**: made by the process that rebases, at the moment it
+        // rebases, it has no window for a change to slip through (a change made after the
+        // check below is refused by git and parsed back into `.treeNotClean`; tested with a
+        // wrapper that dirties the tree as git starts). This check stays as defence in depth,
+        // and because it answers without starting a rebase at all.
         //
         // `git diff --quiet` and not `status`: it exits 1 on a difference and runs no external
         // diff driver (measured with `diff.external` set), and a file whose stat is stale but
         // whose content is not is correctly clean (measured with `touch`). An untracked file is
-        // not asked about, because git does not refuse over one either.
+        // not asked about, because git does not refuse over one either. It is **stricter than
+        // git's check in one place**, deliberately: a submodule with uncommitted content makes
+        // `git diff --quiet` exit 1, while git's own check ignores submodules and rebases (and
+        // leaves the submodule alone, with or without `submodule.recurse` — measured). No
+        // `--ignore-submodules`: submodules are outside this milestone, and refusing is the
+        // answer that cannot lose work.
         let unstaged = try await worktreeDiffersFromIndex(at: root)
         let staged = try await indexDiffersFromHead(at: root)
         if unstaged || staged { throw BranchOperationError.treeNotClean }
@@ -45,11 +50,15 @@ extension CLIGitBackend {
 
         // ONE complete literal, pinned by `ForceFlagScannerTests`'
         // `allowsTheRemoteOperationsThisMilestoneNeeds`, character for character.
-        // `--end-of-options` is accepted by `rebase` in this position (verified on git 2.54:
-        // the rebase runs, and `-x` after it is answered "fatal: invalid upstream '-x'" rather
-        // than read as an option).
+        // `--no-autostash` defeats `rebase.autoStash=true` (above). `--no-update-refs` defeats
+        // `rebase.updateRefs=true`, which would otherwise move every other local branch that
+        // points into the rewritten commits ("Updated the following refs with --update-refs",
+        // measured) — branches the sheet never named. Both are accepted on git 2.54, also under
+        // `rebase.backend=apply`. `--end-of-options` is accepted in this position (the rebase
+        // runs, and `-x` after it is answered "fatal: invalid upstream '-x'" rather than read
+        // as an option).
         do {
-            _ = try await run(["rebase", "--end-of-options", upstream], cwd: root)
+            _ = try await run(["rebase", "--no-autostash", "--no-update-refs", "--end-of-options", upstream], cwd: root)
         } catch let error as GitError {
             // A stopped rebase FIRST, then a refusal. The guard above proved no operation was
             // in progress before git ran, so a rebase in progress now is this one — and a rebase

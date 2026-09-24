@@ -323,7 +323,8 @@ public protocol GitRemoteBackend: Sendable {
     ) async throws -> PushResult
 
     /// Replay the current branch's own commits on top of `upstream`:
-    /// `git rebase --end-of-options <upstream>`. The "Rebase" answer in the pull sheet.
+    /// `git rebase --no-autostash --no-update-refs --end-of-options <upstream>`. The "Rebase"
+    /// answer in the pull sheet.
     ///
     /// **It is the one method here that talks to no remote.** `upstream` is whatever the fetch
     /// before it left in `refs/remotes/*`; it is on this protocol because a pull is, and it is
@@ -343,8 +344,8 @@ public protocol GitRemoteBackend: Sendable {
     ///   under way — asked of the repository, because git's own answer then is the tree
     ///   refusal, which names the wrong problem.
     /// - `.treeNotClean` over **any** uncommitted tracked change, staged or not, related or not
-    ///   — Gitter's own check, because `rebase.autoStash=true` would otherwise have git stash
-    ///   and re-apply it silently. See `BranchOperationError.treeNotClean`.
+    ///   — Gitter's own check first, then git's, which `--no-autostash` keeps from being
+    ///   switched off by `rebase.autoStash=true`. See `BranchOperationError.treeNotClean`.
     /// - `.wouldOverwrite(tracked: [], untracked: […])` when an untracked file is where the
     ///   upstream has a tracked one: the checkout that starts the rebase refuses under its own
     ///   header ("could not detach HEAD"), and nothing moves (measured). Any other untracked
@@ -355,12 +356,12 @@ public protocol GitRemoteBackend: Sendable {
     ///
     /// **The outcome is read back, never taken from the exit code**: see `RebaseOutcome`.
     ///
-    /// **Two things the user's configuration can add, measured on git 2.54 and not
-    /// prevented**, because the vector is pinned by the scanner's contract test and carries no
-    /// flag against them: `rebase.updateRefs=true` also moves every *other* local branch that
-    /// points into the rewritten commits ("Updated the following refs with --update-refs"), and
-    /// `rebase.backend=apply` keeps the stopped state in `rebase-apply/` rather than
-    /// `rebase-merge/` (which `operationInProgress` already reads as `.rebase`). A plain rebase
+    /// **What the user's configuration can and cannot change, measured on git 2.54.**
+    /// `rebase.autoStash=true` and `rebase.updateRefs=true` (which would also move every
+    /// *other* local branch that points into the rewritten commits) are both defeated by the
+    /// vector's `--no-autostash` and `--no-update-refs`. `rebase.backend=apply` is not, and
+    /// need not be: it keeps the stopped state in `rebase-apply/` rather than `rebase-merge/`,
+    /// which `operationInProgress` already reads as `.rebase`. A plain rebase
     /// also **drops merge commits** among the branch's own commits, replaying what was under
     /// them — the sheet's "rewrites N commits" is true of the commits, not of their shape.
     ///

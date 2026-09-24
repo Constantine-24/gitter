@@ -521,6 +521,9 @@ enum ForceFlagScanner {
             "-f": "force",
             "--force-rebase": "rewrites commits that did not need rewriting",
             "--no-verify": "skips the hooks the user installed to stop exactly this",
+            "--update-refs":
+                "moves every other local branch that points into the rewritten commits, "
+                + "branches the sheet never named",
         ],
     ]
 

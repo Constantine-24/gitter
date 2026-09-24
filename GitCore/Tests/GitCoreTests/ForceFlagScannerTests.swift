@@ -371,6 +371,8 @@ import Testing
         #"_ = try await run(["pull", r], cwd: root)"#,
         #"_ = try await run(["rebase", "--autostash", u], cwd: root)"#,
         #"_ = try await run(["rebase", "--force-rebase", u], cwd: root)"#,
+        // `--update-refs` moves every other local branch that points into the rewritten range.
+        #"_ = try await run(["rebase", "--update-refs", u], cwd: root)"#,
         // `--follow-tags` pushes tags the user never named; `--no-force-with-lease` cancels a
         // lease written earlier in the same vector, leaving a plain force push behind.
         #"_ = try await run(["push", "--follow-tags", r], cwd: root)"#,
@@ -676,7 +678,7 @@ import Testing
         _ = try await run(["fetch", "--progress", "--no-prune", "--end-of-options", remote], cwd: root)
         _ = try await run(["fetch", "--progress", "--no-prune", "--all"], cwd: root)
         """#,
-        #"_ = try await run(["rebase", "--end-of-options", upstream], cwd: root)"#,
+        #"_ = try await run(["rebase", "--no-autostash", "--no-update-refs", "--end-of-options", upstream], cwd: root)"#,
         #"_ = try await run(["remote", "-v"], cwd: root)"#,
     ])
     func allowsTheRemoteOperationsThisMilestoneNeeds(source: String) {
