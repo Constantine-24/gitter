@@ -109,6 +109,9 @@
                     + "pull=\(store.pullBlockedReason ?? "nil"); "
                     + "push=\(store.pushBlockedReason ?? "nil") "
                     + "| pushTitle: \(store.pushButtonTitle) | tracking: \(store.currentTracking) "
+                    + "| pushCount: \(store.pushAheadCount.map(String.init) ?? "nil") "
+                    + "| pullCount: \(store.pullBehindCount.map(String.init) ?? "nil") "
+                    + "| pushHelp: \(store.pushHelp) "
                     + "| pullMode: \(store.rememberedPullMode.rawValue) "
                     + "| loads: \(store.snapshotLoadCount)")
         }
@@ -218,12 +221,14 @@
                 // the row calls. The snapshot cannot show the sidebar (see `snapshot(named:)`).
                 for branch in store.localBranches {
                     let text = TrackingBadge.text(
-                        for: branch.tracking, tracksLocalBranch: branch.tracksLocalBranch)
+                        for: branch.tracking, tracksLocalBranch: branch.tracksLocalBranch,
+                        upstream: branch.upstream)
                     let help = RemoteWording.trackingHelp(
                         branch.tracking, upstream: branch.upstream,
                         tracksLocalBranch: branch.tracksLocalBranch)
                     let spoken = RemoteWording.trackingAccessibility(
-                        branch.tracking, tracksLocalBranch: branch.tracksLocalBranch)
+                        branch.tracking, upstream: branch.upstream,
+                        tracksLocalBranch: branch.tracksLocalBranch)
                     log(
                         "badge \(branch.name): \(text ?? "(none)") | help: \(help ?? "nil") "
                             + "| voiceover: \(spoken ?? "nil")")

@@ -1,3 +1,4 @@
+import AppKit
 import GitCore
 import SwiftUI
 
@@ -5,11 +6,17 @@ import SwiftUI
 /// "Re-publish") — each drawn by its own `ToolbarItem` so the toolbar can lay them out and
 /// overflow them like any other item.
 ///
-/// **While the network lane is busy, the item that started it becomes the activity:** a
-/// spinner, git's latest progress line and a stop button. The other two stay where they are,
-/// disabled, with the store's "Wait for … to finish" in their tooltips — the toolbar never
-/// rearranges itself under the pointer, and the progress line has a fixed width so a counter
-/// ticking from 9% to 10% does not nudge its neighbours.
+/// **While the network lane is busy, the item that started it grows the activity to its
+/// left:** `[Stop] spinner progress-line [its own button, disabled]`. The button stays exactly
+/// where it was — the item keeps its trailing edge and grows leftward — so what is under the
+/// pointer after a click is the same button, now disabled, and never Stop. (Task 9's review
+/// reproduced the alternative: with Stop at the trailing edge it landed exactly where the
+/// clicked label had been, and a double-click on Fetch cancelled the fetch it had started.)
+/// Stop is at the far, leading end, and additionally ignores a click that arrives within the
+/// double-click interval of the activity starting (`RemoteActivity.acceptsStopClick`); ⌘. and
+/// the menu's Stop are deliberate and are not held back. The other two items stay where they
+/// are, disabled, with the store's "Wait for … to finish" in their tooltips, and the progress
+/// line has a fixed width so a counter ticking from 9% to 10% does not nudge its neighbours.
 ///
 /// Every reason comes from the store (`fetchBlockedReason` and its two siblings) through
 /// `disabled(_:help:)`, the only way a disabled control keeps its tooltip.
@@ -24,7 +31,12 @@ struct RemoteToolbarItem: View {
 
     var body: some View {
         if let activity = store.remoteActivity, Self.owner(of: activity.kind) == action {
-            RemoteActivityItem(activity: activity)
+            HStack(spacing: 2) {
+                RemoteActivityItem(activity: activity)
+                // Disabled by the lane-busy reason like the other two, and in the same place
+                // it was: a second click of a double-click lands here and does nothing.
+                button
+            }
         } else {
             button
         }
@@ -72,41 +84,33 @@ struct RemoteToolbarItem: View {
 
     // MARK: - What it says
 
-    private var tracking: Tracking { store.currentTracking }
-    private var tracksLocalBranch: Bool { store.currentBranchRef?.tracksLocalBranch ?? false }
-
-    /// "Pull ↓2" when behind; "Push ↑1" when ahead. The Push count is only drawn beside "Push":
-    /// a branch that publishes has no push remote, so an ahead count — which is against its
-    /// upstream, possibly a local branch — says nothing about what a publish would send.
+    /// "Pull ↓2" when behind; "Push ↑1" when a push would send that many. Both counts are the
+    /// store's (`pullBehindCount`, `pushAheadCount`), which decide when a count is true — never
+    /// beside Publish or Re-publish, a triangular branch's Push, or a refused target.
     private var title: String {
         switch action {
         case .fetch:
             return "Fetch"
         case .pull:
-            guard case .counts(_, let behind) = tracking, behind > 0 else { return "Pull" }
-            return "Pull \(tracksLocalBranch ? "⇣" : "↓")\(behind)"
+            return store.pullBehindCount.map { "Pull ↓\($0)" } ?? "Pull"
         case .push:
             let title = store.pushButtonTitle
-            guard title == "Push", !tracksLocalBranch, case .counts(let ahead, _) = tracking,
-                ahead > 0
-            else { return title }
-            return "\(title) ↑\(ahead)"
+            return store.pushAheadCount.map { "\(title) ↑\($0)" } ?? title
         }
     }
 
-    /// The title in words, since "↓2" is read out as "down arrow 2".
+    /// The title in words, since "↓2" is read out as "down arrow 2". The Fetch item's label
+    /// replaces its icon's, so the quiet failure mark is said here too.
     private var accessibilityTitle: String {
         switch action {
-        case .fetch: return "Fetch"
+        case .fetch:
+            return store.lastAutoFetchFailure == nil
+                ? "Fetch" : "Fetch, the last automatic fetch failed"
         case .pull:
-            guard case .counts(_, let behind) = tracking, behind > 0 else { return "Pull" }
-            return "Pull, \(behind) behind"
+            return store.pullBehindCount.map { "Pull, \($0) behind" } ?? "Pull"
         case .push:
             let title = store.pushButtonTitle
-            guard title == "Push", !tracksLocalBranch, case .counts(let ahead, _) = tracking,
-                ahead > 0
-            else { return title }
-            return "\(title), \(ahead) ahead"
+            return store.pushAheadCount.map { "\(title), \($0) ahead" } ?? title
         }
     }
 
@@ -116,8 +120,7 @@ struct RemoteToolbarItem: View {
             store.lastAutoFetchFailure.map(RemoteWording.autoFetchFailedHelp)
                 ?? RemoteWording.fetchHelp
         case .pull: RemoteWording.pullHelp(store.currentBranchRef)
-        case .push:
-            RemoteWording.pushHelp(title: store.pushButtonTitle, branch: store.currentBranchRef)
+        case .push: store.pushHelp
         }
     }
 
@@ -134,7 +137,8 @@ struct RemoteToolbarItem: View {
                             .font(.system(size: 7, weight: .bold))
                             .foregroundStyle(.secondary)
                             .offset(x: 4, y: 3)
-                            .accessibilityLabel("The last automatic fetch failed")
+                        // No label of its own: the button's `accessibilityTitle` replaces its
+                        // icon's, so the failure is said there.
                     }
                 }
         case .pull: Image(systemName: "arrow.down")
@@ -143,47 +147,62 @@ struct RemoteToolbarItem: View {
     }
 }
 
-/// The active network item: spinner, git's latest progress line, and Stop.
+/// The active network item's own part: Stop, spinner and git's latest progress line, with
+/// Stop at the leading end, as far as it can be from the button the user just clicked.
 ///
-/// The line is `RemoteActivity.progress`, which the store has already made plain (no escapes,
-/// credentials redacted, one capped line); until git prints one — and for the whole of a
-/// deletion, which prints none — it says what is running.
+/// The line is `RemoteWording.progressLine`: what is running, then git's latest segment, which
+/// the store has already made plain (no escapes, credentials redacted, one capped line) — so a
+/// `remote: Total 3 (delta 0) … done.` segment never reads as though the whole action were done.
+/// Until git prints one — and for the whole of a deletion, which prints none — it is just what
+/// is running.
 private struct RemoteActivityItem: View {
     let activity: RemoteActivity
 
     @Environment(RepositoryStore.self) private var store
 
-    /// Wide enough for a whole "Receiving objects:  44% (4/9), 67.98 KiB | 18.00 KiB/s" —
-    /// measured: at 220 points the middle truncation ate the percentage, the one number worth
-    /// reading — and fixed, so the toolbar does not move as the counter redraws.
-    static let progressWidth: CGFloat = 330
+    /// Fixed, so the toolbar does not move as the counter redraws. With the "Fetching — "
+    /// prefix the line is cut at its **tail**: measured, at 360 points a middle cut of
+    /// "Fetching — Receiving objects:  50% (3/6), 3.50 MiB | 839.00 KiB/s" ate the percentage,
+    /// the one number worth reading, while a tail cut loses only the transfer rate.
+    static let progressWidth: CGFloat = 360
 
-    private var line: String {
-        activity.progress ?? RemoteWording.inProgressTitle(activity)
-    }
+    private var line: String { RemoteWording.progressLine(activity) }
 
     var body: some View {
         HStack(spacing: 6) {
+            Button(action: stop) {
+                Image(systemName: "xmark.circle")
+            }
+            .buttonStyle(.borderless)
+            .help("Stop \(RemoteWording.describe(activity))")
+            .accessibilityLabel("Stop \(RemoteWording.describe(activity))")
             ProgressView()
                 .controlSize(.small)
             Text(line)
                 .font(.callout)
                 .monospacedDigit()
                 .lineLimit(1)
-                .truncationMode(.middle)
+                .truncationMode(.tail)
                 .frame(width: Self.progressWidth, alignment: .leading)
                 .help(line)
-                .accessibilityLabel("\(RemoteWording.inProgressTitle(activity)) \(activity.progress ?? "")")
-            Button {
-                store.cancelRemoteActivity()
-            } label: {
-                Image(systemName: "xmark.circle")
-            }
-            .buttonStyle(.borderless)
-            .help("Stop \(RemoteWording.describe(activity))")
-            .accessibilityLabel("Stop \(RemoteWording.describe(activity))")
+                .accessibilityLabel(line)
         }
-        .padding(.horizontal, 6)
+        .padding(.leading, 6)
         .accessibilityElement(children: .contain)
+    }
+
+    /// A click on Stop that arrives within the double-click interval of the activity starting
+    /// is the tail of the click that started it, not a decision to stop; it is dropped. ⌘. and
+    /// the menu go straight to `cancelRemoteActivity()` and are never held back.
+    private func stop() {
+        guard activity.acceptsStopClick(at: .now, doubleClickInterval: NSEvent.doubleClickInterval)
+        else {
+            #if DEBUG
+                FileHandle.standardError.write(
+                    Data("BRANCH_ACTION stop click ignored: within the double-click interval\n".utf8))
+            #endif
+            return
+        }
+        store.cancelRemoteActivity()
     }
 }

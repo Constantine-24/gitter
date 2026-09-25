@@ -43,6 +43,15 @@ struct RemoteActivity: Equatable {
     /// nil until git has printed one. The last segment wins — git redraws one counter in place
     /// with `\r`.
     var progress: String?
+    /// When the lane was claimed. The toolbar's Stop ignores a click this close to the start
+    /// (`acceptsStopClick`); nothing else reads it.
+    var startedAt = Date()
+
+    /// Whether a click on the toolbar's Stop at `now` is a decision to stop, rather than the
+    /// second half of the double-click that started this activity.
+    func acceptsStopClick(at now: Date, doubleClickInterval: TimeInterval) -> Bool {
+        now.timeIntervalSince(startedAt) >= doubleClickInterval
+    }
 }
 
 /// A claim on the network lane, handed back to `RepositoryStore.finishRemote`. The token and

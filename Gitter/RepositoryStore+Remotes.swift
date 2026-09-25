@@ -57,10 +57,33 @@ extension RepositoryStore {
         return nil
     }
 
-    /// "Push", "Publish" or "Re-publish" — decided on the push remote, not on the upstream.
-    var pushButtonTitle: String {
-        RemoteWording.pushButtonTitle(
-            branch: currentBranchRef, remotes: snapshot?.refs.remotes ?? [])
+    /// Push, Publish or Re-publish — decided on the push remote, not on the upstream.
+    var pushKind: PushKind {
+        RemoteWording.pushKind(branch: currentBranchRef, remotes: snapshot?.refs.remotes ?? [])
+    }
+
+    /// "Push", "Publish" or "Re-publish", from `pushKind`.
+    var pushButtonTitle: String { RemoteWording.pushTitle(pushKind) }
+
+    /// The ahead count the Push button may draw, or nil: only when the push goes to exactly
+    /// the upstream the count is measured against (`PushTarget.aheadCountToDisplay`). A
+    /// triangular branch, a refused target, a local or gone upstream, and a detached HEAD get
+    /// none.
+    var pushAheadCount: Int? {
+        guard let branch = currentBranchRef else { return nil }
+        return PushTarget.aheadCountToDisplay(for: branch, remotes: snapshot?.refs.remotes ?? [])
+    }
+
+    /// The behind count the Pull button may draw, or nil (`PullPlan.behindCountToDisplay`):
+    /// none when detached, gone, without an upstream, or tracking a local branch.
+    var pullBehindCount: Int? {
+        currentBranchRef.flatMap(PullPlan.behindCountToDisplay(for:))
+    }
+
+    /// The Push item's tooltip while it is enabled: where a push would go.
+    var pushHelp: String {
+        RemoteWording.pushHelp(
+            pushKind, branch: currentBranchRef, remotes: snapshot?.refs.remotes ?? [])
     }
 
     /// Whether the error banner on screen is the refusal "Force Push…" answers, and so should
@@ -372,6 +395,18 @@ extension RepositoryStore {
     static func isCancellation(_ error: Error) -> Bool {
         error is CancellationError || Task.isCancelled
     }
+}
+
+/// What the push button does for the current branch. The view and the menu read this, never
+/// the title string, to decide what to draw beside it.
+enum PushKind: Equatable {
+    /// An ordinary push to the target `PushTarget.resolve` names (also when that target is
+    /// refused: the button is then disabled with the refusal as its reason).
+    case push
+    /// No push remote yet: the branch goes to a remote the user names.
+    case publish
+    /// The upstream was deleted on the remote; the push recreates it.
+    case republish
 }
 
 /// What one piece of lane work came to: what to say, what to open, and what to start once the

@@ -81,16 +81,25 @@ enum RemoteWording {
         }
     }
 
-    /// "Push", "Publish" for a branch with no push remote — which is **not** the same as a
-    /// branch with no upstream — and "Re-publish" for a branch whose upstream is gone: it still
-    /// resolves to a push, and git recreates the branch on the server (design row o), so the
-    /// button must not read as though the remote branch merely moves.
-    static func pushButtonTitle(branch: Branch?, remotes: [Remote]) -> String {
-        guard let branch else { return "Push" }
+    /// Which of the three the push button is: "Publish" for a branch with no push remote —
+    /// which is **not** the same as a branch with no upstream — and "Re-publish" for a branch
+    /// whose upstream is gone: it still resolves to a push, and git recreates the branch on the
+    /// server (design row o), so the button must not read as though the remote branch merely
+    /// moves. A refused target stays `.push` (disabled, with the refusal as its reason).
+    static func pushKind(branch: Branch?, remotes: [Remote]) -> PushKind {
+        guard let branch else { return .push }
         switch PushTarget.resolve(branch, remotes: remotes) {
-        case .unpublished: return "Publish"
-        case .push: return branch.tracking == .gone ? "Re-publish" : "Push"
-        case .refused: return "Push"
+        case .unpublished: return .publish
+        case .push: return branch.tracking == .gone ? .republish : .push
+        case .refused: return .push
+        }
+    }
+
+    static func pushTitle(_ kind: PushKind) -> String {
+        switch kind {
+        case .push: "Push"
+        case .publish: "Publish"
+        case .republish: "Re-publish"
         }
     }
 
@@ -188,18 +197,41 @@ enum RemoteWording {
         }
     }
 
+    /// The active toolbar item's line: what is running, then git's latest progress segment —
+    /// "Fetching — Receiving objects:  44% (4/9)". The prefix is there so a segment that ends
+    /// in "done." (git prints one per phase, and a small fetch prints only `remote: …` lines
+    /// that end that way) never reads as though the action itself were finished.
+    static func progressLine(_ activity: RemoteActivity) -> String {
+        let title = inProgressTitle(activity)
+        guard let progress = activity.progress else { return title }
+        let running = title.hasSuffix("…") ? String(title.dropLast()) : title
+        return "\(running) — \(progress)"
+    }
+
     /// The tooltips of the three toolbar items while they are available.
     static let fetchHelp = "Fetch from every remote"
     static func pullHelp(_ branch: Branch?) -> String {
         branch?.upstream.map { "Pull from \"\($0)\"" } ?? "Pull"
     }
-    static func pushHelp(title: String, branch: Branch?) -> String {
-        guard let branch else { return title }
-        return switch title {
-        case "Publish": "Publish \"\(branch.name)\" to a remote"
-        case "Re-publish":
-            "Publish \"\(branch.name)\" again: its upstream was deleted on the remote"
-        default: "Push \"\(branch.name)\"\(branch.pushRemote.map { " to \"\($0)\"" } ?? "")"
+    /// The Push item's tooltip: where a push would go, from `PushTarget.resolve` — never from
+    /// the upstream, which a triangular branch (`pushRemote` ≠ `upstreamRemote`) does not push
+    /// to. Only called while Push is enabled, so a refused target does not reach it.
+    static func pushHelp(_ kind: PushKind, branch: Branch?, remotes: [Remote]) -> String {
+        guard let branch else { return pushTitle(kind) }
+        switch kind {
+        case .publish: return "Publish \"\(branch.name)\" to a remote"
+        case .republish:
+            return "Publish \"\(branch.name)\" again: its upstream was deleted on the remote"
+        case .push:
+            guard case .push(let remote, let ref) = PushTarget.resolve(branch, remotes: remotes)
+            else { return "Push \"\(branch.name)\"" }
+            let destination = "Push \"\(branch.name)\" to \(Self.destination(branch: branch.name, remote: remote, remoteRef: ref))"
+            // The badge counts against the upstream; say so when the push goes elsewhere, so
+            // the missing count on the button is explained where the user looks for it.
+            guard let upstream = branch.upstream,
+                remote != branch.upstreamRemote || ref != branch.upstreamRef
+            else { return destination }
+            return destination + " — not to its upstream \"\(upstream)\", which the badge counts against"
         }
     }
 
@@ -234,8 +266,11 @@ enum RemoteWording {
         }
     }
 
-    /// What VoiceOver reads for a badge: "2 ahead, 3 behind", "upstream gone".
-    static func trackingAccessibility(_ tracking: Tracking, tracksLocalBranch: Bool) -> String? {
+    /// What VoiceOver reads for a badge: "2 ahead, 3 behind", "upstream gone", and for a local
+    /// upstream "2 ahead, 3 behind, compared with local branch main".
+    static func trackingAccessibility(
+        _ tracking: Tracking, upstream: String?, tracksLocalBranch: Bool
+    ) -> String? {
         switch tracking {
         case .none: return nil
         case .gone: return "upstream gone"
@@ -244,8 +279,9 @@ enum RemoteWording {
             if ahead > 0 { parts.append("\(ahead) ahead") }
             if behind > 0 { parts.append("\(behind) behind") }
             guard !parts.isEmpty else { return nil }
-            return parts.joined(separator: ", ")
-                + (tracksLocalBranch ? ", against a local branch" : "")
+            let local = upstream.map { ", compared with local branch \($0)" }
+                ?? ", compared with a local branch"
+            return parts.joined(separator: ", ") + (tracksLocalBranch ? local : "")
         }
     }
 
