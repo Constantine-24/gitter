@@ -15,7 +15,8 @@
     ///
     ///   GITTER_DEBUG_CLICK="x,y[:2|:shift|:right][;…]"  click those points (see `point(from:)`),
     ///                                            or `type=text` to type in the middle of it
-    ///   GITTER_DEBUG_KEYS=space,return,cmd+return,tab   then press those keys
+    ///   GITTER_DEBUG_KEYS=space,return,cmd+return,tab   then press those keys (also period,
+    ///                                            f, l, p: cmd+period, shift+cmd+f …)
     ///   GITTER_DEBUG_TYPE=text                   then type that text, character by character
     ///   GITTER_DEBUG_DUMP_RESPONDER=1            print the responder chain to stderr after
     ///                                            every click and key, and once more at the
@@ -200,12 +201,48 @@
                 key = String(key[key.index(after: plus)...])
             }
             guard let (code, characters) = keys[key] else { return }
-            send(characters, code: code, modifiers: modifiers, in: window)
+            if modifiers.contains(.command) {
+                performKeyEquivalent(characters, code: code, modifiers: modifiers, in: window)
+            } else {
+                send(characters, code: code, modifiers: modifiers, in: window)
+            }
+        }
+
+        /// A command-key press, dispatched the way `NSApplication` dispatches one: the window's
+        /// views first, then the main menu.
+        ///
+        /// Measured in Task 9: a posted command-key event never reaches a menu's key
+        /// equivalent — ⌘R posted onto the queue ran no Refresh (the snapshot-load count stayed
+        /// put), and neither did ⇧⌘F or ⌘. — so for these the harness makes the same two calls
+        /// AppKit makes, synchronously. What that exercises is real: the menu's own shortcut
+        /// matching, the item's enabled state (after the same `menuNeedsUpdate` SwiftUI gets
+        /// before a key equivalent is checked) and the item's action.
+        private static func performKeyEquivalent(
+            _ characters: String, code: UInt16, modifiers: NSEvent.ModifierFlags,
+            in window: NSWindow
+        ) {
+            guard
+                let event = NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: modifiers,
+                    timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, characters: characters,
+                    charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)
+            else { return }
+            if window.performKeyEquivalent(with: event) {
+                FileHandle.standardError.write(Data("KEY handled by the window's views\n".utf8))
+                return
+            }
+            for item in NSApp.mainMenu?.items ?? [] {
+                if let menu = item.submenu { menu.delegate?.menuNeedsUpdate?(menu) }
+            }
+            let handled = NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false
+            FileHandle.standardError.write(Data("KEY handled by the main menu: \(handled)\n".utf8))
         }
 
         private static let keys: [String: (code: UInt16, characters: String)] = [
             "space": (49, " "), "return": (36, "\r"), "tab": (48, "\t"),
             "escape": (53, "\u{1b}"), "down": (125, "\u{f701}"), "up": (126, "\u{f700}"),
+            "period": (47, "."), "f": (3, "f"), "l": (37, "l"), "p": (35, "p"), "r": (15, "r"),
         ]
 
         /// One character of `GITTER_DEBUG_TYPE`. The key code is what a keyboard would report

@@ -28,7 +28,8 @@
     ///     deleteremote:<remote>/<b>    confirmdeleteremote
     ///     cancel                       start:<step>  idle
     ///     stageall                     commit:<subject>     snapshot:<name>
-    ///     open:<path>
+    ///     open:<path>                  menu:<title>        views[:<class>]     badges
+    ///     autofetchfailed:<reason>
     ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
@@ -208,6 +209,25 @@
             case "open":
                 let path = step.dropFirst("open:".count)
                 if !path.isEmpty { store.open(URL(fileURLWithPath: String(path))) }
+            case "autofetchfailed":
+                store.debugSetLastAutoFetchFailure(String(step.dropFirst("autofetchfailed:".count)))
+            case "menu": first.map { dumpMenu(titled: $0) }
+            case "views": dumpViews(matching: first)
+            case "badges":
+                // What each sidebar row's badge draws, says and reads out — the same function
+                // the row calls. The snapshot cannot show the sidebar (see `snapshot(named:)`).
+                for branch in store.localBranches {
+                    let text = TrackingBadge.text(
+                        for: branch.tracking, tracksLocalBranch: branch.tracksLocalBranch)
+                    let help = RemoteWording.trackingHelp(
+                        branch.tracking, upstream: branch.upstream,
+                        tracksLocalBranch: branch.tracksLocalBranch)
+                    let spoken = RemoteWording.trackingAccessibility(
+                        branch.tracking, tracksLocalBranch: branch.tracksLocalBranch)
+                    log(
+                        "badge \(branch.name): \(text ?? "(none)") | help: \(help ?? "nil") "
+                            + "| voiceover: \(spoken ?? "nil")")
+                }
             case "stageall": store.stageAll()
             case "commit":
                 // The composer's own path: the subject goes into the draft, then `commit()`.
@@ -251,7 +271,9 @@
         /// SwiftUI overlays the banners are drawn in — and that needs neither Screen Recording
         /// nor the window to be visible. It does not draw `NSVisualEffectView` materials, so
         /// the sidebar comes out blank: faithful for banners and sheets, not for the whole
-        /// window.
+        /// window. (Measured in Task 9: rendering the sidebar's own layer does not help either —
+        /// its text layers hold vibrancy-tinted contents, `CATintedImage`, which
+        /// `render(in:)` skips. The `badges` step logs what its rows draw instead.)
         private static func snapshot(named name: String) {
             guard let dir = ProcessInfo.processInfo.environment["GITTER_DEBUG_SNAPSHOT_DIR"],
                 let window = NSApp.windows.first(where: { $0.isVisible && $0.sheetParent == nil }),
@@ -283,6 +305,32 @@
             }
         }
 
+        /// Logs the main window's view tree — class, depth, frame in content-area coordinates
+        /// (the toolbar's y is negative) — for views whose class name contains `filter`.
+        ///
+        /// This is how a `GITTER_DEBUG_CLICK` is aimed at a toolbar button: each SwiftUI toolbar
+        /// item is a `ToolbarItemHostingView`, and the centre of its frame is the click point.
+        /// (The in-process accessibility tree was tried first and exposes only the window and
+        /// its title-bar buttons, not SwiftUI's elements, when no assistive client is running.)
+        private static func dumpViews(matching filter: String?) {
+            guard let window = NSApp.windows.first(where: { $0.isVisible && $0.sheetParent == nil }),
+                let frameView = window.contentView?.superview
+            else { return }
+            let content = window.contentLayoutRect
+            var stack: [(NSView, Int)] = [(frameView, 0)]
+            while let (view, depth) = stack.popLast() {
+                let name = String(describing: Swift.type(of: view))
+                if filter.map({ name.contains($0) }) ?? true {
+                    let r = view.convert(view.bounds, to: nil)
+                    log(
+                        "view: \(String(repeating: " ", count: depth))\(name) "
+                            + "x=\(Int(r.minX - content.minX)) y=\(Int(content.maxY - r.maxY)) "
+                            + "w=\(Int(r.width)) h=\(Int(r.height))\(view.isHidden ? " hidden" : "")")
+                }
+                for child in view.subviews.reversed() { stack.append((child, depth + 1)) }
+            }
+        }
+
         private static func image(of window: NSWindow) -> NSImage? {
             // The frame view, so the toolbar and title bar are in the picture too. Its layer
             // tree is rendered rather than `cacheDisplay`, which leaves out SwiftUI overlays —
@@ -305,6 +353,34 @@
             (layer.presentation() ?? layer).render(in: context)
             guard let cgImage = context.makeImage() else { return nil }
             return NSImage(cgImage: cgImage, size: size)
+        }
+
+        /// Logs every item of the main menu's `<title>` menu — title, shortcut, enabled — after
+        /// `update()`, which runs the same validation opening it would. A script cannot open a
+        /// menu (a posted click on the menu bar does not reach it), so this is how a check
+        /// reads which commands exist, what they are bound to and which are live right now.
+        private static func dumpMenu(titled title: String) {
+            guard let menu = NSApp.mainMenu?.items.first(where: { $0.title == title })?.submenu
+            else {
+                log("menu: no \"\(title)\" menu")
+                return
+            }
+            // SwiftUI refreshes a command menu's items when it is about to open, through the
+            // delegate; `update()` alone reads whatever was there when the app launched.
+            menu.delegate?.menuNeedsUpdate?(menu)
+            menu.update()
+            for item in menu.items {
+                if item.isSeparatorItem {
+                    log("menu \(title): ---")
+                    continue
+                }
+                let mask = item.keyEquivalentModifierMask
+                let shortcut =
+                    (mask.contains(.control) ? "⌃" : "") + (mask.contains(.option) ? "⌥" : "")
+                    + (mask.contains(.shift) ? "⇧" : "") + (mask.contains(.command) ? "⌘" : "")
+                    + item.keyEquivalent.uppercased()
+                log("menu \(title): \(item.title) [\(shortcut)] enabled=\(item.isEnabled)")
+            }
         }
 
         private static func mergeMode(_ name: String?) -> MergeMode? {

@@ -96,6 +96,12 @@ final class RepositoryStore {
         func noteSnapshotLoad() {
             snapshotLoadCount += 1
         }
+
+        /// The harness's `autofetchfailed:<reason>` step, so the Fetch item's quiet mark can be
+        /// drawn before Task 11's scheduler exists to set it for real.
+        func debugSetLastAutoFetchFailure(_ reason: String?) {
+            lastAutoFetchFailure = reason
+        }
     #endif
 
     /// Bumped by every `open()`. Anything loaded or run asynchronously captures it and drops

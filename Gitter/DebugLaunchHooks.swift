@@ -20,6 +20,9 @@
     ///   GITTER_DEBUG_WINDOW=1400x1400       resize the window, past the screen if asked
     ///   GITTER_DEBUG_OPEN=<path>            then open that path, as "Open Repository…" does
     ///   GITTER_DEBUG_APPEARANCE=light|dark  force the window's appearance
+    ///   GITTER_DEBUG_THEN=<steps>           branch-action steps to run after the clicks and
+    ///                                       keys, e.g. `idle;snapshot:after-click` — what a
+    ///                                       click on a toolbar button did
     ///
     /// `DebugLaunchHooks+Events` adds the ones that click and type;
     /// `DebugLaunchHooks+Branches` the ones that run branch actions and open their sheets.
@@ -46,9 +49,10 @@
             let openPath = env["GITTER_DEBUG_OPEN"]
             let appearance = env["GITTER_DEBUG_APPEARANCE"]
             let branchAction = branchActionSpec
+            let then = env["GITTER_DEBUG_THEN"]
             guard
                 path != nil || commit != nil || window != nil || openPath != nil
-                    || appearance != nil || branchAction != nil || wantsEvents
+                    || appearance != nil || branchAction != nil || wantsEvents || then != nil
             else { return }
 
             pendingLineIDs = lineIDs()
@@ -90,6 +94,10 @@
                 }
                 // Last, so a click lands on a list that has finished loading its rows.
                 if wantsEvents { await runEvents() }
+                if let then {
+                    guard await wait({ store.snapshot != nil }) else { return }
+                    await runBranchActions(then, store: store)
+                }
             }
         }
 
