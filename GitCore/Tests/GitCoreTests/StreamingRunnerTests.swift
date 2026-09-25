@@ -97,6 +97,63 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(result.stderr == "no trailing newline")
     }
 
+    /// **A server line with no end is read once, and delivered in pieces.** The pending,
+    /// unterminated segment used to be rescanned from its first byte on every read, so a line
+    /// of N bytes cost O(N²): measured before the fix, a 10 MB `remote:` line took over 150 s in
+    /// a debug build (5 s in release; `git` itself, 3.4 s). The scan now resumes where the last
+    /// one stopped, and a segment that reaches 64 KiB with no separator is delivered as it
+    /// stands — an over-long progress line arrives in several pieces, each a whole number of
+    /// characters, and the pieces together are the line.
+    ///
+    /// The time is taken **on the pipe's queue**, between the first piece and the last, and not
+    /// around the call: in a full parallel `swift test` the cooperative pool is saturated, and
+    /// a wall clock around the `await` measured 12 s of waiting for an executor while the run
+    /// itself took well under one.
+    @Test func aLongUnterminatedStderrLineIsScannedOnceAndDeliveredInBoundedPieces() async throws {
+        let clock = ContinuousClock()
+        let arrivals = Locked<[ContinuousClock.Instant]>([])
+        let collected = Locked<[String]>([])
+        let result = try await ProcessRunner().runStreaming(
+            "/bin/sh", ["-c", "head -c 2000000 /dev/zero | tr '\\0' x >&2"], cwd: Self.root,
+            onStderr: { segment in
+                let now = clock.now
+                arrivals.mutate { $0.append(now) }
+                collected.mutate { $0.append(segment) }
+            })
+        let segments = collected.current
+        let times = arrivals.current
+        let elapsed = (times.last ?? clock.now) - (times.first ?? clock.now)
+
+        #expect(result.stderr.utf8.count == 2_000_000, "the whole stderr is still returned")
+        #expect(segments.joined() == result.stderr, "the pieces together are not the line")
+        #expect(segments.count > 1, "one 2 MB segment: nothing bounds a pending line")
+        #expect(segments.allSatisfy { $0.utf8.count <= 65_536 },
+                "\(segments.map(\.utf8.count).max() ?? 0) bytes in one segment")
+        #expect(elapsed < .seconds(3), "\(elapsed) between the first piece and the last")
+    }
+
+    /// The forced cut lands between characters, never inside one: one `x` and then a 1.4 MB
+    /// line of `é` (`\xc3\xa9`, two bytes each) comes back with no U+FFFD in any piece. The
+    /// `x` puts every `é` at an odd offset, so a cut at exactly 65 536 bytes would split one —
+    /// without it the test would pass for a cut that ignores characters altogether.
+    @Test func anOverLongLineIsNeverCutInsideAMultiByteCharacter() async throws {
+        let (result, segments) = try await runScript(
+            "printf x >&2; yes \"$(printf '\\303\\251')\" | head -n 700000 | tr -d '\\n' >&2")
+        #expect(result.stderr.utf8.count == 1_400_001)
+        #expect(segments.count > 1)
+        #expect(!segments.contains { $0.contains("\u{FFFD}") }, "a character was cut in half")
+        #expect(segments.joined() == result.stderr)
+    }
+
+    /// A separator after a forced cut still ends the segment it belongs to, and the lines after
+    /// it are split as always: the bound changes where an over-long line is cut, nothing else.
+    @Test func linesAfterAnOverLongOneAreSplitAsBefore() async throws {
+        let (_, segments) = try await runScript(
+            "head -c 100000 /dev/zero | tr '\\0' x >&2; printf '\\rnext 1%%\\rnext 2%%\\n' >&2")
+        #expect(segments.suffix(2) == ["next 1%", "next 2%"], "\(segments.suffix(3).map { $0.prefix(20) })")
+        #expect(segments.dropLast(2).joined() == String(repeating: "x", count: 100_000))
+    }
+
     @Test func emptySegmentsAreDropped() async throws {
         let (_, segments) = try await runScript("printf '\\n\\r\\na\\n\\n\\r' >&2")
         #expect(segments == ["a"])

@@ -338,6 +338,9 @@ private final class StreamingProcessState: @unchecked Sendable {
     /// not characters, because a read can end in the middle of a multi-byte one and decoding
     /// the fragment would replace it with U+FFFD.
     private var pendingSegment: [UInt8] = []
+    /// How much of `pendingSegment` has already been searched for a separator — all of it, after
+    /// every `appendStderr`. The next read's search starts here, so each byte is looked at once.
+    private var pendingScanned = 0
     private var stdoutFinished = false
     private var stderrFinished = false
     private var status: Int32?
@@ -422,6 +425,15 @@ private final class StreamingProcessState: @unchecked Sendable {
     }
 
     /// Adds `chunk` to the captured stderr and returns the segments it completed, in order.
+    ///
+    /// **Linear in the bytes read, however long a line is.** The search for a separator resumes
+    /// at `pendingScanned` rather than at the start of the pending segment: it used to rescan
+    /// the whole unterminated segment on every read, so one long server line cost O(N²) —
+    /// measured, a 10 MB line took 268 s in a debug build. And the pending segment is bounded:
+    /// once it holds `maxPendingStderrSegment` bytes with no separator, that much is delivered
+    /// as a segment of its own, cut on a character boundary — so an over-long progress line
+    /// arrives **in pieces**, which together are the line. Buffer handling only: the captured
+    /// `errBuffer`, what is returned at the end and the exactly-once resume are untouched.
     func appendStderr(_ chunk: Data) -> [String] {
         lock.lock()
         defer { lock.unlock() }
@@ -430,18 +442,58 @@ private final class StreamingProcessState: @unchecked Sendable {
 
         var segments: [String] = []
         var start = 0
-        for index in pendingSegment.indices
-        where pendingSegment[index] == UInt8(ascii: "\n") || pendingSegment[index] == UInt8(ascii: "\r") {
-            // Empty segments are dropped: a `\r\n`, or a blank line, is a separator and not an
-            // update worth showing.
-            if index > start {
-                segments.append(String(decoding: pendingSegment[start..<index], as: UTF8.self))
+        var index = pendingScanned
+        while index < pendingSegment.count {
+            let byte = pendingSegment[index]
+            if byte == UInt8(ascii: "\n") || byte == UInt8(ascii: "\r") {
+                // Empty segments are dropped: a `\r\n`, or a blank line, is a separator and not
+                // an update worth showing.
+                if index > start {
+                    segments.append(String(decoding: pendingSegment[start..<index], as: UTF8.self))
+                }
+                start = index + 1
+            } else if index + 1 - start >= Self.maxPendingStderrSegment {
+                // No separator in a whole bound's worth: deliver what there is, ending before
+                // any character the bound would cut in half (see `characterBoundary`).
+                let cut = Self.characterBoundary(in: pendingSegment, before: index + 1, after: start)
+                segments.append(String(decoding: pendingSegment[start..<cut], as: UTF8.self))
+                start = cut
+                index = cut
+                continue
             }
-            start = index + 1
+            index += 1
         }
         if start > 0 { pendingSegment.removeFirst(start) }
+        pendingScanned = pendingSegment.count
         return segments
     }
+
+    /// Where to end a forced piece that would end at `end`: `end` itself if the character
+    /// before it is complete, otherwise that character's lead byte, which then starts the next
+    /// piece. Decided from the bytes **before** `end` — the byte after it may not have been
+    /// read yet. A lead byte announces its character's length (`110xxxxx` two, `1110xxxx`
+    /// three, `11110xxx` four); bytes that are not UTF-8 are cut where they are, since there is
+    /// no character to keep whole.
+    private static func characterBoundary(in bytes: [UInt8], before end: Int, after start: Int)
+        -> Int
+    {
+        var lead = end - 1
+        // At most three continuation bytes follow a lead byte.
+        while lead > start, end - lead < 4, bytes[lead] & 0xC0 == 0x80 { lead -= 1 }
+        let length: Int
+        switch bytes[lead] {
+        case 0xC0...0xDF: length = 2
+        case 0xE0...0xEF: length = 3
+        case 0xF0...0xF7: length = 4
+        default: return end
+        }
+        return lead + length > end && lead > start ? lead : end
+    }
+
+    /// The longest stderr segment held back waiting for its separator: 64 KiB. git's own
+    /// progress lines are well under 100 bytes; this is for a server that prints one enormous
+    /// line, which is then delivered in pieces of at most this many bytes.
+    static let maxPendingStderrSegment = 65_536
 
     func markStdoutFinished() {
         lock.lock()
@@ -458,6 +510,7 @@ private final class StreamingProcessState: @unchecked Sendable {
         guard !pendingSegment.isEmpty else { return [] }
         let tail = String(decoding: pendingSegment, as: UTF8.self)
         pendingSegment.removeAll()
+        pendingScanned = 0
         return [tail]
     }
 
