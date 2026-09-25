@@ -60,7 +60,8 @@ public enum RemoteOperationError: Error, Equatable, Sendable {
     /// thrown by `fetch`, which does not need one; it is here for the operations in the tasks
     /// that follow, which do.
     case noUpstream
-    /// The expected tip handed to `forcePush` or `deleteRemoteBranch` is not a full object
+    /// An expected tip handed to `forcePush` or `deleteRemoteBranch` — the lease, or
+    /// `forcePush`'s `expectedLocalTip`, the refspec's source side — is not a full object
     /// name — 40 or 64 **lower-case** hexadecimal characters, and not all zeros. Thrown
     /// **before git runs**, so it is the third case here that really does mean nothing changed.
     /// The payload is the value that was refused; an object name is not a credential.

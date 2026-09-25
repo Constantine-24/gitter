@@ -101,6 +101,7 @@ extension CLIGitBackend {
 
     public func forcePush(
         _ branch: String, to remote: String, remoteRef: String, expectedRemoteTip: String,
+        expectedLocalTip: String,
         at root: URL, progress: @escaping @Sendable (String) -> Void
     ) async throws -> PushResult {
         // The same three name checks `push` makes, and then the one only a lease needs. Order
@@ -111,6 +112,10 @@ extension CLIGitBackend {
         try requireRemoteName(remote)
         try requirePushDestination(remoteRef)
         try requireFullObjectName(expectedRemoteTip)
+        // The refspec's source side, so the same rule and for a sharper reason: an abbreviation
+        // or a name is resolved by git against a local state that can move, an empty source
+        // side is a deletion, and forty zeros would be read the same way.
+        try requireFullObjectName(expectedLocalTip)
 
         // Bound rather than used directly because the vector below is a **contract**: it is
         // written out in `ForceFlagScannerTests.allowsTheRemoteOperationsThisMilestoneNeeds`
@@ -121,8 +126,20 @@ extension CLIGitBackend {
         // The lease names `remoteRef`, the ref **on the server**, and not `branch`: it is a
         // claim about what the destination holds, and under a rename or a `remote.<n>.push`
         // refspec those are two different refs (`theLeaseNamesTheDestinationRefAndNot…`).
+        //
+        // **The source side is `expectedLocalTip`, a sha, and not `refs/heads/<branch>`.** The
+        // lease pins what the server loses; this pins what it gets. The sheet counted the
+        // commits the server has that *this* commit lacks, and a push by name would send
+        // whatever the branch points at when the button is pressed — a `git reset --hard
+        // <older>` in a terminal while the sheet was up took two commits off the server where
+        // the sheet named one (Task 8's review). Measured on git 2.54, `push
+        // --force-with-lease=refs/heads/main:<theirs> origin <sha>:refs/heads/main` pushes
+        // exactly that commit and prints `+⇥<sha>:refs/heads/main⇥034c32c...d9229ae (forced
+        // update)`: the destination side is unchanged, and `PushPorcelainParser` matches on the
+        // destination. `branch` is still checked above, as the name the caller read the tip
+        // from, but it is no longer sent.
         let tip = expectedRemoteTip
-        let arguments = ["push", "--porcelain", "--progress", "--no-follow-tags", "--force-with-lease=\(remoteRef):\(tip)", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"]
+        let arguments = ["push", "--porcelain", "--progress", "--no-follow-tags", "--force-with-lease=\(remoteRef):\(tip)", "--end-of-options", remote, "\(expectedLocalTip):\(remoteRef)"]
 
         let (outcome, streamed) = try await pushing(
             arguments, destinationRef: remoteRef, at: root, progress: progress)

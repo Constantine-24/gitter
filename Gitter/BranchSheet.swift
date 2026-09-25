@@ -28,9 +28,12 @@ enum BranchSheet: Identifiable, Hashable {
     case publish(branch: String)
     /// What a force push would take off `remoteRef` on `remote`: the remote-tracking ref's
     /// **full** sha read right after a fetch, which `confirmForcePush` hands to git as the
-    /// lease, the first 20 commits it would discard and how many there are in all.
+    /// lease, the first 20 commits it would discard and how many there are in all — counted
+    /// against `localTip`, the **full** sha of `branch` read at the same moment, which is what
+    /// the push sends (the refspec's source side), so the sheet and the push are about the
+    /// same two commits whatever the branch does meanwhile.
     case forcePush(
-        branch: String, remote: String, remoteRef: String, remoteTip: String,
+        branch: String, localTip: String, remote: String, remoteRef: String, remoteTip: String,
         discarded: [Commit], total: Int)
     /// Delete `branch` on `remote`, at the **full** `tip` read right after a fetch — the lease
     /// — with `onlyThere` commits held by no branch, tag or other remote-tracking ref.

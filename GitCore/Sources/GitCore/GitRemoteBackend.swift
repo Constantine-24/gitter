@@ -216,10 +216,20 @@ public protocol GitRemoteBackend: Sendable {
         at root: URL, progress: @escaping @Sendable (String) -> Void
     ) async throws -> PushResult
 
-    /// Send `branch` to `remoteRef` on `remote` **over commits the server already has**, but
-    /// only while that ref is still at `expectedRemoteTip`:
+    /// Send the commit `expectedLocalTip` — the tip of `branch` the sheet showed — to
+    /// `remoteRef` on `remote` **over commits the server already has**, but only while that ref
+    /// is still at `expectedRemoteTip`:
     /// `git push --porcelain --progress --no-follow-tags --force-with-lease=<remoteRef>:<tip>
-    /// --end-of-options <remote> refs/heads/<branch>:<remoteRef>`.
+    /// --end-of-options <remote> <expectedLocalTip>:<remoteRef>`.
+    ///
+    /// **Both sides carry the sha the sheet showed.** The lease pins what the server loses;
+    /// `expectedLocalTip` pins what it gets. The sheet counts the commits the server has that
+    /// *that* commit lacks, so a push of the branch by name — which sends whatever the branch
+    /// points at when the button is pressed — could take more off the server than the sheet
+    /// named after a `git reset --hard <older>` in a terminal. With the sha as the source side,
+    /// git pushes exactly that commit whatever the branch points at now, and leaves the branch
+    /// alone (`theBranchMovingAfterTheSheetDoesNotChangeWhatIsPushed`). `branch` is checked
+    /// like `push`'s but is not sent. `expectedLocalTip` is validated exactly as the lease is.
     ///
     /// **This is the operation that can destroy somebody else's commits, and the lease is the
     /// whole of what stands between it and that.** `expectedRemoteTip` is the sha the
@@ -242,10 +252,10 @@ public protocol GitRemoteBackend: Sendable {
     /// statement about a ref on the server, and under a rename or a `remote.<name>.push`
     /// refspec those are two different refs.
     ///
-    /// **`expectedRemoteTip` must be a full object name** — 40 or 64 lower-case hex characters,
-    /// and not all zeros — or `RemoteOperationError.invalidLease` is thrown before git runs. See
-    /// that case for the five shapes measured and why three of them are accepted by git and
-    /// still wrong.
+    /// **`expectedRemoteTip` and `expectedLocalTip` must be full object names** — 40 or 64
+    /// lower-case hex characters, and not all zeros — or `RemoteOperationError.invalidLease` is
+    /// thrown before git runs. See that case for the five shapes measured and why three of them
+    /// are accepted by git and still wrong.
     ///
     /// **A forced push and a fast-forward are told apart, truthfully.** When the server is
     /// exactly at the lease and the local branch is ahead of it, nothing is discarded and git
@@ -272,6 +282,7 @@ public protocol GitRemoteBackend: Sendable {
     ///   `CancellationError` if the task was cancelled.
     func forcePush(
         _ branch: String, to remote: String, remoteRef: String, expectedRemoteTip: String,
+        expectedLocalTip: String,
         at root: URL, progress: @escaping @Sendable (String) -> Void
     ) async throws -> PushResult
 

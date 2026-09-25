@@ -41,6 +41,7 @@ import Testing
         let segments = LeaseSegments()
         let result = try await CLIGitBackend().forcePush(
             "main", to: "origin", remoteRef: "refs/heads/main", expectedRemoteTip: theirs,
+            expectedLocalTip: try await repo.headSha(),
             at: repo.root, progress: { segments.append($0) })
 
         guard case .forced(let from, let to) = result.outcome else {
@@ -84,6 +85,7 @@ import Testing
 
         let result = try await CLIGitBackend().forcePush(
             "main", to: "origin", remoteRef: "refs/heads/main", expectedRemoteTip: remoteTip,
+            expectedLocalTip: try await repo.headSha(),
             at: repo.root, progress: { _ in })
 
         guard case .pushed(let from, let to) = result.outcome else {
@@ -124,6 +126,7 @@ import Testing
 
         _ = try await CLIGitBackend().forcePush(
             "main", to: "origin", remoteRef: "refs/heads/main", expectedRemoteTip: remoteTip,
+            expectedLocalTip: try await repo.headSha(),
             at: repo.root, progress: { _ in })
 
         try await assertOnlyRefChanged(origin, since: before, isThe: "refs/heads/main")
@@ -162,6 +165,7 @@ import Testing
 
         let result = try await CLIGitBackend().forcePush(
             "main", to: "origin", remoteRef: "refs/heads/main", expectedRemoteTip: sheetTip,
+            expectedLocalTip: try await repo.headSha(),
             at: repo.root, progress: { _ in })
 
         #expect(result.outcome == .rejected(.staleLease))
@@ -185,7 +189,8 @@ import Testing
 
         let result = try await CLIGitBackend().forcePush(
             "main", to: "origin", remoteRef: "refs/heads/main",
-            expectedRemoteTip: neverOnTheServer, at: repo.root, progress: { _ in })
+            expectedRemoteTip: neverOnTheServer,
+            expectedLocalTip: try await repo.headSha(), at: repo.root, progress: { _ in })
 
         #expect(result.outcome == .rejected(.staleLease))
         try await assertRemoteUnchanged(origin, since: serverBefore)
@@ -221,6 +226,7 @@ import Testing
         let serverBefore = try await RemoteState.capture(origin)
         let result = try await CLIGitBackend().forcePush(
             "topic", to: "origin", remoteRef: "refs/heads/topic", expectedRemoteTip: sheetTip,
+            expectedLocalTip: try await repo.headSha(),
             at: repo.root, progress: { _ in })
 
         #expect(result.outcome == .rejected(.staleLease))
@@ -272,6 +278,7 @@ import Testing
 
         let result = try await CLIGitBackend().forcePush(
             "main", to: "origin", remoteRef: "refs/heads/main", expectedRemoteTip: theirs,
+            expectedLocalTip: try await repo.headSha(),
             at: repo.root, progress: { _ in })
 
         guard case .forced = result.outcome else {
@@ -328,6 +335,7 @@ import Testing
         let serverBefore = try await RemoteState.capture(origin)
         let result = try await CLIGitBackend().forcePush(
             "main", to: "origin", remoteRef: "refs/heads/main", expectedRemoteTip: sheetTip,
+            expectedLocalTip: try await repo.headSha(),
             at: repo.root, progress: { _ in })
 
         #expect(result.outcome == .rejected(.staleLease))
@@ -369,6 +377,7 @@ import Testing
         let serverBefore = try await RemoteState.capture(origin)
         let wrong = try await CLIGitBackend().forcePush(
             "mine", to: "origin", remoteRef: "refs/heads/other", expectedRemoteTip: mineTip,
+            expectedLocalTip: try await repo.headSha(),
             at: repo.root, progress: { _ in })
         #expect(wrong.outcome == .rejected(.staleLease))
         try await assertRemoteUnchanged(origin, since: serverBefore)
@@ -376,6 +385,7 @@ import Testing
         // …and leasing the destination's own tip goes through.
         let right = try await CLIGitBackend().forcePush(
             "mine", to: "origin", remoteRef: "refs/heads/other", expectedRemoteTip: otherTip,
+            expectedLocalTip: try await repo.headSha(),
             at: repo.root, progress: { _ in })
         guard case .forced = right.outcome else {
             Issue.record("expected .forced, got \(right.outcome)")
@@ -384,6 +394,119 @@ import Testing
         let after = try await RemoteState.capture(origin)
         #expect(after.refs.contains("refs/heads/other\u{0}\(ours)"))
         #expect(after.refs.contains("refs/heads/mine\u{0}\(mineTip)"), "`mine` was not the target")
+    }
+
+    // MARK: - The commit the sheet showed, on the local side
+
+    /// **The lease pins what the server loses; the local tip pins what it gets.** The sheet
+    /// counts the commits the server has that *this* commit lacks, so a push that sent the
+    /// branch by name would send whatever the branch points at when the button is pressed — and
+    /// a `git reset --hard <older>` in a terminal while the sheet was up would take more off the
+    /// server than the sheet named (reproduced in Task 8's review: the sheet named one commit,
+    /// two left). With the sha as the refspec's source side, git pushes exactly that commit.
+    ///
+    /// Measured on git 2.54: `push --force-with-lease=refs/heads/main:<theirs> origin
+    /// <sha>:refs/heads/main` exits 0 and prints `+⇥<sha>:refs/heads/main⇥034c32c...d9229ae
+    /// (forced update)` — the source side is the full sha, the destination is unchanged, and
+    /// the parser, which matches on the destination, reads it as before.
+    ///
+    /// Both directions a branch can move: forward (a commit on top) and back (a reset to an
+    /// older commit). Either way the server ends at the sheet's commit exactly, and the moved
+    /// local branch is left where it was moved to.
+    @Test(arguments: ["a commit on top", "a reset to an older commit"])
+    func theBranchMovingAfterTheSheetDoesNotChangeWhatIsPushed(move: String) async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+        let colleague = try await repo.addColleague()
+        defer { colleague.cleanUp() }
+
+        try colleague.write("colleague.txt", "theirs\n")
+        try await colleague.commitAll("the colleague's commit")
+        try await colleague.git(["push", "-q", "origin", "main"])
+        let theirs = try await colleague.headSha()
+
+        try repo.write("ours1.txt", "ours 1\n")
+        try await repo.commitAll("ours 1")
+        try repo.write("ours2.txt", "ours 2\n")
+        try await repo.commitAll("ours 2")
+        // What the sheet counted against, and what it described as "your branch".
+        let sheetLocal = try await repo.headSha()
+
+        // …and then, while the sheet was open, from a terminal:
+        switch move {
+        case "a commit on top":
+            try repo.write("later.txt", "later\n")
+            try await repo.commitAll("after the sheet")
+        default:
+            try await repo.git(["reset", "-q", "--hard", "HEAD~1"])
+        }
+        let moved = try await repo.revParse("refs/heads/main")
+        #expect(moved != sheetLocal, "the branch did not move, so this proves nothing")
+
+        let result = try await CLIGitBackend().forcePush(
+            "main", to: "origin", remoteRef: "refs/heads/main", expectedRemoteTip: theirs,
+            expectedLocalTip: sheetLocal, at: repo.root, progress: { _ in })
+
+        guard case .forced(let from, let to) = result.outcome else {
+            Issue.record("expected .forced, got \(result.outcome)")
+            return
+        }
+        #expect(!from.isEmpty && theirs.hasPrefix(from))
+        #expect(!to.isEmpty && sheetLocal.hasPrefix(to), "\(to) is not the sheet's \(sheetLocal)")
+        #expect(try await bareGit(origin, ["rev-parse", "refs/heads/main"]) == sheetLocal,
+                "the server's branch is not exactly the commit the sheet described")
+        #expect(try await repo.revParse("refs/heads/main") == moved,
+                "the local branch was moved by the push")
+    }
+
+    /// The local tip is checked exactly as the lease is — a full, lower-case object name that is
+    /// not all zeros — and for a sharper reason: it is the refspec's **source side**. An
+    /// abbreviation is resolved by git against whatever it happens to match, `HEAD` or a ref
+    /// name is a local name that can move (the very hole this closes), an empty source side is
+    /// a **deletion** on the server, and forty zeros would be read the same way. Each is refused
+    /// before git is launched: no `pre-push` hook fires, and neither repository changes.
+    @Test(arguments: [
+        "", "   ",
+        "1234567",
+        "1234567890ABCDEF1234567890ABCDEF12345678",
+        "1234567890abcdef1234567890abcdef1234567",
+        "refs/heads/main", "HEAD", "main",
+        "0000000000000000000000000000000000000000",
+        " 1234567890abcdef1234567890abcdef12345678",
+        "+1234567890abcdef1234567890abcdef1234567",
+        ":1234567890abcdef1234567890abcdef1234567",
+    ])
+    func aLocalTipThatIsNotAFullObjectNameIsRefusedBeforeGitRuns(localTip: String) async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        let marker = repo.root.appendingPathComponent(".git/pre-push-ran")
+        try repo.writeExecutable(".git/hooks/pre-push", """
+            #!/bin/sh
+            : > "\(marker.path)"
+
+            """)
+        let remoteTip = try await bareGit(origin, ["rev-parse", "refs/heads/main"])
+        try repo.write("ours.txt", "ours\n")
+        try await repo.commitAll("ours")
+
+        let localBefore = try await RepoState.capture(repo)
+        let worktreeBefore = worktreeSnapshot(repo)
+        let serverBefore = try await RemoteState.capture(origin)
+
+        let error = await remoteError {
+            _ = try await CLIGitBackend().forcePush(
+                "main", to: "origin", remoteRef: "refs/heads/main", expectedRemoteTip: remoteTip,
+                expectedLocalTip: localTip, at: repo.root, progress: { _ in })
+        }
+        #expect(error == .invalidLease(localTip))
+        #expect(!FileManager.default.fileExists(atPath: marker.path), "git ran")
+        try await assertRepoUnchanged(repo, since: localBefore, worktree: worktreeBefore)
+        try await assertRemoteUnchanged(origin, since: serverBefore)
     }
 
     // MARK: - The server's own refusal
@@ -417,6 +540,7 @@ import Testing
         let serverBefore = try await RemoteState.capture(origin)
         let result = try await CLIGitBackend().forcePush(
             "main", to: "origin", remoteRef: "refs/heads/main", expectedRemoteTip: theirs,
+            expectedLocalTip: try await repo.headSha(),
             at: repo.root, progress: { _ in })
 
         #expect(result.outcome == .rejected(.remoteRejected("pre-receive hook declined")))
@@ -484,6 +608,7 @@ import Testing
         let error = await remoteError {
             _ = try await CLIGitBackend().forcePush(
                 "main", to: "origin", remoteRef: "refs/heads/main", expectedRemoteTip: tip,
+                expectedLocalTip: try await repo.headSha(),
                 at: repo.root, progress: { _ in })
         }
         #expect(error == .invalidLease(tip))
@@ -513,6 +638,7 @@ import Testing
 
         _ = try await CLIGitBackend().forcePush(
             "main", to: "origin", remoteRef: "refs/heads/main", expectedRemoteTip: tip,
+            expectedLocalTip: try await repo.headSha(),
             at: repo.root, progress: { _ in })
 
         #expect(FileManager.default.fileExists(atPath: marker.path))
@@ -534,6 +660,7 @@ import Testing
             _ = try await CLIGitBackend().forcePush(
                 "main", to: "origin", remoteRef: "refs/heads/main",
                 expectedRemoteTip: String(repeating: "0123456789abcdef", count: 4),
+                expectedLocalTip: try await repo.headSha(),
                 at: repo.root, progress: { _ in })
         } catch {
             thrown = error
@@ -562,6 +689,7 @@ import Testing
         await branchError {
             _ = try await CLIGitBackend().forcePush(
                 name, to: "origin", remoteRef: "refs/heads/main", expectedRemoteTip: tip,
+                expectedLocalTip: try await repo.headSha(),
                 at: repo.root, progress: { _ in })
         }
         #expect(try await RepoState.capture(repo) == before)
@@ -581,6 +709,7 @@ import Testing
         let error = await remoteError {
             _ = try await CLIGitBackend().forcePush(
                 "main", to: name, remoteRef: "refs/heads/main", expectedRemoteTip: tip,
+                expectedLocalTip: try await repo.headSha(),
                 at: repo.root, progress: { _ in })
         }
         #expect(error == .noRemote)
@@ -606,6 +735,7 @@ import Testing
         await branchError {
             _ = try await CLIGitBackend().forcePush(
                 "main", to: "origin", remoteRef: ref, expectedRemoteTip: tip,
+                expectedLocalTip: try await repo.headSha(),
                 at: repo.root, progress: { _ in })
         }
         #expect(try await RepoState.capture(repo) == before)
@@ -658,7 +788,8 @@ import Testing
                 do {
                     _ = try await CLIGitBackend().forcePush(
                         "main", to: "origin", remoteRef: "refs/heads/main",
-                        expectedRemoteTip: remoteTip, at: repo.root, progress: { _ in })
+                        expectedRemoteTip: remoteTip,
+                        expectedLocalTip: try await repo.headSha(), at: repo.root, progress: { _ in })
                     return nil
                 } catch {
                     return error

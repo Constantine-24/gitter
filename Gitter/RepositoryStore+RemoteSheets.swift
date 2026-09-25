@@ -95,9 +95,15 @@ extension RepositoryStore {
     /// Opens the force push confirmation — and is reachable **only** from the banner of a push
     /// the server refused for having commits this branch lacks (`rejectedPush`).
     ///
-    /// Fetches that remote first, so the sheet counts what the server has *now*, then reads the
-    /// remote-tracking ref's **full** sha — the lease `confirmForcePush` will hand to git — and
-    /// the commits it holds that the local branch does not: the first 20, and how many in all.
+    /// Fetches that remote first, so the sheet counts what the server has *now*, then reads two
+    /// **full** shas from the snapshot taken after it: the remote-tracking ref's — the lease
+    /// `confirmForcePush` hands to git — and the local branch's — the commit it pushes. The
+    /// commits the first holds that the second lacks are counted against the *sha*, not the
+    /// branch name, so what the sheet lists is exactly what that push would take off.
+    ///
+    /// Stop during the counting reads "stopped", like Stop anywhere else: the counting is part
+    /// of what the user asked for, and "Couldn't count" would describe a failure that did not
+    /// happen.
     func requestForcePush() {
         guard let rejected = rejectedPush, rejected.branch == currentBranch else {
             showStickyError(RemoteWording.forcePushNotOffered)
@@ -120,27 +126,43 @@ extension RepositoryStore {
                         error, attempt: "fetch from \"\(remote)\"", isWrite: false))
             }
             await refresh()
+            // Stop pressed during the reload: it ran to the end (a reload is not cancellable),
+            // and nothing after it should.
+            if Task.isCancelled {
+                return LaneEnding(
+                    notice: RemoteWording.forcePushWarningStopped, alreadyRefreshed: true)
+            }
             // From the snapshot just read, after the fetch: `%(objectname)`, the full sha.
             guard let tip = remoteBranches.first(where: { $0.name == trackingName })?.sha else {
                 return LaneEnding(
                     failure: RemoteWording.noRemoteTrackingRef(trackingName),
                     alreadyRefreshed: true)
             }
-            let local = "refs/heads/" + branchName
+            guard let localTip = localBranches.first(where: { $0.name == branchName })?.sha else {
+                return LaneEnding(
+                    failure: RemoteWording.forcePushBranchGone(branchName),
+                    alreadyRefreshed: true)
+            }
             do {
-                let total = try await backend.commitCount(in: tip, notIn: local, at: root)
+                let total = try await backend.commitCount(in: tip, notIn: localTip, at: root)
+                try Task.checkCancellation()
                 guard total > 0 else {
                     return LaneEnding(
                         notice: RemoteWording.nothingToForce(trackingName, branch: branchName),
                         alreadyRefreshed: true)
                 }
                 let discarded = try await backend.commits(
-                    in: tip, notIn: local, limit: 20, at: root)
+                    in: tip, notIn: localTip, limit: 20, at: root)
+                try Task.checkCancellation()
                 return LaneEnding(
                     sheet: .forcePush(
-                        branch: branchName, remote: remote, remoteRef: rejected.remoteRef,
-                        remoteTip: tip, discarded: discarded, total: total),
+                        branch: branchName, localTip: localTip, remote: remote,
+                        remoteRef: rejected.remoteRef, remoteTip: tip, discarded: discarded,
+                        total: total),
                     alreadyRefreshed: true)
+            } catch where Self.isCancellation(error) {
+                return LaneEnding(
+                    notice: RemoteWording.forcePushWarningStopped, alreadyRefreshed: true)
             } catch {
                 return LaneEnding(
                     failure: RemoteWording.failure(
@@ -151,11 +173,22 @@ extension RepositoryStore {
         }
     }
 
-    /// The force push, leased on the sheet's own `remoteTip`: if the server's branch is not
-    /// exactly there any more, git answers `[rejected] (stale info)` and changes nothing.
+    /// The force push, pinned on **both** sides to what the sheet showed: leased on its
+    /// `remoteTip` — if the server's branch is not exactly there any more, git answers
+    /// `[rejected] (stale info)` and changes nothing — and sending its `localTip` by sha, so git
+    /// pushes that commit whatever the branch points at now.
+    ///
+    /// **Refused, not pushed, when the branch has moved since the sheet was drawn.** Sending
+    /// `localTip` anyway would be safe for the server — it is exactly what the sheet counted —
+    /// but the sheet described it as "your branch", and it no longer is: the user may have reset
+    /// away from it on purpose. The re-read is a fresh snapshot taken inside the lane, holding
+    /// the mutation slot, so nothing in Gitter can move the branch after it; a terminal that
+    /// does in the instant before git runs still gets the sha the sheet showed pushed, never
+    /// anything else.
     func confirmForcePush() {
-        guard case .forcePush(let branch, let remote, let remoteRef, let remoteTip, _, _) =
-            activeSheet
+        guard
+            case .forcePush(let branch, let localTip, let remote, let remoteRef, let remoteTip, _, _) =
+                activeSheet
         else { return }
         activeSheet = nil
         guard currentBranch == branch else {
@@ -164,11 +197,26 @@ extension RepositoryStore {
         }
         runOnLane(.forcePush, remote: remote, holdingMutation: true) {
             [self] backend, root, progress in
+            let branchNow: String?
+            do {
+                let fresh = try await backend.snapshot(at: root)
+                branchNow = fresh.refs.localBranches.first { $0.name == branch }?.sha
+            } catch where Self.isCancellation(error) {
+                return LaneEnding(notice: RemoteWording.forcePushStoppedBeforeSending)
+            } catch {
+                return LaneEnding(
+                    failure: RemoteWording.failure(
+                        error, attempt: "check \"\(branch)\" before force pushing",
+                        isWrite: false) + " Nothing was pushed.")
+            }
+            guard branchNow == localTip else {
+                return LaneEnding(failure: RemoteWording.forcePushBranchMoved(branch))
+            }
             let result: PushResult
             do {
                 result = try await backend.forcePush(
                     branch, to: remote, remoteRef: remoteRef, expectedRemoteTip: remoteTip,
-                    at: root, progress: progress)
+                    expectedLocalTip: localTip, at: root, progress: progress)
             } catch {
                 return writeFailed(
                     error, kind: .forcePush, branch: branch, remote: remote,

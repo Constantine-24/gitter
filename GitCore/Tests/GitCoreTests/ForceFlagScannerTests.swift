@@ -672,7 +672,7 @@ import Testing
     @Test(arguments: [
         #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
         #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "-u", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
-        #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "--force-with-lease=\(remoteRef):\(tip)", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
+        #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "--force-with-lease=\(remoteRef):\(tip)", "--end-of-options", remote, "\(expectedLocalTip):\(remoteRef)"], cwd: root)"#,
         #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "--force-with-lease=refs/heads/\(b):\(tip)", "--end-of-options", remote, ":refs/heads/\(b)"], cwd: root)"#,
         #"""
         _ = try await run(["fetch", "--progress", "--no-prune", "--end-of-options", remote], cwd: root)

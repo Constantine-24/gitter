@@ -332,8 +332,11 @@
                 "pullDiverged(ahead: \(ahead), behind: \(behind), upstream: \(upstream))"
             case .publish(let branch): "publish(\(branch))"
             // Shas in full: they are the leases, and the shell compares them with git's.
-            case .forcePush(let branch, let remote, let remoteRef, let tip, let discarded, let total):
-                "forcePush(\(branch) -> \(remote) \(remoteRef), remoteTip: \(tip), total: \(total), "
+            case .forcePush(
+                let branch, let localTip, let remote, let remoteRef, let tip, let discarded,
+                let total):
+                "forcePush(\(branch) -> \(remote) \(remoteRef), localTip: \(localTip), "
+                    + "remoteTip: \(tip), total: \(total), "
                     + "discarded: \(discarded.map { "\($0.sha.prefix(7)) \($0.summary) <\($0.authorName)>" }))"
             case .deleteRemoteBranch(let remote, let branch, let tip, let onlyThere):
                 "deleteRemoteBranch(\(remote) \(branch), tip: \(tip), onlyThere: \(onlyThere))"

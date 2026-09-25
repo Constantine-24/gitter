@@ -351,6 +351,31 @@ enum RemoteWording {
         "The branch changed since that question was asked. Nothing was published."
     static let forcePushSheetStale = "The branch changed since that warning. Nothing was pushed."
 
+    /// Confirmed, but the branch no longer points at the commit the sheet counted against —
+    /// reset, amended or committed on in a terminal while it was up. The push would still send
+    /// exactly that commit (it goes by sha), but the sheet called it "your branch", and it is
+    /// not that any more, so nothing is sent and the user is asked to look again.
+    static func forcePushBranchMoved(_ branch: String) -> String {
+        "\"\(branch)\" has moved since that warning, so the commit it described is no longer "
+            + "your branch. Nothing was pushed. Push again to see what a force push would "
+            + "replace now."
+    }
+
+    /// The branch a force push was asked for is gone by the time its sheet was being prepared.
+    static func forcePushBranchGone(_ branch: String) -> String {
+        "\"\(branch)\" is no longer a branch here, so there is nothing to force push."
+    }
+
+    /// Stop pressed while the force push sheet was being prepared (its fetch had finished, the
+    /// reload or the counting had not). Nothing is written by preparing a sheet.
+    static let forcePushWarningStopped =
+        "Stopped before the force push warning was ready. Nothing was pushed."
+    /// Stop pressed after confirming, while the branch was still being re-read and before git
+    /// was asked to push anything.
+    static let forcePushStoppedBeforeSending =
+        "Stopped the force push before anything was sent. Nothing was pushed."
+
+
     static func noSuchRemote(_ remote: String) -> String {
         "There is no remote named \"\(remote)\". Nothing was published."
     }

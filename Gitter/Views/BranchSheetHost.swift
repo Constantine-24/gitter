@@ -32,7 +32,7 @@ struct BranchSheetHost: View {
                 lines: ["\(ahead) of yours, \(behind) of theirs."])
         case .publish(let branch):
             PlaceholderSheet(title: "Publish \"\(branch)\"", lines: ["Choose a remote."])
-        case .forcePush(let branch, let remote, _, let remoteTip, _, let total):
+        case .forcePush(let branch, _, let remote, _, let remoteTip, _, let total):
             PlaceholderSheet(
                 title: "Force push \"\(branch)\" to \"\(remote)\"",
                 lines: ["Remote tip \(remoteTip)", "\(total) commits would be discarded."])
