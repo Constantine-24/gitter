@@ -128,15 +128,16 @@ public enum BranchOperationError: Error, Sendable, Equatable {
 ///
 /// Each case maps to ONE complete, literal argument vector in `CLIGitBackend.merge` — never a
 /// flag assembled from a condition — so the suite's force-flag scanner can read what actually
-/// reaches git.
+/// reaches git. All three carry `--no-autostash`, so `merge.autoStash=true` cannot turn git's
+/// "would be overwritten" refusal into a stash behind a success (see `CLIGitBackend.merge`).
 public enum MergeMode: String, Sendable, CaseIterable {
-    /// `merge --ff --no-edit`: move HEAD straight to the branch when history allows, otherwise
+    /// `merge --no-autostash --ff --no-edit`: move HEAD straight to the branch when history allows, otherwise
     /// make a merge commit.
     case fastForwardIfPossible
-    /// `merge --no-ff --no-edit`: always record a merge commit, even when a fast-forward was
+    /// `merge --no-autostash --no-ff --no-edit`: always record a merge commit, even when a fast-forward was
     /// possible.
     case alwaysMergeCommit
-    /// `merge --ff --squash`: put the branch's whole change in the index as one pending commit,
+    /// `merge --no-autostash --ff --squash`: put the branch's whole change in the index as one pending commit,
     /// leaving HEAD where it is.
     ///
     /// The one mode with a precondition Gitter enforces on top of git's: **the index must match

@@ -28,14 +28,29 @@ extension CLIGitBackend {
         //
         // `--end-of-options` is accepted by `merge` in this position (verified), so a ref named
         // like a flag would still be read as a ref.
+        //
+        // **`--no-autostash` is on all three, first, and it is what keeps git's refusal a
+        // refusal.** `merge.autoStash=true` — or `branch.<name>.mergeOptions=--autostash`, the
+        // same thing per branch — turns "your local changes would be overwritten" into stash,
+        // merge, re-apply. Measured on git 2.54 (the final review's `frqa/as`), with an
+        // uncommitted edit to a file the other side changed and no flag: each of the three
+        // modes **exited 0**, the edit was in `stash@{0}: autostash` and the file was left with
+        // conflict markers (`UU`, no operation in progress) — and a squash on a diverged branch
+        // left no stash in the list at all, the edit parked in `.git/MERGE_AUTOSTASH` and the
+        // file holding the other side's content. Pull's fast-forward and the merge sheet both
+        // reported success. With the flag, all twelve combinations (three modes, both keys,
+        // fast-forwardable or diverged) refused with git's own message, created no stash and
+        // changed nothing; it beats `mergeOptions` as well as the config key
+        // (`MergeAutoStashTests`). It is the same flag the rebase vector carries, for the same
+        // reason, and the scanner's `merge` table already forbids its opposite.
         let arguments: [String]
         switch mode {
         case .fastForwardIfPossible:
-            arguments = ["merge", "--ff", "--no-edit", "--end-of-options", target]
+            arguments = ["merge", "--no-autostash", "--ff", "--no-edit", "--end-of-options", target]
         case .alwaysMergeCommit:
-            arguments = ["merge", "--no-ff", "--no-edit", "--end-of-options", target]
+            arguments = ["merge", "--no-autostash", "--no-ff", "--no-edit", "--end-of-options", target]
         case .squash:
-            arguments = ["merge", "--ff", "--squash", "--end-of-options", target]
+            arguments = ["merge", "--no-autostash", "--ff", "--squash", "--end-of-options", target]
         }
 
         do {

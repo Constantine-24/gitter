@@ -654,9 +654,16 @@ import Testing
     /// finding — a rule that turns one of them red has to be narrowed here, before the code
     /// that writes it exists, rather than argued about afterwards.
     ///
-    /// Seven arguments holding **eight** vectors, not seven: the fifth is a two-line source
-    /// with both `fetch` vectors in it (one remote, and `--all`). This comment and the design
-    /// doc both said "seven vectors" until fix round 2 — count them below.
+    /// Eight arguments holding **eleven** vectors: the fifth is a two-line source with both
+    /// `fetch` vectors in it (one remote, and `--all`), and the eighth holds the three `merge`
+    /// vectors. This comment and the design doc both said "seven vectors" until fix round 2 —
+    /// count them below.
+    ///
+    /// **The `merge` vectors joined in the final review's fix wave**, with `--no-autostash`:
+    /// Pull's fast-forward and the pull sheet's Merge run them, and under `merge.autoStash=true`
+    /// they reported success while stashing the user's edit (measured — see
+    /// `CLIGitBackend+Merge.swift` and `MergeAutoStashTests`). The scanner's `merge` table
+    /// forbids `--autostash`, a different whole token, so it needed no narrowing.
     ///
     /// Read them as the shape the scanner demands in return for what it permits: one complete
     /// array literal, its subcommand first, the lease carrying an interpolated expected sha,
@@ -680,6 +687,11 @@ import Testing
         """#,
         #"_ = try await run(["rebase", "--no-autostash", "--no-update-refs", "--end-of-options", upstream], cwd: root)"#,
         #"_ = try await run(["remote", "-v"], cwd: root)"#,
+        #"""
+        arguments = ["merge", "--no-autostash", "--ff", "--no-edit", "--end-of-options", target]
+        arguments = ["merge", "--no-autostash", "--no-ff", "--no-edit", "--end-of-options", target]
+        arguments = ["merge", "--no-autostash", "--ff", "--squash", "--end-of-options", target]
+        """#,
     ])
     func allowsTheRemoteOperationsThisMilestoneNeeds(source: String) {
         #expect(ForceFlagScanner.findings(in: source).isEmpty,
