@@ -41,7 +41,16 @@ struct BranchMenu: View {
             Button("New Branch…") { store.requestNewBranch() }
         } label: {
             Label {
-                Text(store.headLabel)
+                // The badge rides in the label, so it is where the eye already is for "which
+                // branch am I on" — and says nothing at all when the branch is level.
+                HStack(spacing: 6) {
+                    Text(store.headLabel)
+                    if let branch = store.currentBranchRef {
+                        TrackingBadge(
+                            tracking: branch.tracking, tracksLocalBranch: branch.tracksLocalBranch,
+                            upstream: branch.upstream)
+                    }
+                }
             } icon: {
                 Image(systemName: store.isDetached ? "circle.dashed" : "arrow.triangle.branch")
             }

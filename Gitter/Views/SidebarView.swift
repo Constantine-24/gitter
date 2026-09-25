@@ -123,6 +123,15 @@ struct SidebarView: View {
                     }
                 }
                 Spacer(minLength: 4)
+                // Local branches only: a remote-tracking branch has no upstream of its own, so
+                // its tracking is always `.none` and the badge would draw nothing anyway.
+                if showCheck {
+                    TrackingBadge(
+                        tracking: branch.tracking, tracksLocalBranch: branch.tracksLocalBranch,
+                        upstream: branch.upstream
+                    )
+                    .font(.caption)
+                }
                 if showCheck && branch.isHead {
                     Image(systemName: "checkmark")
                         .font(.caption.weight(.bold))

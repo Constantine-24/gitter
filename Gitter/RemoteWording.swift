@@ -172,6 +172,87 @@ enum RemoteWording {
         }
     }
 
+    // MARK: - Toolbar and badges
+
+    /// What the active toolbar item says beside its spinner until git prints a progress line —
+    /// and for good, for the actions whose git prints none (a deletion transfers no objects).
+    static func inProgressTitle(_ activity: RemoteActivity) -> String {
+        let remote = activity.remote.map { " \"\($0)\"" } ?? ""
+        return switch activity.kind {
+        case .fetch, .autoFetch: activity.remote == nil ? "Fetching…" : "Fetching from\(remote)…"
+        case .pull: "Pulling…"
+        case .push: "Pushing to\(remote)…"
+        case .publish: "Publishing to\(remote)…"
+        case .forcePush: "Force pushing to\(remote)…"
+        case .deleteRemoteBranch: "Deleting on\(remote)…"
+        }
+    }
+
+    /// The tooltips of the three toolbar items while they are available.
+    static let fetchHelp = "Fetch from every remote"
+    static func pullHelp(_ branch: Branch?) -> String {
+        branch?.upstream.map { "Pull from \"\($0)\"" } ?? "Pull"
+    }
+    static func pushHelp(title: String, branch: Branch?) -> String {
+        guard let branch else { return title }
+        return switch title {
+        case "Publish": "Publish \"\(branch.name)\" to a remote"
+        case "Re-publish":
+            "Publish \"\(branch.name)\" again: its upstream was deleted on the remote"
+        default: "Push \"\(branch.name)\"\(branch.pushRemote.map { " to \"\($0)\"" } ?? "")"
+        }
+    }
+
+    /// The Fetch item's tooltip when the last automatic fetch failed. Quiet on purpose — being
+    /// offline is normal — so this and a dimmed mark are all it ever gets.
+    static func autoFetchFailedHelp(_ reason: String) -> String {
+        "The last automatic fetch failed: \(reason)"
+    }
+
+    /// A tracking badge's tooltip. Counts are against **the upstream, by name** — never "the
+    /// remote": the upstream can be another local branch (`tracksLocalBranch`), or live on a
+    /// repository the branch does not push to.
+    static func trackingHelp(
+        _ tracking: Tracking, upstream: String?, tracksLocalBranch: Bool
+    ) -> String? {
+        let name = upstream.map { "\"\($0)\"" } ?? "the upstream"
+        let against = tracksLocalBranch ? "local branch \(name)" : name
+        switch tracking {
+        case .none: return nil
+        case .gone:
+            return upstream.map { "Its upstream, \"\($0)\", no longer exists on the remote." }
+                ?? "Its upstream no longer exists on the remote."
+        case .counts(let ahead, let behind):
+            var parts: [String] = []
+            if ahead > 0 { parts.append("\(commits(ahead)) ahead of") }
+            if behind > 0 { parts.append("\(commits(behind)) behind") }
+            guard !parts.isEmpty else { return nil }
+            let head = parts.joined(separator: " and ")
+            return tracksLocalBranch
+                ? "\(head) \(against) — compared with a local branch, not a remote"
+                : "\(head) \(against)"
+        }
+    }
+
+    /// What VoiceOver reads for a badge: "2 ahead, 3 behind", "upstream gone".
+    static func trackingAccessibility(_ tracking: Tracking, tracksLocalBranch: Bool) -> String? {
+        switch tracking {
+        case .none: return nil
+        case .gone: return "upstream gone"
+        case .counts(let ahead, let behind):
+            var parts: [String] = []
+            if ahead > 0 { parts.append("\(ahead) ahead") }
+            if behind > 0 { parts.append("\(behind) behind") }
+            guard !parts.isEmpty else { return nil }
+            return parts.joined(separator: ", ")
+                + (tracksLocalBranch ? ", against a local branch" : "")
+        }
+    }
+
+    private static func commits(_ count: Int) -> String {
+        count == 1 ? "1 commit" : "\(count) commits"
+    }
+
     // MARK: - Fetch
 
     static func fetched(from remote: String?) -> String {
