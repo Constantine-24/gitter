@@ -850,11 +850,17 @@ enum RemoteWording {
             userinfo = authority[..<at]
         } else {
             // scp-style: `[user@]host:path`, git's reading being "a colon before any slash".
-            guard url.filter({ $0 == "@" }).count == 1, let at = url.firstIndex(of: "@"),
-                let colon = url.firstIndex(of: ":"), at < colon,
-                !url[..<colon].contains("/")
+            // Only the part before that colon is `[user@]host`: an `@` in the path
+            // (`git@host:team@2024/x.git`) is not a second userinfo, and counting it sent the
+            // address to the redactor, which cut it down to what followed the last `@`.
+            guard let colon = url.firstIndex(of: ":"), !url[..<colon].contains("/") else {
+                return false
+            }
+            let hostPart = url[..<colon]
+            guard hostPart.filter({ $0 == "@" }).count == 1,
+                let at = hostPart.firstIndex(of: "@")
             else { return false }
-            userinfo = url[..<at]
+            userinfo = hostPart[..<at]
         }
         return !userinfo.isEmpty && !userinfo.contains(":")
             && !userinfo.contains(where: \.isWhitespace)
