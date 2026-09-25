@@ -30,9 +30,11 @@ struct MenuReasons: View {
 }
 
 enum Clipboard {
-    static func copy(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+    /// `pasteboard` is always `.general` from a menu; the debug harness passes a private one of
+    /// its own, so reading back what a menu item copies never overwrites the user's clipboard.
+    static func copy(_ text: String, to pasteboard: NSPasteboard = .general) {
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
     }
 }
 
@@ -126,10 +128,38 @@ struct RemoteBranchMenu: View {
 /// "Copy URL" copies the fetch URL. A remote with only a push URL gets "Copy Push URL" in its
 /// place, so the title says which address is on the pasteboard; one whose push URL differs from
 /// its fetch URL gets both. A remote with neither keeps the item, disabled, with the reason.
+/// What is copied is `RemoteWording.copyableURL` of the address, never the address itself: a
+/// credential in it would otherwise land on the general pasteboard.
 struct RemoteMenu: View {
     let remote: Remote
 
     @Environment(RepositoryStore.self) private var store
+
+    /// One "Copy …" item: its title and the text it copies, or nil text for the disabled item
+    /// of a remote with no address.
+    struct CopyItem: Hashable {
+        let title: String
+        let text: String?
+    }
+
+    /// The copy items, in menu order, with the text already redacted — the menu and the debug
+    /// harness's `copyurls` step both read this, so what the step reads back is what a click
+    /// copies. The push URL is compared with the fetch URL *before* redaction, so two
+    /// addresses that differ only in their credential still get both items.
+    static func copyItems(for remote: Remote) -> [CopyItem] {
+        func item(_ title: String, _ url: String) -> CopyItem {
+            CopyItem(title: title, text: RemoteWording.copyableURL(url))
+        }
+        if let fetchURL = remote.fetchURL {
+            var items = [item(RemoteWording.copyURLTitle, fetchURL)]
+            if let pushURL = remote.pushURL, pushURL != fetchURL {
+                items.append(item(RemoteWording.copyPushURLTitle, pushURL))
+            }
+            return items
+        }
+        if let pushURL = remote.pushURL { return [item(RemoteWording.copyPushURLTitle, pushURL)] }
+        return [CopyItem(title: RemoteWording.copyURLTitle, text: nil)]
+    }
 
     var body: some View {
         let fetchReason = store.fetchBlockedReason
@@ -144,16 +174,9 @@ struct RemoteMenu: View {
 
         Divider()
 
-        if let fetchURL = remote.fetchURL {
-            Button(RemoteWording.copyURLTitle) { Clipboard.copy(fetchURL) }
-            if let pushURL = remote.pushURL, pushURL != fetchURL {
-                Button(RemoteWording.copyPushURLTitle) { Clipboard.copy(pushURL) }
-            }
-        } else if let pushURL = remote.pushURL {
-            Button(RemoteWording.copyPushURLTitle) { Clipboard.copy(pushURL) }
-        } else {
-            Button(RemoteWording.copyURLTitle) {}
-                .disabled(true)
+        ForEach(Self.copyItems(for: remote), id: \.self) { item in
+            Button(item.title) { item.text.map { Clipboard.copy($0) } }
+                .disabled(item.text == nil)
         }
     }
 }

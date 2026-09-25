@@ -375,9 +375,13 @@ enum RemoteWording {
     /// dropped and the commits under it are replayed — so "your N commits" is true of the
     /// commits and not of how they were joined.
     static func rebaseExplanation(ahead: Int) -> String {
+        let flattening =
+            ahead == 1
+            ? "If it is a merge commit, it is flattened, not kept."
+            : "A merge commit among them is flattened, not kept."
         let them = ahead == 1 ? "it" : "them"
         return "Replays \(yours(ahead)) on top of theirs. Rewrites \(them); needs a clean "
-            + "working copy. A merge commit among \(them) is flattened, not kept."
+            + "working copy. " + flattening
     }
 
     /// "your 2 commits", "your commit".
@@ -761,6 +765,52 @@ enum RemoteWording {
     static func fetchRemoteTitle(_ remote: String) -> String { "Fetch \"\(remote)\"" }
     static let copyURLTitle = "Copy URL"
     static let copyPushURLTitle = "Copy Push URL"
+
+    /// What "Copy URL" / "Copy Push URL" put on the pasteboard: the remote's address with any
+    /// **credential** taken out. The general pasteboard is readable by every app and travels to
+    /// the user's other devices through Universal Clipboard, so `https://user:token@host/…`
+    /// must not reach it whole. `RemoteFailureParser.redactingCredentials` does the removing —
+    /// one implementation of what a credential looks like, shared with every banner.
+    ///
+    /// That function strips *every* userinfo it recognises, including a bare ssh login
+    /// (`git@github.com:a/b.git` → `github.com:a/b.git`), which is right for a message and wrong
+    /// for an address someone will paste into `git clone`: without the login, ssh logs in as
+    /// the local user and the clone fails. So an ssh login — a userinfo with no `:` in it and
+    /// no second `@`, on an `ssh://` (`git+ssh://`, `ssh+git://`) URL or an scp-style
+    /// `user@host:path` address — is kept: ssh never takes a password from the address, so a
+    /// lone name there is no secret. Everything else with a userinfo goes through the redaction,
+    /// including a lone name on `https://`, where it is how a token is usually written
+    /// (`https://ghp_…@github.com/…`).
+    ///
+    /// Left alone, as the redaction leaves them: a query string or anything else past the
+    /// authority (see `redactingCredentials` for why), and a local path.
+    static func copyableURL(_ url: String) -> String {
+        if isSSHLogin(in: url) { return url }
+        return RemoteFailureParser.redactingCredentials(url)
+    }
+
+    /// Whether `url`'s only userinfo is an ssh login — see `copyableURL`.
+    private static func isSSHLogin(in url: String) -> Bool {
+        let userinfo: Substring
+        if let separator = url.range(of: "://") {
+            let scheme = url[..<separator.lowerBound].lowercased()
+            guard ["ssh", "git+ssh", "ssh+git"].contains(scheme) else { return false }
+            let authority = url[separator.upperBound...].prefix { !"/?\u{23}".contains($0) }
+            guard authority.filter({ $0 == "@" }).count == 1,
+                let at = authority.firstIndex(of: "@")
+            else { return false }
+            userinfo = authority[..<at]
+        } else {
+            // scp-style: `[user@]host:path`, git's reading being "a colon before any slash".
+            guard url.filter({ $0 == "@" }).count == 1, let at = url.firstIndex(of: "@"),
+                let colon = url.firstIndex(of: ":"), at < colon,
+                !url[..<colon].contains("/")
+            else { return false }
+            userinfo = url[..<at]
+        }
+        return !userinfo.isEmpty && !userinfo.contains(":")
+            && !userinfo.contains(where: \.isWhitespace)
+    }
 
     static func remoteHasNoURL(_ remote: String) -> String {
         "\"\(remote)\" has no URL configured."

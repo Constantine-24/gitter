@@ -29,7 +29,7 @@
     ///     cancel                       start:<step>  idle
     ///     stageall                     commit:<subject>     snapshot:<name>
     ///     open:<path>                  menu:<title>        views[:<class>]     badges
-    ///     autofetchfailed:<reason>
+    ///     autofetchfailed:<reason>     copyurls
     ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
@@ -60,6 +60,12 @@
     /// `delete:` and `forcedelete:` **act** — they run `git branch -d`/`-D`. Every `sheet:` step
     /// only opens a sheet; `sheet:delete:<b>` in particular reads the warning's numbers instead
     /// of letting `-d` refuse, so it cannot delete a branch git considers merged.
+    ///
+    /// `copyurls` takes every configured remote's "Copy …" items (`RemoteMenu.copyItems`, what
+    /// the menu draws), copies each through `Clipboard.copy` — the menu's own call — onto a
+    /// private named pasteboard rather than the general one, reads it back and logs
+    /// `copy <remote> "<title>": <raw address> -> <pasteboard>`. The raw address is printed so
+    /// the redaction can be checked against it; point this only at scratch remotes.
     ///
     /// After every step one line goes to stderr. `head` and `selection` ride along because the
     /// store's own answer to "where are we now" cannot be read from git, and "the selection
@@ -233,12 +239,32 @@
                         "badge \(branch.name): \(text ?? "(none)") | help: \(help ?? "nil") "
                             + "| voiceover: \(spoken ?? "nil")")
                 }
+            case "copyurls": copyURLs(store: store)
             case "stageall": store.stageAll()
             case "commit":
                 // The composer's own path: the subject goes into the draft, then `commit()`.
                 store.draft.subject = first ?? "commit"
                 store.commit()
             default: log("unknown step: \(step)")
+            }
+        }
+
+        private static func copyURLs(store: RepositoryStore) {
+            let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.debug-copyurls"))
+            defer { pasteboard.releaseGlobally() }
+            for remote in store.snapshot?.refs.remotes ?? [] {
+                for item in RemoteMenu.copyItems(for: remote) {
+                    let raw =
+                        item.title == RemoteWording.copyPushURLTitle
+                        ? remote.pushURL : remote.fetchURL
+                    guard let text = item.text else {
+                        log("copy \(remote.name) \"\(item.title)\": (disabled)")
+                        continue
+                    }
+                    Clipboard.copy(text, to: pasteboard)
+                    let back = pasteboard.string(forType: .string) ?? "(empty)"
+                    log("copy \(remote.name) \"\(item.title)\": \(raw ?? "nil") -> \(back)")
+                }
             }
         }
 
