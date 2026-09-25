@@ -119,9 +119,11 @@ extension CLIGitBackend: GitRemoteBackend {
     /// **Every name `git remote -v` prints**, the name-only line of a remote with no URL
     /// included: measured on git 2.54, `--all` visits such a remote too (and tries the name as
     /// a path). `RemoteParser` leaves those out, so the names are read here. A remote with
-    /// `remote.<name>.skipFetchAll=true` is one `--all` never fetches, so an unsafe one of those
-    /// is not a reason to leave `--all` — it is dropped from both lists; its setting is read
-    /// only when its refspecs would otherwise put it in `skipped`.
+    /// `remote.<name>.skipFetchAll=true` is one `--all` never fetches, so it is dropped from
+    /// **both** lists, safe or not, before its refspecs are looked at: an unsafe one is no
+    /// reason to leave `--all`, and a safe one must not be fetched by the one-by-one fallback
+    /// either (re-review: it was, on every tick). With no unsafe remote left, the plain `--all`
+    /// runs, and git itself honours the setting there.
     private func remotesForFetchAll(
         at root: URL
     ) async throws -> (safe: [String], skipped: [(remote: String, refspec: String)]) {
@@ -135,10 +137,6 @@ extension CLIGitBackend: GitRemoteBackend {
         var safe: [String] = []
         var skipped: [(remote: String, refspec: String)] = []
         for name in names {
-            guard let refspec = try await unsafeFetchRefspec(of: name, at: root) else {
-                safe.append(name)
-                continue
-            }
             let skipsAll = try await run(
                 ["config", "--type=bool", "--get", "remote." + name + ".skipFetchAll"],
                 cwd: root, allowedExitCodes: [1])
@@ -147,7 +145,11 @@ extension CLIGitBackend: GitRemoteBackend {
             {
                 continue
             }
-            skipped.append((name, refspec))
+            if let refspec = try await unsafeFetchRefspec(of: name, at: root) {
+                skipped.append((name, refspec))
+            } else {
+                safe.append(name)
+            }
         }
         return (safe, skipped)
     }

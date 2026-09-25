@@ -48,8 +48,10 @@ public protocol GitRemoteBackend: Sendable {
     ///
     /// - **A named remote** with a refspec whose destination is outside `refs/remotes/` →
     ///   `.unsafeFetchRefspec(remote:refspec:)`, thrown before git is launched.
-    /// - **`--all`** → every remote `git remote -v` names is checked (a `skipFetchAll` one is
-    ///   left out, as `--all` leaves it out). None unsafe: `--all` runs exactly as before. Some
+    /// - **`--all`** → every remote `git remote -v` names is checked, except that a remote with
+    ///   `skipFetchAll=true` is left out first, safe or unsafe, as `--all` leaves it out: it is
+    ///   never a reason to leave `--all`, and never fetched by the one-by-one fallback either
+    ///   (`UnsafeFetchRefspecTests`). None unsafe: `--all` runs exactly as before. Some
     ///   unsafe: they are **skipped**, every other remote is fetched on its own with the
     ///   single-remote vector, and `.unsafeFetchRefspec` for the first skipped one is thrown
     ///   afterwards — unless a fetched remote failed, in which case git's own words for every

@@ -178,6 +178,60 @@ import Testing
         #expect(try await fixture.repo.revParse("refs/heads/feat/x") == fixture.localFeatX)
     }
 
+    /// Adds a safe remote `name` with `main` on it and an upload-pack marker, and returns the
+    /// bare repository and the marker's file.
+    private static func addMarkedRemote(
+        _ name: String, to fixture: Fixture
+    ) async throws -> (bare: URL, marker: URL) {
+        let bare = try await fixture.repo.addEmptyRemote(named: name)
+        try await fixture.repo.git(["push", "-q", name, "refs/heads/main:refs/heads/main"])
+        let marker = try Fixture.installUploadPackMarker(for: name, origin: bare, in: fixture.repo)
+        try await fixture.repo.git(["config", "remote.\(name).uploadpack", marker.script.path])
+        return (bare, marker.file)
+    }
+
+    /// `skipFetchAll` on a **safe** remote: `--all` never fetches it, so neither may the
+    /// one-by-one fallback an unsafe remote elsewhere forces (re-review: `fork`'s marker fired
+    /// on every tick). `third` is still fetched and `origin`'s skip is still thrown.
+    @Test func theFallbackLeavesOutASafeRemoteThatFetchAllSkips() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.cleanUp() }
+        let fork = try await Self.addMarkedRemote("fork", to: fixture)
+        defer { try? FileManager.default.removeItem(at: fork.bare) }
+        let third = try await Self.addMarkedRemote("third", to: fixture)
+        defer { try? FileManager.default.removeItem(at: third.bare) }
+        try await fixture.repo.git(["config", "remote.fork.skipFetchAll", "true"])
+        try await fixture.setFetchRefspecs(["+refs/heads/*:refs/heads/*"])
+
+        let error = await remoteError {
+            try await CLIGitBackend().fetch(remote: nil, at: fixture.repo.root, progress: { _ in })
+        }
+
+        #expect(error == .unsafeFetchRefspec(remote: "origin", refspec: "+refs/heads/*:refs/heads/*"))
+        #expect(FileManager.default.fileExists(atPath: third.marker.path), "third was not fetched")
+        #expect(!FileManager.default.fileExists(atPath: fork.marker.path), "fork was fetched")
+        #expect(!fixture.markerFired, "origin was contacted")
+        #expect(try await fixture.repo.revParse("refs/heads/feat/x") == fixture.localFeatX)
+    }
+
+    /// The control: the same remotes with nothing unsafe run the plain `--all`, and git itself
+    /// leaves `fork` out — the behaviour the fallback above has to match.
+    @Test func plainFetchAllLeavesOutASafeRemoteThatSkipsIt() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.cleanUp() }
+        let fork = try await Self.addMarkedRemote("fork", to: fixture)
+        defer { try? FileManager.default.removeItem(at: fork.bare) }
+        let third = try await Self.addMarkedRemote("third", to: fixture)
+        defer { try? FileManager.default.removeItem(at: third.bare) }
+        try await fixture.repo.git(["config", "remote.fork.skipFetchAll", "true"])
+
+        try await CLIGitBackend().fetch(remote: nil, at: fixture.repo.root, progress: { _ in })
+
+        #expect(FileManager.default.fileExists(atPath: third.marker.path), "third was not fetched")
+        #expect(!FileManager.default.fileExists(atPath: fork.marker.path), "fork was fetched")
+        #expect(fixture.markerFired, "origin was not fetched")
+    }
+
     /// `--all` where every remote is unsafe: nothing is contacted at all.
     @Test func fetchAllWithOnlyUnsafeRemotesContactsNothing() async throws {
         let fixture = try await Fixture.make()
