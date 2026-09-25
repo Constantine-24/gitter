@@ -33,6 +33,17 @@ struct MainWindow: View {
                             ProgressView().controlSize(.small)
                         }
                     }
+                    // Trailing, apart from the branch items: these talk to the remotes, the
+                    // ones on the left only to this repository.
+                    ToolbarItem(placement: .primaryAction) {
+                        RemoteToolbarItem(action: .fetch)
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        RemoteToolbarItem(action: .pull)
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        RemoteToolbarItem(action: .push)
+                    }
                 }
                 // On the branch that has a repository, like the toolbar items: every sheet
                 // asks a question about a repository, and `open()` already clears `activeSheet`

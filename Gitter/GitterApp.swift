@@ -39,6 +39,25 @@ struct GitterApp: App {
                     .keyboardShortcut("r")
                     .disabled(store.root == nil)
             }
+            // The toolbar's three network items and Stop. Disabled for the same reasons as
+            // the toolbar, but the reasons are not spelled out here: a menu item shows no
+            // tooltip, and the titles stay the plain verbs. The toolbar carries the "why".
+            CommandMenu("Repository") {
+                Button("Fetch") { store.fetch() }
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
+                    .disabled(store.fetchBlockedReason != nil)
+                Button("Pull") { store.pull() }
+                    .keyboardShortcut("l", modifiers: [.command, .shift])
+                    .disabled(store.pullBlockedReason != nil)
+                Button(store.pushButtonTitle) { store.push() }
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
+                    .disabled(store.pushBlockedReason != nil)
+                Button("Stop") { store.cancelRemoteActivity() }
+                    .keyboardShortcut(".", modifiers: .command)
+                    .disabled(store.remoteActivity == nil)
+                Divider()
+                // Task 11: the "Fetch Automatically" toggle goes here, below the divider.
+            }
         }
     }
 }
