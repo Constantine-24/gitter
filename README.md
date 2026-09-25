@@ -25,6 +25,15 @@ There is still no discard and no push/pull/fetch; those are next.
   squash
 - Hooks and commit signing apply as configured, because every commit runs through
   your own `git`, not a reimplementation of it
+- Fetch quietly in the background: when a repository opens and every 10 minutes after,
+  unless **Repository ▸ Fetch Automatically** is unticked (on by default). It never shows a
+  banner — a failure is only a small mark on the Fetch button, with the reason in its
+  tooltip — and it never makes you wait: Fetch, Pull and Push stay available while it runs,
+  and using one stops it
+- Quit safely while the network is busy: a fetch or pull is stopped and Gitter quits; a push
+  (or publish, force push, delete on a remote) asks first — **Wait** lets it finish and then
+  quits (or stays open if it failed, so you can read why), **Stop and Quit**, or **Don't
+  Quit**
 
 ![Line-level staging, in dark mode, with a long line wrapped](docs/screenshots/main.png)
 
@@ -165,6 +174,8 @@ Gitter/                   macOS app (SwiftUI)
   RepositoryStore+Errors.swift    Turning a refusal into the sentence the banner shows
   RepositoryStore+Remotes.swift   The network lane: fetch, pull, push, cancel, blocked reasons
   RepositoryStore+RemoteSheets.swift  Pull, publish, force push and delete-on-remote sheets
+  AutoFetchScheduler.swift   When the quiet automatic fetch runs (the store decides what it does)
+  QuitGuard.swift            Quitting while the network lane is busy: stop, or ask first
   RemoteActivity.swift       What the lane is running, a refused push, the progress relay
   RemoteWording.swift        Every sentence about the network, and making server text plain
   BranchSheet.swift          Which confirmation or form the store wants on screen
@@ -207,6 +218,7 @@ never be put on screen from a script, and a focus bug can never be reproduced.
 | `GITTER_DEBUG_DUMP_RESPONDER=1` | print the first-responder chain, the window geometry and whether the window is key to stderr, after every click and key; a count instead of `1` repeats the final dump that many times, 200 ms apart, which is how you tell "never focused" from "focused, then lost it" |
 | `GITTER_DEBUG_BRANCH_ACTION=<step>[;<step>…]` | run branch actions and open their sheets (see below) — the sidebar's context menus are AppKit menus that in-process clicks cannot open |
 | `GITTER_DEBUG_THEN=<step>[;<step>…]` | more branch steps, run **after** the clicks and keys — what a click on a toolbar button did: `idle;snapshot:after-click` |
+| `GITTER_DEBUG_AUTOFETCH=<interval>[,<timeout>]` | run the automatic fetch every `<interval>` seconds instead of 10 minutes, stopping each one after `<timeout>` seconds (default 120) instead of 2 minutes — so a script sees several ticks. Every tick and every ending prints an `AUTOFETCH …` line |
 | `GITTER_DEBUG_SNAPSHOT_DIR=<dir>` | where a `snapshot:<name>` step writes `<name>.png`: the window and any sheet on it, drawn by the app itself — no Screen Recording needed, and it works for a window on a Space nobody is looking at |
 
 The branch steps run in order, each waiting for the mutation the one before it started:
@@ -236,14 +248,19 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `menu:<title>` | log every item of that main-menu menu — title, shortcut, enabled — as it would be when opened; a script cannot open a menu. As the **very first** step it can read stale state (seen: every item `enabled=false` before the first snapshot had loaded), so put `wait:1` before it |
 | `views[:<class>]` | log the window's view tree with frames in click coordinates; a toolbar item is a `ToolbarItemHostingView`, above the content area (negative y) — the centre of its frame is where `GITTER_DEBUG_CLICK` aims |
 | `badges` | log what each local branch's tracking badge draws, its tooltip and its VoiceOver text — the snapshot cannot draw the sidebar |
-| `autofetchfailed:<reason>` | set the failure the Fetch item's quiet mark stands for (until the auto-fetch scheduler sets it for real) |
+| `autofetchfailed:<reason>` | set the failure the Fetch item's quiet mark stands for, without waiting for a real automatic fetch to fail |
+| `menuitem:<menu>:<title>` | choose that main-menu item (`NSMenu.performActionForItem`) — how "Fetch Automatically" is toggled; `menu:<title>` a second later shows its tick as `state=on` |
+| `quit` | quit as ⌘Q does, from the run loop, so the steps after it run while the quit is held: `start:push;wait:1;quit;wait:1;start:snapshot:alert;alert;alertbutton:Wait`. `QUIT …` lines say what was decided and when |
+| `alert` / `alertbutton:<title>` | log every text and button (with its key equivalent) of the alert on screen — the snapshot draws an alert's buttons but not its text — and click one of its buttons |
 
 A step that starts network work waits for the lane to free as well, for up to 120 seconds; a
 step taken while the lane is already busy waits only for the mutation slot, so a second
 network action is refused and logged at once. After each step a second line reports the lane
 (its kind, remote and progress line), the three blocked reasons, the push button's title, the
 tracking, the counts the Push and Pull buttons draw (`pushCount`, `pullCount`), the Push
-tooltip, the remembered pull mode, and how many snapshot loads have run. A click on the
+tooltip, the remembered pull mode, how many snapshot loads have run, whether "Fetch
+Automatically" is on and the last automatic fetch's failure. An automatic fetch on the lane
+does not count as busy for this: the user's actions stop it and go ahead. A click on the
 toolbar's Stop that the double-click guard drops logs `stop click ignored`.
 
 A slow transport, for cancelling and for working during a fetch, is configuration in the
