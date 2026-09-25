@@ -11,6 +11,9 @@ struct Banner: View {
     /// What the close button says to VoiceOver; "Dismiss error" and "Dismiss message" are
     /// different things to hear.
     let dismissLabel: String
+    /// Buttons drawn before the close button — the rejected push's "Pull" and "Force Push…".
+    /// Empty for every other banner.
+    var actions: [BannerAction] = []
     let dismiss: () -> Void
 
     var body: some View {
@@ -22,6 +25,12 @@ struct Banner: View {
                 .lineLimit(3)
                 .textSelection(.enabled)
             Spacer(minLength: 8)
+            ForEach(actions) { action in
+                Button(action.title, action: action.perform)
+                    .controlSize(.small)
+                    .disabled(action.disabledReason != nil)
+                    .help(action.disabledReason ?? "")
+            }
             Button(action: dismiss) {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.bold))
@@ -44,15 +53,26 @@ struct Banner: View {
     }
 }
 
+/// One trailing button on a banner.
+struct BannerAction: Identifiable {
+    let title: String
+    /// Why it is off right now, or nil; shown as its tooltip.
+    var disabledReason: String?
+    let perform: () -> Void
+
+    var id: String { title }
+}
+
 /// The store's `lastError`: something did not happen, and the message stays until dismissed.
 struct ErrorBanner: View {
     let message: String
+    var actions: [BannerAction] = []
     let dismiss: () -> Void
 
     var body: some View {
         Banner(
             message: message, systemImage: "exclamationmark.triangle.fill", iconTint: .orange,
-            tint: .yellow, dismissLabel: "Dismiss error", dismiss: dismiss)
+            tint: .yellow, dismissLabel: "Dismiss error", actions: actions, dismiss: dismiss)
     }
 }
 

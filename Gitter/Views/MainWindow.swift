@@ -48,7 +48,7 @@ struct MainWindow: View {
             // just failed can both be true (a rename succeeded, the switch after it did not).
             VStack(spacing: 0) {
                 if let error = store.lastError {
-                    ErrorBanner(message: error) { store.dismissError() }
+                    ErrorBanner(message: error, actions: bannerActions) { store.dismissError() }
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
                 if let notice = store.notice {
@@ -59,6 +59,20 @@ struct MainWindow: View {
         }
         .animation(.default, value: store.lastError)
         .animation(.default, value: store.notice)
+    }
+
+    /// "Pull" and "Force Push…" beside the banner of a push the server refused for having
+    /// commits this branch lacks — the one place Force Push is reachable from.
+    private var bannerActions: [BannerAction] {
+        guard store.bannerOffersForcePush else { return [] }
+        return [
+            BannerAction(title: "Pull", disabledReason: store.pullBlockedReason) {
+                store.pull()
+            },
+            BannerAction(title: "Force Push…", disabledReason: store.pushBlockedReason) {
+                store.requestForcePush()
+            },
+        ]
     }
 
     private var emptyState: some View {
