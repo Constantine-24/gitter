@@ -49,6 +49,27 @@ import Foundation
 ///
 /// The flag is written out four times rather than hoisted into a constant, because each vector
 /// is a complete array literal the scanner reads as text.
+///
+/// **All four carry `--no-recurse-submodules` too, right after `--no-follow-tags`, for the same
+/// reason** (final review's fix wave). `submodule.recurse=true` and
+/// `push.recurseSubmodules=on-demand` push a submodule's branch to the submodule's own server
+/// alongside the superproject — a ref nobody named, on a server no sheet mentioned. Measured on
+/// git 2.54 with an unpushed commit on the submodule's `main` and the gitlink bumped to it:
+///
+/// | key | no flag | `--no-recurse-submodules` |
+/// |---|---|---|
+/// | `submodule.recurse=true` | `Pushing submodule 'sub'`; its server's `main` moved | not moved |
+/// | `push.recurseSubmodules=on-demand` | the same | not moved |
+/// | either, on the force push vector | `fatal: src refspec '<sha>' must name a ref` / `fatal: process for submodule 'sub' failed`, exit 128: the sha refspec is handed down to the submodule | pushed |
+/// | `push.recurseSubmodules=check` | `fatal: Aborting.`, exit 128: a gitlink whose commit is on no submodule remote is refused | **pushed** |
+/// | none | nothing recursive | nothing recursive |
+///
+/// The `check` row is the cost, and it is written down rather than hidden: a user who set it
+/// to be stopped from publishing a gitlink nobody can fetch is not stopped by Gitter. It moves
+/// nothing on any server it was not asked to, which is the line this file holds; it is in
+/// `docs/BACKLOG.md`. The delete vector sends no commits and did not recurse with or without
+/// the flag (measured); it carries it so that all four vectors read the same.
+/// `PushSubmoduleTests` holds the first three rows.
 extension CLIGitBackend {
     public func push(
         _ branch: String, to remote: String, remoteRef: String, setUpstream: Bool,
@@ -85,9 +106,9 @@ extension CLIGitBackend {
         // character in a refspec.
         let arguments: [String]
         if setUpstream {
-            arguments = ["push", "--porcelain", "--progress", "--no-follow-tags", "-u", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"]
+            arguments = ["push", "--porcelain", "--progress", "--no-follow-tags", "--no-recurse-submodules", "-u", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"]
         } else {
-            arguments = ["push", "--porcelain", "--progress", "--no-follow-tags", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"]
+            arguments = ["push", "--porcelain", "--progress", "--no-follow-tags", "--no-recurse-submodules", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"]
         }
 
         let (outcome, streamed) = try await pushing(
@@ -139,7 +160,7 @@ extension CLIGitBackend {
         // destination. `branch` is still checked above, as the name the caller read the tip
         // from, but it is no longer sent.
         let tip = expectedRemoteTip
-        let arguments = ["push", "--porcelain", "--progress", "--no-follow-tags", "--force-with-lease=\(remoteRef):\(tip)", "--end-of-options", remote, "\(expectedLocalTip):\(remoteRef)"]
+        let arguments = ["push", "--porcelain", "--progress", "--no-follow-tags", "--no-recurse-submodules", "--force-with-lease=\(remoteRef):\(tip)", "--end-of-options", remote, "\(expectedLocalTip):\(remoteRef)"]
 
         let (outcome, streamed) = try await pushing(
             arguments, destinationRef: remoteRef, at: root, progress: progress)
@@ -167,7 +188,7 @@ extension CLIGitBackend {
         // sheet showed.
         let b = branch
         let tip = expectedTip
-        let arguments = ["push", "--porcelain", "--progress", "--no-follow-tags", "--force-with-lease=refs/heads/\(b):\(tip)", "--end-of-options", remote, ":refs/heads/\(b)"]
+        let arguments = ["push", "--porcelain", "--progress", "--no-follow-tags", "--no-recurse-submodules", "--force-with-lease=refs/heads/\(b):\(tip)", "--end-of-options", remote, ":refs/heads/\(b)"]
 
         // No progress to report: a deletion sends one command and transfers no objects, so git
         // prints no counters. It is cancellable all the same — `runStreaming` is what makes it

@@ -143,8 +143,8 @@ public protocol GitRemoteBackend: Sendable {
     ) async throws
 
     /// Send `branch` to `remoteRef` on `remote`:
-    /// `git push --porcelain --progress --no-follow-tags [-u] --end-of-options <remote>
-    /// refs/heads/<branch>:<remoteRef>`.
+    /// `git push --porcelain --progress --no-follow-tags --no-recurse-submodules [-u]
+    /// --end-of-options <remote> refs/heads/<branch>:<remoteRef>`.
     ///
     /// **One ref goes to the server, and it is the one named here.** `--no-follow-tags` is on
     /// this vector and on both lease vectors for the reason `fetch` carries `--no-prune`:
@@ -153,7 +153,9 @@ public protocol GitRemoteBackend: Sendable {
     /// 2.54, every one of the four vectors then also published annotated tags — the **delete**
     /// included. Pushing tags is not in this milestone and no confirmation names one. The full
     /// measured table, and the neighbouring keys that were checked and cannot re-enable it, are
-    /// in `CLIGitBackend+Push.swift`.
+    /// in `CLIGitBackend+Push.swift`. `--no-recurse-submodules` is on all four for the same
+    /// reason: `submodule.recurse=true` or `push.recurseSubmodules=on-demand` otherwise push a
+    /// submodule's branch to the submodule's own server (measured; same file).
     ///
     /// **The backend never works out where a branch goes.** `remote` and `remoteRef` are the
     /// caller's to choose, and there is exactly one way to choose them: `PushTarget.resolve`,
@@ -240,8 +242,9 @@ public protocol GitRemoteBackend: Sendable {
     /// Send the commit `expectedLocalTip` — the tip of `branch` the sheet showed — to
     /// `remoteRef` on `remote` **over commits the server already has**, but only while that ref
     /// is still at `expectedRemoteTip`:
-    /// `git push --porcelain --progress --no-follow-tags --force-with-lease=<remoteRef>:<tip>
-    /// --end-of-options <remote> <expectedLocalTip>:<remoteRef>`.
+    /// `git push --porcelain --progress --no-follow-tags --no-recurse-submodules
+    /// --force-with-lease=<remoteRef>:<tip> --end-of-options <remote>
+    /// <expectedLocalTip>:<remoteRef>`.
     ///
     /// **Both sides carry the sha the sheet showed.** The lease pins what the server loses;
     /// `expectedLocalTip` pins what it gets. The sheet counts the commits the server has that
@@ -308,7 +311,7 @@ public protocol GitRemoteBackend: Sendable {
     ) async throws -> PushResult
 
     /// Delete `branch` on `remote`, but only while it is still at `expectedTip`:
-    /// `git push --porcelain --progress --no-follow-tags
+    /// `git push --porcelain --progress --no-follow-tags --no-recurse-submodules
     /// --force-with-lease=refs/heads/<branch>:<tip> --end-of-options <remote>
     /// :refs/heads/<branch>`.
     ///

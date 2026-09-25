@@ -659,6 +659,11 @@ import Testing
     /// vectors. This comment and the design doc both said "seven vectors" until fix round 2 —
     /// count them below.
     ///
+    /// **`--no-recurse-submodules` joined all four push vectors in the final review's fix
+    /// wave**, right after `--no-follow-tags`, because `submodule.recurse=true` pushed a
+    /// submodule's branch nobody named (measured — see `CLIGitBackend+Push.swift` and
+    /// `PushSubmoduleTests`). No `push` rule keys on it, so the table needed no narrowing.
+    ///
     /// **The `merge` vectors joined in the final review's fix wave**, with `--no-autostash`:
     /// Pull's fast-forward and the pull sheet's Merge run them, and under `merge.autoStash=true`
     /// they reported success while stashing the user's edit (measured — see
@@ -677,10 +682,10 @@ import Testing
     /// the only prefix rule is `--force-with-lease=`. So the deny table for `push` needed no
     /// narrowing — these four sources staying clean is the proof.
     @Test(arguments: [
-        #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
-        #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "-u", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
-        #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "--force-with-lease=\(remoteRef):\(tip)", "--end-of-options", remote, "\(expectedLocalTip):\(remoteRef)"], cwd: root)"#,
-        #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "--force-with-lease=refs/heads/\(b):\(tip)", "--end-of-options", remote, ":refs/heads/\(b)"], cwd: root)"#,
+        #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "--no-recurse-submodules", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
+        #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "--no-recurse-submodules", "-u", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"], cwd: root)"#,
+        #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "--no-recurse-submodules", "--force-with-lease=\(remoteRef):\(tip)", "--end-of-options", remote, "\(expectedLocalTip):\(remoteRef)"], cwd: root)"#,
+        #"_ = try await run(["push", "--porcelain", "--progress", "--no-follow-tags", "--no-recurse-submodules", "--force-with-lease=refs/heads/\(b):\(tip)", "--end-of-options", remote, ":refs/heads/\(b)"], cwd: root)"#,
         #"""
         _ = try await run(["fetch", "--progress", "--no-prune", "--end-of-options", remote], cwd: root)
         _ = try await run(["fetch", "--progress", "--no-prune", "--all"], cwd: root)
