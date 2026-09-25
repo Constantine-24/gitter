@@ -35,9 +35,10 @@ enum RemoteWording {
         var remotes: [Remote]
     }
 
-    /// Why Fetch is off, or nil. Fetch writes only `refs/remotes/*` and `FETCH_HEAD`, so neither
-    /// an operation in progress nor a detached HEAD stops it; only the lane and the absence of
-    /// anything to fetch from do.
+    /// Why Fetch is off, or nil. Fetch writes only `refs/remotes/*` and `FETCH_HEAD` (and a tag
+    /// it has not seen before) — and Gitter refuses a fetch whose refspec would write anywhere
+    /// else (`FetchRefspec`) — so neither an operation in progress nor a detached HEAD stops it;
+    /// only the lane and the absence of anything to fetch from do.
     static func fetchBlocked(_ gate: Gate) -> String? {
         guard gate.hasRepository else { return noRepository }
         if let activity = gate.activity { return laneBusy(activity) }
@@ -290,6 +291,12 @@ enum RemoteWording {
     /// manual fetch would use, made plain and cut to one line — without the "Couldn't fetch: "
     /// the tooltip's own "failed:" already says.
     static func autoFetchFailure(_ error: Error) -> String {
+        // Not a failure of the network but a fetch Gitter would not run, and every other remote
+        // was fetched: said as what it is, with the fix, rather than as "failed".
+        if case RemoteOperationError.unsafeFetchRefspec(let remote, let refspec) = error {
+            return "\(plain(remote))'s fetch refspec writes outside refs/remotes/ "
+                + "(\(plain(refspec))); Gitter will not fetch it. " + fixRefspec(remote)
+        }
         let sentence = plain(failure(error, attempt: "fetch", isWrite: false))
         let prefix = "Couldn't fetch: "
         return sentence.hasPrefix(prefix) ? String(sentence.dropFirst(prefix.count)) : sentence
@@ -924,7 +931,21 @@ enum RemoteWording {
             "Couldn't \(attempt): the branch has no upstream."
         case .invalidLease(let value):
             "Couldn't \(attempt): \"\(plain(value))\" is not a full commit id, so nothing was sent."
+        case .unsafeFetchRefspec(let remote, let refspec):
+            "Gitter did not fetch \"\(plain(remote))\": its fetch refspec \(plain(refspec)) writes "
+                + "outside refs/remotes/, so a fetch could move your own branches or tags. "
+                + fixRefspec(remote)
         }
+    }
+
+    /// How to point a remote's refspec back at remote-tracking refs. `--replace-all` rather
+    /// than a plain `git config remote.<r>.fetch …`, which refuses with "cannot overwrite
+    /// multiple values with a single value" once there is more than one refspec — the usual
+    /// shape of a hand-added unsafe one.
+    private static func fixRefspec(_ remote: String) -> String {
+        let name = plain(remote)
+        return "Point it at remote-tracking refs in a terminal: git config --replace-all "
+            + "remote.\(name).fetch '+refs/heads/*:refs/remotes/\(name)/*'"
     }
 
     // MARK: - Somebody else's text

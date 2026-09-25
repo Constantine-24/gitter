@@ -38,6 +38,26 @@ public protocol GitRemoteBackend: Sendable {
     /// says it is, `main` is exactly where the user left it, and what to do about the
     /// difference is a separate decision the user makes.
     ///
+    /// **That promise is the refspec's to keep, and the refspec is the user's configuration**,
+    /// so it is checked (final review's fix wave). `remote.<name>.fetch=+refs/heads/*:refs/heads/*`
+    /// — or `git remote add --mirror=fetch`, which writes `+refs/*:refs/*` — made every fetch,
+    /// the automatic one included, force-move local branches (measured: `forced-update` in the
+    /// branch's reflog, its commit left on no ref; git protects only the checked-out branch).
+    /// So before anything runs, `git config --get-all remote.<name>.fetch` is read for each
+    /// remote about to be fetched and `FetchRefspec` decides:
+    ///
+    /// - **A named remote** with a refspec whose destination is outside `refs/remotes/` →
+    ///   `.unsafeFetchRefspec(remote:refspec:)`, thrown before git is launched.
+    /// - **`--all`** → every remote `git remote -v` names is checked (a `skipFetchAll` one is
+    ///   left out, as `--all` leaves it out). None unsafe: `--all` runs exactly as before. Some
+    ///   unsafe: they are **skipped**, every other remote is fetched on its own with the
+    ///   single-remote vector, and `.unsafeFetchRefspec` for the first skipped one is thrown
+    ///   afterwards — unless a fetched remote failed, in which case git's own words for every
+    ///   failure are thrown (a `GitError.commandFailed`, as for a partial `--all`), and the skip
+    ///   is reported by the next fetch that gets through. Skipping rather than refusing the
+    ///   whole fetch keeps one misconfigured remote from stopping every other remote's
+    ///   automatic fetch, and the skip is still said out loud every time.
+    ///
     /// **`--no-prune`, not merely "no `--prune`".** Pruning deletes remote-tracking refs for
     /// branches that are gone from the server, and that can drop the last ref to commits — a
     /// loss, and one that needs its own confirmation. Leaving the flag out does not prevent it:
@@ -114,9 +134,10 @@ public protocol GitRemoteBackend: Sendable {
     /// executor and never on the main actor, and it must not block: the pipe is not drained
     /// while it runs. A callback that wants to update the UI hops to the main actor itself.
     ///
-    /// - Throws: `RemoteOperationError` for a network failure Gitter recognises,
-    ///   `GitError.commandFailed` with git's own words for one it does not, and
-    ///   `CancellationError` if the task was cancelled.
+    /// - Throws: `RemoteOperationError` for a network failure Gitter recognises and
+    ///   `.unsafeFetchRefspec` for a remote it will not fetch, `GitError.commandFailed` with
+    ///   git's own words for a failure it does not recognise, and `CancellationError` if the
+    ///   task was cancelled.
     func fetch(
         remote: String?, at root: URL, progress: @escaping @Sendable (String) -> Void
     ) async throws

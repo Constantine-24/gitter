@@ -7,11 +7,11 @@ extension CLIGitBackend: GitRemoteBackend {
     public func fetch(
         remote: String?, at root: URL, progress: @escaping @Sendable (String) -> Void
     ) async throws {
-        // Each vector is a COMPLETE array literal beginning with `"fetch"`, chosen by this
-        // branch rather than assembled — `ForceFlagScannerTests` classifies a vector by its
-        // first literal element and reads the rest against `fetch`'s deny table, and an
-        // `append` or a `+` would hide the arguments from it entirely. Both are pinned there,
-        // character for character, by `allowsTheRemoteOperationsThisMilestoneNeeds`.
+        // Each vector is a COMPLETE array literal beginning with `"fetch"`, rather than
+        // assembled — `ForceFlagScannerTests` classifies a vector by its first literal element
+        // and reads the rest against `fetch`'s deny table, and an `append` or a `+` would hide
+        // the arguments from it entirely. Both are pinned there, character for character, by
+        // `allowsTheRemoteOperationsThisMilestoneNeeds`.
         //
         // `--progress` is not decoration: without a tty git prints no progress at all, so the
         // callback would never fire. `--end-of-options` is accepted by `fetch` in this position
@@ -22,14 +22,58 @@ extension CLIGitBackend: GitRemoteBackend {
         // enough: `fetch.prune` and `remote.<name>.prune` turn pruning on from the user's own
         // config (measured — see the protocol), and then a fetch deletes remote-tracking refs
         // and, with the `pruneTags` twins, local tags. Both vectors carry it.
-        let arguments: [String]
+        //
+        // **And no fetch runs under a refspec that writes outside `refs/remotes/`** — see
+        // `FetchRefspec` for what one did, and the protocol for the two paths below.
         if let remote {
             try requireRemoteName(remote)
-            arguments = ["fetch", "--progress", "--no-prune", "--end-of-options", remote]
-        } else {
-            arguments = ["fetch", "--progress", "--no-prune", "--all"]
+            if let refspec = try await unsafeFetchRefspec(of: remote, at: root) {
+                throw RemoteOperationError.unsafeFetchRefspec(remote: remote, refspec: refspec)
+            }
+            try await runFetch(Self.fetchVector(remote), at: root, progress: progress)
+            return
         }
 
+        let (safe, skipped) = try await remotesForFetchAll(at: root)
+        guard let firstSkipped = skipped.first else {
+            try await runFetch(
+                ["fetch", "--progress", "--no-prune", "--all"], at: root, progress: progress)
+            return
+        }
+
+        // Some remote would write outside `refs/remotes/`: every other one is fetched on its
+        // own, with the single-remote vector, in `git remote -v`'s order, and the skip is
+        // thrown at the end. Like `--all`, a remote that fails does not stop the ones after
+        // it, and git's own words for every failure are thrown instead of the skip — they are
+        // what `--all` would have said, and the skip is still there to be reported by the next
+        // fetch. A cancellation stops the loop at once.
+        var failures: [String] = []
+        var lastCode: Int32 = 1
+        for name in safe {
+            do {
+                _ = try await runStreaming(Self.fetchVector(name), cwd: root, progress: progress)
+            } catch GitError.commandFailed(let code, let stderr) {
+                lastCode = code
+                failures.append(RemoteFailureParser.gitsOwnWords(stderr))
+            }
+        }
+        if !failures.isEmpty {
+            throw GitError.commandFailed(
+                exitCode: lastCode, stderr: failures.joined(separator: "\n"))
+        }
+        throw RemoteOperationError.unsafeFetchRefspec(
+            remote: firstSkipped.remote, refspec: firstSkipped.refspec)
+    }
+
+    /// The one-remote vector, a complete literal the scanner reads (see `fetch`).
+    private static func fetchVector(_ remote: String) -> [String] {
+        ["fetch", "--progress", "--no-prune", "--end-of-options", remote]
+    }
+
+    /// Runs one fetch vector and turns a failure into words.
+    private func runFetch(
+        _ arguments: [String], at root: URL, progress: @escaping @Sendable (String) -> Void
+    ) async throws {
         do {
             _ = try await runStreaming(arguments, cwd: root, progress: progress)
         } catch let error as GitError {
@@ -54,6 +98,58 @@ extension CLIGitBackend: GitRemoteBackend {
             }
             throw failure
         }
+    }
+
+    /// The first of `remote`'s configured fetch refspecs that would write outside
+    /// `refs/remotes/`, or nil. Read with `git config --get-all remote.<name>.fetch`, which
+    /// exits 1 when the key is not set — a remote with no refspec fetches into `FETCH_HEAD`
+    /// only. Any other failure is thrown: a fetch whose refspecs could not be read is not run.
+    private func unsafeFetchRefspec(of remote: String, at root: URL) async throws -> String? {
+        let data = try await run(
+            ["config", "--get-all", "remote." + remote + ".fetch"], cwd: root,
+            allowedExitCodes: [1])
+        let refspecs = String(decoding: data, as: UTF8.self)
+            .split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        return FetchRefspec.firstUnsafe(refspecs.last == "" ? refspecs.dropLast() : refspecs)
+    }
+
+    /// The remotes `git fetch --all` visits, split into the ones that may be fetched and the
+    /// ones whose refspecs would write outside `refs/remotes/`.
+    ///
+    /// **Every name `git remote -v` prints**, the name-only line of a remote with no URL
+    /// included: measured on git 2.54, `--all` visits such a remote too (and tries the name as
+    /// a path). `RemoteParser` leaves those out, so the names are read here. A remote with
+    /// `remote.<name>.skipFetchAll=true` is one `--all` never fetches, so an unsafe one of those
+    /// is not a reason to leave `--all` — it is dropped from both lists; its setting is read
+    /// only when its refspecs would otherwise put it in `skipped`.
+    private func remotesForFetchAll(
+        at root: URL
+    ) async throws -> (safe: [String], skipped: [(remote: String, refspec: String)]) {
+        let listing = String(decoding: try await run(["remote", "-v"], cwd: root), as: UTF8.self)
+        var names: [String] = []
+        for line in listing.split(whereSeparator: \.isNewline) {
+            guard let tab = line.firstIndex(of: "\t") else { continue }
+            let name = String(line[..<tab])
+            if !name.isEmpty, !names.contains(name) { names.append(name) }
+        }
+        var safe: [String] = []
+        var skipped: [(remote: String, refspec: String)] = []
+        for name in names {
+            guard let refspec = try await unsafeFetchRefspec(of: name, at: root) else {
+                safe.append(name)
+                continue
+            }
+            let skipsAll = try await run(
+                ["config", "--type=bool", "--get", "remote." + name + ".skipFetchAll"],
+                cwd: root, allowedExitCodes: [1])
+            if String(decoding: skipsAll, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+            {
+                continue
+            }
+            skipped.append((name, refspec))
+        }
+        return (safe, skipped)
     }
 
     public func commits(

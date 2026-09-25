@@ -8,7 +8,7 @@ import GitCore
 ///
 /// | action | lane | mutation slot |
 /// |---|---|---|
-/// | fetch | while it runs | never — staging, committing and branch actions stay usable; a fetch writes only `refs/remotes/*` and git's own ref locking arbitrates |
+/// | fetch | while it runs | never — staging, committing and branch actions stay usable; a fetch writes only `refs/remotes/*`, and Gitter refuses a fetch whose refspec would write anywhere else (`FetchRefspec`); git's own ref locking arbitrates |
 /// | pull | for its fetch | for the merge or rebase after it, through `perform`/`mutate` |
 /// | push, publish, force push, delete on a remote | while it runs | while it runs — nothing may move the branch between the decision and the push |
 /// | automatic fetch | while it runs — but it **gives way**: anything above stops it and takes the lane (`beginRemote`) | never |
@@ -329,8 +329,10 @@ extension RepositoryStore {
     /// user — nothing about the automatic fetch is ever said in a banner — but what the DEBUG
     /// log prints for each tick.
     ///
-    /// Not skipped for a running mutation: a fetch writes only `refs/remotes/*` and holds only
-    /// the lane, like the manual one.
+    /// Not skipped for a running mutation: a fetch writes only `refs/remotes/*` — and Gitter
+    /// refuses a fetch whose refspec would write anywhere else (`FetchRefspec`; the remote is
+    /// then skipped and `lastAutoFetchFailure` says so) — and holds only the lane, like the
+    /// manual one.
     var autoFetchSkipReason: String? {
         guard AutoFetchScheduler.isEnabled else { return "turned off" }
         guard !isTerminating else { return "quitting" }
@@ -349,6 +351,7 @@ extension RepositoryStore {
     /// |---|---|
     /// | fetched | `lastAutoFetchFailure` cleared; the one reload shows the new badges |
     /// | failed | `lastAutoFetchFailure` = git's reason, made plain, one line |
+    /// | a remote's refspec writes outside `refs/remotes/` | that remote skipped, the rest fetched; `lastAutoFetchFailure` names it and the fix |
     /// | took longer than `timeout` | stopped; `lastAutoFetchFailure` says so |
     /// | stopped by the user (Stop, ⌘.) | nothing changes but the reload |
     /// | pre-empted by the user's own Fetch, Pull, Push or a sheet's confirm | nothing, no reload: the user's action has the lane and reloads itself |

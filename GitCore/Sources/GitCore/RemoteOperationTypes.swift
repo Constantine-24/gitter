@@ -9,8 +9,9 @@ import Foundation
 /// A network failure Gitter can describe in its own words, rather than dumping git's stderr.
 ///
 /// **This is not `BranchOperationError`, and the difference matters.** Every case of that type
-/// is a refusal: git did nothing, and the UI may say so. Here, only the two cases thrown
-/// *before git runs* (`.noRemote` for a name Gitter will not pass on, and `.noUpstream`) carry
+/// is a refusal: git did nothing, and the UI may say so. Here, only the cases thrown *before
+/// git runs* (`.noRemote` for a name Gitter will not pass on, `.noUpstream`, `.invalidLease`,
+/// and `.unsafeFetchRefspec` for a *named* remote — see its own comment for `--all`) carry
 /// that guarantee. The rest are reports of a failure that happened somewhere in the middle of a
 /// transfer, and a fetch that failed **may still have updated refs** — measured on git 2.54:
 /// `git fetch --all` with one good remote and one unreachable one exits 1 with the good
@@ -85,6 +86,19 @@ public enum RemoteOperationError: Error, Equatable, Sendable {
     /// pushes `[new branch]`. And an upper-case name is a spelling of a sha the sheet never
     /// showed — git prints object names in lower case, so that is what the sheet held.
     case invalidLease(String)
+    /// A fetch from `remote` was not run because one of its configured refspecs
+    /// (`remote.<name>.fetch`) writes outside `refs/remotes/` — `refspec` is the first such, as
+    /// configured. See `FetchRefspec` for what one did and the rule that decides.
+    ///
+    /// **Whether anything changed depends on which fetch it was, and the payload does not
+    /// say.** For a named remote it is thrown **before git runs**: nothing was contacted and
+    /// nothing changed (proved in `UnsafeFetchRefspecTests` by an upload-pack wrapper that never
+    /// fired). For `--all` it is thrown **after** every other remote was fetched on its own, so
+    /// their remote-tracking refs may well have moved — the same "re-read, never infer" rule as
+    /// every other case here, and the reason the UI words it as "did not fetch `<remote>`" and
+    /// never as "nothing changed". Neither payload is a credential: a remote name and a
+    /// refspec are configuration, not a URL.
+    case unsafeFetchRefspec(remote: String, refspec: String)
 }
 
 /// Why the server refused a ref. Each case is git's own `--porcelain` summary, read back from
