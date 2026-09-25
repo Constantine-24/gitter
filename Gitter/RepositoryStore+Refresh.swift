@@ -16,8 +16,10 @@ extension RepositoryStore {
         // What was dropped is remembered, so an event that lands after the lane's reload began
         // still gets one (`watcherEventDuringLane`) — unless it is only the lane's own writes,
         // which its reload is about to read or has just read.
-        guard remoteActivity == nil else {
-            if paths.isEmpty || !paths.allSatisfy(Self.isLaneOwnWrite) {
+        if let remoteActivity {
+            if paths.isEmpty
+                || !paths.allSatisfy({ Self.isLaneOwnWrite($0, during: remoteActivity.kind) })
+            {
                 setWatcherEventDuringLane(true)
             }
             return
@@ -30,16 +32,50 @@ extension RepositoryStore {
         }
     }
 
-    /// Whether `path` is one of the files a network operation itself writes in `.git`: the
-    /// remote-tracking refs and their reflogs, `FETCH_HEAD`, `packed-refs` (a delete on a remote
-    /// rewrites it when the tracking ref was packed) and `config` (Publish's `-u`). A change
-    /// anywhere else during the lane — the index, `refs/heads`, `HEAD`, the worktree — came from
-    /// something else, and is what `watcherEventDuringLane` exists to catch.
-    static func isLaneOwnWrite(_ path: String) -> Bool {
+    /// Whether `path` is one of the files the lane's own kind of work writes in `.git`, so that
+    /// a watcher event for it, arriving late, is not taken for somebody else's change. Anything
+    /// else during the lane — the index, `refs/heads`, `HEAD`, the worktree, and for most kinds
+    /// `config` and `packed-refs` — came from something else, and is what
+    /// `watcherEventDuringLane` exists to catch. (Loose objects and `*.lock` files never get
+    /// here: `RepositoryWatcher` drops them.)
+    ///
+    /// | lane kind | its own writes |
+    /// |---|---|
+    /// | every kind | `FETCH_HEAD`, `refs/remotes/…`, `logs/refs/remotes/…`, `refs/tags/…` |
+    /// | publish | and `config` (`push -u` writes `branch.<b>.remote`/`.merge`) |
+    /// | delete on a remote | and `packed-refs` (deleting a packed tracking ref rewrites it) |
+    ///
+    /// Why the first row is every kind's: each of them can fetch on the lane — a fetch and a
+    /// pull outright (the force push and delete warnings are fetch lanes too), and a push,
+    /// force push or delete the server refused, to show what it has now — and a fetch writes
+    /// `FETCH_HEAD`, the remote-tracking refs with their reflogs, and any new tags (tags keep
+    /// no reflog by default). A push that lands updates the tracking ref it pushed.
+    ///
+    /// What is deliberately **not** anyone's:
+    /// - `config` outside Publish. Only `-u` writes it; a user's `git branch --unset-upstream`
+    ///   during a fetch's reload writes it too, and ignoring that left stale tracking on
+    ///   screen with no reload to correct it (found in Task 8's re-review).
+    /// - `packed-refs` outside a delete. The fetches here pass `--no-prune`, so they never
+    ///   delete a ref, and a created or updated ref is written loose. The one lane-made
+    ///   rewrite left is `git maintenance run --auto` packing refs after a fetch — rare, and
+    ///   what it costs is one extra reload, never a missed one.
+    /// - A pull's merge or rebase (`ORIG_HEAD`, `HEAD`, `refs/heads/<b>`, the index, the
+    ///   worktree). It does not run on the lane: the fast-forward runs in the lane's `then`
+    ///   and Merge or Rebase from the sheet, both after the lane is free and through
+    ///   `mutate`, which reloads by itself. While a pull holds the lane it only fetches.
+    static func isLaneOwnWrite(_ path: String, during kind: RemoteActivity.Kind) -> Bool {
         guard let range = path.range(of: "/.git/") else { return false }
         let inGit = path[range.upperBound...]
-        return inGit == "FETCH_HEAD" || inGit == "packed-refs" || inGit == "config"
-            || inGit.hasPrefix("refs/remotes/") || inGit.hasPrefix("logs/refs/remotes/")
+        if inGit == "FETCH_HEAD" || inGit.hasPrefix("refs/remotes/")
+            || inGit.hasPrefix("logs/refs/remotes/") || inGit.hasPrefix("refs/tags/")
+        {
+            return true
+        }
+        switch kind {
+        case .publish: return inGit == "config"
+        case .deleteRemoteBranch: return inGit == "packed-refs"
+        case .fetch, .autoFetch, .pull, .push, .forcePush: return false
+        }
     }
 
     // MARK: - Refresh

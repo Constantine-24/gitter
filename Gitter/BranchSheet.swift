@@ -48,8 +48,12 @@ enum BranchSheet: Identifiable, Hashable {
         switch (self, other) {
         case (.pullDiverged(_, _, let a), .pullDiverged(_, _, let b)): a == b
         case (.publish(let a), .publish(let b)): a == b
-        case (.forcePush(let a, _, let r, _, _, _, _), .forcePush(let b, _, let s, _, _, _, _)):
-            a == b && r == s
+        case (
+            .forcePush(let a, _, let r, let ra, _, _, _), .forcePush(let b, _, let s, let rb, _, _, _)
+        ):
+            // All three: the same branch force-pushed to another remote, or to another ref on
+            // the same remote, is a different question about different commits.
+            a == b && r == s && ra == rb
         case (.deleteRemoteBranch(let r, let a, _, _), .deleteRemoteBranch(let s, let b, _, _)):
             r == s && a == b
         default: false

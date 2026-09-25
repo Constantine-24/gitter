@@ -22,15 +22,17 @@ extension RepositoryStore {
     /// it are about that pair, and a terminal can switch branches while it is up.
     func confirmPull(_ mode: PullMode) {
         guard case .pullDiverged(_, _, let upstream) = activeSheet else { return }
+        // `mutate` drops a call silently while the slot is held; the answer to a question must
+        // not vanish like that. Checked **before** the sheet is taken down: the question is
+        // still the right one, and leaving it up is what lets the user answer it again once
+        // the other change has finished.
+        guard !isMutating else {
+            showStickyError(RemoteWording.pullAnswerSlotBusy)
+            return
+        }
         activeSheet = nil
         guard let branch = currentBranchRef, branch.upstream == upstream else {
             showStickyError(RemoteWording.pullSheetStale)
-            return
-        }
-        // `mutate` drops a call silently while the slot is held; the answer to a question must
-        // not vanish like that.
-        guard !isMutating else {
-            showStickyError(RemoteWording.mutationBusy)
             return
         }
         switch mode {
@@ -121,7 +123,7 @@ extension RepositoryStore {
             ? String(rejected.remoteRef.dropFirst("refs/heads/".count)) : rejected.remoteRef
         let trackingName = "\(remote)/\(remoteName)"
 
-        runOnLane(.fetch, remote: remote, holdingMutation: false) { [self] backend, root, progress in
+        runOnLane(.fetch, remote: remote, holdingMutation: false) { [self] backend, root, lane, progress in
             do {
                 try await backend.fetch(remote: remote, at: root, progress: progress)
             } catch where Self.isCancellation(error) {
@@ -131,7 +133,7 @@ extension RepositoryStore {
                     failure: RemoteWording.failure(
                         error, attempt: "fetch from \"\(remote)\"", isWrite: false))
             }
-            await laneRefresh()
+            await laneRefresh(lane)
             // Stop pressed during the reload: it ran to the end (a reload is not cancellable),
             // and nothing after it should.
             if Task.isCancelled {
@@ -202,7 +204,7 @@ extension RepositoryStore {
             return
         }
         runOnLane(.forcePush, remote: remote, holdingMutation: true) {
-            [self] backend, root, progress in
+            [self] backend, root, lane, progress in
             let branchNow: String?
             do {
                 let fresh = try await backend.snapshot(at: root)
@@ -269,7 +271,7 @@ extension RepositoryStore {
         let branch = String(remoteBranch.dropFirst(remoteName.count + 1))
 
         runOnLane(.fetch, remote: remoteName, holdingMutation: false) {
-            [self] backend, root, progress in
+            [self] backend, root, lane, progress in
             do {
                 try await backend.fetch(remote: remoteName, at: root, progress: progress)
             } catch where Self.isCancellation(error) {
@@ -279,7 +281,7 @@ extension RepositoryStore {
                     failure: RemoteWording.failure(
                         error, attempt: "fetch from \"\(remoteName)\"", isWrite: false))
             }
-            await laneRefresh()
+            await laneRefresh(lane)
             if Task.isCancelled {
                 return LaneEnding(
                     notice: RemoteWording.deleteWarningStopped, alreadyRefreshed: true)
@@ -317,7 +319,7 @@ extension RepositoryStore {
         }
         activeSheet = nil
         runOnLane(.deleteRemoteBranch, remote: remote, holdingMutation: true) {
-            [self] backend, root, progress in
+            [self] backend, root, lane, progress in
             let result: PushResult
             do {
                 result = try await backend.deleteRemoteBranch(

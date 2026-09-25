@@ -83,8 +83,8 @@ final class RepositoryStore {
     /// freeing — would otherwise be lost until the next one, so `runOnLane` reloads once more
     /// when this is set. Only a path the lane does not write itself sets it: the lane's own
     /// writes (`FETCH_HEAD`, `refs/remotes/…`) arrive up to the watcher's 0.2 s latency late —
-    /// after its reload began — and would otherwise cost every fetch a second reload
-    /// (`RepositoryStore.isLaneOwnWrite`).
+    /// after its reload began — and would otherwise cost every fetch a second reload. Which
+    /// paths are "its own" depends on the kind of work (`RepositoryStore.isLaneOwnWrite`).
     private(set) var watcherEventDuringLane = false
 
     #if DEBUG
@@ -404,17 +404,17 @@ final class RepositoryStore {
         remoteTask = nil
     }
 
-    /// Stores git's latest progress segment — **made plain first**: the progress stream is
-    /// git's whole stderr, and that includes the server's own `remote:` lines, which can carry
-    /// escape sequences and URLs with credentials in them. Done here, on the main-actor hop the
-    /// relay already throttles to ten a second, so the pipe's queue stays as cheap as it was.
-    /// A segment that is nothing once made plain leaves the previous one standing.
     // internal (not private(set) write): used by +Refresh.swift's `scheduleRefresh` (true) and
     // +Remotes.swift's `laneRefresh` (false, as the lane's reload begins)
     func setWatcherEventDuringLane(_ value: Bool) {
         watcherEventDuringLane = value
     }
 
+    /// Stores git's latest progress segment — **made plain first**: the progress stream is
+    /// git's whole stderr, and that includes the server's own `remote:` lines, which can carry
+    /// escape sequences and URLs with credentials in them. Done here, on the main-actor hop the
+    /// relay already throttles to ten a second, so the pipe's queue stays as cheap as it was.
+    /// A segment that is nothing once made plain leaves the previous one standing.
     // internal (not private): used by +Remotes.swift's progress relay
     func setRemoteProgress(_ text: String, lane: RemoteLane) {
         guard lane.token == laneToken, generation == lane.generation, remoteActivity != nil

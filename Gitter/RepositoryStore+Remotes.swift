@@ -90,7 +90,7 @@ extension RepositoryStore {
     /// remote that failed.
     private func startFetch(remote: String?, quiet: Bool) {
         runOnLane(.fetch, remote: remote, holdingMutation: false, quiet: quiet) {
-            backend, root, progress in
+            backend, root, lane, progress in
             do {
                 try await backend.fetch(remote: remote, at: root, progress: progress)
                 return LaneEnding(notice: quiet ? nil : RemoteWording.fetched(from: remote))
@@ -123,7 +123,7 @@ extension RepositoryStore {
         guard let branch = currentBranchRef, let upstream = branch.upstream else { return }
         let fetchRemote = branch.upstreamRemote
 
-        runOnLane(.pull, remote: fetchRemote, holdingMutation: false) { [self] backend, root, progress in
+        runOnLane(.pull, remote: fetchRemote, holdingMutation: false) { [self] backend, root, lane, progress in
             if let fetchRemote {
                 do {
                     try await backend.fetch(remote: fetchRemote, at: root, progress: progress)
@@ -137,7 +137,7 @@ extension RepositoryStore {
             }
             // The decision needs the tracking *after* the fetch, so the one reload happens here,
             // still holding the lane.
-            await laneRefresh()
+            await laneRefresh(lane)
             // Stop pressed after the fetch finished, while the reload ran: the reload is not
             // cancellable and has completed, but nothing after it may start — Stop means stop.
             if Task.isCancelled {
@@ -218,7 +218,7 @@ extension RepositoryStore {
         let wasGone = branch.tracking == .gone
         let previousUpstream = branch.upstream
         runOnLane(publishing ? .publish : .push, remote: remote, holdingMutation: true) {
-            [self] backend, root, progress in
+            [self] backend, root, lane, progress in
             let result: PushResult
             do {
                 result = try await backend.push(
@@ -303,8 +303,9 @@ extension RepositoryStore {
     func runOnLane(
         _ kind: RemoteActivity.Kind, remote: String?, holdingMutation: Bool,
         quiet: Bool = false,
-        _ work: @escaping @MainActor (Backend, URL, @escaping @Sendable (String) -> Void) async
-            -> LaneEnding
+        _ work: @escaping @MainActor (
+            Backend, URL, RemoteLane, @escaping @Sendable (String) -> Void
+        ) async -> LaneEnding
     ) {
         guard let root,
             let lane = beginRemote(
@@ -315,8 +316,8 @@ extension RepositoryStore {
         }
         let backend = self.backend
         remoteTask = Task { @MainActor [self] in
-            let ending = await work(backend, root) { relay.send($0) }
-            if !ending.alreadyRefreshed { await laneRefresh() }
+            let ending = await work(backend, root, lane) { relay.send($0) }
+            if !ending.alreadyRefreshed { await laneRefresh(lane) }
             let missedWatcherEvent = watcherEventDuringLane
             finishRemote(lane)
             // A sheet the lane ends with never goes over one the user already has open — a new
@@ -355,8 +356,14 @@ extension RepositoryStore {
     /// The lane's one reload. Clears `watcherEventDuringLane` as it begins: everything the
     /// watcher dropped until now, this reload reads; anything it drops from here on sets the
     /// flag again, and `runOnLane` reloads once more for it.
+    ///
+    /// Does nothing for a lane `open()` has left behind. Its task was cancelled, but a
+    /// cancelled task still runs to its end, and without this guard it reloaded the **new**
+    /// repository and cleared the new repository's flag — an event the new repository's own
+    /// lane had dropped would then never get its reload.
     // internal (not private): used by +RemoteSheets.swift
-    func laneRefresh() async {
+    func laneRefresh(_ lane: RemoteLane) async {
+        guard generation == lane.generation else { return }
         setWatcherEventDuringLane(false)
         await refresh()
     }
