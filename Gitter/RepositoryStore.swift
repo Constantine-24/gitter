@@ -75,6 +75,23 @@ final class RepositoryStore {
     /// follow-up fetch — so the lane can only free, and the app can go.
     private(set) var isTerminating = false
 
+    /// A lane ending's follow-up (`LaneEnding.then`) that was not started because the user had
+    /// decided to quit — with the generation it belongs to. Run if the quit is called off
+    /// (`endTerminating`): a stopped push's banner says "fetching to find out", and that fetch
+    /// must then happen after all.
+    private var followUpHeldForQuit: (generation: Int, run: @MainActor () -> Void)?
+
+    /// How many pieces of lane work have ended with something the user has to read: a banner,
+    /// a sheet, or a notice that is more than "it worked" (`LaneEnding.mustBeRead`). A count
+    /// rather than the text on screen, because the same banner can come back (a second rejected
+    /// push reads word for word like the first) and a banner that went up and was replaced is
+    /// still one nobody read. `QuitGuard` takes it when it *asks* about a quit and compares
+    /// when the lane frees: anything new calls the quit off.
+    private(set) var laneMessagesToRead = 0
+
+    /// The last of those, for `QuitGuard`'s log line.
+    private(set) var lastLaneMessageToRead: String?
+
     /// The push the server just refused for having commits this branch lacks — the only state
     /// "Force Push…" is reachable from. Cleared by the next mutation or network action.
     private(set) var rejectedPush: RejectedPush?
@@ -400,6 +417,13 @@ final class RepositoryStore {
         lane.token == laneToken && generation == lane.generation && remoteActivity != nil
     }
 
+    // internal (not private(set) write): used by +Remotes.swift's `runOnLane`, once the lane's
+    // banner, sheet or notice is up
+    func noteLaneMessageToRead(_ text: String) {
+        laneMessagesToRead += 1
+        lastLaneMessageToRead = text
+    }
+
     // internal (not private(set) write): used by +Remotes.swift's automatic fetch and its
     // manual fetch from every remote
     func setLastAutoFetchFailure(_ reason: String?) {
@@ -419,7 +443,17 @@ final class RepositoryStore {
     func endTerminating() {
         guard isTerminating else { return }
         isTerminating = false
+        let held = followUpHeldForQuit
+        followUpHeldForQuit = nil
+        // First, so the schedule's immediate tick finds the lane busy with it and skips.
+        if let held, held.generation == generation { held.run() }
         if root != nil { autoFetchScheduler.start(for: self) }
+    }
+
+    /// Keeps a lane ending's follow-up for `endTerminating` instead of starting it while quitting.
+    // internal (not private(set) write): used by +Remotes.swift's `runOnLane`
+    func holdFollowUpForQuit(_ followUp: @escaping @MainActor () -> Void) {
+        followUpHeldForQuit = (generation, followUp)
     }
 
     /// Claims the network lane — and, for a write, the mutation slot as well — returning the
@@ -437,13 +471,19 @@ final class RepositoryStore {
     /// cancelled git is gone within the runner's escalation). If the claim fails for another
     /// reason — the mutation slot is taken — the automatic fetch is left running.
     ///
-    /// While quitting (`isTerminating`) nothing is claimed, silently: what is left to say
-    /// belongs to an app that is going away.
+    /// While quitting (`isTerminating`) nothing is claimed. The user's own action says why in
+    /// the banner — a click that does nothing and says nothing reads as a broken button; the
+    /// quiet ones (the automatic fetch, a write's follow-up fetch) say nothing. That banner is
+    /// not a lane's ending, so it does not call a held quit off (`laneMessagesToRead`).
     // internal (not private): used by +Remotes.swift's `runOnLane`
     func beginRemote(
         _ kind: RemoteActivity.Kind, remote: String?, holdingMutation: Bool, quiet: Bool = false
     ) -> (lane: RemoteLane, preempted: Task<Void, Never>?)? {
-        guard root != nil, !isTerminating else { return nil }
+        guard root != nil else { return nil }
+        guard !isTerminating else {
+            if !quiet, kind != .autoFetch { showStickyError(RemoteWording.refusedWhileQuitting) }
+            return nil
+        }
         let preempting = remoteActivity?.kind == .autoFetch && kind != .autoFetch
         if let remoteActivity, !preempting {
             if !quiet { showStickyError(RemoteWording.laneBusy(remoteActivity)) }

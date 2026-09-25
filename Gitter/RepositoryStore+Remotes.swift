@@ -298,7 +298,10 @@ extension RepositoryStore {
             var notice = lines.compactMap { $0 }.joined(separator: " ")
             let links = RemoteWording.pullRequestLinks(result.remoteMessages)
             if !links.isEmpty { notice += "\n" + links.joined(separator: "\n") }
-            return LaneEnding(notice: notice)
+            // Pushed, but the upstream was not set, or could not be checked: a success that says
+            // something is wrong, which a quit must not carry away unread (`QuitGuard`).
+            let warns = result.upstream == .notSet || result.upstream == .unknown
+            return LaneEnding(notice: notice, mustBeRead: warns)
         }
     }
 
@@ -490,13 +493,23 @@ extension RepositoryStore {
                 if let failure { showStickyError(failure) }
             }
             guard generation == lane.generation else { return }
+            // What a held quit must not carry away unread (`QuitGuard`).
+            if let told = failure ?? sheet.map({ "a question: \($0)" })
+                ?? (ending.mustBeRead ? ending.notice : nil)
+            {
+                noteLaneMessageToRead(told)
+            }
             // A watcher event that landed after the lane's reload began was dropped; the state
             // on screen may be behind by it, so it gets the reload it was denied.
             if missedWatcherEvent { scheduleRefresh() }
             if let rejected = ending.rejected { setRejectedPush(rejected) }
             if let notice = ending.notice, !notice.isEmpty { showNotice(notice) }
-            // Quitting: a pull's merge or a write's follow-up fetch would only be cut short.
-            guard !isTerminating else { return }
+            // Quitting: a pull's merge or a write's follow-up fetch would only be cut short. Kept,
+            // though, in case the quit is called off (`endTerminating`).
+            guard !isTerminating else {
+                if let then = ending.then { holdFollowUpForQuit(then) }
+                return
+            }
             ending.then?()
         }
     }
@@ -509,9 +522,13 @@ extension RepositoryStore {
     /// cancelled task still runs to its end, and without this guard it reloaded the **new**
     /// repository and cleared the new repository's flag — an event the new repository's own
     /// lane had dropped would then never get its reload.
+    ///
+    /// Nor for a lane a user's action has taken over (`isCurrentLane`): an automatic fetch that
+    /// was pre-empted just as its git finished returns "fetched", and its reload would run beside
+    /// the user's action, which reloads itself (Task 11's review).
     // internal (not private): used by +RemoteSheets.swift
     func laneRefresh(_ lane: RemoteLane) async {
-        guard generation == lane.generation else { return }
+        guard isCurrentLane(lane) else { return }
         setWatcherEventDuringLane(false)
         await refresh()
     }
@@ -544,6 +561,10 @@ struct LaneEnding {
     /// The work reloaded the snapshot itself (a pull decides on the tracking after its fetch),
     /// so `runOnLane` does not reload a second time.
     var alreadyRefreshed = false
+    /// The notice is a success with a warning in it ("pushed, but the upstream could not be
+    /// set"): like a banner, something a held quit is called off for (`QuitGuard`). A plain
+    /// "it worked" is not.
+    var mustBeRead = false
     /// Runs on the main actor straight after the lane is freed, with no suspension in between:
     /// a pull's merge claims the mutation slot here, and a write's follow-up fetch claims the
     /// lane again.
@@ -551,7 +572,7 @@ struct LaneEnding {
 
     init(
         notice: String? = nil, failure: String? = nil, sheet: BranchSheet? = nil,
-        rejected: RejectedPush? = nil, alreadyRefreshed: Bool = false,
+        rejected: RejectedPush? = nil, alreadyRefreshed: Bool = false, mustBeRead: Bool = false,
         then: (@MainActor () -> Void)? = nil
     ) {
         self.notice = notice
@@ -559,6 +580,7 @@ struct LaneEnding {
         self.sheet = sheet
         self.rejected = rejected
         self.alreadyRefreshed = alreadyRefreshed
+        self.mustBeRead = mustBeRead
         self.then = then
     }
 }

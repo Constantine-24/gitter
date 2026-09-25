@@ -12,11 +12,21 @@ import AppKit
 /// |---|---|
 /// | nothing | quits at once |
 /// | fetch, automatic fetch, pull (its fetch) | stops it and quits when the lane frees — at most `readStopBound` (the runner's escalation ends git within about two grace periods) |
-/// | push, publish, force push, delete on a remote | asks: **Wait** (default) lets it finish, then quits — unless it ended with a banner, which is then left on screen and the quit is called off; **Stop and Quit** stops it and quits when the lane frees; **Don't Quit** calls the quit off |
+/// | push, publish, force push, delete on a remote | asks: **Wait** (default) lets it finish, then quits — unless something ended on the lane since the quit was asked with a banner, a sheet or a notice with a warning in it, which is then left on screen and the quit called off; **Stop and Quit** stops it and quits when the lane frees; **Don't Quit** calls the quit off |
+///
+/// "Since the quit was asked", not "since Wait was clicked": the write can end — rejected, say —
+/// while the alert is still up, and its banner is then just as unread (Task 11's review: a
+/// rejected push under the alert, then Wait, quit with the banner unread). What is compared is
+/// `RepositoryStore.laneMessagesToRead`, a count of lane endings the user has to read, taken
+/// before the alert goes up — not the banner's text, which can repeat word for word.
 ///
 /// Once the user has decided to quit (every row but "Don't Quit"), `beginTerminating()` stops
 /// anything new from starting on the lane — the automatic fetch, a pull's merge, a cancelled
-/// write's follow-up fetch — so the lane can only free.
+/// write's follow-up fetch — so the lane can only free; a Fetch, Pull or Push the user asks for
+/// meanwhile is refused with a sentence saying so. Stop (⌘.) still works while the quit is held.
+///
+/// A second quit (⌘Q again) while one is held does nothing: AppKit does not ask
+/// `applicationShouldTerminate` again until the first is answered.
 ///
 /// **Not covered:** a SIGTERM (`kill`, a logout that force-quits) never reaches
 /// `applicationShouldTerminate`, and git is left running as before; and a mutation that is not
@@ -37,15 +47,18 @@ enum QuitGuard {
             log("quit: stopping \(activity.kind) and quitting when the lane frees")
             store.beginTerminating()
             store.cancelRemoteActivity()
-            replyWhenLaneFrees(store, bound: readStopBound, stayForBanner: nil)
+            replyWhenLaneFrees(store, bound: readStopBound, callOffIfToldSince: nil)
             return .terminateLater
         }
         log("quit: \(activity.kind) is a write, asking")
-        ask(about: activity, store: store)
+        // Before the alert: whatever the write ends with from here on is unread.
+        ask(about: activity, store: store, messagesBefore: store.laneMessagesToRead)
         return .terminateLater
     }
 
-    private static func ask(about activity: RemoteActivity, store: RepositoryStore) {
+    private static func ask(
+        about activity: RemoteActivity, store: RepositoryStore, messagesBefore: Int
+    ) {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = RemoteWording.quitDuringWriteTitle(activity)
@@ -62,13 +75,12 @@ enum QuitGuard {
             case .alertFirstButtonReturn:
                 log("quit: Wait")
                 store.beginTerminating()
-                // A banner the write ends with is new if it differs from what was up before.
-                replyWhenLaneFrees(store, bound: nil, stayForBanner: store.lastError)
+                replyWhenLaneFrees(store, bound: nil, callOffIfToldSince: messagesBefore)
             case .alertSecondButtonReturn:
                 log("quit: Stop and Quit")
                 store.beginTerminating()
                 store.cancelRemoteActivity()
-                replyWhenLaneFrees(store, bound: readStopBound, stayForBanner: nil)
+                replyWhenLaneFrees(store, bound: readStopBound, callOffIfToldSince: nil)
             default:
                 log("quit: Don't Quit")
                 NSApp.reply(toApplicationShouldTerminate: false)
@@ -85,12 +97,13 @@ enum QuitGuard {
 
     /// Replies to the pending terminate once the lane is free — or after `bound`, if given.
     ///
-    /// `stayForBanner` is the banner that was up when the user chose Wait: if the lane ends with
-    /// a different one (the push failed, or the server refused it), the quit is called off so
-    /// that the user reads it. A write that failed while nobody was looking is exactly the
-    /// silent loss this type exists to prevent.
+    /// `callOffIfToldSince` is `laneMessagesToRead` as it was when the quit was asked: if a lane
+    /// has ended since with something to read (the push failed, the server refused it, it
+    /// pushed but could not set the upstream), the quit is called off so that the user reads it.
+    /// A write that failed while nobody was looking is exactly the silent loss this type exists
+    /// to prevent.
     private static func replyWhenLaneFrees(
-        _ store: RepositoryStore, bound: Duration?, stayForBanner before: String??
+        _ store: RepositoryStore, bound: Duration?, callOffIfToldSince before: Int?
     ) {
         // Polled from a run-loop timer in the common modes, not from a Task: while the quit is
         // held AppKit spins the run loop in its modal-panel mode, and a timer there fires even if
@@ -105,8 +118,10 @@ enum QuitGuard {
                     guard let bound, waited > bound else { return false }
                     log("quit: the lane did not free within \(bound); quitting anyway")
                 }
-                if let before, let banner = store.lastError, banner != before {
-                    log("quit: called off, the write ended with a banner: \(banner)")
+                if let before, store.laneMessagesToRead != before {
+                    log(
+                        "quit: called off, the lane ended with something to read: "
+                            + (store.lastLaneMessageToRead ?? "?"))
                     store.endTerminating()
                     NSApp.reply(toApplicationShouldTerminate: false)
                     return true

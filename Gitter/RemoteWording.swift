@@ -317,10 +317,17 @@ enum RemoteWording {
     static let quitDuringWriteMessage =
         "Stopping it now leaves the remote in an unknown state: it may or may not have been "
         + "updated, and Gitter would not be here to find out. Wait lets it finish and then "
-        + "quits — unless it fails, in which case Gitter stays open so you can read why."
+        + "quits — unless it fails or has something to tell you, in which case Gitter stays "
+        + "open so you can read it."
     static let quitWait = "Wait"
     static let quitStop = "Stop and Quit"
     static let quitCancel = "Don't Quit"
+
+    /// A Fetch, Pull or Push asked for after the user has decided to quit and before the app
+    /// has gone (`RepositoryStore.beginRemote`).
+    static let refusedWhileQuitting =
+        "Gitter is quitting once the network work in progress has ended, so nothing new is "
+        + "started."
 
     /// A tracking badge's tooltip. Counts are against **the upstream, by name** — never "the
     /// remote": the upstream can be another local branch (`tracksLocalBranch`), or live on a
