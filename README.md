@@ -233,7 +233,7 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `stageall` / `commit:<subject>` | stage everything, and commit through the composer's own path |
 | `snapshot:<name>` | draw the window into `GITTER_DEBUG_SNAPSHOT_DIR/<name>.png` |
 | `open:<path>` | open that repository as "Open Repository…" does — mid-script, e.g. while a push is running |
-| `menu:<title>` | log every item of that main-menu menu — title, shortcut, enabled — as it would be when opened; a script cannot open a menu |
+| `menu:<title>` | log every item of that main-menu menu — title, shortcut, enabled — as it would be when opened; a script cannot open a menu. As the **very first** step it can read stale state (seen: every item `enabled=false` before the first snapshot had loaded), so put `wait:1` before it |
 | `views[:<class>]` | log the window's view tree with frames in click coordinates; a toolbar item is a `ToolbarItemHostingView`, above the content area (negative y) — the centre of its frame is where `GITTER_DEBUG_CLICK` aims |
 | `badges` | log what each local branch's tracking badge draws, its tooltip and its VoiceOver text — the snapshot cannot draw the sidebar |
 | `autofetchfailed:<reason>` | set the failure the Fetch item's quiet mark stands for (until the auto-fetch scheduler sets it for real) |
@@ -242,7 +242,9 @@ A step that starts network work waits for the lane to free as well, for up to 12
 step taken while the lane is already busy waits only for the mutation slot, so a second
 network action is refused and logged at once. After each step a second line reports the lane
 (its kind, remote and progress line), the three blocked reasons, the push button's title, the
-tracking, the remembered pull mode, and how many snapshot loads have run.
+tracking, the counts the Push and Pull buttons draw (`pushCount`, `pullCount`), the Push
+tooltip, the remembered pull mode, and how many snapshot loads have run. A click on the
+toolbar's Stop that the double-click guard drops logs `stop click ignored`.
 
 A slow transport, for cancelling and for working during a fetch, is configuration in the
 scratch repository and not a hook: point `remote.<name>.uploadpack` (fetch) or
