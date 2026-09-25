@@ -78,19 +78,26 @@ struct GitterApp: App {
             // The toolbar's three network items and Stop. Disabled for the same reasons as
             // the toolbar, but the reasons are not spelled out here: a menu item shows no
             // tooltip, and the titles stay the plain verbs. The toolbar carries the "why".
+            //
+            // **And all four are off while a sheet is up** (final review's fix wave). The
+            // toolbar is behind the sheet; the menu's key equivalents are not, and a sheet is a
+            // question the user has not answered yet. Measured with the harness in the final
+            // review: ⇧⌘P under an open merge sheet pushed `main` to `origin` while the sheet
+            // was still asking. Stop is included so that no key pressed while a sheet has the
+            // user's attention acts on the network lane behind it.
             CommandMenu("Repository") {
                 Button("Fetch") { store.fetch() }
                     .keyboardShortcut("f", modifiers: [.command, .shift])
-                    .disabled(store.fetchBlockedReason != nil)
+                    .disabled(store.activeSheet != nil || store.fetchBlockedReason != nil)
                 Button("Pull") { store.pull() }
                     .keyboardShortcut("l", modifiers: [.command, .shift])
-                    .disabled(store.pullBlockedReason != nil)
+                    .disabled(store.activeSheet != nil || store.pullBlockedReason != nil)
                 Button(store.pushButtonTitle) { store.push() }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
-                    .disabled(store.pushBlockedReason != nil)
+                    .disabled(store.activeSheet != nil || store.pushBlockedReason != nil)
                 Button("Stop") { store.cancelRemoteActivity() }
                     .keyboardShortcut(".", modifiers: .command)
-                    .disabled(store.remoteActivity == nil)
+                    .disabled(store.activeSheet != nil || store.remoteActivity == nil)
                 Divider()
                 // Off also stops an automatic fetch that is running; on waits for the next tick.
                 Toggle(
