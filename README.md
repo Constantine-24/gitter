@@ -163,6 +163,10 @@ Gitter/                   macOS app (SwiftUI)
   RepositoryStore+BranchSheets.swift  Opening the sheets, delete, abort, name validation
   RepositoryStore+BranchState.swift   HEAD, refs and what is allowed right now
   RepositoryStore+Errors.swift    Turning a refusal into the sentence the banner shows
+  RepositoryStore+Remotes.swift   The network lane: fetch, pull, push, cancel, blocked reasons
+  RepositoryStore+RemoteSheets.swift  Pull, publish, force push and delete-on-remote sheets
+  RemoteActivity.swift       What the lane is running, a refused push, the progress relay
+  RemoteWording.swift        Every sentence about the network, and making server text plain
   BranchSheet.swift          Which confirmation or form the store wants on screen
   CommitDraft.swift          The commit message + amend toggle being edited
   RepositoryWatcher.swift    FSEvents-based debounced refresh trigger
@@ -202,6 +206,7 @@ never be put on screen from a script, and a focus bug can never be reproduced.
 | `GITTER_DEBUG_TYPE=text` | then type that text into whatever has focus |
 | `GITTER_DEBUG_DUMP_RESPONDER=1` | print the first-responder chain, the window geometry and whether the window is key to stderr, after every click and key; a count instead of `1` repeats the final dump that many times, 200 ms apart, which is how you tell "never focused" from "focused, then lost it" |
 | `GITTER_DEBUG_BRANCH_ACTION=<step>[;<step>…]` | run branch actions and open their sheets (see below) — the sidebar's context menus are AppKit menus that in-process clicks cannot open |
+| `GITTER_DEBUG_SNAPSHOT_DIR=<dir>` | where a `snapshot:<name>` step writes `<name>.png`: the window and any sheet on it, drawn by the app itself — no Screen Recording needed, and it works for a window on a Space nobody is looking at |
 
 The branch steps run in order, each waiting for the mutation the one before it started:
 
@@ -216,7 +221,28 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `abort` | open the abort confirmation and answer it |
 | `confirmleave` | answer the "leaving a detached HEAD" confirmation a previous step opened |
 | `wait:<seconds>` | hold whatever is on screen, so a terminal can change the repository *underneath* a confirmation — the only way to check what a stale sheet does. Clamped to 0…120 |
-| `sheet:new` / `sheet:rename:<b>` / `sheet:merge:<b>` / `sheet:delete:<b>` / `sheet:abort` | open a sheet without acting — `sheet:delete` reads the warning's count and tip instead of letting `git branch -d` refuse, so it never deletes anything |
+| `sheet:new` / `sheet:rename:<b>` / `sheet:merge:<b>` / `sheet:delete:<b>` / `sheet:abort` / `sheet:pull` | open a sheet without acting — `sheet:delete` reads the warning's count and tip instead of letting `git branch -d` refuse, so it never deletes anything; `sheet:pull` opens the pull sheet from the tracking on screen, without fetching |
+| `fetch[:<remote>]` | fetch one remote, or all |
+| `pull` / `pull:merge` / `pull:rebase` | pull; the two with a mode also answer the pull sheet if one opened |
+| `push` / `publish:<remote>` | push, or publish — `publish:` answers the publish sheet with that remote when there are several |
+| `forcepush` / `confirmforcepush` | open the force push sheet (only possible after a rejected `push`), and answer it |
+| `deleteremote:<remote>/<branch>` / `confirmdeleteremote` | open the delete-on-remote sheet, and answer it |
+| `cancel` | stop what the network lane is running, and wait for it to say so |
+| `start:<step>` / `idle` | run a step without waiting for its network lane, so the next steps run *during* it; `idle` then waits for the lane to free |
+| `stageall` / `commit:<subject>` | stage everything, and commit through the composer's own path |
+| `snapshot:<name>` | draw the window into `GITTER_DEBUG_SNAPSHOT_DIR/<name>.png` |
+
+A step that starts network work waits for the lane to free as well, for up to 120 seconds; a
+step taken while the lane is already busy waits only for the mutation slot, so a second
+network action is refused and logged at once. After each step a second line reports the lane
+(its kind, remote and progress line), the three blocked reasons, the push button's title, the
+tracking, the remembered pull mode, and how many snapshot loads have run.
+
+A slow transport, for cancelling and for working during a fetch, is configuration in the
+scratch repository and not a hook: point `remote.<name>.uploadpack` (fetch) or
+`remote.<name>.receivepack` (push) at a script that sleeps and then `exec`s
+`git-upload-pack "$@"` / `git-receive-pack "$@"` — the same fixture GitCore's cancellation
+tests use. Only ever against local bare repositories.
 
 The clicks and keys in `GITTER_DEBUG_CLICK`/`KEYS`/`TYPE` run **once, after the last
 step**, so a `wait:` step is what puts a click on a sheet that has gone out of date.
