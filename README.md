@@ -219,7 +219,7 @@ xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -config
 cd GitCore && swift test
 ```
 
-728 tests in 58 suites. Most of them run real `git` against a temporary repository rather
+730 tests in 58 suites. Most of them run real `git` against a temporary repository rather
 than a fake — the remote tests against local bare repositories standing in for a server,
 with a second clone as "the colleague" who pushes in between — including one that greps
 `GitCore`'s own sources for forbidden force flags. The suite isolates itself from your git
