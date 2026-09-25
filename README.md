@@ -49,8 +49,8 @@ quiet fetch in the background. There is still no discard and no stash; those are
   and using one stops it
 - Quit safely while the network is busy: a fetch or pull is stopped and Gitter quits; a push
   (or publish, force push, delete on a remote) asks first — **Wait** lets it finish and then
-  quits (or stays open if it failed or has a warning, so you can read it), **Stop and
-  Quit**, or **Don't Quit**
+  quits (or stays open if it failed or has a warning, so you can read it, or if it is still
+  running after ten minutes), **Stop and Quit**, or **Don't Quit**
 
 ![The remote toolbar: Fetch, "Pull ↓2" and "Push ↑2", with "main ↑2 ↓2" on the branch button](docs/screenshots/remotes.png)
 
@@ -328,6 +328,7 @@ never be put on screen from a script, and a focus bug can never be reproduced.
 | `GITTER_DEBUG_BRANCH_ACTION=<step>[;<step>…]` | run branch actions and open their sheets (see below) — the sidebar's context menus are AppKit menus that in-process clicks cannot open |
 | `GITTER_DEBUG_THEN=<step>[;<step>…]` | more branch steps, run **after** the clicks and keys — what a click on a toolbar button did: `idle;snapshot:after-click` |
 | `GITTER_DEBUG_AUTOFETCH=<interval>[,<timeout>]` | run the automatic fetch every `<interval>` seconds instead of 10 minutes, stopping each one after `<timeout>` seconds (default 120) instead of 2 minutes — so a script sees several ticks. Every tick and every ending prints an `AUTOFETCH …` line, naming the store (`store 1`); `STORES built: <n>` lines at launch and on every open event say how many stores exist — one is the only right answer |
+| `GITTER_DEBUG_QUIT_WAIT=<seconds>` | how long **Wait**, in the quit alert, waits for a write before calling the quit off with a banner, instead of 10 minutes — so a script can reach the bound with a slow scratch transport |
 | `GITTER_DEBUG_SNAPSHOT_DIR=<dir>` | where a `snapshot:<name>` step writes `<name>.png`: the window and any sheet on it, drawn by the app itself — no Screen Recording needed, and it works for a window on a Space nobody is looking at |
 
 The branch steps run in order, each waiting for the mutation the one before it started:

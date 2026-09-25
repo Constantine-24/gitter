@@ -302,14 +302,24 @@ enum RemoteWording {
         return sentence.hasPrefix(prefix) ? String(sentence.dropFirst(prefix.count)) : sentence
     }
 
+    /// Wait was chosen at quit and the write is still running at `QuitGuard.waitBound`: the quit
+    /// is called off, since quitting would leave git to finish — or not — with nobody told.
+    static func quitWaitGaveUp(_ activity: RemoteActivity, after bound: Duration) -> String {
+        "Gitter waited \(span(bound)) for \(describe(activity)) to finish and did not quit, "
+            + "because it was still running. Quit again once it has finished, or stop it."
+    }
+
     /// An automatic fetch still running at its timeout is stopped, and the mark says so.
     static func autoFetchTimedOut(after timeout: Duration) -> String {
-        let seconds = Int(timeout.components.seconds)
-        let span =
-            seconds >= 60 && seconds % 60 == 0
+        "it took longer than \(span(timeout)) and was stopped."
+    }
+
+    /// "1 second", "45 seconds", "a minute", "10 minutes" — whole minutes when it is one.
+    private static func span(_ duration: Duration) -> String {
+        let seconds = Int(duration.components.seconds)
+        return seconds >= 60 && seconds % 60 == 0
             ? (seconds == 60 ? "a minute" : "\(seconds / 60) minutes")
             : (seconds == 1 ? "1 second" : "\(seconds) seconds")
-        return "it took longer than \(span) and was stopped."
     }
 
     // MARK: - Quitting

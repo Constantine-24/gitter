@@ -12,7 +12,7 @@ import AppKit
 /// |---|---|
 /// | nothing | quits at once |
 /// | fetch, automatic fetch, pull (its fetch) | stops it and quits when the lane frees — at most `readStopBound` (the runner's escalation ends git within about two grace periods) |
-/// | push, publish, force push, delete on a remote | asks: **Wait** (default) lets it finish, then quits — unless something ended on the lane since the quit was asked with a banner, a sheet or a notice with a warning in it, which is then left on screen and the quit called off; **Stop and Quit** stops it and quits when the lane frees; **Don't Quit** calls the quit off |
+/// | push, publish, force push, delete on a remote | asks: **Wait** (default) lets it finish, then quits — unless something ended on the lane since the quit was asked with a banner, a sheet or a notice with a warning in it, which is then left on screen and the quit called off; and unless it is still running after `waitBound`, when the quit is called off with a banner saying so; **Stop and Quit** stops it and quits when the lane frees; **Don't Quit** calls the quit off |
 ///
 /// "Since the quit was asked", not "since Wait was clicked": the write can end — rejected, say —
 /// while the alert is still up, and its banner is then just as unread (Task 11's review: a
@@ -37,6 +37,34 @@ enum QuitGuard {
     /// cancelled git within about two grace periods (2 s each); this is generous on top.
     static let readStopBound: Duration = .seconds(10)
 
+    /// How long **Wait** waits for a write before it gives up on quitting (final review's fix
+    /// wave). It used to wait without end: a push stuck on a server that never answers held the
+    /// quit — and the app, with every new lane claim refused — for as long as git ran, with
+    /// nothing on screen to say why nothing happened. Ten minutes is far past any push the lane
+    /// makes while leaving a stuck one visibly stuck; at the bound the quit is **called off**,
+    /// never turned into a quit: the write is still running, and quitting now is the silent
+    /// loss this type exists to prevent. The banner says so and the user chooses again.
+    ///
+    /// DEBUG builds read `GITTER_DEBUG_QUIT_WAIT=<seconds>` so the harness can reach the bound.
+    static var waitBound: Duration {
+        #if DEBUG
+            if let seconds = ProcessInfo.processInfo.environment["GITTER_DEBUG_QUIT_WAIT"]
+                .flatMap(Double.init), seconds > 0
+            {
+                return .milliseconds(Int(seconds * 1000))
+            }
+        #endif
+        return .seconds(600)
+    }
+
+    /// What happens when a bound passes with the lane still busy.
+    private enum AtTheBound {
+        /// A stopped read: git has been told to go and the runner's escalation ends it; quit.
+        case quitAnyway
+        /// A write the user chose to wait for: still running, so the quit is called off.
+        case callOff
+    }
+
     /// The answer to `applicationShouldTerminate`.
     static func shouldTerminate(_ store: RepositoryStore?) -> NSApplication.TerminateReply {
         guard let store, let activity = store.remoteActivity else {
@@ -47,7 +75,8 @@ enum QuitGuard {
             log("quit: stopping \(activity.kind) and quitting when the lane frees")
             store.beginTerminating()
             store.cancelRemoteActivity()
-            replyWhenLaneFrees(store, bound: readStopBound, callOffIfToldSince: nil)
+            replyWhenLaneFrees(
+                store, bound: readStopBound, atTheBound: .quitAnyway, callOffIfToldSince: nil)
             return .terminateLater
         }
         log("quit: \(activity.kind) is a write, asking")
@@ -75,12 +104,16 @@ enum QuitGuard {
             case .alertFirstButtonReturn:
                 log("quit: Wait")
                 store.beginTerminating()
-                replyWhenLaneFrees(store, bound: nil, callOffIfToldSince: messagesBefore)
+                replyWhenLaneFrees(
+                    store, bound: waitBound, atTheBound: .callOff,
+                    callOffIfToldSince: messagesBefore)
             case .alertSecondButtonReturn:
                 log("quit: Stop and Quit")
                 store.beginTerminating()
                 store.cancelRemoteActivity()
-                replyWhenLaneFrees(store, bound: readStopBound, callOffIfToldSince: nil)
+                replyWhenLaneFrees(
+                    store, bound: readStopBound, atTheBound: .quitAnyway,
+                    callOffIfToldSince: nil)
             default:
                 log("quit: Don't Quit")
                 NSApp.reply(toApplicationShouldTerminate: false)
@@ -95,7 +128,8 @@ enum QuitGuard {
         }
     }
 
-    /// Replies to the pending terminate once the lane is free — or after `bound`, if given.
+    /// Replies to the pending terminate once the lane is free — or, once `bound` has passed with
+    /// the lane still busy, as `atTheBound` says.
     ///
     /// `callOffIfToldSince` is `laneMessagesToRead` as it was when the quit was asked: if a lane
     /// has ended since with something to read (the push failed, the server refused it, it
@@ -103,7 +137,8 @@ enum QuitGuard {
     /// A write that failed while nobody was looking is exactly the silent loss this type exists
     /// to prevent.
     private static func replyWhenLaneFrees(
-        _ store: RepositoryStore, bound: Duration?, callOffIfToldSince before: Int?
+        _ store: RepositoryStore, bound: Duration, atTheBound: AtTheBound,
+        callOffIfToldSince before: Int?
     ) {
         // Polled from a run-loop timer in the common modes, not from a Task: while the quit is
         // held AppKit spins the run loop in its modal-panel mode, and a timer there fires even if
@@ -114,9 +149,19 @@ enum QuitGuard {
         let timer = Timer(timeInterval: 0.05, repeats: true) { timer in
             let replied = MainActor.assumeIsolated { () -> Bool in
                 let waited = ContinuousClock.now - started
-                if store.remoteActivity != nil {
-                    guard let bound, waited > bound else { return false }
-                    log("quit: the lane did not free within \(bound); quitting anyway")
+                if let activity = store.remoteActivity {
+                    guard waited > bound else { return false }
+                    switch atTheBound {
+                    case .quitAnyway:
+                        log("quit: the lane did not free within \(bound); quitting anyway")
+                        NSApp.reply(toApplicationShouldTerminate: true)
+                    case .callOff:
+                        log("quit: the lane did not free within \(bound); calling the quit off")
+                        store.endTerminating()
+                        store.showStickyError(RemoteWording.quitWaitGaveUp(activity, after: bound))
+                        NSApp.reply(toApplicationShouldTerminate: false)
+                    }
+                    return true
                 }
                 if let before, store.laneMessagesToRead != before {
                     log(
