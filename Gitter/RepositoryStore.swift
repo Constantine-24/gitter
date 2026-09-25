@@ -61,8 +61,14 @@ final class RepositoryStore {
     private(set) var remoteActivity: RemoteActivity?
 
     /// Why the last automatic fetch failed, for a quiet mark on the Fetch button. Never a
-    /// banner: being offline is normal. Written by Task 11's scheduler.
+    /// banner: being offline is normal. Set and cleared by the automatic fetch
+    /// (`RepositoryStore+Remotes`), cleared by a manual fetch from every remote that succeeds,
+    /// and by opening a repository: it is about the one that was open.
     private(set) var lastAutoFetchFailure: String?
+
+    /// Fetches every remote now and then, quietly. Started by `open()` once the repository's
+    /// first snapshot is in, stopped by the next `open()` and by quitting.
+    let autoFetchScheduler = AutoFetchScheduler.fromEnvironment()
 
     /// The push the server just refused for having commits this branch lacks — the only state
     /// "Force Push…" is reachable from. Cleared by the next mutation or network action.
@@ -98,7 +104,7 @@ final class RepositoryStore {
         }
 
         /// The harness's `autofetchfailed:<reason>` step, so the Fetch item's quiet mark can be
-        /// drawn before Task 11's scheduler exists to set it for real.
+        /// drawn without waiting for a real automatic fetch to fail.
         func debugSetLastAutoFetchFailure(_ reason: String?) {
             lastAutoFetchFailure = reason
         }
@@ -221,6 +227,11 @@ final class RepositoryStore {
         remoteTask = nil
         remoteActivity = nil
         rejectedPush = nil
+        // The automatic fetch belongs to the repository it fetches: the old one's schedule
+        // stops here, and its mark says nothing about this one. This one's starts once its first
+        // snapshot is in (below), so the first tick can see whether it has a remote at all.
+        autoFetchScheduler.stop()
+        lastAutoFetchFailure = nil
         // Everything in flight for the previous repository — including a reopen of this very
         // path — is now stale and will drop its result.
         generation += 1
@@ -233,7 +244,12 @@ final class RepositoryStore {
             self?.scheduleRefresh(changed: paths)
         }
 
-        Task { await refresh() }
+        let openedGeneration = generation
+        Task {
+            await refresh()
+            guard generation == openedGeneration else { return }
+            autoFetchScheduler.start(for: self)
+        }
     }
 
     // MARK: - Selection
@@ -348,6 +364,27 @@ final class RepositoryStore {
 
     // MARK: - Network lane bookkeeping
 
+    /// The lane's activity when it is one that stops the user: everything except the automatic
+    /// fetch. An automatic fetch never makes the user wait — Fetch, Pull, Push and the sheets'
+    /// buttons stay available, and starting any of them stops it (`beginRemote`) — so the
+    /// blocked reasons read this rather than `remoteActivity`.
+    var blockingRemoteActivity: RemoteActivity? {
+        remoteActivity?.kind == .autoFetch ? nil : remoteActivity
+    }
+
+    /// Whether `lane` is still the one on the lane: not freed, not replaced (a user's action
+    /// pre-empting an automatic fetch), not left behind by `open()`.
+    // internal (not private): used by +Remotes.swift's automatic fetch
+    func isCurrentLane(_ lane: RemoteLane) -> Bool {
+        lane.token == laneToken && generation == lane.generation && remoteActivity != nil
+    }
+
+    // internal (not private(set) write): used by +Remotes.swift's automatic fetch and its
+    // manual fetch from every remote
+    func setLastAutoFetchFailure(_ reason: String?) {
+        lastAutoFetchFailure = reason
+    }
+
     /// Claims the network lane — and, for a write, the mutation slot as well — returning the
     /// ticket to hand back to `finishRemote`, or nil when it cannot be claimed. A refusal says
     /// why in the banner: a second network action is refused with a reason, never queued and
@@ -356,12 +393,19 @@ final class RepositoryStore {
     /// `quiet` is for the follow-up fetch after a cancelled or failed write: it must not clear
     /// the banner that says the remote may or may not have changed, which is the one thing the
     /// user has to read.
+    ///
+    /// **An automatic fetch gives way.** Anything else claiming the lane while one runs cancels
+    /// it and takes the lane; the task that ran it is returned as `preempted`, and the caller
+    /// waits for it before starting git, so two fetches never write the same refs at once (a
+    /// cancelled git is gone within the runner's escalation). If the claim fails for another
+    /// reason — the mutation slot is taken — the automatic fetch is left running.
     // internal (not private): used by +Remotes.swift's `runOnLane`
     func beginRemote(
         _ kind: RemoteActivity.Kind, remote: String?, holdingMutation: Bool, quiet: Bool = false
-    ) -> RemoteLane? {
+    ) -> (lane: RemoteLane, preempted: Task<Void, Never>?)? {
         guard root != nil else { return nil }
-        if let remoteActivity {
+        let preempting = remoteActivity?.kind == .autoFetch && kind != .autoFetch
+        if let remoteActivity, !preempting {
             if !quiet { showStickyError(RemoteWording.laneBusy(remoteActivity)) }
             return nil
         }
@@ -382,11 +426,23 @@ final class RepositoryStore {
             }
             dismissNotice()
         }
-        rejectedPush = nil
+        var preempted: Task<Void, Never>?
+        if preempting {
+            preempted = remoteTask
+            remoteTask?.cancel()
+            remoteTask = nil
+        }
+        // "Force Push…" answers the refusal on screen; the automatic fetch is not something the
+        // user did, and must not take that answer away every ten minutes. (The force push reads
+        // its lease with a fetch of its own, so a tracking ref moved meanwhile changes nothing.)
+        if kind != .autoFetch { rejectedPush = nil }
         laneToken += 1
         remoteActivity = RemoteActivity(kind: kind, remote: remote, progress: nil)
-        return RemoteLane(
-            token: laneToken, generation: generation, mutationGeneration: mutationGeneration)
+        return (
+            RemoteLane(
+                token: laneToken, generation: generation, mutationGeneration: mutationGeneration),
+            preempted
+        )
     }
 
     /// Frees the lane `lane` holds. Does nothing for a lane `open()` has already reset or a

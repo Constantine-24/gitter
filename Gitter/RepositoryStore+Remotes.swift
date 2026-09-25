@@ -11,6 +11,7 @@ import GitCore
 /// | fetch | while it runs | never — staging, committing and branch actions stay usable; a fetch writes only `refs/remotes/*` and git's own ref locking arbitrates |
 /// | pull | for its fetch | for the merge or rebase after it, through `perform`/`mutate` |
 /// | push, publish, force push, delete on a remote | while it runs | while it runs — nothing may move the branch between the decision and the push |
+/// | automatic fetch | while it runs — but it **gives way**: anything above stops it and takes the lane (`beginRemote`) | never |
 ///
 /// **One reload.** While the lane is busy the watcher's reloads are dropped (`scheduleRefresh`);
 /// `runOnLane` reloads once, still holding the lane, and only then frees it and puts up the
@@ -34,10 +35,11 @@ extension RepositoryStore {
         currentBranchRef?.tracking ?? .none
     }
 
-    /// Everything the blocked reasons are decided on, read in one place.
+    /// Everything the blocked reasons are decided on, read in one place. An automatic fetch on
+    /// the lane blocks nothing (`blockingRemoteActivity`): the user's action stops it.
     var remoteGate: RemoteWording.Gate {
         RemoteWording.Gate(
-            hasRepository: root != nil && snapshot != nil, activity: remoteActivity,
+            hasRepository: root != nil && snapshot != nil, activity: blockingRemoteActivity,
             isMutating: isMutating, operation: operationInProgress, isDetached: isDetached,
             branch: currentBranchRef, remotes: snapshot?.refs.remotes ?? [])
     }
@@ -58,7 +60,7 @@ extension RepositoryStore {
     /// the mutation slot. The one sentence all four sheets (pull, publish, force push, delete on
     /// a remote) show under their text; what is *stale* about a sheet is each sheet's own.
     var sheetBusyReason: String? {
-        if let activity = remoteActivity { return RemoteWording.laneBusy(activity) }
+        if let activity = blockingRemoteActivity { return RemoteWording.laneBusy(activity) }
         if isMutating { return RemoteWording.mutationBusy }
         return nil
     }
@@ -122,7 +124,12 @@ extension RepositoryStore {
             backend, root, lane, progress in
             do {
                 try await backend.fetch(remote: remote, at: root, progress: progress)
-                return LaneEnding(notice: quiet ? nil : RemoteWording.fetched(from: remote))
+                // Every remote answered, so whatever the last automatic fetch ran into is over.
+                // A fetch from one remote says nothing about the others.
+                return LaneEnding(notice: quiet ? nil : RemoteWording.fetched(from: remote)) {
+                    [self] in
+                    if remote == nil { setLastAutoFetchFailure(nil) }
+                }
             } catch where Self.isCancellation(error) {
                 return LaneEnding(notice: quiet ? nil : RemoteWording.fetchStopped(from: remote))
             } catch {
@@ -313,6 +320,110 @@ extension RepositoryStore {
         return LaneEnding(failure: message) { [self] in startFetch(remote: remote, quiet: true) }
     }
 
+    // MARK: - Automatic fetch
+
+    /// Why the scheduler's tick does nothing this time, or nil to fetch. Not a sentence for the
+    /// user — nothing about the automatic fetch is ever said in a banner — but what the DEBUG
+    /// log prints for each tick.
+    ///
+    /// Not skipped for a running mutation: a fetch writes only `refs/remotes/*` and holds only
+    /// the lane, like the manual one.
+    var autoFetchSkipReason: String? {
+        guard AutoFetchScheduler.isEnabled else { return "turned off" }
+        guard root != nil, let snapshot else { return "no repository" }
+        if let remoteActivity { return "the lane is busy (\(remoteActivity.kind))" }
+        if let operationInProgress { return "an operation is in progress (\(operationInProgress))" }
+        if snapshot.refs.remotes.isEmpty { return "no remotes" }
+        return nil
+    }
+
+    /// One tick of the schedule: `git fetch --all` on the lane as `.autoFetch`, stopped after
+    /// `timeout`. Quiet in every outcome — no banner, no notice, no sheet, and the banner or
+    /// notice already on screen is left alone (`quiet` claim):
+    ///
+    /// | outcome | what it leaves |
+    /// |---|---|
+    /// | fetched | `lastAutoFetchFailure` cleared; the one reload shows the new badges |
+    /// | failed | `lastAutoFetchFailure` = git's reason, made plain, one line |
+    /// | took longer than `timeout` | stopped; `lastAutoFetchFailure` says so |
+    /// | stopped by the user (Stop, ⌘.) | nothing changes but the reload |
+    /// | pre-empted by the user's own Fetch, Pull, Push or a sheet's confirm | nothing, no reload: the user's action has the lane and reloads itself |
+    ///
+    /// It can never ask for anything: git runs with stdin at `/dev/null` and
+    /// `GIT_TERMINAL_PROMPT=0`, and ssh — measured in Task 11, see the spec's "Auto-fetch" —
+    /// finds no tty to ask on when Gitter is started from the Dock or Finder.
+    func autoFetchTick(timeout: Duration) {
+        if let reason = autoFetchSkipReason {
+            #if DEBUG
+                Self.logAutoFetch("tick skipped: \(reason)")
+            #endif
+            return
+        }
+        #if DEBUG
+            Self.logAutoFetch("tick: fetching every remote")
+        #endif
+        runOnLane(.autoFetch, remote: nil, holdingMutation: false, quiet: true) {
+            [self] backend, root, lane, _ in
+            do {
+                // No progress callback: the toolbar says only that it is running.
+                let finished = try await Self.fetchAll(
+                    backend: backend, root: root, within: timeout)
+                let reason = finished ? nil : RemoteWording.autoFetchTimedOut(after: timeout)
+                #if DEBUG
+                    Self.logAutoFetch("ended: \(reason ?? "fetched")")
+                #endif
+                return LaneEnding { [self] in setLastAutoFetchFailure(reason) }
+            } catch where Self.isCancellation(error) {
+                let preempted = !isCurrentLane(lane)
+                #if DEBUG
+                    Self.logAutoFetch("ended: \(preempted ? "pre-empted" : "stopped")")
+                #endif
+                // Pre-empted: the lane is the user's now and their action reloads; a reload here
+                // would only run beside it. Stopped: some refs may have moved; the one reload.
+                return LaneEnding(alreadyRefreshed: preempted)
+            } catch {
+                let reason = RemoteWording.autoFetchFailure(error)
+                #if DEBUG
+                    Self.logAutoFetch("ended: failed: \(reason)")
+                #endif
+                return LaneEnding { [self] in setLastAutoFetchFailure(reason) }
+            }
+        }
+    }
+
+    /// Turning "Fetch Automatically" off stops an automatic fetch that is running; turning it on
+    /// waits for the next tick.
+    func autoFetchSettingChanged(enabled: Bool) {
+        guard !enabled, remoteActivity?.kind == .autoFetch else { return }
+        remoteTask?.cancel()
+    }
+
+    /// `git fetch --all`, or false once `timeout` has passed first — the fetch is then
+    /// cancelled, and this returns once its git has gone (the runner's escalation bounds that).
+    /// A failure or a cancellation of the caller is thrown.
+    private nonisolated static func fetchAll(
+        backend: Backend, root: URL, within timeout: Duration
+    ) async throws -> Bool {
+        try await withThrowingTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                try await backend.fetch(remote: nil, at: root, progress: { _ in })
+                return true
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                return false
+            }
+            defer { group.cancelAll() }
+            return try await group.next() ?? false
+        }
+    }
+
+    #if DEBUG
+        static func logAutoFetch(_ message: String) {
+            FileHandle.standardError.write(Data("AUTOFETCH \(message)\n".utf8))
+        }
+    #endif
+
     // MARK: - Cancel
 
     /// Stops whatever the lane is running. The running work sees `CancellationError` and says
@@ -337,14 +448,19 @@ extension RepositoryStore {
         ) async -> LaneEnding
     ) {
         guard let root,
-            let lane = beginRemote(
+            let claim = beginRemote(
                 kind, remote: remote, holdingMutation: holdingMutation, quiet: quiet)
         else { return }
+        let lane = claim.lane
+        let preempted = claim.preempted
         let relay = ProgressRelay { [weak self] text in
             self?.setRemoteProgress(text, lane: lane)
         }
         let backend = self.backend
         remoteTask = Task { @MainActor [self] in
+            // An automatic fetch this claim stopped: its git is going, and this one's starts
+            // only once it has gone (see `beginRemote`).
+            await preempted?.value
             let ending = await work(backend, root, lane) { relay.send($0) }
             if !ending.alreadyRefreshed { await laneRefresh(lane) }
             let missedWatcherEvent = watcherEventDuringLane

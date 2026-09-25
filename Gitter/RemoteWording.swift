@@ -188,7 +188,8 @@ enum RemoteWording {
     static func inProgressTitle(_ activity: RemoteActivity) -> String {
         let remote = activity.remote.map { " \"\($0)\"" } ?? ""
         return switch activity.kind {
-        case .fetch, .autoFetch: activity.remote == nil ? "Fetching…" : "Fetching from\(remote)…"
+        case .fetch: activity.remote == nil ? "Fetching…" : "Fetching from\(remote)…"
+        case .autoFetch: "Fetching automatically…"
         case .pull: "Pulling…"
         case .push: "Pushing to\(remote)…"
         case .publish: "Publishing to\(remote)…"
@@ -207,8 +208,13 @@ enum RemoteWording {
     /// to \"origin\" — " pushing the item's own Stop into the overflow). The remote is in
     /// `progressHelp` and in Stop's tooltip; until git prints a segment the line is the full
     /// `inProgressTitle`, remote included.
+    ///
+    /// The automatic fetch never shows git's counters — it is quiet, and what the user needs
+    /// from it is only why the lane is busy — so its line is always its title.
     static func progressLine(_ activity: RemoteActivity) -> String {
-        guard let progress = activity.progress else { return inProgressTitle(activity) }
+        guard activity.kind != .autoFetch, let progress = activity.progress else {
+            return inProgressTitle(activity)
+        }
         // git pads its percentages to three places ("Receiving objects:  83%"); at this width
         // the padding is what pushes the "%" past the cut, so runs of spaces become one.
         let compact = progress.split(separator: " ").joined(separator: " ")
@@ -218,6 +224,7 @@ enum RemoteWording {
     /// The progress line's tooltip: the whole of it, remote included — "Pushing to \"origin\" —
     /// Writing objects: 100% (3/3), 250 bytes | 250.00 KiB/s, done."
     static func progressHelp(_ activity: RemoteActivity) -> String {
+        if activity.kind == .autoFetch { return autoFetchRunningHelp }
         let title = inProgressTitle(activity)
         guard let progress = activity.progress else { return title }
         let running = title.hasSuffix("…") ? String(title.dropLast()) : title
@@ -272,6 +279,30 @@ enum RemoteWording {
     /// offline is normal — so this and a dimmed mark are all it ever gets.
     static func autoFetchFailedHelp(_ reason: String) -> String {
         "The last automatic fetch failed: \(reason)"
+    }
+
+    /// The automatic fetch's progress line tooltip: what it is, and that it never stands in
+    /// the way (`RepositoryStore.beginRemote`).
+    static let autoFetchRunningHelp =
+        "Fetching from every remote automatically. Fetch, Pull and Push stop it and go ahead."
+
+    /// What the mark's tooltip says after a failed automatic fetch: git's reason in the words a
+    /// manual fetch would use, made plain and cut to one line — without the "Couldn't fetch: "
+    /// the tooltip's own "failed:" already says.
+    static func autoFetchFailure(_ error: Error) -> String {
+        let sentence = plain(failure(error, attempt: "fetch", isWrite: false))
+        let prefix = "Couldn't fetch: "
+        return sentence.hasPrefix(prefix) ? String(sentence.dropFirst(prefix.count)) : sentence
+    }
+
+    /// An automatic fetch still running at its timeout is stopped, and the mark says so.
+    static func autoFetchTimedOut(after timeout: Duration) -> String {
+        let seconds = Int(timeout.components.seconds)
+        let span =
+            seconds >= 60 && seconds % 60 == 0
+            ? (seconds == 60 ? "a minute" : "\(seconds / 60) minutes")
+            : (seconds == 1 ? "1 second" : "\(seconds) seconds")
+        return "it took longer than \(span) and was stopped."
     }
 
     /// A tracking badge's tooltip. Counts are against **the upstream, by name** — never "the

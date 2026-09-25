@@ -30,6 +30,7 @@
     ///     stageall                     commit:<subject>     snapshot:<name>
     ///     open:<path>                  menu:<title>        views[:<class>]     badges
     ///     autofetchfailed:<reason>     copyurls
+    ///     menuitem:<menu>:<title>
     ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
@@ -67,6 +68,12 @@
     /// `copy <remote> "<title>": <raw address> -> <pasteboard>`. The raw address is printed so
     /// the redaction can be checked against it; point this only at scratch remotes.
     ///
+    /// `menuitem:<menu>:<title>` fires a main menu item through `NSMenu.performActionForItem(at:)`,
+    /// which is what choosing it does — how "Fetch Automatically" is toggled — and
+    /// `menu:<title>` then shows its state. It waits for nothing.
+    ///
+    /// The automatic fetch prints its own lines, `AUTOFETCH …`, one per tick and one per ending.
+    ///
     /// After every step one line goes to stderr. `head` and `selection` ride along because the
     /// store's own answer to "where are we now" cannot be read from git, and "the selection
     /// returns to the working copy" is part of what these actions promise:
@@ -83,13 +90,15 @@
             for step in spec.split(separator: ";") {
                 log("step: \(step)")
                 let text = String(step)
-                let laneWasBusy = store.remoteActivity != nil
+                // An automatic fetch does not count: the user's network actions stop it and go
+                // ahead (`beginRemote`), so a step taken during one waits for its own lane.
+                let laneWasBusy = store.blockingRemoteActivity != nil
                 let started = text.hasPrefix("start:")
                 await perform(started ? String(text.dropFirst("start:".count)) : text, store: store)
                 // `mutate` and the lane are both claimed synchronously, so by now `isMutating` or
                 // `remoteActivity` is already set for anything that runs git; a step that only
                 // opens a sheet sets neither and this returns at once.
-                if started || text.hasPrefix("wait:") {
+                if started || text.hasPrefix("wait:") || text.hasPrefix("menuitem:") {
                     // Nothing to wait for: the point is to carry on while it runs.
                 } else if laneWasBusy && text != "cancel" && text != "idle" {
                     _ = await wait({ !store.isMutating })
@@ -119,7 +128,9 @@
                     + "| pullCount: \(store.pullBehindCount.map(String.init) ?? "nil") "
                     + "| pushHelp: \(store.pushHelp) "
                     + "| pullMode: \(store.rememberedPullMode.rawValue) "
-                    + "| loads: \(store.snapshotLoadCount)")
+                    + "| loads: \(store.snapshotLoadCount) "
+                    + "| autoFetch: \(AutoFetchScheduler.isEnabled ? "on" : "off"), "
+                    + "failure: \(store.lastAutoFetchFailure ?? "nil")")
         }
 
         private static func flat(_ text: String?) -> String {
@@ -240,6 +251,8 @@
                             + "| voiceover: \(spoken ?? "nil")")
                 }
             case "copyurls": copyURLs(store: store)
+            case "menuitem":
+                if let first, let second { fireMenuItem(second, inMenu: first) }
             case "stageall": store.stageAll()
             case "commit":
                 // The composer's own path: the subject goes into the draft, then `commit()`.
@@ -247,6 +260,21 @@
                 store.commit()
             default: log("unknown step: \(step)")
             }
+        }
+
+        private static func fireMenuItem(_ title: String, inMenu menuTitle: String) {
+            guard let menu = NSApp.mainMenu?.items.first(where: { $0.title == menuTitle })?.submenu
+            else {
+                log("menuitem: no \"\(menuTitle)\" menu")
+                return
+            }
+            menu.delegate?.menuNeedsUpdate?(menu)
+            menu.update()
+            guard let index = menu.items.firstIndex(where: { $0.title == title }) else {
+                log("menuitem: no \"\(title)\" in \"\(menuTitle)\"")
+                return
+            }
+            menu.performActionForItem(at: index)
         }
 
         private static func copyURLs(store: RepositoryStore) {
@@ -410,7 +438,8 @@
                     (mask.contains(.control) ? "⌃" : "") + (mask.contains(.option) ? "⌥" : "")
                     + (mask.contains(.shift) ? "⇧" : "") + (mask.contains(.command) ? "⌘" : "")
                     + item.keyEquivalent.uppercased()
-                log("menu \(title): \(item.title) [\(shortcut)] enabled=\(item.isEnabled)")
+                let state = item.state == .on ? " state=on" : ""
+                log("menu \(title): \(item.title) [\(shortcut)] enabled=\(item.isEnabled)\(state)")
             }
         }
 

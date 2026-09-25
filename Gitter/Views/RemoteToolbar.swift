@@ -18,6 +18,11 @@ import SwiftUI
 /// are, disabled, with the store's "Wait for … to finish" in their tooltips, and the progress
 /// line has a fixed width so a counter ticking from 9% to 10% does not nudge its neighbours.
 ///
+/// **The automatic fetch is the exception.** It shows on Fetch like a fetch — Stop, spinner and
+/// "Fetching automatically…", never git's counters — so a user can see why the network is busy,
+/// but it blocks nothing: all three buttons, Fetch's own included, stay enabled, and using one
+/// stops the automatic fetch and goes ahead (`RepositoryStore.beginRemote`).
+///
 /// Every reason comes from the store (`fetchBlockedReason` and its two siblings) through
 /// `disabled(_:help:)`, the only way a disabled control keeps its tooltip.
 struct RemoteToolbarItem: View {

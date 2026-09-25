@@ -5,6 +5,8 @@ import SwiftUI
 struct GitterApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = RepositoryStore()
+    /// "Fetch Automatically". Read by the schedule at every tick (`AutoFetchScheduler.isEnabled`).
+    @AppStorage(AutoFetchScheduler.enabledKey) private var autoFetchEnabled = true
 
     init() {
         // Capture the initial @State instance so the AppDelegate hook (a static closure,
@@ -56,7 +58,15 @@ struct GitterApp: App {
                     .keyboardShortcut(".", modifiers: .command)
                     .disabled(store.remoteActivity == nil)
                 Divider()
-                // Task 11: the "Fetch Automatically" toggle goes here, below the divider.
+                // Off also stops an automatic fetch that is running; on waits for the next tick.
+                Toggle(
+                    "Fetch Automatically",
+                    isOn: Binding(
+                        get: { autoFetchEnabled },
+                        set: { enabled in
+                            autoFetchEnabled = enabled
+                            store.autoFetchSettingChanged(enabled: enabled)
+                        }))
             }
         }
     }
