@@ -77,6 +77,37 @@ import Testing
         #expect(PushTarget.aheadCountToDisplay(for: main, remotes: Self.remotes) == nil)
     }
 
+    /// Task 9's second review: `git remote set-url --push origin fork2.git` on a branch level
+    /// with `fork2` drew "Push ↑1" while `git push --dry-run` answered "Everything up-to-date".
+    /// The count is against `refs/remotes/origin/main`, which only a *fetch* from `origin`'s
+    /// fetch URL updates; a push goes to the push URL. Same remote name and ref, different
+    /// repository — so no count.
+    @Test func aRemoteThatPushesToAnotherURLShowsNoAheadCount() {
+        let remotes = [Remote(name: "origin", fetchURL: "/tmp/origin.git", pushURL: "/tmp/fork2.git")]
+        #expect(PushTarget.resolve(Self.branch(), remotes: remotes)
+                == .push(remote: "origin", ref: "refs/heads/main"))
+        #expect(PushTarget.aheadCountToDisplay(for: Self.branch(), remotes: remotes) == nil)
+    }
+
+    /// The control for the test above: a `pushurl` spelled out but equal to the fetch URL is
+    /// the ordinary case, and the count stands.
+    @Test func aRemoteWhosePushURLEqualsItsFetchURLShowsItsAheadCount() {
+        let remotes = [Remote(name: "origin", fetchURL: "/tmp/origin.git", pushURL: "/tmp/origin.git")]
+        #expect(PushTarget.aheadCountToDisplay(for: Self.branch(), remotes: remotes) == 1)
+    }
+
+    /// Either URL missing means the two cannot be shown to be the same repository. A remote
+    /// with no push URL is not one `git remote -v` prints for an ordinary remote (it prints the
+    /// fetch URL as the push URL), and a remote with no fetch URL has no remote-tracking refs
+    /// a fetch keeps current — so a count there would be a guess. Nil, not the ahead count.
+    @Test(arguments: [(String?.none, String?.some("/tmp/origin.git")),
+                      (String?.some("/tmp/origin.git"), String?.none),
+                      (String?.none, String?.none)])
+    func aRemoteMissingAURLShowsNoAheadCount(fetchURL: String?, pushURL: String?) {
+        let remotes = [Remote(name: "origin", fetchURL: fetchURL, pushURL: pushURL)]
+        #expect(PushTarget.aheadCountToDisplay(for: Self.branch(), remotes: remotes) == nil)
+    }
+
     @Test(arguments: [Tracking.none, .counts(ahead: 0, behind: 3), .counts(ahead: -1, behind: 0)])
     func nothingAheadShowsNoAheadCount(tracking: Tracking) {
         let main = Self.branch(tracking: tracking)

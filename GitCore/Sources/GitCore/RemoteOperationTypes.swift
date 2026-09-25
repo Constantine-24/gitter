@@ -315,16 +315,53 @@ public enum PushTarget: Equatable, Sendable {
     /// against `origin/main` and the push went to `fork`. Nil too for a refused target (a
     /// disabled Push must not advertise commits it will not send), an unpublished branch, a
     /// local upstream, a `[gone]` upstream, and nothing ahead.
+    ///
+    /// **The same remote name is not the same repository.** The count is against a
+    /// remote-tracking ref that a fetch from the remote's *fetch* URL keeps; a push goes to its
+    /// *push* URL. Measured in Task 9's second review: `git remote set-url --push origin
+    /// fork2.git` on a branch level with `fork2` read "Push ↑1" while `git push --dry-run` said
+    /// "Everything up-to-date". So the count also needs `pushURL == fetchURL`, both present — a
+    /// remote missing either cannot be shown to push where it fetches from. (Only the first
+    /// push URL is compared; a remote with several pushes to all of them.)
     public static func aheadCountToDisplay(for branch: Branch, remotes: [Remote]) -> Int? {
         guard !branch.tracksLocalBranch,
             case .counts(let ahead, _) = branch.tracking, ahead > 0,
             case .push(let remote, let ref) = resolve(branch, remotes: remotes),
-            remote == branch.upstreamRemote, ref == branch.upstreamRef
+            remote == branch.upstreamRemote, ref == branch.upstreamRef,
+            pushesWhereItFetches(remote, remotes: remotes)
         else { return nil }
         return ahead
     }
+
+    /// Whether `remote` pushes to the URL it fetches from: both known, and equal. False for a
+    /// remote not in `remotes`.
+    public static func pushesWhereItFetches(_ remote: String, remotes: [Remote]) -> Bool {
+        guard let entry = remotes.first(where: { $0.name == remote }),
+            let fetchURL = entry.fetchURL, let pushURL = entry.pushURL
+        else { return false }
+        return fetchURL == pushURL
+    }
 }
 
+
+/// Whether a click on the toolbar's Stop is a decision to stop.
+///
+/// The Stop button appears the moment a network action starts, in the same toolbar item as the
+/// button that started it. A click that lands within the double-click interval of the start is
+/// the second half of that first click — Task 9's review reproduced a double-click on Fetch
+/// cancelling the fetch it had just begun — so it is dropped. The system interval can be set up
+/// to 5 s; Stop never ignores a click for longer than `longestGuard`. ⌘. and the menu's Stop are
+/// deliberate and do not come through here.
+public enum StopClick {
+    /// The cap on the guard, in seconds — about the default double-click interval (0.5 s).
+    public static let longestGuard: TimeInterval = 0.6
+
+    public static func isDeliberate(
+        startedAt: Date, now: Date, doubleClickInterval: TimeInterval
+    ) -> Bool {
+        now.timeIntervalSince(startedAt) >= min(doubleClickInterval, longestGuard)
+    }
+}
 
 /// What `rebase(onto:at:)` did, read back from the repository afterwards — from
 /// `operationInProgress` and from where HEAD ended up — never from git's exit code or its prose.
