@@ -77,6 +77,16 @@ final class RepositoryStore {
     /// never land on a later one.
     private var laneToken = 0
 
+    /// A watcher event was dropped while the lane was busy, **after** the lane's own reload was
+    /// begun (it is cleared as that reload starts). The reload covers everything before it; an
+    /// event after it — a terminal commit in the instant between the reload and the lane
+    /// freeing — would otherwise be lost until the next one, so `runOnLane` reloads once more
+    /// when this is set. Only a path the lane does not write itself sets it: the lane's own
+    /// writes (`FETCH_HEAD`, `refs/remotes/…`) arrive up to the watcher's 0.2 s latency late —
+    /// after its reload began — and would otherwise cost every fetch a second reload
+    /// (`RepositoryStore.isLaneOwnWrite`).
+    private(set) var watcherEventDuringLane = false
+
     #if DEBUG
         /// How many snapshot loads have run, for the harness's "exactly one refresh when the
         /// lane frees" check.
@@ -147,6 +157,18 @@ final class RepositoryStore {
             return
         }
 
+        // A push, publish, force push or delete on a remote cannot be abandoned quietly:
+        // cancelling it leaves the server in an unknown state, and the sentence that says so —
+        // and the fetch that finds out — belong to *this* repository, which is about to be
+        // replaced on screen. So opening another one waits: the user can Stop the write (and
+        // read what that means here) and then open. A fetch or a pull's fetch writes nothing on
+        // the server and is still cancelled below.
+        if let remoteActivity, remoteActivity.isWrite {
+            lastError = RemoteWording.openRefusedDuringWrite(remoteActivity)
+            errorIsSticky = true
+            return
+        }
+
         let standardized = url.standardizedFileURL
         let dotGit = standardized.appending(path: ".git")
         guard FileManager.default.fileExists(atPath: dotGit.path) else {
@@ -201,8 +223,8 @@ final class RepositoryStore {
         UserDefaults.standard.set(standardized.path, forKey: Self.lastRepositoryPathKey)
         NSDocumentController.shared.noteNewRecentDocumentURL(standardized)
 
-        watcher = RepositoryWatcher(path: standardized.path) { [weak self] in
-            self?.scheduleRefresh()
+        watcher = RepositoryWatcher(path: standardized.path) { [weak self] paths in
+            self?.scheduleRefresh(changed: paths)
         }
 
         Task { await refresh() }
@@ -337,6 +359,7 @@ final class RepositoryStore {
             if !quiet { showStickyError(RemoteWording.laneBusy(remoteActivity)) }
             return nil
         }
+        watcherEventDuringLane = false
         var mutationGeneration: Int?
         if holdingMutation {
             guard let claimed = beginMutation() else {
@@ -368,8 +391,12 @@ final class RepositoryStore {
         guard lane.token == laneToken, generation == lane.generation else { return }
         // A refusal made while this lane was busy ("Wait for the fetch to finish…") is about a
         // state that has just ended; left up, it would sit beside the fetch's own notice
-        // telling the user to wait for something already done.
-        if let remoteActivity, lastError == RemoteWording.laneBusy(remoteActivity) {
+        // telling the user to wait for something already done. The same for "wait before
+        // opening another repository": the write it waited for is over, and opening is allowed.
+        if let remoteActivity,
+            lastError == RemoteWording.laneBusy(remoteActivity)
+                || lastError == RemoteWording.openRefusedDuringWrite(remoteActivity)
+        {
             lastError = nil
             errorIsSticky = false
         }
@@ -377,11 +404,24 @@ final class RepositoryStore {
         remoteTask = nil
     }
 
+    /// Stores git's latest progress segment — **made plain first**: the progress stream is
+    /// git's whole stderr, and that includes the server's own `remote:` lines, which can carry
+    /// escape sequences and URLs with credentials in them. Done here, on the main-actor hop the
+    /// relay already throttles to ten a second, so the pipe's queue stays as cheap as it was.
+    /// A segment that is nothing once made plain leaves the previous one standing.
+    // internal (not private(set) write): used by +Refresh.swift's `scheduleRefresh` (true) and
+    // +Remotes.swift's `laneRefresh` (false, as the lane's reload begins)
+    func setWatcherEventDuringLane(_ value: Bool) {
+        watcherEventDuringLane = value
+    }
+
     // internal (not private): used by +Remotes.swift's progress relay
     func setRemoteProgress(_ text: String, lane: RemoteLane) {
         guard lane.token == laneToken, generation == lane.generation, remoteActivity != nil
         else { return }
-        remoteActivity?.progress = text
+        let shown = RemoteWording.plain(text)
+        guard !shown.isEmpty else { return }
+        remoteActivity?.progress = shown
     }
 
     /// A banner that the reloads it provokes must not erase, for work that does not go through

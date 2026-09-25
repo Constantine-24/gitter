@@ -28,6 +28,7 @@
     ///     deleteremote:<remote>/<b>    confirmdeleteremote
     ///     cancel                       start:<step>  idle
     ///     stageall                     commit:<subject>     snapshot:<name>
+    ///     open:<path>
     ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
@@ -202,6 +203,11 @@
                 // Past the banners' insertion animation, so they are drawn at full opacity.
                 try? await Task.sleep(for: .milliseconds(800))
                 first.map { snapshot(named: $0) }
+            // "Open Repository…" mid-script, e.g. while a push is on the lane. The path is the
+            // rest of the step, colons and all.
+            case "open":
+                let path = step.dropFirst("open:".count)
+                if !path.isEmpty { store.open(URL(fileURLWithPath: String(path))) }
             case "stageall": store.stageAll()
             case "commit":
                 // The composer's own path: the subject goes into the draft, then `commit()`.
@@ -240,8 +246,12 @@
         ///
         /// Drawn by the app itself rather than captured from the screen: a window on a Space
         /// nobody is looking at captures as blank, and a screen capture would take whatever
-        /// else is on the display with it. `cacheDisplay` needs neither Screen Recording nor the
-        /// window to be visible.
+        /// else is on the display with it. The frame view's **layer tree** is rendered
+        /// (`CALayer.render(in:)`, see `image(of:)`) — not `cacheDisplay`, which leaves out the
+        /// SwiftUI overlays the banners are drawn in — and that needs neither Screen Recording
+        /// nor the window to be visible. It does not draw `NSVisualEffectView` materials, so
+        /// the sidebar comes out blank: faithful for banners and sheets, not for the whole
+        /// window.
         private static func snapshot(named name: String) {
             guard let dir = ProcessInfo.processInfo.environment["GITTER_DEBUG_SNAPSHOT_DIR"],
                 let window = NSApp.windows.first(where: { $0.isVisible && $0.sheetParent == nil }),

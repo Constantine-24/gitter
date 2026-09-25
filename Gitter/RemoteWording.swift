@@ -134,6 +134,31 @@ enum RemoteWording {
         "Wait for \(describe(activity)) to finish, or stop it first."
     }
 
+    /// Opening another repository while a write is on the lane. Refused rather than cancelled:
+    /// see `RepositoryStore.open`.
+    static func openRefusedDuringWrite(_ activity: RemoteActivity) -> String {
+        "Wait for \(describe(activity)) to finish, or stop it first, before opening another "
+            + "repository."
+    }
+
+    /// A lane ended with a question while the user had another sheet open. The question is not
+    /// pushed over theirs; this says what was found and how to ask it again.
+    static func sheetNotShown(_ sheet: BranchSheet) -> String {
+        switch sheet {
+        case .pullDiverged(_, _, let upstream):
+            "\"\(upstream)\" and this branch both have new commits, but another sheet was open, "
+                + "so nothing was merged. Pull again to choose Merge or Rebase."
+        case .forcePush:
+            "The force push warning wasn't shown because another sheet was open. Nothing was "
+                + "pushed. Push again to see it."
+        case .deleteRemoteBranch(let remote, let branch, _, _):
+            "The warning for deleting \"\(branch)\" on \"\(remote)\" wasn't shown because "
+                + "another sheet was open. Nothing was deleted."
+        default:
+            "Another sheet was open, so the next question wasn't shown. Nothing was changed."
+        }
+    }
+
     static func describe(_ activity: RemoteActivity) -> String {
         let remote = activity.remote.map { " \"\($0)\"" } ?? ""
         return switch activity.kind {
@@ -168,6 +193,17 @@ enum RemoteWording {
 
     static let pullBranchChanged =
         "The branch changed while fetching, so nothing was merged. Pull again."
+    /// The pull's fetch finished and it would fast-forward, but a commit or a branch action
+    /// held the mutation slot when the lane freed. Nothing was merged; the fetch stands.
+    static let pullSlotBusy =
+        "The pull fetched, but couldn't integrate while another change was running. Pull again."
+
+    /// Stop pressed after the pull's fetch had finished, before it merged anything.
+    static func pullStoppedAfterFetch(_ remote: String?) -> String {
+        "Stopped the pull after fetching\(remote.map { " from \"\($0)\"" } ?? ""). Nothing was "
+            + "merged."
+    }
+
     static let pullSheetStale =
         "The branch or its upstream changed since that question was asked. Nothing was "
         + "merged or rebased. Pull again."
@@ -370,11 +406,13 @@ enum RemoteWording {
     /// reload or the counting had not). Nothing is written by preparing a sheet.
     static let forcePushWarningStopped =
         "Stopped before the force push warning was ready. Nothing was pushed."
+    /// The same for the delete sheet.
+    static let deleteWarningStopped =
+        "Stopped before the delete warning was ready. Nothing was deleted."
     /// Stop pressed after confirming, while the branch was still being re-read and before git
     /// was asked to push anything.
     static let forcePushStoppedBeforeSending =
         "Stopped the force push before anything was sent. Nothing was pushed."
-
 
     static func noSuchRemote(_ remote: String) -> String {
         "There is no remote named \"\(remote)\". Nothing was published."
@@ -467,14 +505,20 @@ enum RemoteWording {
     /// And at most this many characters of each.
     static let maxLineLength = 200
 
-    /// One line of text that came from outside — git's stderr, a server hook — made safe to
-    /// show: credentials redacted, escape sequences removed whole (so `ESC[31m` leaves no `[31m`
-    /// behind), every other control or bidirectional-formatting character dropped, tabs turned
-    /// into spaces, and the result capped at `maxLineLength`.
+    /// One line of text that came from outside — git's stderr, a server hook, a progress
+    /// segment — made safe to show, in this order: escape sequences removed whole (so `ESC[31m`
+    /// leaves no `[31m` behind), every other control, bidirectional-formatting or line/paragraph
+    /// separator character (Cc, Cf, Zl, Zp) dropped and tabs turned into spaces; **then**
+    /// credentials redacted; then the result capped at `maxLineLength`, on one line.
+    ///
+    /// **Strip before redacting, never the other way round.** The redactor matches a URL's
+    /// userinfo as ordinary text, so a control character inside it — `https://u:<VT>secret@host`
+    /// — breaks the match and the password survives; the stripping that follows then removes
+    /// the VT and puts the password back together, on screen (found in Task 8's review). With
+    /// the controls gone first, the redactor sees the URL the user would see.
     static func plain(_ text: String) -> String {
-        let redacted = RemoteFailureParser.redactingCredentials(text)
         var out = String.UnicodeScalarView()
-        var scalars = redacted.unicodeScalars.makeIterator()
+        var scalars = text.unicodeScalars.makeIterator()
         while let scalar = scalars.next() {
             if scalar == "\u{1B}" {
                 skipEscape(&scalars)
@@ -486,13 +530,15 @@ enum RemoteWording {
             }
             // Cc: C0/C1 controls (BEL, CR, backspace, CSI as one byte …). Cf: format characters,
             // which include the bidirectional overrides a line could use to reorder what it
-            // appears to say.
+            // appears to say. Zl/Zp: U+2028 and U+2029, which a text view breaks a line on —
+            // a second line inside what is meant to be one.
             switch scalar.properties.generalCategory {
-            case .control, .format: continue
+            case .control, .format, .lineSeparator, .paragraphSeparator: continue
             default: out.append(scalar)
             }
         }
-        let line = String(out).trimmingCharacters(in: .whitespaces)
+        let redacted = RemoteFailureParser.redactingCredentials(String(out))
+        let line = redacted.trimmingCharacters(in: .whitespaces)
         guard line.count > maxLineLength else { return line }
         return String(line.prefix(maxLineLength - 1)) + "…"
     }

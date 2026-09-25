@@ -137,7 +137,14 @@ extension RepositoryStore {
             }
             // The decision needs the tracking *after* the fetch, so the one reload happens here,
             // still holding the lane.
-            await refresh()
+            await laneRefresh()
+            // Stop pressed after the fetch finished, while the reload ran: the reload is not
+            // cancellable and has completed, but nothing after it may start — Stop means stop.
+            if Task.isCancelled {
+                return LaneEnding(
+                    notice: RemoteWording.pullStoppedAfterFetch(fetchRemote),
+                    alreadyRefreshed: true)
+            }
             guard let now = currentBranchRef, now.name == branch.name else {
                 return LaneEnding(failure: RemoteWording.pullBranchChanged, alreadyRefreshed: true)
             }
@@ -150,7 +157,17 @@ extension RepositoryStore {
             case .fastForward:
                 // Runs synchronously once the lane is free, and `perform` claims the mutation
                 // slot synchronously, so there is no instant with neither held.
+                //
+                // A pull holds only the lane for its fetch, so a commit or a branch action may
+                // have claimed the slot meanwhile — and `mutate` returns silently when it cannot
+                // claim it. The pull does not wait (a queued merge would run against a branch
+                // the user has since moved, the same reason the lane is never queued); it says
+                // why nothing was merged instead of saying nothing.
                 return LaneEnding(alreadyRefreshed: true) { [self] in
+                    guard !isMutating else {
+                        showStickyError(RemoteWording.pullSlotBusy)
+                        return
+                    }
                     integratePull(upstream: upstreamNow, mode: .fastForwardIfPossible)
                 }
             case .askHowToIntegrate(let ahead, let behind):
@@ -299,25 +316,49 @@ extension RepositoryStore {
         let backend = self.backend
         remoteTask = Task { @MainActor [self] in
             let ending = await work(backend, root) { relay.send($0) }
-            if !ending.alreadyRefreshed { await refresh() }
+            if !ending.alreadyRefreshed { await laneRefresh() }
+            let missedWatcherEvent = watcherEventDuringLane
             finishRemote(lane)
+            // A sheet the lane ends with never goes over one the user already has open — a new
+            // branch form, a merge question — which a plain assignment would silently replace.
+            // The same question with fresher numbers may replace itself; anything else becomes
+            // a banner saying what was found and how to ask again.
+            var failure = ending.failure
+            var sheet = ending.sheet
+            if let asked = sheet, let open = activeSheet, !open.asksTheSameQuestion(as: asked) {
+                sheet = nil
+                failure = [failure, RemoteWording.sheetNotShown(asked)].compactMap { $0 }
+                    .joined(separator: " ")
+            }
             if let mutationGeneration = lane.mutationGeneration {
                 if generation == lane.generation {
-                    if let sheet = ending.sheet { activeSheet = sheet }
+                    if let sheet { activeSheet = sheet }
                 }
                 finishMutation(
                     generation: mutationGeneration,
-                    failure: ending.failure.map(RemoteBannerText.init))
+                    failure: failure.map(RemoteBannerText.init))
             } else {
                 guard generation == lane.generation else { return }
-                if let sheet = ending.sheet { activeSheet = sheet }
-                if let failure = ending.failure { showStickyError(failure) }
+                if let sheet { activeSheet = sheet }
+                if let failure { showStickyError(failure) }
             }
             guard generation == lane.generation else { return }
+            // A watcher event that landed after the lane's reload began was dropped; the state
+            // on screen may be behind by it, so it gets the reload it was denied.
+            if missedWatcherEvent { scheduleRefresh() }
             if let rejected = ending.rejected { setRejectedPush(rejected) }
             if let notice = ending.notice, !notice.isEmpty { showNotice(notice) }
             ending.then?()
         }
+    }
+
+    /// The lane's one reload. Clears `watcherEventDuringLane` as it begins: everything the
+    /// watcher dropped until now, this reload reads; anything it drops from here on sets the
+    /// flag again, and `runOnLane` reloads once more for it.
+    // internal (not private): used by +RemoteSheets.swift
+    func laneRefresh() async {
+        setWatcherEventDuringLane(false)
+        await refresh()
     }
 
     // internal (not private): used by +RemoteSheets.swift

@@ -26,10 +26,22 @@ struct RemoteActivity: Equatable {
     }
 
     let kind: Kind
+
+    /// Whether this operation writes on the server — the four that hold the mutation slot too,
+    /// and whose cancellation leaves the remote in an unknown state.
+    var isWrite: Bool {
+        switch kind {
+        case .push, .publish, .forcePush, .deleteRemoteBranch: true
+        case .fetch, .autoFetch, .pull: false
+        }
+    }
+
     /// The remote being talked to, or nil for `fetch --all`.
     let remote: String?
-    /// git's latest progress segment ("Receiving objects:  57% (4/7)"), trimmed; nil until git
-    /// has printed one. The last segment wins — git redraws one counter in place with `\r`.
+    /// git's latest progress segment ("Receiving objects:  57% (4/7)"), made plain
+    /// (`RemoteWording.plain`: no escapes or controls, credentials redacted, one capped line);
+    /// nil until git has printed one. The last segment wins — git redraws one counter in place
+    /// with `\r`.
     var progress: String?
 }
 

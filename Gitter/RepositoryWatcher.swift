@@ -2,7 +2,8 @@ import CoreServices
 import Foundation
 
 /// Watches a repository root (including `.git/`) for filesystem changes and calls `onChange`
-/// on the main actor, after filtering out noise (lockfiles and loose object writes).
+/// on the main actor with the paths that changed, after filtering out noise (lockfiles and
+/// loose object writes).
 ///
 /// `.git/index` is deliberately *not* filtered: `git add`/`reset`/`rm --cached` touch only
 /// the index, and ignoring it made staging invisible to the live refresh. Our own reads
@@ -20,9 +21,9 @@ import Foundation
 final class RepositoryWatcher: @unchecked Sendable {
     private var stream: FSEventStreamRef?
     private let queue = DispatchQueue(label: "dev.penzin.Gitter.RepositoryWatcher")
-    private let onChange: @MainActor @Sendable () -> Void
+    private let onChange: @MainActor @Sendable ([String]) -> Void
 
-    init(path: String, onChange: @escaping @MainActor @Sendable () -> Void) {
+    init(path: String, onChange: @escaping @MainActor @Sendable ([String]) -> Void) {
         self.onChange = onChange
 
         // `info` is a +1 (passRetained) reference: the C stream effectively co-owns this
@@ -97,7 +98,7 @@ final class RepositoryWatcher: @unchecked Sendable {
         // Valid only because `kFSEventStreamCreateFlagUseCFTypes` was passed at creation time,
         // which makes `eventPaths` a `CFArray` of `CFString` rather than a `char **`.
         let cfArray = unsafeBitCast(eventPaths, to: CFArray.self)
-        var relevant = false
+        var relevant: [String] = []
         for index in 0..<numEvents {
             guard let raw = CFArrayGetValueAtIndex(cfArray, index) else { continue }
             let cfString = unsafeBitCast(raw, to: CFString.self)
@@ -105,15 +106,14 @@ final class RepositoryWatcher: @unchecked Sendable {
             if path.hasSuffix(".lock") || path.contains("/.git/objects/") {
                 continue
             }
-            relevant = true
-            break
+            relevant.append(path)
         }
 
-        guard relevant else { return }
+        guard !relevant.isEmpty else { return }
 
         let onChange = watcher.onChange
         Task { @MainActor in
-            onChange()
+            onChange(relevant)
         }
     }
 }

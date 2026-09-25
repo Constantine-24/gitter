@@ -231,6 +231,7 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `start:<step>` / `idle` | run a step without waiting for its network lane, so the next steps run *during* it; `idle` then waits for the lane to free |
 | `stageall` / `commit:<subject>` | stage everything, and commit through the composer's own path |
 | `snapshot:<name>` | draw the window into `GITTER_DEBUG_SNAPSHOT_DIR/<name>.png` |
+| `open:<path>` | open that repository as "Open Repository…" does — mid-script, e.g. while a push is running |
 
 A step that starts network work waits for the lane to free as well, for up to 120 seconds; a
 step taken while the lane is already busy waits only for the mutation slot, so a second

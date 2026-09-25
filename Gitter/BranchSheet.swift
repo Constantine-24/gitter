@@ -40,6 +40,21 @@ enum BranchSheet: Identifiable, Hashable {
     case deleteRemoteBranch(remote: String, branch: String, tip: String, onlyThere: Int)
 
     var id: Self { self }
+
+    /// Whether `other` is the same question as this one, with possibly different numbers: the
+    /// same case about the same branch or remote branch. A lane that ends with a question may
+    /// replace an open sheet only when it is this — a fresher copy of itself.
+    func asksTheSameQuestion(as other: BranchSheet) -> Bool {
+        switch (self, other) {
+        case (.pullDiverged(_, _, let a), .pullDiverged(_, _, let b)): a == b
+        case (.publish(let a), .publish(let b)): a == b
+        case (.forcePush(let a, _, let r, _, _, _, _), .forcePush(let b, _, let s, _, _, _, _)):
+            a == b && r == s
+        case (.deleteRemoteBranch(let r, let a, _, _), .deleteRemoteBranch(let s, let b, _, _)):
+            r == s && a == b
+        default: false
+        }
+    }
 }
 
 /// An action that was asked for while HEAD was detached over unreferenced commits, and is

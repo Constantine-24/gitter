@@ -27,6 +27,12 @@ extension RepositoryStore {
             showStickyError(RemoteWording.pullSheetStale)
             return
         }
+        // `mutate` drops a call silently while the slot is held; the answer to a question must
+        // not vanish like that.
+        guard !isMutating else {
+            showStickyError(RemoteWording.mutationBusy)
+            return
+        }
         switch mode {
         case .merge:
             integratePull(upstream: upstream, mode: .alwaysMergeCommit)
@@ -125,7 +131,7 @@ extension RepositoryStore {
                     failure: RemoteWording.failure(
                         error, attempt: "fetch from \"\(remote)\"", isWrite: false))
             }
-            await refresh()
+            await laneRefresh()
             // Stop pressed during the reload: it ran to the end (a reload is not cancellable),
             // and nothing after it should.
             if Task.isCancelled {
@@ -273,7 +279,11 @@ extension RepositoryStore {
                     failure: RemoteWording.failure(
                         error, attempt: "fetch from \"\(remoteName)\"", isWrite: false))
             }
-            await refresh()
+            await laneRefresh()
+            if Task.isCancelled {
+                return LaneEnding(
+                    notice: RemoteWording.deleteWarningStopped, alreadyRefreshed: true)
+            }
             guard let tip = remoteBranches.first(where: { $0.name == remoteBranch })?.sha else {
                 return LaneEnding(
                     notice: RemoteWording.alreadyGone(branch, on: remoteName),
@@ -282,10 +292,14 @@ extension RepositoryStore {
             do {
                 let onlyThere = try await backend.commitsOnlyOnRemoteBranch(
                     remoteBranch, at: root)
+                try Task.checkCancellation()
                 return LaneEnding(
                     sheet: .deleteRemoteBranch(
                         remote: remoteName, branch: branch, tip: tip, onlyThere: onlyThere),
                     alreadyRefreshed: true)
+            } catch where Self.isCancellation(error) {
+                return LaneEnding(
+                    notice: RemoteWording.deleteWarningStopped, alreadyRefreshed: true)
             } catch {
                 return LaneEnding(
                     failure: RemoteWording.failure(

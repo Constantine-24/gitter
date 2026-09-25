@@ -8,18 +8,38 @@ extension RepositoryStore {
 
     // internal (not private): used by RepositoryStore.swift's `open()`, which schedules this
     // from the file-system watcher's callback
-    func scheduleRefresh() {
+    func scheduleRefresh(changed paths: [String] = []) {
         // While the network lane is busy a fetch rewrites `FETCH_HEAD` and refs continuously,
         // and every write would schedule a reload. They are dropped here; the lane's own work
         // reloads exactly once, while it still holds the lane, before it frees it (see
         // `runOnLane`). A mutation during a fetch is unaffected: `mutate` reloads directly.
-        guard remoteActivity == nil else { return }
+        // What was dropped is remembered, so an event that lands after the lane's reload began
+        // still gets one (`watcherEventDuringLane`) — unless it is only the lane's own writes,
+        // which its reload is about to read or has just read.
+        guard remoteActivity == nil else {
+            if paths.isEmpty || !paths.allSatisfy(Self.isLaneOwnWrite) {
+                setWatcherEventDuringLane(true)
+            }
+            return
+        }
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
             await self?.refresh()
         }
+    }
+
+    /// Whether `path` is one of the files a network operation itself writes in `.git`: the
+    /// remote-tracking refs and their reflogs, `FETCH_HEAD`, `packed-refs` (a delete on a remote
+    /// rewrites it when the tracking ref was packed) and `config` (Publish's `-u`). A change
+    /// anywhere else during the lane — the index, `refs/heads`, `HEAD`, the worktree — came from
+    /// something else, and is what `watcherEventDuringLane` exists to catch.
+    static func isLaneOwnWrite(_ path: String) -> Bool {
+        guard let range = path.range(of: "/.git/") else { return false }
+        let inGit = path[range.upperBound...]
+        return inGit == "FETCH_HEAD" || inGit == "packed-refs" || inGit == "config"
+            || inGit.hasPrefix("refs/remotes/") || inGit.hasPrefix("logs/refs/remotes/")
     }
 
     // MARK: - Refresh
