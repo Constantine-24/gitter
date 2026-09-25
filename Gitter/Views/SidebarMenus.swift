@@ -2,13 +2,14 @@ import AppKit
 import GitCore
 import SwiftUI
 
-/// The right-click menus for the three kinds of ref in the sidebar, and the two small things
-/// they share: how a menu explains an item it has turned off, and how a name reaches the
-/// pasteboard.
+/// The right-click menus for the three kinds of ref in the sidebar and for a remote, and the
+/// two small things they share: how a menu explains an item it has turned off, and how a name
+/// reaches the pasteboard.
 ///
 /// Every item here goes through the store, which is where the gates live — an operation in
-/// progress, a detached HEAD holding commits on no ref, git's own refusals. A disabled item is
-/// therefore never the safety net; it is the explanation, given before the click.
+/// progress, a detached HEAD holding commits on no ref, a busy network lane, git's own
+/// refusals. A disabled item is therefore never the safety net; it is the explanation, given
+/// before the click.
 
 /// Why some of this menu's items are off, as plain (disabled) lines at the top of it.
 ///
@@ -73,17 +74,30 @@ struct LocalBranchMenu: View {
 }
 
 /// A remote-tracking branch: check it out as a local branch that tracks it, branch from it,
-/// copy its name. Nothing here deletes or renames anything on a remote — out of scope for this
-/// milestone, and not something a right-click should reach.
+/// copy its name — and delete it **on the remote**, the one item in these menus that writes to
+/// a server. That item only opens the confirmation (`requestDeleteRemoteBranch` fetches, reads
+/// the tip and counts what only it holds); nothing is deleted until the sheet's own button.
 struct RemoteBranchMenu: View {
     let branch: String
 
     @Environment(RepositoryStore.self) private var store
 
+    /// The remote this branch belongs to, or nil for a ref no configured remote claims.
+    private var remote: String? {
+        guard let refs = store.snapshot?.refs,
+            let ref = refs.remoteBranches.first(where: { $0.name == branch })
+        else { return nil }
+        return refs.remote(of: ref)?.name
+    }
+
     var body: some View {
         let reason = store.branchSwitchingBlockedReason
+        let remote = remote
+        // Only asked for a branch that has a remote to delete it on: a ref no configured
+        // remote claims (the sidebar's "Other" group) gets no delete item at all.
+        let deleteReason = remote == nil ? nil : store.deleteRemoteBranchBlockedReason
 
-        MenuReasons(reasons: [reason])
+        MenuReasons(reasons: [reason, deleteReason])
 
         Button("Check Out as Local Branch") { store.track(remoteBranch: branch) }
             .disabled(reason != nil)
@@ -95,6 +109,52 @@ struct RemoteBranchMenu: View {
         Divider()
 
         Button("Copy Name") { Clipboard.copy(branch) }
+
+        if let remote {
+            Divider()
+
+            Button(RemoteWording.deleteOnRemoteTitle(remote)) {
+                store.requestDeleteRemoteBranch(branch)
+            }
+            .disabled(deleteReason != nil)
+        }
+    }
+}
+
+/// A configured remote's row: fetch just that remote, copy its address.
+///
+/// "Copy URL" copies the fetch URL. A remote with only a push URL gets "Copy Push URL" in its
+/// place, so the title says which address is on the pasteboard; one whose push URL differs from
+/// its fetch URL gets both. A remote with neither keeps the item, disabled, with the reason.
+struct RemoteMenu: View {
+    let remote: Remote
+
+    @Environment(RepositoryStore.self) private var store
+
+    var body: some View {
+        let fetchReason = store.fetchBlockedReason
+        let urlReason =
+            remote.fetchURL == nil && remote.pushURL == nil
+            ? RemoteWording.remoteHasNoURL(remote.name) : nil
+
+        MenuReasons(reasons: [fetchReason, urlReason])
+
+        Button(RemoteWording.fetchRemoteTitle(remote.name)) { store.fetch(remote: remote.name) }
+            .disabled(fetchReason != nil)
+
+        Divider()
+
+        if let fetchURL = remote.fetchURL {
+            Button(RemoteWording.copyURLTitle) { Clipboard.copy(fetchURL) }
+            if let pushURL = remote.pushURL, pushURL != fetchURL {
+                Button(RemoteWording.copyPushURLTitle) { Clipboard.copy(pushURL) }
+            }
+        } else if let pushURL = remote.pushURL {
+            Button(RemoteWording.copyPushURLTitle) { Clipboard.copy(pushURL) }
+        } else {
+            Button(RemoteWording.copyURLTitle) {}
+                .disabled(true)
+        }
     }
 }
 

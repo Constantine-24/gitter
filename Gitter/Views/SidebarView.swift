@@ -56,10 +56,15 @@ struct SidebarView: View {
             if !refs.remotes.isEmpty || !refs.branchesWithoutRemote.isEmpty {
                 Section("Remotes") {
                     ForEach(refs.remotes) { remote in
-                        DisclosureGroup(remote.name) {
+                        DisclosureGroup {
                             ForEach(refs.branches(of: remote)) { branch in
                                 remoteBranchRow(branch)
                             }
+                        } label: {
+                            // On the label only, so a right-click on one of the remote's
+                            // branches still gets that branch's menu.
+                            Text(remote.name)
+                                .contextMenu { RemoteMenu(remote: remote) }
                         }
                     }
                     // Refs under `refs/remotes/` that no configured remote claims — left over
