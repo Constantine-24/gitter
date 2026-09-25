@@ -313,13 +313,41 @@ extension RepositoryStore {
     }
 
     /// The deletion, leased on the sheet's own `tip`.
+    ///
+    /// **Refused, not sent, when more commits would go with it than the sheet said.** The lease
+    /// guards the server's side; the sheet's count is about *this clone's* refs, and those can
+    /// change under an open sheet without the tip moving at all. Reproduced in the final review
+    /// (`frqa/sd`): the sheet said 0 — the commits were also on a local branch — a terminal
+    /// `git branch -D` of that branch made it 1, and Confirm deleted the only ref left to the
+    /// commit. So the count is asked again inside the lane, holding the mutation slot, and a
+    /// rise is refused in the words the force push uses for its own stale sheet. A count that
+    /// fell (the commits are held somewhere new) is no reason to refuse.
     func confirmDeleteRemoteBranch() {
-        guard case .deleteRemoteBranch(let remote, let branch, let tip, _) = activeSheet else {
+        guard case .deleteRemoteBranch(let remote, let branch, let tip, let onlyThere) = activeSheet
+        else {
             return
         }
         activeSheet = nil
         runOnLane(.deleteRemoteBranch, remote: remote, holdingMutation: true) {
             [self] backend, root, lane, progress in
+            let remoteBranch = remote + "/" + branch
+            do {
+                let onlyThereNow = try await backend.commitsOnlyOnRemoteBranch(
+                    remoteBranch, at: root)
+                try Task.checkCancellation()
+                guard onlyThereNow <= onlyThere else {
+                    return LaneEnding(
+                        failure: RemoteWording.deleteRemoteMoreWouldGo(
+                            remoteBranch, was: onlyThere, now: onlyThereNow))
+                }
+            } catch where Self.isCancellation(error) {
+                return LaneEnding(notice: RemoteWording.deleteStoppedBeforeSending)
+            } catch {
+                return LaneEnding(
+                    failure: RemoteWording.failure(
+                        error, attempt: "count the commits only on \"\(remoteBranch)\"",
+                        isWrite: false) + " Nothing was deleted.")
+            }
             let result: PushResult
             do {
                 result = try await backend.deleteRemoteBranch(

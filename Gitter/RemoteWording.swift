@@ -647,6 +647,21 @@ enum RemoteWording {
     /// was asked to push anything.
     static let forcePushStoppedBeforeSending =
         "Stopped the force push before anything was sent. Nothing was pushed."
+    /// Stop pressed after confirming a deletion, while the commits were being counted again and
+    /// before git was asked to push anything.
+    static let deleteStoppedBeforeSending =
+        "Stopped the deletion before anything was sent. Nothing was deleted."
+
+    /// Confirmed, but more commits would go with the branch than the sheet said — the branch,
+    /// tag or other remote that also held them was deleted here while the sheet was up. The
+    /// counterpart of `forcePushBranchMoved`: nothing is sent and the user is asked to look
+    /// again.
+    static func deleteRemoteMoreWouldGo(_ remoteBranch: String, was: Int, now: Int) -> String {
+        let count = now == 1 ? "1 commit" : "\(now) commits"
+        return "\"\(remoteBranch)\" now has \(count) held by no branch, tag or other remote Gitter "
+            + "can see — the warning said \(was). Nothing was deleted. Delete it again to see "
+            + "what would be lost now."
+    }
 
     static func noSuchRemote(_ remote: String) -> String {
         "There is no remote named \"\(remote)\". Nothing was published."
