@@ -22,7 +22,7 @@ struct Banner: View {
                 .foregroundStyle(iconTint)
             Text(message)
                 .font(.callout)
-                .lineLimit(3)
+                .lineLimit(Self.lineLimit(for: message))
                 .textSelection(.enabled)
             Spacer(minLength: 8)
             ForEach(actions) { action in
@@ -50,6 +50,16 @@ struct Banner: View {
         }
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(tint.opacity(0.6)))
         .padding(8)
+    }
+
+    /// Three lines for a sentence, and room for every line a message was built with on top:
+    /// a server's refusal is a sentence plus up to `RemoteWording.maxServerLines` lines and a
+    /// "(N more lines)" count, and a fixed three would hide the count — the one line that says
+    /// something was left out. Two per extra line, since a 200-character server line wraps;
+    /// capped so a banner can never take the window.
+    static func lineLimit(for message: String) -> Int {
+        let extraLines = message.reduce(0) { $0 + ($1 == "\n" ? 1 : 0) }
+        return min(3 + 2 * extraLines, 24)
     }
 }
 
