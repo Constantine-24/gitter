@@ -354,8 +354,9 @@ extension RepositoryStore {
     /// | pre-empted by the user's own Fetch, Pull, Push or a sheet's confirm | nothing, no reload: the user's action has the lane and reloads itself |
     ///
     /// It can never ask for anything: git runs with stdin at `/dev/null` and
-    /// `GIT_TERMINAL_PROMPT=0`, and ssh — measured in Task 11, see the spec's "Auto-fetch" —
-    /// finds no tty to ask on when Gitter is started from the Dock or Finder.
+    /// `GIT_TERMINAL_PROMPT=0`, and ssh with `SSH_ASKPASS_REQUIRE=force` unless the user set an
+    /// askpass of their own (`ProcessRunner.runStreaming`), so it never stops on a terminal —
+    /// measured in Task 11's review, see the spec's "Auto-fetch".
     func autoFetchTick(timeout: Duration) {
         if let reason = autoFetchSkipReason {
             #if DEBUG
