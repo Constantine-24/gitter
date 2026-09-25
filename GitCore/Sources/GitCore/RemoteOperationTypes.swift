@@ -304,6 +304,25 @@ public enum PushTarget: Equatable, Sendable {
         }
         return .push(remote: pushRemote, ref: ownRef)
     }
+
+    /// The count a "Push" button may draw beside itself, or nil to draw none.
+    ///
+    /// `Branch.tracking` is measured against the **upstream**; a push goes wherever `resolve`
+    /// says. The two are the same ref only when the push goes to exactly the upstream's remote
+    /// and ref, so that is the only time the ahead count says what a push would send. Measured
+    /// in Task 9's review: with `branch.main.pushRemote=fork` (rows b/c) the toolbar read
+    /// "Push ↑1" while `git push --dry-run` answered "Everything up-to-date" — the count was
+    /// against `origin/main` and the push went to `fork`. Nil too for a refused target (a
+    /// disabled Push must not advertise commits it will not send), an unpublished branch, a
+    /// local upstream, a `[gone]` upstream, and nothing ahead.
+    public static func aheadCountToDisplay(for branch: Branch, remotes: [Remote]) -> Int? {
+        guard !branch.tracksLocalBranch,
+            case .counts(let ahead, _) = branch.tracking, ahead > 0,
+            case .push(let remote, let ref) = resolve(branch, remotes: remotes),
+            remote == branch.upstreamRemote, ref == branch.upstreamRef
+        else { return nil }
+        return ahead
+    }
 }
 
 
@@ -388,5 +407,17 @@ public enum PullPlan: Equatable, Sendable {
             if ahead == 0 { return .fastForward }
             return .askHowToIntegrate(ahead: ahead, behind: behind)
         }
+    }
+
+    /// The count a "Pull" button may draw beside itself, or nil to draw none: the behind count
+    /// against a **remote** upstream. A pull fetches the upstream's remote and integrates the
+    /// upstream, so — unlike a push — the count is right even when the branch pushes elsewhere.
+    /// Nil for a local upstream (the badge carries that, naming the branch), `.gone`, `.none`,
+    /// and nothing behind.
+    public static func behindCountToDisplay(for branch: Branch) -> Int? {
+        guard !branch.tracksLocalBranch, branch.upstreamRemote != nil,
+            case .counts(_, let behind) = branch.tracking, behind > 0
+        else { return nil }
+        return behind
     }
 }
