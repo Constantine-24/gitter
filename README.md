@@ -30,8 +30,9 @@ quiet fetch in the background. There is still no discard and no stash; those are
 - Fetch, Pull and Push from the toolbar (Repository menu: ⇧⌘F, ⇧⌘L, ⇧⌘P). The running one
   shows a spinner, git's own progress line and a Stop button (⌘.); browsing is never
   blocked, and a fetch does not block staging or committing either
-- Pull fast-forwards silently when it can; when both sides have moved on it asks, Merge or
-  Rebase, with the counts — the last answer is remembered
+- Pull fast-forwards when it can and says so in a notice (`Fast-forwarded to
+  "origin/main".`); when both sides have moved on it asks, Merge or Rebase, with the counts —
+  the last answer is remembered
 - Publish a branch that has no upstream (`push -u`), choosing the remote when there is more
   than one (`origin` preselected); Re-publish one whose upstream was deleted on the server
 - When the server refuses a push because it has commits you don't, the banner offers
@@ -45,8 +46,9 @@ quiet fetch in the background. There is still no discard and no stash; those are
 - Fetch quietly in the background: when a repository opens and every 10 minutes after,
   unless **Repository ▸ Fetch Automatically** is unticked (on by default). It never shows a
   banner — a failure is only a small mark on the Fetch button, with the reason in its
-  tooltip — and it never makes you wait: Fetch, Pull and Push stay available while it runs,
-  and using one stops it
+  tooltip — and it never stands in your way: Fetch, Pull and Push stay available while it
+  runs, and using one stops it (yours starts once the stopped fetch's git has gone — at once
+  for a transport that honours the stop, about 2 s for one that ignores it)
 - Quit safely while the network is busy: a fetch or pull is stopped and Gitter quits; a push
   (or publish, force push, delete on a remote) asks first — **Wait** lets it finish and then
   quits (or stays open if it failed or has a warning, so you can read it, or if it is still
@@ -168,6 +170,20 @@ terminal, ssh's own rules apply and it can still be stopped there (see the backl
   beside the one ref it was asked to push, even beside a delete.
 - **Only the current branch**, always by an explicit refspec (`refs/heads/<b>:<remote ref>`),
   to the branch's push remote (`branch.<b>.pushRemote` / `remote.pushDefault` are honoured).
+  The force push is the one exception to the spelling, not to the rule: it sends the sha its
+  sheet showed (`<sha>:<remote ref>`), so what lands is the commit you were shown even if the
+  branch moved meanwhile — and if it did, Gitter refuses instead.
+- **No submodules.** Every push passes `--no-recurse-submodules`: with `submodule.recurse` or
+  `push.recurseSubmodules=on-demand` set, git otherwise pushes the submodule's branch to the
+  submodule's own server too. (This also overrides `push.recurseSubmodules=check`.)
+- **No autostash.** Pull's fast-forward and merge pass `--no-autostash`: with
+  `merge.autoStash` set, git otherwise stashes an edit the pull would overwrite, reports
+  success, and leaves the file with conflict markers. Gitter shows git's refusal instead.
+- **No fetch into your own branches.** A fetch is only a read of the server while the remote's
+  fetch refspecs write into `refs/remotes/`. One that writes anywhere else
+  (`+refs/heads/*:refs/heads/*`, a `--mirror=fetch` remote) would move your local branches or
+  tags on every fetch, so Gitter does not fetch that remote — it says so, with the `git
+  config` line that fixes it — and fetches the others.
 
 ## Design decisions
 
@@ -203,7 +219,7 @@ xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -config
 cd GitCore && swift test
 ```
 
-717 tests in 54 suites. Most of them run real `git` against a temporary repository rather
+728 tests in 58 suites. Most of them run real `git` against a temporary repository rather
 than a fake — the remote tests against local bare repositories standing in for a server,
 with a second clone as "the colleague" who pushes in between — including one that greps
 `GitCore`'s own sources for forbidden force flags. The suite isolates itself from your git
@@ -228,9 +244,9 @@ Deleting any of them would take the proof away and the suite would go on looking
 
 ## Project layout
 
-Every `.swift` file in the two product targets — 91 of them, which is what `find
+Every `.swift` file in the two product targets — 92 of them, which is what `find
 GitCore/Sources Gitter -name '*.swift' | wc -l` prints — with the ones inside `Models/`,
-`Parsers/` and `Views/` named in prose rather than one per line. The 60 test files and
+`Parsers/` and `Views/` named in prose rather than one per line. The 64 test files and
 `GitCore/Package.swift` are summarised rather than listed, which is also why the check is
 that command and not a bare `find . -name '*.swift'`: that one reaches them too, and the
 generated sources under `.build` as well.
@@ -243,6 +259,7 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
     GitBranchBackend.swift      Branch/merge/abort protocol and its contract
     GitRemoteBackend.swift      Fetch/push/lease/rebase protocol and its contract
     GitError.swift              commandFailed, launchFailed, and the two pre-flight refusals
+    FetchRefspec.swift          Which configured fetch refspecs write outside refs/remotes/
     BranchOperationTypes.swift  MergeMode, MergeOutcome, BranchDeletion, the typed refusals
     RemoteOperationTypes.swift  PushOutcome, PushResult, RebaseOutcome, RemoteOperationError,
                                 PullPlan, PushTarget (where a push goes), StopClick
@@ -264,7 +281,7 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
     Models/                     RepoSnapshot, Commit, FileStatus, Diff, Branch, Graph, Remote
     Parsers/                    Status, Log, Ref, Diff (+Paths), BranchRefusal, Remote,
                                 PushPorcelain and RemoteFailure parsers
-  Tests/GitCoreTests/           54 suites; ForceFlagScanner(+Lexing) is the force-flag grep
+  Tests/GitCoreTests/           58 suites; ForceFlagScanner(+Lexing) is the force-flag grep
 
 Gitter/                   macOS app (SwiftUI)
   GitterApp.swift            App entry point, the one store (`AppModel`), the Repository
