@@ -571,6 +571,14 @@ private final class Locked<Value>: @unchecked Sendable {
     /// The same, when the leader had already exited *before* the cancel: it ran a grandchild in
     /// the background and ended. The call is waiting for the grandchild's EOF, and a cancel must
     /// still end it — by the remembered group, since the leader's pid is reaped.
+    ///
+    /// **The window is 30 s here, not the production 5 s.** Everything between the reap and the
+    /// SIGKILL counts against `reapedGroupWindow` — `waitForReap`, the polled process listing,
+    /// the cancel and the 500 ms grace — and under a heavy concurrent load that alone ate 5 s
+    /// (1 of 4 and 2 of 4 full runs failed): the group was never signalled, which past the
+    /// window is the runner's rule, not a bug. This test is about the escalation, so it gives
+    /// the machine room; that the window itself is honoured is
+    /// `aReapedGroupIsNotSignalledPastTheWindow`'s job.
     @Test func aCancelAfterTheLeaderExitedStillEndsAGrandchildHoldingThePipe() async throws {
         let duration = Self.uniqueDuration()
         let sleep = Self.sleepToken(duration)
@@ -578,7 +586,7 @@ private final class Locked<Value>: @unchecked Sendable {
         let signals = Locked<[[Int32]]>([])
         let started = try await startScript(
             "( trap '' TERM; exec sleep \"$2\" ) & : > \"$1\"; exit 0", duration: duration,
-            killGracePeriod: .milliseconds(500),
+            killGracePeriod: .milliseconds(500), reapedGroupWindow: .seconds(30),
             onReapedGroupSignal: { group, signal in signals.mutate { $0.append([group, signal]) } })
         // The leader is gone and reaped, and the grandchild is still running: the premise.
         #expect(await Self.waitForReap(started.pid))
