@@ -67,8 +67,7 @@ public enum RemoteFailureParser {
     public static func parse(stderr: String) -> RemoteOperationError? {
         // Lines beginning `remote:` are dropped before anything is diagnosed: see
         // `isServerOutput`. Everything below therefore speaks about *this* connection.
-        let lines = stderr.split(separator: "\n", omittingEmptySubsequences: false)
-            .map(String.init)
+        let lines = Self.lines(of: stderr)
             .filter { !isServerOutput($0) && !isAskpassNoise($0) }
 
         // Most specific first. Each `first(where:)` walks the whole text, so a success block
@@ -115,8 +114,7 @@ public enum RemoteFailureParser {
     /// sentence included — and the phrase must begin the line, so `hint: error: could not fetch
     /// …` is git quoting itself rather than reporting.
     static func reportsARemoteThatCouldNotBeFetched(stderr: String) -> Bool {
-        stderr.split(separator: "\n", omittingEmptySubsequences: false)
-            .map(String.init)
+        lines(of: stderr)
             .contains { !isServerOutput($0) && $0.hasPrefix("error: could not fetch ") }
     }
 
@@ -124,9 +122,18 @@ public enum RemoteFailureParser {
     /// the parser does not recognise: redacted (`redactingCredentials`), and without ssh's
     /// askpass line (`isAskpassNoise`), every other line kept as git wrote it.
     public static func gitsOwnWords(_ stderr: String) -> String {
-        let kept = stderr.split(separator: "\n", omittingEmptySubsequences: false)
-            .filter { !isAskpassNoise($0) }
+        let kept = lines(of: stderr).filter { !isAskpassNoise($0) }
         return redactingCredentials(kept.joined(separator: "\n"))
+    }
+
+    /// `text`'s lines, ending at `\n` **or `\r\n`**, which Swift reads as one `Character` — so
+    /// a split on `"\n"` alone does not break there. ssh ends every line `\r\n` (measured
+    /// through `git fetch`, stderr a pipe), and those lines came out glued to git's next one: a
+    /// refused key was then no longer a line of its own, and nothing found it. A lone `\r` —
+    /// git's progress redrawing itself — stays inside its line, as before.
+    static func lines(of text: String) -> [String] {
+        text.split(omittingEmptySubsequences: false) { $0 == "\n" || $0 == "\r\n" }
+            .map(String.init)
     }
 
     /// Whether `line` is ssh saying that it could not run its askpass program — `ssh_askpass:

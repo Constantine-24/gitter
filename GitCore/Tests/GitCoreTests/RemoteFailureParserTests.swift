@@ -175,6 +175,31 @@ import Testing
         #expect(RemoteFailureParser.parse(stderr: stderr) == .hostKeyNotTrusted)
     }
 
+    /// **As ssh really writes it: every line ends `\r\n`**, not `\n` (measured in the isolated
+    /// rig through `git fetch --all`, stderr a pipe). To Swift `"\r\n"` is one `Character`, so
+    /// a split on `"\n"` alone does not break there: the askpass line, the refused key and
+    /// git's `fatal:` came out as ONE line, and leaving out the askpass "line" took the cause
+    /// with it — the automatic fetch's mark read only "Please make sure you have the correct
+    /// access rights…".
+    @Test func sshsCarriageReturnLineEndsAreLineEnds() {
+        let stderr = Self.askpassCouldNotStart + "\r\n"
+            + "git@fake.invalid: Permission denied (publickey).\r\n" + Self.couldNotRead
+        #expect(
+            RemoteFailureParser.parse(stderr: stderr)
+                == .authenticationFailed(url: "git@fake.invalid"))
+        let shown = RemoteFailureParser.gitsOwnWords(stderr)
+        #expect(!shown.contains("ssh_askpass"), "\(shown)")
+        #expect(shown.contains("git@fake.invalid: Permission denied (publickey)."), "\(shown)")
+        #expect(shown.contains("fatal: Could not read from remote repository."), "\(shown)")
+    }
+
+    /// The same for the host key: `Host key verification failed.` after the askpass line.
+    @Test func anUnknownHostKeyWithCarriageReturnsIsStillAnUnknownHostKey() {
+        let stderr = Self.askpassCouldNotStart + "\r\n" + "Host key verification failed.\r\n"
+            + Self.couldNotRead
+        #expect(RemoteFailureParser.parse(stderr: stderr) == .hostKeyNotTrusted)
+    }
+
     /// Git's own words — what is shown when the parser recognises nothing, or when `fetch --all`
     /// failed for some remotes only — leave the askpass line out, keep every other line, and
     /// are redacted as before.

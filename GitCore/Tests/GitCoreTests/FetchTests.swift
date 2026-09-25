@@ -338,8 +338,9 @@ import Testing
             #!/bin/sh
             # git's variant probe (`-G`) first: answer as OpenSSH would, then fail the connection.
             [ "$1" = "-G" ] && exit 0
-            echo 'ssh_askpass: exec(/usr/X11R6/bin/ssh-askpass): No such file or directory' >&2
-            echo 'git@fake.invalid: Permission denied (publickey).' >&2
+            # With ssh's own line ends, \\r\\n (measured).
+            printf 'ssh_askpass: exec(/usr/X11R6/bin/ssh-askpass): No such file or directory\\r\\n' >&2
+            printf 'git@fake.invalid: Permission denied (publickey).\\r\\n' >&2
             exit 255
 
             """.write(to: fakeSSH, atomically: true, encoding: .utf8)
