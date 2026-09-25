@@ -4,7 +4,8 @@ import SwiftUI
 /// which question is on screen.
 ///
 /// The switch is exhaustive on purpose: every question the store can ask has a view here, and
-/// three of the six are confirmations for the actions that can lose work.
+/// five of the ten are confirmations for actions that can lose work — three here, two on
+/// the server.
 struct BranchSheetHost: View {
     let sheet: BranchSheet
 
@@ -23,46 +24,19 @@ struct BranchSheetHost: View {
         case .leaveDetached(let unreferencedCommits, let headSha, let action):
             LeaveDetachedSheet(
                 unreferencedCommits: unreferencedCommits, headSha: headSha, action: action)
-        // Placeholders until Task 10 draws the four remote sheets. They can only be cancelled:
-        // none of them offers the confirming button, so nothing on the server can be changed
-        // from a sheet that does not yet say what it would change.
         case .pullDiverged(let ahead, let behind, let upstream):
-            PlaceholderSheet(
-                title: "Pull from \"\(upstream)\"",
-                lines: ["\(ahead) of yours, \(behind) of theirs."])
+            PullSheet(ahead: ahead, behind: behind, upstream: upstream)
         case .publish(let branch):
-            PlaceholderSheet(title: "Publish \"\(branch)\"", lines: ["Choose a remote."])
-        case .forcePush(let branch, _, let remote, _, let remoteTip, _, let total):
-            PlaceholderSheet(
-                title: "Force push \"\(branch)\" to \"\(remote)\"",
-                lines: ["Remote tip \(remoteTip)", "\(total) commits would be discarded."])
+            PublishSheet(branch: branch)
+        case .forcePush(
+            let branch, let localTip, let remote, let remoteRef, let remoteTip, let discarded,
+            let total):
+            ForcePushSheet(
+                branch: branch, localTip: localTip, remote: remote, remoteRef: remoteRef,
+                remoteTip: remoteTip, discarded: discarded, total: total)
         case .deleteRemoteBranch(let remote, let branch, let tip, let onlyThere):
-            PlaceholderSheet(
-                title: "Delete \"\(branch)\" on \"\(remote)\"",
-                lines: ["Tip \(tip)", "\(onlyThere) held by no branch, tag or other remote."])
+            DeleteRemoteBranchSheet(remote: remote, branch: branch, tip: tip, onlyThere: onlyThere)
         }
     }
 }
 
-/// A stand-in for a sheet whose real view is not written yet: its facts, and Cancel.
-private struct PlaceholderSheet: View {
-    @Environment(RepositoryStore.self) private var store
-    let title: String
-    let lines: [String]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.headline)
-            ForEach(lines, id: \.self) { line in
-                Text(line).font(.callout.monospaced()).textSelection(.enabled)
-            }
-            HStack {
-                Spacer()
-                Button("Cancel") { store.activeSheet = nil }
-                    .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
-        .frame(minWidth: 420)
-    }
-}

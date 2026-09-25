@@ -364,9 +364,10 @@ enum RemoteWording {
         "The branch or its upstream changed since that question was asked. Nothing was "
         + "merged or rebased. Pull again."
 
-    /// The pull sheet's Merge line (Task 10 draws it).
+    /// The pull sheet's Merge line.
     static func mergeExplanation(ahead: Int, behind: Int) -> String {
-        "Creates a merge commit joining \(commits(ahead, "your")) and \(commits(behind, "their"))."
+        "Creates a merge commit joining \(yours(ahead)) and \(theirs(behind)). Rewrites "
+            + "nothing."
     }
 
     /// The pull sheet's Rebase line. It must not promise the history's shape: measured in
@@ -374,8 +375,19 @@ enum RemoteWording {
     /// dropped and the commits under it are replayed — so "your N commits" is true of the
     /// commits and not of how they were joined.
     static func rebaseExplanation(ahead: Int) -> String {
-        "Replays \(commits(ahead, "your")) on top of theirs as new commits. Any merge commit "
-            + "among them is flattened, not kept. Needs every change committed first."
+        let them = ahead == 1 ? "it" : "them"
+        return "Replays \(yours(ahead)) on top of theirs. Rewrites \(them); needs a clean "
+            + "working copy. A merge commit among \(them) is flattened, not kept."
+    }
+
+    /// "your 2 commits", "your commit".
+    private static func yours(_ count: Int) -> String {
+        count == 1 ? "your commit" : "your \(count) commits"
+    }
+
+    /// "their 3 commits", "their commit".
+    private static func theirs(_ count: Int) -> String {
+        count == 1 ? "their commit" : "their \(count) commits"
     }
 
     static func rebaseNotice(_ outcome: RebaseOutcome, branch: String, upstream: String) -> String? {
@@ -587,15 +599,18 @@ enum RemoteWording {
             + "would replace nothing. Push again."
     }
 
-    /// The delete sheet's line about what goes with the branch (Task 10 draws it). Worded as
-    /// exactly the question `commitsOnlyOnRemoteBranch` asks — "held by no branch, tag or
-    /// other remote" — and never "unreachable": that count does not consult the stash, notes,
-    /// a detached HEAD, another worktree or the reflog.
+    /// The delete sheet's line about what goes with the branch. Worded as exactly the question
+    /// `commitsOnlyOnRemoteBranch` asks — "held by no branch, tag or other remote" — and never
+    /// "unreachable": that count does not consult the stash, notes, a detached HEAD, another
+    /// worktree or the reflog. "Gitter can see" because it is this clone's refs that were
+    /// counted, not every clone of the remote.
     static func onlyThere(_ count: Int) -> String {
         switch count {
         case 0: "Its commits are also on another branch, tag or remote."
-        case 1: "1 of its commits is held by no branch, tag or other remote."
-        default: "\(count) of its commits are held by no branch, tag or other remote."
+        // One commit held by nothing else is necessarily the tip: were the tip held elsewhere,
+        // everything under it would be too.
+        case 1: "Its tip commit is held by no branch, tag or other remote Gitter can see."
+        default: "These \(count) commits are held by no branch, tag or other remote Gitter can see."
         }
     }
 
@@ -605,6 +620,153 @@ enum RemoteWording {
         "Gitter couldn't find \"\(remoteBranch)\" after fetching, so it can't show what a force "
             + "push would replace."
     }
+
+    // MARK: - The four sheets
+
+    /// "2 of your commits, 3 of theirs", with the singulars spelled out.
+    static func pullCounts(ahead: Int, behind: Int) -> String {
+        let mine = ahead == 1 ? "1 commit of yours" : "\(ahead) of your commits"
+        let other = behind == 1 ? "1 of theirs" : "\(behind) of theirs"
+        return "\(mine), \(other)"
+    }
+
+    static func pullSheetTitle(_ upstream: String) -> String { "Pull from \"\(upstream)\"" }
+
+    static func pullSheetSummary(branch: String, upstream: String, ahead: Int, behind: Int)
+        -> String
+    {
+        "\"\(branch)\" and \"\(upstream)\" have both moved on: "
+            + "\(pullCounts(ahead: ahead, behind: behind))."
+    }
+
+    static func pullModeTitle(_ mode: PullMode) -> String {
+        switch mode {
+        case .merge: "Merge"
+        case .rebase: "Rebase"
+        }
+    }
+
+    /// The pull sheet's live line when the branch on screen no longer tracks the upstream the
+    /// sheet asked about — `confirmPull` refuses then.
+    static func pullSheetNoLongerApplies(_ upstream: String) -> String {
+        "You are no longer on a branch that tracks \"\(upstream)\", so an answer would be "
+            + "refused. Close this and pull again."
+    }
+
+    /// The pull sheet's live line when the counts it shows are out of date.
+    static func pullSheetCountsChanged(_ tracking: Tracking) -> String {
+        guard case .counts(let ahead, let behind) = tracking else {
+            return "The branch's tracking has changed since this was asked; the numbers above "
+                + "are out of date. Close this and pull again."
+        }
+        return "Since this was asked the counts have changed to "
+            + "\(pullCounts(ahead: ahead, behind: behind)); the numbers above are out of date."
+    }
+
+    static func publishSheetTitle(_ branch: String) -> String { "Publish \"\(branch)\"" }
+
+    static func publishTo(_ branch: String, remote: String?) -> String {
+        guard let remote else { return "Choose the remote to publish \"\(branch)\" to:" }
+        return "Publishes \"\(branch)\" to \"\(remote)\"."
+    }
+
+    /// What `push -u` leaves behind, so the badge's next reading is not a surprise.
+    static func publishWillTrack(remote: String, branch: String) -> String {
+        "It will then track \"\(remote)/\(branch)\", and Pull and Push will use it."
+    }
+
+    /// The chosen remote already has a branch of this name (as last fetched): publishing is an
+    /// ordinary push onto it, which the server refuses unless it is a fast-forward.
+    static func publishOntoExisting(remote: String, branch: String) -> String {
+        "\"\(remote)\" already has a \"\(branch)\". Publishing adds your commits to it only if "
+            + "that needs no force; otherwise it is refused and nothing changes."
+    }
+
+    static func publishSheetNoLongerApplies(_ branch: String) -> String {
+        "You are no longer on \"\(branch)\", so publishing would be refused. Close this and "
+            + "push again."
+    }
+
+    static func forcePushTitle(branch: String, remote: String, remoteRef: String) -> String {
+        "Force push \"\(branch)\" to \(destination(branch: branch, remote: remote, remoteRef: remoteRef))?"
+    }
+
+    /// The force push sheet's warning: what the server's branch loses. Never "lost forever":
+    /// other clones, other branches or the server's own reflog may still hold them.
+    static func forcePushWarning(total: Int, remoteBranch: String) -> String {
+        total == 1
+            ? "1 commit on \"\(remoteBranch)\" is not in the commit you are pushing. A force "
+                + "push takes it off that branch on the server, for everyone who uses it."
+            : "\(total) commits on \"\(remoteBranch)\" are not in the commit you are pushing. A "
+                + "force push takes them off that branch on the server, for everyone who uses it."
+    }
+
+    static func forcePushLocalTipLabel(_ branch: String) -> String {
+        "Will be pushed — the tip of your \"\(branch)\":"
+    }
+
+    static func forcePushRemoteTipLabel(_ remoteBranch: String) -> String {
+        "Will be replaced — the tip of \"\(remoteBranch)\":"
+    }
+
+    static func forcePushListHeading(total: Int, remote: String) -> String {
+        total == 1
+            ? "The commit that will be discarded from \"\(remote)\":"
+            : "The \(total) commits that will be discarded from \"\(remote)\":"
+    }
+
+    static func andMore(_ count: Int) -> String { "and \(count) more, not listed" }
+
+    /// The force push sheet's live line: the branch no longer points where the sheet says it
+    /// does. `confirmForcePush` refuses then (`forcePushBranchMoved`).
+    static func forcePushSheetBranchMoved(_ branch: String) -> String {
+        "\"\(branch)\" has moved since this warning, so Force Push would be refused. Close this "
+            + "and push again to see what it would replace now."
+    }
+
+    /// The live line when the remote-tracking ref no longer holds the tip the sheet leases on
+    /// — a fetch saw the server's branch somewhere else, or it is gone.
+    static func forcePushSheetRemoteMoved(_ remoteBranch: String) -> String {
+        "\"\(remoteBranch)\" has changed since this warning. The force push is leased on the "
+            + "tip shown here, so the server would refuse it. Close this and push again."
+    }
+
+    static func deleteRemoteTitle(branch: String, remote: String) -> String {
+        "Delete \"\(branch)\" on \"\(remote)\"?"
+    }
+
+    static func deleteRemoteBody(branch: String, remote: String) -> String {
+        "This deletes the branch on the server itself, for everyone who uses \"\(remote)\" — "
+            + "not only \"\(remote)/\(branch)\" here."
+    }
+
+    static let deleteRemoteTipLabel = "Its tip, which the deletion is leased on:"
+    static let deleteRemoteRecreate =
+        "The notice after the deletion shows the command that recreates the branch from this tip."
+
+    static func deleteOnRemoteButton(_ remote: String) -> String { "Delete on \"\(remote)\"" }
+
+    /// The delete sheet's live line: the remote-tracking ref has moved or gone since the sheet
+    /// read the tip it leases on.
+    static func deleteRemoteSheetStale(_ remoteBranch: String, isGone: Bool) -> String {
+        isGone
+            ? "\"\(remoteBranch)\" is gone here since this warning — it may already be deleted "
+                + "on the server. Close this and look again."
+            : "\"\(remoteBranch)\" has changed since this warning. The deletion is leased on the "
+                + "tip shown here, so the server would refuse it. Close this and look again."
+    }
+
+    // MARK: - Sidebar menus
+
+    static func fetchRemoteTitle(_ remote: String) -> String { "Fetch \"\(remote)\"" }
+    static let copyURLTitle = "Copy URL"
+    static let copyPushURLTitle = "Copy Push URL"
+
+    static func remoteHasNoURL(_ remote: String) -> String {
+        "\"\(remote)\" has no URL configured."
+    }
+
+    static func deleteOnRemoteTitle(_ remote: String) -> String { "Delete on \"\(remote)\"…" }
 
     // MARK: - Failures
 
@@ -776,11 +938,5 @@ enum RemoteWording {
         let lines = serverLines(messages)
         guard !lines.isEmpty else { return base }
         return base + "\n" + lines.map { "remote: \($0)" }.joined(separator: "\n")
-    }
-
-    // MARK: - Helpers
-
-    private static func commits(_ count: Int, _ owner: String) -> String {
-        count == 1 ? "\(owner) 1 commit" : "\(owner) \(count) commits"
     }
 }
