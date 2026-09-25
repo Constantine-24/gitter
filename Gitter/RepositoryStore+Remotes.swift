@@ -330,6 +330,7 @@ extension RepositoryStore {
     /// the lane, like the manual one.
     var autoFetchSkipReason: String? {
         guard AutoFetchScheduler.isEnabled else { return "turned off" }
+        guard !isTerminating else { return "quitting" }
         guard root != nil, let snapshot else { return "no repository" }
         if let remoteActivity { return "the lane is busy (\(remoteActivity.kind))" }
         if let operationInProgress { return "an operation is in progress (\(operationInProgress))" }
@@ -494,6 +495,8 @@ extension RepositoryStore {
             if missedWatcherEvent { scheduleRefresh() }
             if let rejected = ending.rejected { setRejectedPush(rejected) }
             if let notice = ending.notice, !notice.isEmpty { showNotice(notice) }
+            // Quitting: a pull's merge or a write's follow-up fetch would only be cut short.
+            guard !isTerminating else { return }
             ending.then?()
         }
     }

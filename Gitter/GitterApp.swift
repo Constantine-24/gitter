@@ -14,6 +14,8 @@ struct GitterApp: App {
         // forward "Open Recent"/Finder opens to the same store the scene uses.
         let store = store
         AppDelegate.onOpenURL = { url in store.open(url) }
+        // And for quitting, which has to know what the network lane is doing (`QuitGuard`).
+        AppDelegate.store = store
     }
 
     var body: some Scene {
@@ -21,6 +23,10 @@ struct GitterApp: App {
             MainWindow()
                 .environment(store)
                 .onAppear {
+                    // Again here: SwiftUI may run `init` more than once and keep only the first
+                    // `@State` value (two stores were measured being built in Task 11), so `init`
+                    // can hand the delegate a store nobody looks at. This one is the window's.
+                    AppDelegate.store = store
                     Task {
                         await store.checkGitAvailability()
                         store.reopenLastRepository()
@@ -72,10 +78,19 @@ struct GitterApp: App {
     }
 }
 
-/// Forwards "Open Recent" selections (and other Finder/system open requests) to the store.
-/// The App struct owns the store, so this delegate holds a closure set from `GitterApp.init`.
+/// Forwards "Open Recent" selections (and other Finder/system open requests) to the store, and
+/// asks `QuitGuard` before the app quits. The App struct owns the store, so this delegate holds
+/// a closure and a reference set from `GitterApp.init`.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static var onOpenURL: ((URL) -> Void)?
+    @MainActor static var store: RepositoryStore?
+
+    /// ⌘Q, the Dock's Quit, a logout that asks: never with git still running on its own.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            QuitGuard.shouldTerminate(AppDelegate.store)
+        }
+    }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let url = urls.first else { return }

@@ -70,6 +70,11 @@ final class RepositoryStore {
     /// first snapshot is in, stopped by the next `open()` and by quitting.
     let autoFetchScheduler = AutoFetchScheduler.fromEnvironment()
 
+    /// Set once the user has decided to quit while the lane was busy (`QuitGuard`): from then on
+    /// nothing new is started on the lane — not the automatic fetch, not a cancelled write's
+    /// follow-up fetch — so the lane can only free, and the app can go.
+    private(set) var isTerminating = false
+
     /// The push the server just refused for having commits this branch lacks — the only state
     /// "Force Push…" is reachable from. Cleared by the next mutation or network action.
     private(set) var rejectedPush: RejectedPush?
@@ -247,7 +252,7 @@ final class RepositoryStore {
         let openedGeneration = generation
         Task {
             await refresh()
-            guard generation == openedGeneration else { return }
+            guard generation == openedGeneration, !isTerminating else { return }
             autoFetchScheduler.start(for: self)
         }
     }
@@ -385,6 +390,22 @@ final class RepositoryStore {
         lastAutoFetchFailure = reason
     }
 
+    /// The user has decided to quit while the lane was busy (`QuitGuard`). Nothing new starts on
+    /// the lane from here, and the automatic fetch's schedule stops. (The alert's "Don't Quit"
+    /// never gets here.)
+    func beginTerminating() {
+        isTerminating = true
+        autoFetchScheduler.stop()
+    }
+
+    /// The quit was called off after all: "Wait" was chosen, and the write it waited for ended
+    /// with a banner the user has to read. Everything is available again, the schedule too.
+    func endTerminating() {
+        guard isTerminating else { return }
+        isTerminating = false
+        if root != nil { autoFetchScheduler.start(for: self) }
+    }
+
     /// Claims the network lane — and, for a write, the mutation slot as well — returning the
     /// ticket to hand back to `finishRemote`, or nil when it cannot be claimed. A refusal says
     /// why in the banner: a second network action is refused with a reason, never queued and
@@ -399,11 +420,14 @@ final class RepositoryStore {
     /// waits for it before starting git, so two fetches never write the same refs at once (a
     /// cancelled git is gone within the runner's escalation). If the claim fails for another
     /// reason — the mutation slot is taken — the automatic fetch is left running.
+    ///
+    /// While quitting (`isTerminating`) nothing is claimed, silently: what is left to say
+    /// belongs to an app that is going away.
     // internal (not private): used by +Remotes.swift's `runOnLane`
     func beginRemote(
         _ kind: RemoteActivity.Kind, remote: String?, holdingMutation: Bool, quiet: Bool = false
     ) -> (lane: RemoteLane, preempted: Task<Void, Never>?)? {
-        guard root != nil else { return nil }
+        guard root != nil, !isTerminating else { return nil }
         let preempting = remoteActivity?.kind == .autoFetch && kind != .autoFetch
         if let remoteActivity, !preempting {
             if !quiet { showStickyError(RemoteWording.laneBusy(remoteActivity)) }

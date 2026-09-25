@@ -305,6 +305,23 @@ enum RemoteWording {
         return "it took longer than \(span) and was stopped."
     }
 
+    // MARK: - Quitting
+
+    /// The alert when the user quits while a write is on the lane (`QuitGuard`). A fetch or a
+    /// pull's fetch is stopped without asking: it changes nothing on the server.
+    static func quitDuringWriteTitle(_ activity: RemoteActivity) -> String {
+        let what = describe(activity)
+        return "\(what.prefix(1).uppercased())\(what.dropFirst()) is still running."
+    }
+
+    static let quitDuringWriteMessage =
+        "Stopping it now leaves the remote in an unknown state: it may or may not have been "
+        + "updated, and Gitter would not be here to find out. Wait lets it finish and then "
+        + "quits — unless it fails, in which case Gitter stays open so you can read why."
+    static let quitWait = "Wait"
+    static let quitStop = "Stop and Quit"
+    static let quitCancel = "Don't Quit"
+
     /// A tracking badge's tooltip. Counts are against **the upstream, by name** — never "the
     /// remote": the upstream can be another local branch (`tracksLocalBranch`), or live on a
     /// repository the branch does not push to.

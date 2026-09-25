@@ -30,6 +30,7 @@
     ///     stageall                     commit:<subject>     snapshot:<name>
     ///     open:<path>                  menu:<title>        views[:<class>]     badges
     ///     autofetchfailed:<reason>     copyurls
+    ///     quit                         alert               alertbutton:<title>
     ///     menuitem:<menu>:<title>
     ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
@@ -68,11 +69,19 @@
     /// `copy <remote> "<title>": <raw address> -> <pasteboard>`. The raw address is printed so
     /// the redaction can be checked against it; point this only at scratch remotes.
     ///
-    /// `menuitem:<menu>:<title>` fires a main menu item through `NSMenu.performActionForItem(at:)`,
-    /// which is what choosing it does — how "Fetch Automatically" is toggled — and
-    /// `menu:<title>` then shows its state. It waits for nothing.
+    /// `quit` asks the app to quit the way ⌘Q does (`NSApp.terminate`), posted to the main queue
+    /// so that the steps after it still run while `QuitGuard` holds the quit (`.terminateLater`):
+    /// `start:push;wait:1;quit;snapshot:alert;alertbutton:Wait`. `alertbutton:<title>` clicks
+    /// that button of an alert on screen (`performClick`, the button's own action — the alert's
+    /// completion handler runs as it would for a pointer). `menuitem:<menu>:<title>` fires a main
+    /// menu item through `NSMenu.performActionForItem(at:)`, which is what choosing it does —
+    /// how "Fetch Automatically" is toggled — and `menu:<title>` then shows its state. None of
+    /// the three waits for anything. `alert` logs every text and button (with its key
+    /// equivalent) of each sheet on screen: the snapshot draws an alert's frame and its tinted
+    /// buttons but not its text, which is drawn with vibrancy (the sidebar's problem, below).
     ///
-    /// The automatic fetch prints its own lines, `AUTOFETCH …`, one per tick and one per ending.
+    /// The automatic fetch prints its own lines, `AUTOFETCH …`, one per tick and one per ending;
+    /// `QUIT …` lines say what quitting decided.
     ///
     /// After every step one line goes to stderr. `head` and `selection` ride along because the
     /// store's own answer to "where are we now" cannot be read from git, and "the selection
@@ -98,7 +107,9 @@
                 // `mutate` and the lane are both claimed synchronously, so by now `isMutating` or
                 // `remoteActivity` is already set for anything that runs git; a step that only
                 // opens a sheet sets neither and this returns at once.
-                if started || text.hasPrefix("wait:") || text.hasPrefix("menuitem:") {
+                if started || text.hasPrefix("wait:") || text == "quit" || text == "alert"
+                    || text.hasPrefix("alertbutton:") || text.hasPrefix("menuitem:")
+                {
                     // Nothing to wait for: the point is to carry on while it runs.
                 } else if laneWasBusy && text != "cancel" && text != "idle" {
                     _ = await wait({ !store.isMutating })
@@ -251,6 +262,27 @@
                             + "| voiceover: \(spoken ?? "nil")")
                 }
             case "copyurls": copyURLs(store: store)
+            case "quit":
+                // From the run loop, as ⌘Q's key event or the Dock's quit event arrives — not
+                // called here, and not from a main-queue block. `terminate` does not return while
+                // the quit is held, and the run loop it spins then cannot drain the main queue
+                // from *inside* a main-queue block (a MainActor job is one), so nothing on the
+                // main actor — the lane's own task included — would run again (measured in Task
+                // 11: the lane never freed and the app never quit).
+                NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0)
+            case "alert":
+                for window in NSApp.windows where window.sheetParent != nil && window.isVisible {
+                    logControls(in: window.contentView, window: "\(type(of: window))")
+                }
+            case "alertbutton":
+                let title = String(step.dropFirst("alertbutton:".count))
+                let button = NSApp.windows.lazy.compactMap { findButton(title, in: $0.contentView) }
+                    .first
+                if let button {
+                    button.performClick(nil)
+                } else {
+                    log("alertbutton: no button \"\(title)\" on screen")
+                }
             case "menuitem":
                 if let first, let second { fireMenuItem(second, inMenu: first) }
             case "stageall": store.stageAll()
@@ -260,6 +292,28 @@
                 store.commit()
             default: log("unknown step: \(step)")
             }
+        }
+
+        private static func logControls(in view: NSView?, window: String) {
+            guard let view else { return }
+            if let button = view as? NSButton, !button.title.isEmpty {
+                let key = button.keyEquivalent
+                    .replacingOccurrences(of: "\r", with: "Return")
+                    .replacingOccurrences(of: "\u{1b}", with: "Escape")
+                log("alert \(window) button: \(button.title) [key: \(key.isEmpty ? "none" : key)]")
+            } else if let text = view as? NSTextField, !text.stringValue.isEmpty {
+                log("alert \(window) text: \(text.stringValue)")
+            }
+            for child in view.subviews { logControls(in: child, window: window) }
+        }
+
+        private static func findButton(_ title: String, in view: NSView?) -> NSButton? {
+            guard let view else { return nil }
+            if let button = view as? NSButton, button.title == title { return button }
+            for child in view.subviews {
+                if let found = findButton(title, in: child) { return found }
+            }
+            return nil
         }
 
         private static func fireMenuItem(_ title: String, inMenu menuTitle: String) {
