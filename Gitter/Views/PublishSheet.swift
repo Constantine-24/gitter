@@ -17,13 +17,20 @@ struct PublishSheet: View {
 
     private var remotes: [Remote] { store.snapshot?.refs.remotes ?? [] }
 
-    /// The upstream's remote when the branch has one (a branch tracking a local branch, or one
-    /// published before and since unset, still says where it belongs), else the first remote.
+    /// "origin" when it is configured, else git's first remote (git lists them alphabetically).
+    ///
+    /// "origin" because it is git's own implicit default remote — the one a bare `git push` of
+    /// an upstreamless branch falls back to (the design's push-target table, row m) — so it is
+    /// where the user's own terminal would have sent this branch.
+    ///
+    /// The branch's upstream cannot be the guide, although it would be the natural first
+    /// choice: this sheet only opens for a branch `PushTarget` calls `.unpublished`, meaning it
+    /// has no `pushRemote`, and a branch whose upstream is on a remote always has one — git
+    /// reports the upstream's remote as the push remote when nothing overrides it. The other
+    /// case, an upstream that is another *local* branch, has no remote at all
+    /// (`upstreamRemote` is nil there). So there is never an upstream remote to prefer here.
     private var defaultRemote: String? {
-        let upstreamRemote = store.localBranches.first { $0.name == branch }?.upstreamRemote
-        if let upstreamRemote, remotes.contains(where: { $0.name == upstreamRemote }) {
-            return upstreamRemote
-        }
+        if remotes.contains(where: { $0.name == "origin" }) { return "origin" }
         return remotes.first?.name
     }
 
@@ -35,12 +42,6 @@ struct PublishSheet: View {
 
     private var staleReason: String? {
         store.currentBranch == branch ? nil : RemoteWording.publishSheetNoLongerApplies(branch)
-    }
-
-    private var busyReason: String? {
-        if let activity = store.remoteActivity { return RemoteWording.laneBusy(activity) }
-        if store.isMutating { return RemoteWording.mutationBusy }
-        return nil
     }
 
     var body: some View {
@@ -89,7 +90,9 @@ struct PublishSheet: View {
                 }
             }
 
-            ForEach([staleReason, busyReason].compactMap { $0 }, id: \.self) { line in
+            ForEach(
+                [staleReason, store.sheetBusyReason].compactMap { $0 }, id: \.self
+            ) { line in
                 Text(line)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -100,7 +103,7 @@ struct PublishSheet: View {
                 Spacer()
                 // No shortcut: Return belongs to Cancel.
                 Button("Publish") { confirm() }
-                    .disabled(remote == nil || busyReason != nil)
+                    .disabled(remote == nil || store.sheetBusyReason != nil)
                 Button("Cancel") { store.activeSheet = nil }
                     .keyboardShortcut(.defaultAction)
             }
@@ -111,7 +114,7 @@ struct PublishSheet: View {
     }
 
     private func confirm() {
-        guard let remote, busyReason == nil else { return }
+        guard let remote, store.sheetBusyReason == nil else { return }
         // `confirmPublish` checks this sheet's branch against HEAD and clears it itself.
         store.confirmPublish(to: remote)
     }

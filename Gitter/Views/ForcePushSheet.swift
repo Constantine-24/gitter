@@ -48,12 +48,6 @@ struct ForcePushSheet: View {
         return reasons
     }
 
-    private var busyReason: String? {
-        if let activity = store.remoteActivity { return RemoteWording.laneBusy(activity) }
-        if store.isMutating { return RemoteWording.mutationBusy }
-        return nil
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(RemoteWording.forcePushTitle(branch: branch, remote: remote, remoteRef: remoteRef))
@@ -68,10 +62,16 @@ struct ForcePushSheet: View {
 
             commitList
 
-            ForEach(staleReasons + [busyReason].compactMap { $0 }, id: \.self) { line in
+            ForEach(
+                staleReasons + [store.sheetBusyReason].compactMap { $0 }, id: \.self
+            ) { line in
                 Text(line)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    // A stale line warns about the destructive button; tinted so it does not
+                    // read like the grey busy line that may sit under it.
+                    .foregroundStyle(
+                        staleReasons.contains(line)
+                            ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -81,7 +81,7 @@ struct ForcePushSheet: View {
                 Button("Force Push", role: .destructive) { confirm() }
                     // The role alone draws an ordinary grey button in a macOS sheet.
                     .foregroundStyle(.red)
-                    .disabled(busyReason != nil)
+                    .disabled(store.sheetBusyReason != nil)
                 Button("Cancel") { store.activeSheet = nil }
                     .keyboardShortcut(.defaultAction)
             }
@@ -147,7 +147,7 @@ struct ForcePushSheet: View {
     }
 
     private func confirm() {
-        guard busyReason == nil else { return }
+        guard store.sheetBusyReason == nil else { return }
         // `confirmForcePush` reads this very sheet for both shas and clears it itself.
         store.confirmForcePush()
     }

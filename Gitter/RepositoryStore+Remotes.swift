@@ -50,10 +50,16 @@ extension RepositoryStore {
     /// deletion on the server touches neither the worktree nor HEAD, so an operation in
     /// progress and a detached HEAD do not.
     var deleteRemoteBranchBlockedReason: String? {
-        let gate = remoteGate
-        guard gate.hasRepository else { return RemoteWording.noRepository }
-        if let activity = gate.activity { return RemoteWording.laneBusy(activity) }
-        if gate.isMutating { return RemoteWording.mutationBusy }
+        guard remoteGate.hasRepository else { return RemoteWording.noRepository }
+        return sheetBusyReason
+    }
+
+    /// Why a remote sheet's confirming button is off: the lane is busy, or another change holds
+    /// the mutation slot. The one sentence all four sheets (pull, publish, force push, delete on
+    /// a remote) show under their text; what is *stale* about a sheet is each sheet's own.
+    var sheetBusyReason: String? {
+        if let activity = remoteActivity { return RemoteWording.laneBusy(activity) }
+        if isMutating { return RemoteWording.mutationBusy }
         return nil
     }
 

@@ -29,12 +29,6 @@ struct DeleteRemoteBranchSheet: View {
         return RemoteWording.deleteRemoteSheetStale(trackingName, isGone: now == nil)
     }
 
-    private var busyReason: String? {
-        if let activity = store.remoteActivity { return RemoteWording.laneBusy(activity) }
-        if store.isMutating { return RemoteWording.mutationBusy }
-        return nil
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(RemoteWording.deleteRemoteTitle(branch: branch, remote: remote))
@@ -62,10 +56,16 @@ struct DeleteRemoteBranchSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            ForEach([staleReason, busyReason].compactMap { $0 }, id: \.self) { line in
+            ForEach(
+                [staleReason, store.sheetBusyReason].compactMap { $0 }, id: \.self
+            ) { line in
                 Text(line)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    // A stale line warns about the destructive button; tinted so it does not
+                    // read like the grey busy line that may sit under it.
+                    .foregroundStyle(
+                        line == staleReason
+                            ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -77,7 +77,7 @@ struct DeleteRemoteBranchSheet: View {
                 }
                     // The role alone draws an ordinary grey button in a macOS sheet.
                     .foregroundStyle(.red)
-                    .disabled(busyReason != nil)
+                    .disabled(store.sheetBusyReason != nil)
                 Button("Cancel") { store.activeSheet = nil }
                     .keyboardShortcut(.defaultAction)
             }
@@ -88,7 +88,7 @@ struct DeleteRemoteBranchSheet: View {
     }
 
     private func confirm() {
-        guard busyReason == nil else { return }
+        guard store.sheetBusyReason == nil else { return }
         // `confirmDeleteRemoteBranch` reads this very sheet for the tip and clears it itself.
         store.confirmDeleteRemoteBranch()
     }

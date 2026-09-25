@@ -39,13 +39,6 @@ struct PullSheet: View {
         return nil
     }
 
-    /// Why the confirming button is off: another change holds the slot, or the lane is busy.
-    private var busyReason: String? {
-        if let activity = store.remoteActivity { return RemoteWording.laneBusy(activity) }
-        if store.isMutating { return RemoteWording.mutationBusy }
-        return nil
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(RemoteWording.pullSheetTitle(upstream))
@@ -66,7 +59,9 @@ struct PullSheet: View {
             }
             .pickerStyle(.radioGroup)
 
-            ForEach([staleReason, busyReason].compactMap { $0 }, id: \.self) { line in
+            ForEach(
+                [staleReason, store.sheetBusyReason].compactMap { $0 }, id: \.self
+            ) { line in
                 Text(line)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -77,7 +72,7 @@ struct PullSheet: View {
                 Spacer()
                 // No shortcut: Return belongs to Cancel, and a rebase rewrites commits.
                 Button(RemoteWording.pullModeTitle(mode)) { confirm() }
-                    .disabled(busyReason != nil)
+                    .disabled(store.sheetBusyReason != nil)
                 Button("Cancel") { store.activeSheet = nil }
                     .keyboardShortcut(.defaultAction)
             }
@@ -102,7 +97,7 @@ struct PullSheet: View {
     }
 
     private func confirm() {
-        guard busyReason == nil else { return }
+        guard store.sheetBusyReason == nil else { return }
         // `confirmPull` reads this very sheet for the upstream and clears it itself.
         store.confirmPull(mode)
     }
