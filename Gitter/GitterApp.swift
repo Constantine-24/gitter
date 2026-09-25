@@ -1,35 +1,58 @@
 import AppKit
 import SwiftUI
 
+/// The one `RepositoryStore` of the app, built once, outside `GitterApp`.
+///
+/// SwiftUI runs `GitterApp.init` more than once and keeps only the first `@State` value — two
+/// stores were measured being built (Task 11) — so a store made there, or captured there, may be
+/// one nobody sees. It was worse than idle: `open()` starts the automatic fetch, so the discarded
+/// store that `onOpenURL` had captured fetched a repository nobody could see every interval,
+/// unseen by Stop, by "Fetch Automatically" and by `QuitGuard` (measured in Task 11's review:
+/// a Finder open logged two schedules 76 ms apart and paired ticks). A static is built once, on
+/// first use, and the window, the menus and both delegate hooks read this same one — including
+/// an open event that arrives at launch before the window's `onAppear`.
+@MainActor
+enum AppModel {
+    static let store = RepositoryStore()
+
+    /// The main window's scene id, for `openWindow`.
+    static let windowID = "main"
+
+    /// Opens a main window: set by the first window to appear, from its `openWindow`, so that
+    /// `AppDelegate` — which has no SwiftUI environment — can show the repository a Finder open
+    /// has just opened when every window has been closed.
+    static var openWindow: (() -> Void)?
+}
+
+/// Hands the window's `openWindow` action to `AppModel.openWindow`.
+private struct RemembersHowToOpenTheWindow: ViewModifier {
+    @Environment(\.openWindow) private var openWindow
+
+    func body(content: Content) -> some View {
+        content.onAppear {
+            let openWindow = openWindow
+            AppModel.openWindow = { openWindow(id: AppModel.windowID) }
+        }
+    }
+}
+
 @main
 struct GitterApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var store = RepositoryStore()
+    private var store: RepositoryStore { AppModel.store }
     /// "Fetch Automatically". Read by the schedule at every tick (`AutoFetchScheduler.isEnabled`).
     @AppStorage(AutoFetchScheduler.enabledKey) private var autoFetchEnabled = true
 
-    init() {
-        // Capture the initial @State instance so the AppDelegate hook (a static closure,
-        // since AppDelegate is created by the adaptor and can't be handed the store) can
-        // forward "Open Recent"/Finder opens to the same store the scene uses.
-        let store = store
-        AppDelegate.onOpenURL = { url in store.open(url) }
-        // And for quitting, which has to know what the network lane is doing (`QuitGuard`).
-        AppDelegate.store = store
-    }
-
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: AppModel.windowID) {
             MainWindow()
                 .environment(store)
+                .modifier(RemembersHowToOpenTheWindow())
                 .onAppear {
-                    // Again here: SwiftUI may run `init` more than once and keep only the first
-                    // `@State` value (two stores were measured being built in Task 11), so `init`
-                    // can hand the delegate a store nobody looks at. This one is the window's.
-                    AppDelegate.store = store
                     Task {
                         await store.checkGitAvailability()
-                        store.reopenLastRepository()
+                        // Not over a repository a Finder open at launch has already opened.
+                        if store.root == nil { store.reopenLastRepository() }
                         #if DEBUG
                             DebugLaunchHooks.run(store: store)
                         #endif
@@ -37,6 +60,11 @@ struct GitterApp: App {
                 }
         }
         .defaultSize(width: 1200, height: 760)
+        // A Finder open (or "Open Recent") is opened in the one store by `AppDelegate`, which
+        // also brings a window back if none is open. Left to itself the scene answered the same
+        // event with new windows onto that same store — two per open, measured in Task 11's
+        // review.
+        .handlesExternalEvents(matching: [])
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Open Repository…") { RepositoryOpener.run(store: store) }
@@ -79,23 +107,27 @@ struct GitterApp: App {
 }
 
 /// Forwards "Open Recent" selections (and other Finder/system open requests) to the store, and
-/// asks `QuitGuard` before the app quits. The App struct owns the store, so this delegate holds
-/// a closure and a reference set from `GitterApp.init`.
+/// asks `QuitGuard` before the app quits. Both go to `AppModel.store`, the one the window shows.
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    @MainActor static var onOpenURL: ((URL) -> Void)?
-    @MainActor static var store: RepositoryStore?
-
     /// ⌘Q, the Dock's Quit, a logout that asks: never with git still running on its own.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
-            QuitGuard.shouldTerminate(AppDelegate.store)
+            QuitGuard.shouldTerminate(AppModel.store)
         }
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let url = urls.first else { return }
         MainActor.assumeIsolated {
-            AppDelegate.onOpenURL?(url)
+            #if DEBUG
+                RepositoryStore.logStores("open event: \(url.path)")
+            #endif
+            AppModel.store.open(url)
+            // The scene no longer makes a window for the event (`handlesExternalEvents`), so
+            // when none is open, one is asked for here — else the open would happen unseen.
+            if !NSApp.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) {
+                AppModel.openWindow?()
+            }
         }
     }
 }

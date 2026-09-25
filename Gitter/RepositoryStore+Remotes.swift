@@ -361,7 +361,7 @@ extension RepositoryStore {
             return
         }
         #if DEBUG
-            Self.logAutoFetch("tick: fetching every remote")
+            Self.logAutoFetch("tick: fetching every remote (store \(debugSerial))")
         #endif
         runOnLane(.autoFetch, remote: nil, holdingMutation: false, quiet: true) {
             [self] backend, root, lane, _ in

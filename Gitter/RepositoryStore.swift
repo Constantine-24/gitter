@@ -113,6 +113,18 @@ final class RepositoryStore {
         func debugSetLastAutoFetchFailure(_ reason: String?) {
             lastAutoFetchFailure = reason
         }
+
+        /// How many stores this process has built. One — `AppModel.store` — is the only right
+        /// answer: a second one is a store nobody sees, and it would still fetch (Task 11).
+        private(set) static var storesBuilt = 0
+
+        /// Which store this is, 1 for the first built: in the `AUTOFETCH` lines, so two
+        /// schedules from two stores can be told apart in a log.
+        let debugSerial: Int
+
+        static func logStores(_ event: String) {
+            FileHandle.standardError.write(Data("STORES built: \(storesBuilt) | \(event)\n".utf8))
+        }
     #endif
 
     /// Bumped by every `open()`. Anything loaded or run asynchronously captures it and drops
@@ -158,6 +170,10 @@ final class RepositoryStore {
     ) {
         self.backend = backend
         self.gitPath = gitPath
+        #if DEBUG
+            Self.storesBuilt += 1
+            debugSerial = Self.storesBuilt
+        #endif
     }
 
     // MARK: - Opening

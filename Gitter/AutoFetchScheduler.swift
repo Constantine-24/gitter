@@ -60,7 +60,8 @@ final class AutoFetchScheduler {
     func start(for store: RepositoryStore) {
         stop()
         #if DEBUG
-            RepositoryStore.logAutoFetch("schedule: every \(interval), stopped after \(timeout)")
+            RepositoryStore.logAutoFetch(
+                "schedule: every \(interval), stopped after \(timeout) (store \(store.debugSerial))")
         #endif
         let generation = store.generation
         let interval = interval

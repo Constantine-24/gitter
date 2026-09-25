@@ -69,8 +69,10 @@
     /// `copy <remote> "<title>": <raw address> -> <pasteboard>`. The raw address is printed so
     /// the redaction can be checked against it; point this only at scratch remotes.
     ///
-    /// `quit` asks the app to quit the way ⌘Q does (`NSApp.terminate`), posted to the main queue
-    /// so that the steps after it still run while `QuitGuard` holds the quit (`.terminateLater`):
+    /// `quit` asks the app to quit the way ⌘Q does (`NSApp.terminate`), performed from the run
+    /// loop (`perform(_:with:afterDelay: 0)`) — not from a main-queue block, where a held quit
+    /// would starve every MainActor job — so that the steps after it still run while `QuitGuard`
+    /// holds the quit (`.terminateLater`):
     /// `start:push;wait:1;quit;snapshot:alert;alertbutton:Wait`. `alertbutton:<title>` clicks
     /// that button of an alert on screen (`performClick`, the button's own action — the alert's
     /// completion handler runs as it would for a pointer). `menuitem:<menu>:<title>` fires a main
@@ -141,7 +143,8 @@
                     + "| pullMode: \(store.rememberedPullMode.rawValue) "
                     + "| loads: \(store.snapshotLoadCount) "
                     + "| autoFetch: \(AutoFetchScheduler.isEnabled ? "on" : "off"), "
-                    + "failure: \(store.lastAutoFetchFailure ?? "nil")")
+                    + "failure: \(store.lastAutoFetchFailure ?? "nil") "
+                    + "| stores: \(RepositoryStore.storesBuilt)")
         }
 
         private static func flat(_ text: String?) -> String {

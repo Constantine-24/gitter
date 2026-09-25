@@ -42,6 +42,7 @@
         }
 
         static func run(store: RepositoryStore) {
+            RepositoryStore.logStores("the window's store is store \(store.debugSerial)")
             let env = ProcessInfo.processInfo.environment
             let path = env["GITTER_DEBUG_SELECT_PATH"]
             let commit = env["GITTER_DEBUG_SELECT_COMMIT"]
