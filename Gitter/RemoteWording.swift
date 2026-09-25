@@ -198,6 +198,12 @@ enum RemoteWording {
     static let pullSlotBusy =
         "The pull fetched, but couldn't integrate while another change was running. Pull again."
 
+    /// Merge or Rebase chosen on the pull sheet while another change holds the slot. The sheet
+    /// stays up, so the way to try again is right there.
+    static let pullAnswerSlotBusy =
+        "Another change is still running, so nothing was merged. Wait for it to finish, then "
+        + "choose Merge or Rebase again."
+
     /// Stop pressed after the pull's fetch had finished, before it merged anything.
     static func pullStoppedAfterFetch(_ remote: String?) -> String {
         "Stopped the pull after fetching\(remote.map { " from \"\($0)\"" } ?? ""). Nothing was "
@@ -516,9 +522,19 @@ enum RemoteWording {
     /// — breaks the match and the password survives; the stripping that follows then removes
     /// the VT and puts the password back together, on screen (found in Task 8's review). With
     /// the controls gone first, the redactor sees the URL the user would see.
+    ///
+    /// **Marks on ASCII punctuation are dropped too** (Mn, Me directly after a `@`, `:`, `/`,
+    /// `.` …, however many). No real text puts an accent or a variation selector on a URL's
+    /// punctuation, but a hostile line can: `@` + U+FE0F renders as a plain `@`, and was enough
+    /// to hide the `@` from a redactor that compared `Character`s. The redactor now compares
+    /// scalars and no longer needs this; it is kept so that what is shown is the address as git
+    /// would parse it, not an `@` with something invisible riding on it. Marks anywhere else
+    /// are **kept**: stripping every Mn would take the accents off decomposed text (`e` +
+    /// U+0301 is how a macOS path spells `é`) and the vowel signs off whole scripts.
     static func plain(_ text: String) -> String {
         var out = String.UnicodeScalarView()
         var scalars = text.unicodeScalars.makeIterator()
+        var afterASCIIPunctuation = false
         while let scalar = scalars.next() {
             if scalar == "\u{1B}" {
                 skipEscape(&scalars)
@@ -526,6 +542,7 @@ enum RemoteWording {
             }
             if scalar == "\t" {
                 out.append(" ")
+                afterASCIIPunctuation = false
                 continue
             }
             // Cc: C0/C1 controls (BEL, CR, backspace, CSI as one byte …). Cf: format characters,
@@ -534,7 +551,15 @@ enum RemoteWording {
             // a second line inside what is meant to be one.
             switch scalar.properties.generalCategory {
             case .control, .format, .lineSeparator, .paragraphSeparator: continue
-            default: out.append(scalar)
+            // Two cases, not one: a `where` after a pattern list guards only the last pattern.
+            case .nonspacingMark where afterASCIIPunctuation: continue
+            case .enclosingMark where afterASCIIPunctuation: continue
+            default:
+                out.append(scalar)
+                afterASCIIPunctuation =
+                    scalar.isASCII && scalar.properties.generalCategory != .control
+                    && !scalar.properties.isAlphabetic && !scalar.properties.isWhitespace
+                    && !("0"..."9").contains(scalar)
             }
         }
         let redacted = RemoteFailureParser.redactingCredentials(String(out))

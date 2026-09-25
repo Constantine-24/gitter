@@ -170,19 +170,33 @@ public enum RemoteFailureParser {
     ///
     /// Pure, total, and unanchored to any particular message: it walks the text in runs of
     /// URL-ish characters, so quotes, brackets and punctuation around an address survive.
+    ///
+    /// **Scalars, not `Character`s.** Every comparison here is made on Unicode scalars. A
+    /// combining mark, a variation selector or a joiner written straight after `@` — or after
+    /// one of the characters of `://` — joins that punctuation into a single `Character`, so a
+    /// walk that compared `Character`s saw no `@` and no `://` there and handed the credential
+    /// back untouched (`https://u:secret@\u{FE0F}host/y`). A scalar `@` is an `@` whatever
+    /// follows it, and the marks between the scalars of `://` are looked through
+    /// (`isTransparent`). Decomposed letters (`e` + U+0301, how a macOS path spells `é`) are
+    /// ordinary text to this walk and come back as they were.
+    ///
+    /// Callers that cut a long stream into pieces before redacting — the progress relay forces
+    /// a split every 64 KiB of a line with no end — redact each piece on its own, so a
+    /// credential straddling such a cut is redacted piece by piece; see `docs/BACKLOG.md`.
     public static func redactingCredentials(_ text: String) -> String {
-        var result = ""
-        var run = ""
-        for character in text {
-            if isRunDelimiter(character) {
-                result += redactingUserinfo(in: run)
-                run = ""
-                result.append(character)
+        var result = String.UnicodeScalarView()
+        var run: [Unicode.Scalar] = []
+        for scalar in text.unicodeScalars {
+            if isRunDelimiter(scalar) {
+                result.append(contentsOf: redactingUserinfo(in: run))
+                run = []
+                result.append(scalar)
             } else {
-                run.append(character)
+                run.append(scalar)
             }
         }
-        return result + redactingUserinfo(in: run)
+        result.append(contentsOf: redactingUserinfo(in: run))
+        return String(result)
     }
 
     /// Whether `line` is the *server* talking rather than this connection.
@@ -267,7 +281,7 @@ public enum RemoteFailureParser {
         redactingCredentials(line).trimmed
     }
 
-    /// Characters that cannot be inside a URL or an scp-style address, and so end one:
+    /// Scalars that cannot be inside a URL or an scp-style address, and so end one:
     /// whitespace and the punctuation git, ssh and hooks quote addresses with.
     ///
     /// **`[` is not one of them, and that is the whole of the IPv6 fix.** A URL's host may be an
@@ -276,55 +290,80 @@ public enum RemoteFailureParser {
     /// empty — so it bailed and the credential was returned untouched. `]` stays a delimiter,
     /// which costs nothing: it can only appear after the host, so the run that carries the
     /// userinfo is intact, and the walk puts the `]` back itself.
-    private static func isRunDelimiter(_ character: Character) -> Bool {
-        character.isWhitespace
-            || "'\"<>`()]".contains(character)
+    private static func isRunDelimiter(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.properties.isWhitespace || "'\"<>`()]".unicodeScalars.contains(scalar)
+    }
+
+    /// Scalars the address matching looks through: combining and enclosing marks (Mn, Me —
+    /// variation selectors and U+034F are Mn), spacing marks (Mc) and format characters (Cf —
+    /// the joiners, the tag characters), plus the emoji skin-tone modifiers. They are exactly
+    /// what can glue onto a preceding `:`, `/` or `@` as one grapheme, and none of them can
+    /// turn a credential into something that is not one. Looking through them only ever finds
+    /// *more* of an address, so the cost of the list being generous is a redaction, never a
+    /// leak.
+    private static func isTransparent(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.properties.generalCategory {
+        case .nonspacingMark, .enclosingMark, .spacingMark, .format: true
+        default: scalar.properties.isEmojiModifier
+        }
     }
 
     /// One run of URL-ish text with its userinfo removed — see `redactingCredentials` for which
     /// shapes count and why `git@github.com` is not one of them.
-    private static func redactingUserinfo(in run: String) -> String {
+    ///
+    /// The shapes are matched on `seen`, the run's positions with the transparent scalars left
+    /// out, and cut on the run itself: what is kept is the original text, marks included,
+    /// except that the userinfo goes together with the `@` and any marks glued onto it.
+    private static func redactingUserinfo(in run: [Unicode.Scalar]) -> [Unicode.Scalar] {
         guard run.contains("@") else { return run }
+        let seen = run.indices.filter { !isTransparent(run[$0]) }
+        func scalar(_ position: Int) -> Unicode.Scalar { run[seen[position]] }
+        // Where `seen[position]` starts in the run, or the run's end past the last one.
+        func start(_ position: Int) -> Int { position < seen.count ? seen[position] : run.count }
 
-        if let scheme = run.range(of: "://") {
-            let rest = run[scheme.upperBound...]
+        if let colon = seen.indices.dropLast(2).first(where: {
+            scalar($0) == ":" && scalar($0 + 1) == "/" && scalar($0 + 2) == "/"
+        }) {
+            let rest = colon + 3
             // `\u{23}` is the number sign, spelled as an escape rather than written between
             // quotes: `ForceFlagScannerTests` refuses to scan a file in which a number sign is
             // followed by a double quote, because that opens a raw string literal its lexer
             // does not handle — and a number sign written as a one-character literal is
             // exactly that pair of characters.
             let authorityEnd =
-                rest.firstIndex(where: { $0 == "/" || $0 == "?" || $0 == "\u{23}" })
-                ?? rest.endIndex
-            let authority = rest[..<authorityEnd]
-            guard let at = authority.lastIndex(of: "@") else { return run }
-            let host = authority[authority.index(after: at)...]
-            guard !host.isEmpty else { return run }
-            return String(run[..<scheme.upperBound]) + host + rest[authorityEnd...]
+                (rest..<seen.count).first(where: {
+                    scalar($0) == "/" || scalar($0) == "?" || scalar($0) == "\u{23}"
+                }) ?? seen.count
+            guard let at = (rest..<authorityEnd).last(where: { scalar($0) == "@" }),
+                at + 1 < authorityEnd
+            else { return run }
+            return Array(run[..<start(rest)] + run[start(at + 1)...])
         }
 
-        guard let at = run.lastIndex(of: "@") else { return run }
-        var userinfo = run[..<at]
-        let host = run[run.index(after: at)...]
+        guard let at = seen.indices.last(where: { scalar($0) == "@" }) else { return run }
+        var userinfo = 0..<at
+        let host = (at + 1)..<seen.count
         // A `[` before the `@` is punctuation the message was written with rather than part of
         // the credential: RFC 3986 excludes `[` from userinfo, and only `]` ends a run here, so
         // a run like `[u:p@host:path` is a bracketed sentence and not an address that begins
         // with a bracket. Everything up to the last one is kept and handed back untouched, so
         // `[u:p@host:path]` redacts to `[host:path]` rather than to `host:path]`.
-        var prefix = Substring("")
-        if let bracket = userinfo.lastIndex(of: "[") {
-            prefix = userinfo[...bracket]
-            userinfo = userinfo[userinfo.index(after: bracket)...]
+        var prefix = 0
+        if let bracket = userinfo.last(where: { scalar($0) == "[" }) {
+            prefix = seen[bracket] + 1
+            userinfo = (bracket + 1)..<at
         }
         // A `/` in the userinfo means this is not an authority at all but a path git is
         // quoting — `/tmp/gitter-test/a:b@origin.git` is a directory, not a credential.
-        guard !userinfo.isEmpty, !host.isEmpty, !userinfo.contains("/") else { return run }
+        guard !userinfo.isEmpty, !host.isEmpty, !userinfo.contains(where: { scalar($0) == "/" })
+        else { return run }
+        let redacted = Array(run[..<prefix] + run[start(at + 1)...])
         // `user:secret@host` — a credential whatever surrounds it.
-        if userinfo.contains(":") { return String(prefix + host) }
+        if userinfo.contains(where: { scalar($0) == ":" }) { return redacted }
         // `user@host:path`, scp-style: a `:` with something after it. Without that something
         // this is `git@github.com` in a sentence, or an email address, and neither is redacted.
-        if let colon = host.firstIndex(of: ":"), host.index(after: colon) < host.endIndex {
-            return String(prefix + host)
+        if let colon = host.first(where: { scalar($0) == ":" }), colon + 1 < host.upperBound {
+            return redacted
         }
         return run
     }

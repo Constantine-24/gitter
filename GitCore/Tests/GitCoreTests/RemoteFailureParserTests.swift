@@ -324,6 +324,42 @@ import Testing
         #expect(RemoteFailureParser.redactingCredentials(text) == expected)
     }
 
+    /// A combining mark, a variation selector or a joiner right after the `@` (or inside the
+    /// `://`) glues onto the punctuation as one `Character`, so a walk that compared
+    /// `Character`s no longer saw an `@` or a `://` there and handed the run back **with the
+    /// password in it**. The walk compares Unicode scalars now, and a mark between the scalars
+    /// of `://` is looked through. Each shape below survived before the fix; the last three
+    /// guard the other side: decomposed letters (a macOS path is NFD) are not touched.
+    @Test(arguments: [
+        // A variation selector (Mn) after the `@`.
+        ("https://u:secret@\u{FE0F}host/y", "https://host/y"),
+        // A combining acute accent (Mn) and a combining grapheme joiner (Mn).
+        ("https://u:secret@\u{301}host/y", "https://host/y"),
+        ("https://u:secret@\u{34F}host/y", "https://host/y"),
+        // An enclosing mark (Me) and a zero-width joiner (Cf, grapheme-extending).
+        ("https://u:secret@\u{20E3}host/y", "https://host/y"),
+        ("https://u:secret@\u{200D}host/y", "https://host/y"),
+        // A mark inside the `://`, in either gap.
+        ("https:\u{301}//u:secret@host/y", "https:\u{301}//host/y"),
+        ("https:/\u{301}/u:secret@host/y", "https:/\u{301}/host/y"),
+        // No scheme: a two-part userinfo, and scp-style.
+        ("u:secret@\u{301}host", "host"),
+        ("tok@\u{FE0F}host:acme/p.git", "host:acme/p.git"),
+        // A mark on the delimiter before the run: it must not glue the run onto the text
+        // before it, which here has a `/` that made the userinfo look like a local path.
+        ("/tmp/x \u{301}u:secret@host", "/tmp/x host"),
+        ("'\u{301}https://u:secret@host/y'", "'\u{301}https://host/y'"),
+        // Decomposed letters are text, not an attack, and come back as they were.
+        ("/tmp/cafe\u{301}/a:b@origin.git", "/tmp/cafe\u{301}/a:b@origin.git"),
+        ("https://host/cafe\u{301}.git", "https://host/cafe\u{301}.git"),
+        ("see jose\u{301}@example.invalid", "see jose\u{301}@example.invalid"),
+    ])
+    func redactionLooksThroughMarksGluedOntoItsPunctuation(text: String, expected: String) {
+        let redacted = RemoteFailureParser.redactingCredentials(text)
+        #expect(redacted.unicodeScalars.elementsEqual(expected.unicodeScalars), "\(redacted.debugDescription)")
+        #expect(!redacted.contains("secret"))
+    }
+
     /// A bracketed host inside the message git actually prints: the whole point of the fix is
     /// that a payload built from such a line carries no secret.
     @Test func aCredentialBeforeABracketedHostNeverReachesThePayload() {
