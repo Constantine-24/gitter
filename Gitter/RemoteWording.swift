@@ -198,14 +198,41 @@ enum RemoteWording {
     }
 
     /// The active toolbar item's line: what is running, then git's latest progress segment —
-    /// "Fetching — Receiving objects:  44% (4/9)". The prefix is there so a segment that ends
-    /// in "done." (git prints one per phase, and a small fetch prints only `remote: …` lines
-    /// that end that way) never reads as though the action itself were finished.
+    /// "Fetching… Receiving objects:  44% (4/9)". The marker is there so a segment that ends in
+    /// "done." (git prints one per phase, and a small fetch prints only `remote: …` lines that
+    /// end that way) never reads as though the action itself were finished.
+    ///
+    /// Only the verb, never the remote: the toolbar holds all three network items at the default
+    /// 1200-point window only while the line is short (Task 9's second review measured "Pushing
+    /// to \"origin\" — " pushing the item's own Stop into the overflow). The remote is in
+    /// `progressHelp` and in Stop's tooltip; until git prints a segment the line is the full
+    /// `inProgressTitle`, remote included.
     static func progressLine(_ activity: RemoteActivity) -> String {
+        guard let progress = activity.progress else { return inProgressTitle(activity) }
+        // git pads its percentages to three places ("Receiving objects:  83%"); at this width
+        // the padding is what pushes the "%" past the cut, so runs of spaces become one.
+        let compact = progress.split(separator: " ").joined(separator: " ")
+        return "\(inProgressVerb(activity.kind))… \(compact)"
+    }
+
+    /// The progress line's tooltip: the whole of it, remote included — "Pushing to \"origin\" —
+    /// Writing objects: 100% (3/3), 250 bytes | 250.00 KiB/s, done."
+    static func progressHelp(_ activity: RemoteActivity) -> String {
         let title = inProgressTitle(activity)
         guard let progress = activity.progress else { return title }
         let running = title.hasSuffix("…") ? String(title.dropLast()) : title
         return "\(running) — \(progress)"
+    }
+
+    private static func inProgressVerb(_ kind: RemoteActivity.Kind) -> String {
+        switch kind {
+        case .fetch, .autoFetch: "Fetching"
+        case .pull: "Pulling"
+        case .push: "Pushing"
+        case .publish: "Publishing"
+        case .forcePush: "Force pushing"
+        case .deleteRemoteBranch: "Deleting"
+        }
     }
 
     /// The tooltips of the three toolbar items while they are available.
@@ -228,10 +255,16 @@ enum RemoteWording {
             let destination = "Push \"\(branch.name)\" to \(Self.destination(branch: branch.name, remote: remote, remoteRef: ref))"
             // The badge counts against the upstream; say so when the push goes elsewhere, so
             // the missing count on the button is explained where the user looks for it.
-            guard let upstream = branch.upstream,
-                remote != branch.upstreamRemote || ref != branch.upstreamRef
-            else { return destination }
-            return destination + " — not to its upstream \"\(upstream)\", which the badge counts against"
+            guard let upstream = branch.upstream else { return destination }
+            if remote != branch.upstreamRemote || ref != branch.upstreamRef {
+                return destination + " — not to its upstream \"\(upstream)\", which the badge counts against"
+            }
+            // Same remote and ref, but `remote.<name>.pushurl` sends the push to another
+            // repository than the one the upstream is fetched from.
+            guard PushTarget.pushesWhereItFetches(remote, remotes: remotes) else {
+                return destination + " — \"\(remote)\" pushes to a different URL than it fetches from, and the badge counts against \"\(upstream)\" as fetched"
+            }
+            return destination
         }
     }
 

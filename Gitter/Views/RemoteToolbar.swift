@@ -13,7 +13,7 @@ import SwiftUI
 /// reproduced the alternative: with Stop at the trailing edge it landed exactly where the
 /// clicked label had been, and a double-click on Fetch cancelled the fetch it had started.)
 /// Stop is at the far, leading end, and additionally ignores a click that arrives within the
-/// double-click interval of the activity starting (`RemoteActivity.acceptsStopClick`); ⌘. and
+/// double-click interval of the activity starting (`StopClick.isDeliberate`, capped at 0.6 s); ⌘. and
 /// the menu's Stop are deliberate and are not held back. The other two items stay where they
 /// are, disabled, with the store's "Wait for … to finish" in their tooltips, and the progress
 /// line has a fixed width so a counter ticking from 9% to 10% does not nudge its neighbours.
@@ -150,26 +150,34 @@ struct RemoteToolbarItem: View {
 /// The active network item's own part: Stop, spinner and git's latest progress line, with
 /// Stop at the leading end, as far as it can be from the button the user just clicked.
 ///
-/// The line is `RemoteWording.progressLine`: what is running, then git's latest segment, which
-/// the store has already made plain (no escapes, credentials redacted, one capped line) — so a
-/// `remote: Total 3 (delta 0) … done.` segment never reads as though the whole action were done.
-/// Until git prints one — and for the whole of a deletion, which prints none — it is just what
-/// is running.
+/// The line is `RemoteWording.progressLine`: what is running ("Fetching…"), then git's latest
+/// segment, which the store has already made plain (no escapes, credentials redacted, one capped
+/// line) — so a `remote: Total 3 (delta 0) … done.` segment never reads as though the whole
+/// action were done. Until git prints one — and for the whole of a deletion, which prints none —
+/// it is just what is running, remote included. The tooltip and VoiceOver get the long form
+/// (`progressHelp`), remote and all.
 private struct RemoteActivityItem: View {
     let activity: RemoteActivity
 
     @Environment(RepositoryStore.self) private var store
 
-    /// Fixed, so the toolbar does not move as the counter redraws. With the "Fetching — "
-    /// prefix the line is cut at its **tail**: measured, at 360 points a middle cut of
-    /// "Fetching — Receiving objects:  50% (3/6), 3.50 MiB | 839.00 KiB/s" ate the percentage,
-    /// the one number worth reading, while a tail cut loses only the transfer rate.
-    static let progressWidth: CGFloat = 360
+    /// Fixed, so the toolbar does not move as the counter redraws, and cut at its **tail**: a
+    /// middle cut ate the percentage, the one number worth reading, where a tail cut loses only
+    /// the byte counts and the rate.
+    ///
+    /// **The width is what the default 1200-point window allows.** Measured with the `views`
+    /// step (Task 9, fix round 2) at 1200 with the longest labels ("Pull ↓12", "Push ↑12"): the
+    /// three network items have the toolbar from x≈670 to 1191, so the active item — Stop,
+    /// spinner, this line and the item's own button — may be about 320 points with the Fetch
+    /// button (fix round 1's 360-point line made it 485–506 and pushed a pull's or a push's own
+    /// Stop into the overflow menu). 196 points at the subheadline size holds "Fetching…
+    /// Receiving objects: 100%" plus the truncation mark (measured 187 + 8).
+    static let progressWidth: CGFloat = 196
 
     private var line: String { RemoteWording.progressLine(activity) }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             Button(action: stop) {
                 Image(systemName: "xmark.circle")
             }
@@ -179,15 +187,14 @@ private struct RemoteActivityItem: View {
             ProgressView()
                 .controlSize(.small)
             Text(line)
-                .font(.callout)
+                .font(.subheadline)
                 .monospacedDigit()
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(width: Self.progressWidth, alignment: .leading)
-                .help(line)
-                .accessibilityLabel(line)
+                .help(RemoteWording.progressHelp(activity))
+                .accessibilityLabel(RemoteWording.progressHelp(activity))
         }
-        .padding(.leading, 6)
         .accessibilityElement(children: .contain)
     }
 
@@ -195,7 +202,9 @@ private struct RemoteActivityItem: View {
     /// is the tail of the click that started it, not a decision to stop; it is dropped. ⌘. and
     /// the menu go straight to `cancelRemoteActivity()` and are never held back.
     private func stop() {
-        guard activity.acceptsStopClick(at: .now, doubleClickInterval: NSEvent.doubleClickInterval)
+        guard StopClick.isDeliberate(
+            startedAt: activity.startedAt, now: .now,
+            doubleClickInterval: NSEvent.doubleClickInterval)
         else {
             #if DEBUG
                 FileHandle.standardError.write(
