@@ -61,6 +61,15 @@ extension RepositoryStore {
         perform(action, confirming: UnreferencedCommits(headSha: sha, count: count))
     }
 
+    /// A pull's integration step — the fast-forward straight after the fetch, or the sheet's
+    /// "Merge" — through the same `perform` as every other HEAD-moving action, so every existing
+    /// refusal (`wouldOverwrite`, `indexNotClean`, an operation in progress) and its wording is
+    /// reused as it stands.
+    // internal (not private): used by +Remotes.swift and +RemoteSheets.swift
+    func integratePull(upstream: String, mode: MergeMode) {
+        perform(.pull(upstream: upstream, mode: mode))
+    }
+
     // MARK: - Actions that do not move HEAD
 
     /// Create `name`, optionally switching to it. Creating *without* switching writes one ref
@@ -250,6 +259,16 @@ extension RepositoryStore {
             // was a real one — silently declining to remember it would be its own small lie).
             rememberMergeMode(mode)
             return notice(for: outcome, branch: branch)
+        case .pull(let upstream, let mode):
+            let outcome = try await reporting(.merge, upstream) {
+                try await backend.merge(upstream, mode: mode, at: root)
+            }
+            // The pull mode, never the merge mode, and only for the sheet's explicit Merge: a
+            // pull that fast-forwarded asked the user nothing. Here for the reason
+            // `rememberMergeMode` is above — every refusal is a throw, so reaching this line
+            // means the merge ran.
+            if mode == .alwaysMergeCommit { rememberPullMode(.merge) }
+            return notice(for: outcome, branch: upstream)
         }
     }
 

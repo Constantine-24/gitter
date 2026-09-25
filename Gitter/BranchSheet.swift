@@ -20,6 +20,21 @@ enum BranchSheet: Identifiable, Hashable {
     /// HEAD is detached and holds `unreferencedCommits` commits that no branch, tag or
     /// remote-tracking ref can reach. `then` is the action that was asked for and has NOT run.
     case leaveDetached(unreferencedCommits: Int, headSha: String, then: PendingBranchAction)
+    /// A pull found both sides with commits of their own — counted on the tracking read
+    /// **after** its fetch — and asks Merge or Rebase. `upstream` is git's short spelling
+    /// (`origin/main`); the answer is refused if the branch no longer tracks it.
+    case pullDiverged(ahead: Int, behind: Int, upstream: String)
+    /// The current branch has no push remote and there is more than one remote to choose from.
+    case publish(branch: String)
+    /// What a force push would take off `remoteRef` on `remote`: the remote-tracking ref's
+    /// **full** sha read right after a fetch, which `confirmForcePush` hands to git as the
+    /// lease, the first 20 commits it would discard and how many there are in all.
+    case forcePush(
+        branch: String, remote: String, remoteRef: String, remoteTip: String,
+        discarded: [Commit], total: Int)
+    /// Delete `branch` on `remote`, at the **full** `tip` read right after a fetch — the lease
+    /// — with `onlyThere` commits held by no branch, tag or other remote-tracking ref.
+    case deleteRemoteBranch(remote: String, branch: String, tip: String, onlyThere: Int)
 
     var id: Self { self }
 }
@@ -37,6 +52,11 @@ enum PendingBranchAction: Hashable {
     case detach(String)
     case merge(String, MergeMode)
     case createAndSwitch(name: String, startPoint: String?)
+    /// A pull's merge step: `merge` of the upstream in `mode`, which records the **pull** mode
+    /// rather than the merge sheet's — a fast-forward pull was no choice at all, and must not
+    /// change what the merge sheet comes up on. Never parked behind the detached-HEAD
+    /// confirmation (a pull needs a branch), and like a merge it only moves HEAD forward.
+    case pull(upstream: String, mode: MergeMode)
 
     /// Whether leaving a detached HEAD for this action could strand commits.
     ///
@@ -48,7 +68,7 @@ enum PendingBranchAction: Hashable {
         switch self {
         case .switchTo, .track, .detach: true
         // A merge only ever moves HEAD forward, so whatever HEAD reaches now it still reaches.
-        case .merge: false
+        case .merge, .pull: false
         // `switch -c <new>` with no start point creates the branch where HEAD already is, which
         // is the *cure* for a detached HEAD, not a way to lose it. With a start point it moves
         // HEAD somewhere else like any switch — **unless** that start point is the very commit
@@ -70,6 +90,7 @@ enum PendingBranchAction: Hashable {
         case .detach(let revision): "check out \(revision)"
         case .merge(let branch, _): "merge \"\(branch)\""
         case .createAndSwitch(let name, _): "create \"\(name)\" and switch to it"
+        case .pull(let upstream, _): "pull from \"\(upstream)\""
         }
     }
 }

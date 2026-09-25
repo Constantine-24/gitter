@@ -1,5 +1,6 @@
 #if DEBUG
 
+    import AppKit
     import Foundation
     import GitCore
 
@@ -16,9 +17,32 @@
     ///     merge:<branch>:<ff|noff|squash>
     ///     abort                        confirmleave
     ///     sheet:new | sheet:rename:<b> | sheet:merge:<b> | sheet:delete:<b> | sheet:abort
+    ///     sheet:pull
     ///     wait:<seconds>
     ///
-    /// Steps run in order, each waiting for the mutation the one before it started. `abort`,
+    ///   The network lane (`RepositoryStore+Remotes`, `+RemoteSheets`):
+    ///
+    ///     fetch[:<remote>]             pull          pull:merge      pull:rebase
+    ///     push                         publish:<remote>
+    ///     forcepush                    confirmforcepush
+    ///     deleteremote:<remote>/<b>    confirmdeleteremote
+    ///     cancel                       start:<step>  idle
+    ///     stageall                     commit:<subject>     snapshot:<name>
+    ///
+    /// Steps run in order, each waiting for the mutation the one before it started — and, for a
+    /// step that starts network work, for the lane to free as well, for up to 120 seconds.
+    /// `start:<step>` runs a step **without** waiting for its lane, which is how the steps after
+    /// it run *during* a slow fetch: `start:fetch;stageall;commit:x;wait:2;cancel`. A step taken
+    /// while the lane was already busy waits only for the mutation slot, so a second network
+    /// action is refused and logged at once instead of waiting out the first. `cancel` and
+    /// `idle` wait for the lane to free, so their line shows what the work said at the end.
+    ///
+    /// `pull:merge` and `pull:rebase` pull and then answer the pull sheet, if one opened, with
+    /// that mode; `sheet:pull` opens the sheet from the tracking already on screen without
+    /// fetching or acting. `publish:<remote>` pushes and answers the publish sheet with that
+    /// remote if one opened (with a single remote there is none). `forcepush` opens the force
+    /// push sheet, which it can only do after a rejected `push`; `deleteremote:` only opens its
+    /// sheet. The two `confirm…` steps answer those sheets, and do nothing without them. `abort`,
     /// `forcedelete` and `confirmleave` answer a confirmation, which is why several steps in one
     /// launch matter: those sheets cannot be reached any other way.
     ///
@@ -50,16 +74,45 @@
         static func runBranchActions(_ spec: String, store: RepositoryStore) async {
             for step in spec.split(separator: ";") {
                 log("step: \(step)")
-                await perform(String(step), store: store)
-                // `mutate` claims the store synchronously, so by now `isMutating` is already
-                // true for anything that runs git; a step that only opens a sheet never sets it
-                // and this returns at once.
-                _ = await wait({ !store.isMutating })
-                log(
-                    "result: \(describe(store.activeSheet, store)) | notice: \(store.notice ?? "nil") "
-                        + "| error: \(store.lastError?.replacingOccurrences(of: "\n", with: " ") ?? "nil") "
-                        + "| head: \(store.headLabel) | selection: \(store.selection)")
+                let text = String(step)
+                let laneWasBusy = store.remoteActivity != nil
+                let started = text.hasPrefix("start:")
+                await perform(started ? String(text.dropFirst("start:".count)) : text, store: store)
+                // `mutate` and the lane are both claimed synchronously, so by now `isMutating` or
+                // `remoteActivity` is already set for anything that runs git; a step that only
+                // opens a sheet sets neither and this returns at once.
+                if started || text.hasPrefix("wait:") {
+                    // Nothing to wait for: the point is to carry on while it runs.
+                } else if laneWasBusy && text != "cancel" && text != "idle" {
+                    _ = await wait({ !store.isMutating })
+                } else {
+                    _ = await wait(
+                        { store.remoteActivity == nil && !store.isMutating }, seconds: 120)
+                }
+                logResult(store)
             }
+        }
+
+        private static func logResult(_ store: RepositoryStore) {
+            let lane = store.remoteActivity.map {
+                "\($0.kind)(\($0.remote ?? "all"), progress: \($0.progress ?? "nil"))"
+            }
+            log(
+                "result: \(describe(store.activeSheet, store)) | notice: \(flat(store.notice)) "
+                    + "| error: \(flat(store.lastError)) "
+                    + "| head: \(store.headLabel) | selection: \(store.selection)")
+            log(
+                "lane: \(lane ?? "nil") | forcePushOffered: \(store.bannerOffersForcePush) "
+                    + "| reasons: fetch=\(store.fetchBlockedReason ?? "nil"); "
+                    + "pull=\(store.pullBlockedReason ?? "nil"); "
+                    + "push=\(store.pushBlockedReason ?? "nil") "
+                    + "| pushTitle: \(store.pushButtonTitle) | tracking: \(store.currentTracking) "
+                    + "| pullMode: \(store.rememberedPullMode.rawValue) "
+                    + "| loads: \(store.snapshotLoadCount)")
+        }
+
+        private static func flat(_ text: String?) -> String {
+            text?.replacingOccurrences(of: "\n", with: " \u{23CE} ") ?? "nil"
         }
 
         // MARK: - One step
@@ -121,6 +174,39 @@
                 try? await Task.sleep(
                     for: .seconds(min(max(Double(first ?? "") ?? 1, 0), 120)))
             case "sheet": await sheet(first, second, store: store)
+            case "fetch": store.fetch(remote: first)
+            case "pull":
+                if first == nil {
+                    store.pull()
+                } else if let mode = first.flatMap(PullMode.init(rawValue:)) {
+                    // The pull, then the sheet's answer — the two steps a user takes. Answered
+                    // unconditionally: `confirmPull` does nothing without its sheet on screen.
+                    store.pull()
+                    _ = await wait(
+                        { store.remoteActivity == nil && !store.isMutating }, seconds: 120)
+                    store.confirmPull(mode)
+                }
+            case "push": store.push()
+            case "publish":
+                store.push()
+                _ = await wait({ store.remoteActivity == nil && !store.isMutating }, seconds: 120)
+                first.map { store.confirmPublish(to: $0) }
+            case "forcepush": store.requestForcePush()
+            case "confirmforcepush": store.confirmForcePush()
+            case "deleteremote": first.map { store.requestDeleteRemoteBranch($0) }
+            case "confirmdeleteremote": store.confirmDeleteRemoteBranch()
+            case "cancel": store.cancelRemoteActivity()
+            // Nothing but the wait below: the lane to free, after a `start:`.
+            case "idle": break
+            case "snapshot":
+                // Past the banners' insertion animation, so they are drawn at full opacity.
+                try? await Task.sleep(for: .milliseconds(800))
+                first.map { snapshot(named: $0) }
+            case "stageall": store.stageAll()
+            case "commit":
+                // The composer's own path: the subject goes into the draft, then `commit()`.
+                store.draft.subject = first ?? "commit"
+                store.commit()
             default: log("unknown step: \(step)")
             }
         }
@@ -143,8 +229,72 @@
                 name.map { store.previewDeleteWarning($0) }
                 _ = await wait({ store.activeSheet != nil })
             case "abort": store.requestAbort()
+            // From the tracking on screen, with no fetch and no merge: this step opens a sheet.
+            case "pull": store.previewPullSheet()
             default: log("unknown sheet: \(which ?? "")")
             }
+        }
+
+        /// Renders the main window — and the sheet attached to it, drawn centred over its top
+        /// edge the way AppKit presents it — into `<GITTER_DEBUG_SNAPSHOT_DIR>/<name>.png`.
+        ///
+        /// Drawn by the app itself rather than captured from the screen: a window on a Space
+        /// nobody is looking at captures as blank, and a screen capture would take whatever
+        /// else is on the display with it. `cacheDisplay` needs neither Screen Recording nor the
+        /// window to be visible.
+        private static func snapshot(named name: String) {
+            guard let dir = ProcessInfo.processInfo.environment["GITTER_DEBUG_SNAPSHOT_DIR"],
+                let window = NSApp.windows.first(where: { $0.isVisible && $0.sheetParent == nil }),
+                let main = image(of: window)
+            else {
+                log("snapshot failed: \(name)")
+                return
+            }
+            let size = main.size
+            let composed = NSImage(size: size, flipped: false) { _ in
+                main.draw(in: NSRect(origin: .zero, size: size))
+                if let sheet = window.attachedSheet, let drawn = image(of: sheet) {
+                    let origin = NSPoint(
+                        x: (size.width - drawn.size.width) / 2,
+                        y: size.height - drawn.size.height - 60)
+                    drawn.draw(in: NSRect(origin: origin, size: drawn.size))
+                }
+                return true
+            }
+            guard let tiff = composed.tiffRepresentation,
+                let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
+            else { return }
+            let url = URL(fileURLWithPath: dir).appending(path: name + ".png")
+            do {
+                try png.write(to: url)
+                log("snapshot: \(url.lastPathComponent)")
+            } catch {
+                log("snapshot failed: \(error)")
+            }
+        }
+
+        private static func image(of window: NSWindow) -> NSImage? {
+            // The frame view, so the toolbar and title bar are in the picture too. Its layer
+            // tree is rendered rather than `cacheDisplay`, which leaves out SwiftUI overlays —
+            // the banners, which are most of what these pictures are for.
+            guard let view = window.contentView?.superview ?? window.contentView else {
+                return nil
+            }
+            view.layoutSubtreeIfNeeded()
+            view.displayIfNeeded()
+            let scale = window.backingScaleFactor
+            let size = view.bounds.size
+            guard let layer = view.layer,
+                let context = CGContext(
+                    data: nil, width: Int(size.width * scale), height: Int(size.height * scale),
+                    bitsPerComponent: 8, bytesPerRow: 0,
+                    space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return nil }
+            context.scaleBy(x: scale, y: scale)
+            (layer.presentation() ?? layer).render(in: context)
+            guard let cgImage = context.makeImage() else { return nil }
+            return NSImage(cgImage: cgImage, size: size)
         }
 
         private static func mergeMode(_ name: String?) -> MergeMode? {
@@ -178,6 +328,15 @@
             case .leaveDetached(let count, let sha, let action):
                 "leaveDetached(unreferencedCommits: \(count), head: \(sha.prefix(7)), "
                     + "then: \(action))"
+            case .pullDiverged(let ahead, let behind, let upstream):
+                "pullDiverged(ahead: \(ahead), behind: \(behind), upstream: \(upstream))"
+            case .publish(let branch): "publish(\(branch))"
+            // Shas in full: they are the leases, and the shell compares them with git's.
+            case .forcePush(let branch, let remote, let remoteRef, let tip, let discarded, let total):
+                "forcePush(\(branch) -> \(remote) \(remoteRef), remoteTip: \(tip), total: \(total), "
+                    + "discarded: \(discarded.map { "\($0.sha.prefix(7)) \($0.summary) <\($0.authorName)>" }))"
+            case .deleteRemoteBranch(let remote, let branch, let tip, let onlyThere):
+                "deleteRemoteBranch(\(remote) \(branch), tip: \(tip), onlyThere: \(onlyThere))"
             }
         }
 

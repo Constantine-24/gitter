@@ -141,13 +141,14 @@
             }
         }
 
-        /// Polls `condition` for up to ten seconds. Loading is spread over several independent
+        /// Polls `condition` for up to ten seconds, or `seconds` — the network steps wait up to
+        /// 120, since a slow transfer is exactly what some of them are there to drive. Loading is spread over several independent
         /// tasks in the store with nothing to await from outside, so polling is the honest
         /// way to say "once it is on screen".
         // internal (not private): used by DebugLaunchHooks+Branches.swift, which waits the same
         // way for each step's mutation to finish
-        static func wait(_ condition: @MainActor () -> Bool) async -> Bool {
-            for _ in 0..<100 {
+        static func wait(_ condition: @MainActor () -> Bool, seconds: Int = 10) async -> Bool {
+            for _ in 0..<(seconds * 10) {
                 if condition() { return true }
                 try? await Task.sleep(for: .milliseconds(100))
             }

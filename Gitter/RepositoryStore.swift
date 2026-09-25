@@ -56,6 +56,38 @@ final class RepositoryStore {
     // internal (not private): used by +Branches.swift's `showNotice(_:)`
     var noticeTask: Task<Void, Never>?
 
+    /// The network lane: the one fetch, pull, push, publish, force push or remote delete that
+    /// is running, or nil. See `RepositoryStore+Remotes` for what holds it and for how long.
+    private(set) var remoteActivity: RemoteActivity?
+
+    /// Why the last automatic fetch failed, for a quiet mark on the Fetch button. Never a
+    /// banner: being offline is normal. Written by Task 11's scheduler.
+    private(set) var lastAutoFetchFailure: String?
+
+    /// The push the server just refused for having commits this branch lacks — the only state
+    /// "Force Push…" is reachable from. Cleared by the next mutation or network action.
+    private(set) var rejectedPush: RejectedPush?
+
+    /// The task running the lane's work, so `cancelRemoteActivity()` can cancel it. Bookkeeping
+    /// only, views must not touch it.
+    // internal (not private): used by +Remotes.swift
+    var remoteTask: Task<Void, Never>?
+
+    /// Bumped by every `beginRemote`, so a progress line or a release from an earlier lane can
+    /// never land on a later one.
+    private var laneToken = 0
+
+    #if DEBUG
+        /// How many snapshot loads have run, for the harness's "exactly one refresh when the
+        /// lane frees" check.
+        private(set) var snapshotLoadCount = 0
+
+        // internal (not private): used by +Refresh.swift's `loadSnapshot()`
+        func noteSnapshotLoad() {
+            snapshotLoadCount += 1
+        }
+    #endif
+
     /// Bumped by every `open()`. Anything loaded or run asynchronously captures it and drops
     /// its result if it no longer matches: comparing `root` is not enough, because reopening
     /// the *same* repository mid-flight leaves the root equal while everything on screen has
@@ -154,6 +186,13 @@ final class RepositoryStore {
         // `finishMutation` stale, and a stale one returns early — so without this the flag
         // would stay set for the new repository and every button would stay disabled.
         isMutating = false
+        // A transfer for the previous repository is of no use to this one, and its lane must not
+        // make this one's Fetch and Push read "busy". Its task drops its own result on the
+        // generation below.
+        remoteTask?.cancel()
+        remoteTask = nil
+        remoteActivity = nil
+        rejectedPush = nil
         // Everything in flight for the previous repository — including a reopen of this very
         // path — is now stale and will drop its result.
         generation += 1
@@ -250,6 +289,9 @@ final class RepositoryStore {
     func beginMutation() -> Int? {
         guard root != nil, !isMutating else { return nil }
         isMutating = true
+        // "Force Push…" answers the refusal of *that* push. Once anything else has happened the
+        // branch may not be where it was, and the banner offering it goes with it.
+        rejectedPush = nil
         // A new attempt supersedes the last one's message: it has been read or ignored by
         // now, and nothing should keep protecting it from the reloads that follow.
         if errorIsSticky {
@@ -274,6 +316,86 @@ final class RepositoryStore {
             errorIsSticky = true
         }
         isMutating = false
+    }
+
+    // MARK: - Network lane bookkeeping
+
+    /// Claims the network lane — and, for a write, the mutation slot as well — returning the
+    /// ticket to hand back to `finishRemote`, or nil when it cannot be claimed. A refusal says
+    /// why in the banner: a second network action is refused with a reason, never queued and
+    /// never silently dropped.
+    ///
+    /// `quiet` is for the follow-up fetch after a cancelled or failed write: it must not clear
+    /// the banner that says the remote may or may not have changed, which is the one thing the
+    /// user has to read.
+    // internal (not private): used by +Remotes.swift's `runOnLane`
+    func beginRemote(
+        _ kind: RemoteActivity.Kind, remote: String?, holdingMutation: Bool, quiet: Bool = false
+    ) -> RemoteLane? {
+        guard root != nil else { return nil }
+        if let remoteActivity {
+            if !quiet { showStickyError(RemoteWording.laneBusy(remoteActivity)) }
+            return nil
+        }
+        var mutationGeneration: Int?
+        if holdingMutation {
+            guard let claimed = beginMutation() else {
+                showStickyError(RemoteWording.mutationBusy)
+                return nil
+            }
+            mutationGeneration = claimed
+        } else if !quiet {
+            // What `beginMutation` does for a mutation: a new attempt supersedes the last one's
+            // message and notice.
+            if errorIsSticky {
+                lastError = nil
+                errorIsSticky = false
+            }
+            dismissNotice()
+        }
+        rejectedPush = nil
+        laneToken += 1
+        remoteActivity = RemoteActivity(kind: kind, remote: remote, progress: nil)
+        return RemoteLane(
+            token: laneToken, generation: generation, mutationGeneration: mutationGeneration)
+    }
+
+    /// Frees the lane `lane` holds. Does nothing for a lane `open()` has already reset or a
+    /// later one replaced. The mutation slot, if the lane holds it, is released separately by
+    /// `finishMutation`, after the banner is decided.
+    // internal (not private): used by +Remotes.swift's `runOnLane`
+    func finishRemote(_ lane: RemoteLane) {
+        guard lane.token == laneToken, generation == lane.generation else { return }
+        // A refusal made while this lane was busy ("Wait for the fetch to finish…") is about a
+        // state that has just ended; left up, it would sit beside the fetch's own notice
+        // telling the user to wait for something already done.
+        if let remoteActivity, lastError == RemoteWording.laneBusy(remoteActivity) {
+            lastError = nil
+            errorIsSticky = false
+        }
+        remoteActivity = nil
+        remoteTask = nil
+    }
+
+    // internal (not private): used by +Remotes.swift's progress relay
+    func setRemoteProgress(_ text: String, lane: RemoteLane) {
+        guard lane.token == laneToken, generation == lane.generation, remoteActivity != nil
+        else { return }
+        remoteActivity?.progress = text
+    }
+
+    /// A banner that the reloads it provokes must not erase, for work that does not go through
+    /// `mutate` (a fetch holds only the lane) or for a refusal made before anything ran.
+    // internal (not private): used by +Remotes.swift and +RemoteSheets.swift
+    func showStickyError(_ message: String) {
+        lastError = message
+        errorIsSticky = true
+    }
+
+    // internal (not private(set) write): used by +Remotes.swift, right after the banner it
+    // belongs to has been put up
+    func setRejectedPush(_ value: RejectedPush?) {
+        rejectedPush = value
     }
 
     /// The one place `diff` is written, so `diffIsStaged` can never drift from it.

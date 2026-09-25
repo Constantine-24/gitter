@@ -10,6 +10,8 @@ extension RepositoryStore {
     func dismissError() {
         setError(nil)
         clearSticky()
+        // The banner's "Pull" / "Force Push…" belong to the message just dismissed.
+        setRejectedPush(nil)
     }
 
     // internal (not private): used by RepositoryStore+Refresh.swift and +Detail.swift
@@ -49,6 +51,7 @@ enum BranchVerb: String {
     case create = "create"
     case rename = "rename"
     case delete = "delete"
+    case rebaseOnto = "rebase onto"
 }
 
 /// A refusal, plus what was being attempted when git made it.

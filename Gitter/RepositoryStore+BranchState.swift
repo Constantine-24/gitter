@@ -200,4 +200,23 @@ extension RepositoryStore {
     static func rememberMergeMode(_ mode: MergeMode) {
         UserDefaults.standard.set(mode.rawValue, forKey: Self.mergeModeKey)
     }
+
+    // MARK: - Remembered pull mode
+
+    // internal (not private): `UserDefaults` key, paired with the two accessors below.
+    static let pullModeKey = "pullMode"
+
+    /// What the pull sheet comes up on: whatever last ran, or Merge — the answer that rewrites
+    /// nothing.
+    var rememberedPullMode: PullMode {
+        UserDefaults.standard.string(forKey: Self.pullModeKey)
+            .flatMap(PullMode.init(rawValue:)) ?? .merge
+    }
+
+    /// Recorded once the pull's merge or rebase has really run, exactly as `rememberMergeMode`
+    /// is: a sheet the user cancelled, or a rebase refused over a dirty tree, leaves it alone.
+    // internal (not private): used by +Branches.swift's `run` and +RemoteSheets.swift
+    static func rememberPullMode(_ mode: PullMode) {
+        UserDefaults.standard.set(mode.rawValue, forKey: Self.pullModeKey)
+    }
 }

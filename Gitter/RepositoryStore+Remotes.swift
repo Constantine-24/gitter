@@ -1,0 +1,364 @@
+import Foundation
+import GitCore
+
+/// Fetch, pull and push: the network lane.
+///
+/// **One lane.** At most one network operation runs (`remoteActivity`); a second one is refused
+/// with a reason in the banner, never queued (see `RemoteActivity`). What each holds:
+///
+/// | action | lane | mutation slot |
+/// |---|---|---|
+/// | fetch | while it runs | never — staging, committing and branch actions stay usable; a fetch writes only `refs/remotes/*` and git's own ref locking arbitrates |
+/// | pull | for its fetch | for the merge or rebase after it, through `perform`/`mutate` |
+/// | push, publish, force push, delete on a remote | while it runs | while it runs — nothing may move the branch between the decision and the push |
+///
+/// **One reload.** While the lane is busy the watcher's reloads are dropped (`scheduleRefresh`);
+/// `runOnLane` reloads once, still holding the lane, and only then frees it and puts up the
+/// banner or notice, so the message the user reads belongs to the state on screen.
+///
+/// **Nothing here decides where a push goes** except `PushTarget.resolve`, and no sentence is
+/// written here: they are all in `RemoteWording`.
+extension RepositoryStore {
+
+    // MARK: - Derived state
+
+    /// The branch HEAD is on, as a ref with its tracking and push fields; nil when detached or
+    /// unborn.
+    var currentBranchRef: Branch? {
+        guard let name = currentBranch else { return nil }
+        return localBranches.first { $0.name == name }
+    }
+
+    /// Of the current branch; `.none` when HEAD is detached.
+    var currentTracking: Tracking {
+        currentBranchRef?.tracking ?? .none
+    }
+
+    /// Everything the blocked reasons are decided on, read in one place.
+    var remoteGate: RemoteWording.Gate {
+        RemoteWording.Gate(
+            hasRepository: root != nil && snapshot != nil, activity: remoteActivity,
+            isMutating: isMutating, operation: operationInProgress, isDetached: isDetached,
+            branch: currentBranchRef, remotes: snapshot?.refs.remotes ?? [])
+    }
+
+    var fetchBlockedReason: String? { RemoteWording.fetchBlocked(remoteGate) }
+    var pullBlockedReason: String? { RemoteWording.pullBlocked(remoteGate) }
+    var pushBlockedReason: String? { RemoteWording.pushBlocked(remoteGate) }
+
+    /// Why "Delete on <remote>…" is off: only a busy lane or a running mutation stops it. A
+    /// deletion on the server touches neither the worktree nor HEAD, so an operation in
+    /// progress and a detached HEAD do not.
+    var deleteRemoteBranchBlockedReason: String? {
+        let gate = remoteGate
+        guard gate.hasRepository else { return RemoteWording.noRepository }
+        if let activity = gate.activity { return RemoteWording.laneBusy(activity) }
+        if gate.isMutating { return RemoteWording.mutationBusy }
+        return nil
+    }
+
+    /// "Push", "Publish" or "Re-publish" — decided on the push remote, not on the upstream.
+    var pushButtonTitle: String {
+        RemoteWording.pushButtonTitle(
+            branch: currentBranchRef, remotes: snapshot?.refs.remotes ?? [])
+    }
+
+    /// Whether the error banner on screen is the refusal "Force Push…" answers, and so should
+    /// carry the "Pull" and "Force Push…" buttons.
+    var bannerOffersForcePush: Bool {
+        guard let rejectedPush, let lastError else { return false }
+        return rejectedPush.banner == lastError
+    }
+
+    // MARK: - Fetch
+
+    /// `git fetch <remote>`, or `git fetch --all` for nil. Holds only the lane.
+    func fetch(remote: String? = nil) {
+        if let reason = fetchBlockedReason {
+            showStickyError(reason)
+            return
+        }
+        startFetch(remote: remote, quiet: false)
+    }
+
+    /// The fetch itself. `quiet` is the re-read after a cancelled or failed write: it says
+    /// nothing on success or failure, because the banner already on screen — "the remote may or
+    /// may not have been updated" — is the message, and this only brings the badges up to date.
+    ///
+    /// A failed `fetch --all` may already have updated the remotes that answered (measured in
+    /// Task 4), so a failure reloads like a success and shows git's words, which name the
+    /// remote that failed.
+    private func startFetch(remote: String?, quiet: Bool) {
+        runOnLane(.fetch, remote: remote, holdingMutation: false, quiet: quiet) {
+            backend, root, progress in
+            do {
+                try await backend.fetch(remote: remote, at: root, progress: progress)
+                return LaneEnding(notice: quiet ? nil : RemoteWording.fetched(from: remote))
+            } catch where Self.isCancellation(error) {
+                return LaneEnding(notice: quiet ? nil : RemoteWording.fetchStopped(from: remote))
+            } catch {
+                guard !quiet else { return LaneEnding() }
+                return LaneEnding(
+                    failure: RemoteWording.failure(
+                        error, attempt: remote.map { "fetch from \"\($0)\"" } ?? "fetch",
+                        isWrite: false))
+            }
+        }
+    }
+
+    // MARK: - Pull
+
+    /// Fetch the upstream's remote, then — on the tracking re-read *after* that fetch — do
+    /// nothing, fast-forward, or ask Merge or Rebase (`PullPlan.decide`). There is no
+    /// `git pull`: its behaviour depends on three config keys and it does two things in one
+    /// process, so Gitter does the two things itself.
+    ///
+    /// A branch whose upstream is another local branch has nothing to fetch; it goes straight
+    /// to the decision.
+    func pull() {
+        if let reason = pullBlockedReason {
+            showStickyError(reason)
+            return
+        }
+        guard let branch = currentBranchRef, let upstream = branch.upstream else { return }
+        let fetchRemote = branch.upstreamRemote
+
+        runOnLane(.pull, remote: fetchRemote, holdingMutation: false) { [self] backend, root, progress in
+            if let fetchRemote {
+                do {
+                    try await backend.fetch(remote: fetchRemote, at: root, progress: progress)
+                } catch where Self.isCancellation(error) {
+                    return LaneEnding(notice: RemoteWording.fetchStopped(from: fetchRemote))
+                } catch {
+                    return LaneEnding(
+                        failure: RemoteWording.failure(
+                            error, attempt: "fetch from \"\(fetchRemote)\"", isWrite: false))
+                }
+            }
+            // The decision needs the tracking *after* the fetch, so the one reload happens here,
+            // still holding the lane.
+            await refresh()
+            guard let now = currentBranchRef, now.name == branch.name else {
+                return LaneEnding(failure: RemoteWording.pullBranchChanged, alreadyRefreshed: true)
+            }
+            let upstreamNow = now.upstream ?? upstream
+            switch PullPlan.decide(now.tracking) {
+            case .nothingToDo:
+                return LaneEnding(
+                    notice: RemoteWording.alreadyUpToDate(with: upstreamNow),
+                    alreadyRefreshed: true)
+            case .fastForward:
+                // Runs synchronously once the lane is free, and `perform` claims the mutation
+                // slot synchronously, so there is no instant with neither held.
+                return LaneEnding(alreadyRefreshed: true) { [self] in
+                    integratePull(upstream: upstreamNow, mode: .fastForwardIfPossible)
+                }
+            case .askHowToIntegrate(let ahead, let behind):
+                return LaneEnding(
+                    sheet: .pullDiverged(ahead: ahead, behind: behind, upstream: upstreamNow),
+                    alreadyRefreshed: true)
+            case .noUpstream:
+                return LaneEnding(
+                    failure: RemoteWording.noUpstream(now.name), alreadyRefreshed: true)
+            case .upstreamGone:
+                return LaneEnding(
+                    failure: RemoteWording.upstreamGone(now), alreadyRefreshed: true)
+            }
+        }
+    }
+
+    // MARK: - Push
+
+    /// Push the current branch where `PushTarget.resolve` says — and nowhere else. An
+    /// unpublished branch publishes: straight away with a single remote, through the publish
+    /// sheet with several.
+    func push() {
+        if let reason = pushBlockedReason {
+            showStickyError(reason)
+            return
+        }
+        guard let branch = currentBranchRef, let remotes = snapshot?.refs.remotes else { return }
+        switch PushTarget.resolve(branch, remotes: remotes) {
+        case .push(let remote, let ref):
+            send(branch, to: remote, remoteRef: ref, publishing: false)
+        case .unpublished:
+            if remotes.count == 1, let only = remotes.first {
+                send(branch, to: only.name, remoteRef: "refs/heads/" + branch.name, publishing: true)
+            } else {
+                activeSheet = .publish(branch: branch.name)
+            }
+        case .refused(let refusal):
+            // Unreachable while `pushBlockedReason` covers it; said anyway rather than ignored.
+            showStickyError(RemoteWording.refused(refusal, branch: branch.name))
+        }
+    }
+
+    /// One push, holding the lane and the mutation slot. `publishing` passes `-u` and reads
+    /// the upstream back.
+    // internal (not private): used by +RemoteSheets.swift's `confirmPublish`
+    func send(_ branch: Branch, to remote: String, remoteRef: String, publishing: Bool) {
+        let name = branch.name
+        let wasGone = branch.tracking == .gone
+        let previousUpstream = branch.upstream
+        runOnLane(publishing ? .publish : .push, remote: remote, holdingMutation: true) {
+            [self] backend, root, progress in
+            let result: PushResult
+            do {
+                result = try await backend.push(
+                    name, to: remote, remoteRef: remoteRef, setUpstream: publishing, at: root,
+                    progress: progress)
+            } catch {
+                return writeFailed(
+                    error, kind: publishing ? .publish : .push, branch: name, remote: remote,
+                    attempt: "push \"\(name)\" to \"\(remote)\"")
+            }
+
+            if let banner = RemoteWording.rejected(
+                result.outcome, branch: name, remote: remote,
+                remoteMessages: result.remoteMessages)
+            {
+                guard case .rejected(let rejection) = result.outcome,
+                    rejection == .fetchFirst || rejection == .nonFastForward
+                else { return LaneEnding(failure: banner) }
+                // Brings the remote-tracking ref up to what the server refused over, so the
+                // badge shows the behind count and "Force Push…" has something to count. A
+                // failure here changes nothing about the rejection.
+                try? await backend.fetch(remote: remote, at: root, progress: progress)
+                return LaneEnding(
+                    failure: banner,
+                    rejected: RejectedPush(
+                        branch: name, remote: remote, remoteRef: remoteRef,
+                        rejection: rejection, banner: banner))
+            }
+
+            var lines = [
+                RemoteWording.pushed(
+                    result.outcome, branch: name, remote: remote, remoteRef: remoteRef,
+                    publishing: publishing, wasGone: wasGone)
+            ]
+            if publishing {
+                lines.append(
+                    RemoteWording.upstreamAfterPublish(
+                        result, branch: name, remote: remote, remoteRef: remoteRef,
+                        previousUpstream: previousUpstream))
+            }
+            var notice = lines.compactMap { $0 }.joined(separator: " ")
+            let links = RemoteWording.pullRequestLinks(result.remoteMessages)
+            if !links.isEmpty { notice += "\n" + links.joined(separator: "\n") }
+            return LaneEnding(notice: notice)
+        }
+    }
+
+    /// What a push, force push or delete that threw says, and the fetch that re-reads the truth
+    /// after it. Cancelled means *unknown*, never "nothing changed"; a failure in git's own words
+    /// may have happened part-way too, and gets the same re-read.
+    // internal (not private): used by +RemoteSheets.swift
+    func writeFailed(
+        _ error: Error, kind: RemoteActivity.Kind, branch: String, remote: String,
+        attempt: String
+    ) -> LaneEnding {
+        if Self.isCancellation(error) {
+            return LaneEnding(
+                failure: RemoteWording.cancelledWrite(kind, branch: branch, remote: remote)
+            ) { [self] in startFetch(remote: remote, quiet: true) }
+        }
+        let message = RemoteWording.failure(error, attempt: attempt, isWrite: true)
+        guard case GitError.commandFailed = error else { return LaneEnding(failure: message) }
+        return LaneEnding(failure: message) { [self] in startFetch(remote: remote, quiet: true) }
+    }
+
+    // MARK: - Cancel
+
+    /// Stops whatever the lane is running. The running work sees `CancellationError` and says
+    /// what that means for its kind: nothing for a fetch beyond "some refs may have moved", and
+    /// "may or may not have been updated" — then a fetch — for a write.
+    func cancelRemoteActivity() {
+        guard remoteActivity != nil else { return }
+        remoteTask?.cancel()
+    }
+
+    // MARK: - Running on the lane
+
+    /// Claims the lane (and the slot, for a write), runs `work` with a progress callback that
+    /// is safe to call from git's pipe queue, reloads once unless `work` already did, frees the
+    /// lane, and then says what happened.
+    // internal (not private): used by +RemoteSheets.swift
+    func runOnLane(
+        _ kind: RemoteActivity.Kind, remote: String?, holdingMutation: Bool,
+        quiet: Bool = false,
+        _ work: @escaping @MainActor (Backend, URL, @escaping @Sendable (String) -> Void) async
+            -> LaneEnding
+    ) {
+        guard let root,
+            let lane = beginRemote(
+                kind, remote: remote, holdingMutation: holdingMutation, quiet: quiet)
+        else { return }
+        let relay = ProgressRelay { [weak self] text in
+            self?.setRemoteProgress(text, lane: lane)
+        }
+        let backend = self.backend
+        remoteTask = Task { @MainActor [self] in
+            let ending = await work(backend, root) { relay.send($0) }
+            if !ending.alreadyRefreshed { await refresh() }
+            finishRemote(lane)
+            if let mutationGeneration = lane.mutationGeneration {
+                if generation == lane.generation {
+                    if let sheet = ending.sheet { activeSheet = sheet }
+                }
+                finishMutation(
+                    generation: mutationGeneration,
+                    failure: ending.failure.map(RemoteBannerText.init))
+            } else {
+                guard generation == lane.generation else { return }
+                if let sheet = ending.sheet { activeSheet = sheet }
+                if let failure = ending.failure { showStickyError(failure) }
+            }
+            guard generation == lane.generation else { return }
+            if let rejected = ending.rejected { setRejectedPush(rejected) }
+            if let notice = ending.notice, !notice.isEmpty { showNotice(notice) }
+            ending.then?()
+        }
+    }
+
+    // internal (not private): used by +RemoteSheets.swift
+    static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || Task.isCancelled
+    }
+}
+
+/// What one piece of lane work came to: what to say, what to open, and what to start once the
+/// lane (and the slot) are free again.
+struct LaneEnding {
+    var notice: String?
+    var failure: String?
+    var sheet: BranchSheet?
+    var rejected: RejectedPush?
+    /// The work reloaded the snapshot itself (a pull decides on the tracking after its fetch),
+    /// so `runOnLane` does not reload a second time.
+    var alreadyRefreshed = false
+    /// Runs on the main actor straight after the lane is freed, with no suspension in between:
+    /// a pull's merge claims the mutation slot here, and a write's follow-up fetch claims the
+    /// lane again.
+    var then: (@MainActor () -> Void)?
+
+    init(
+        notice: String? = nil, failure: String? = nil, sheet: BranchSheet? = nil,
+        rejected: RejectedPush? = nil, alreadyRefreshed: Bool = false,
+        then: (@MainActor () -> Void)? = nil
+    ) {
+        self.notice = notice
+        self.failure = failure
+        self.sheet = sheet
+        self.rejected = rejected
+        self.alreadyRefreshed = alreadyRefreshed
+        self.then = then
+    }
+}
+
+/// A banner sentence already written by `RemoteWording`, handed to `finishMutation` — which
+/// describes an `Error` — without being described a second time.
+struct RemoteBannerText: LocalizedError {
+    let text: String
+    init(_ text: String) { self.text = text }
+    var errorDescription: String? { text }
+}

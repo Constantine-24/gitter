@@ -9,6 +9,11 @@ extension RepositoryStore {
     // internal (not private): used by RepositoryStore.swift's `open()`, which schedules this
     // from the file-system watcher's callback
     func scheduleRefresh() {
+        // While the network lane is busy a fetch rewrites `FETCH_HEAD` and refs continuously,
+        // and every write would schedule a reload. They are dropped here; the lane's own work
+        // reloads exactly once, while it still holds the lane, before it frees it (see
+        // `runOnLane`). A mutation during a fetch is unaffected: `mutate` reloads directly.
+        guard remoteActivity == nil else { return }
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(300))
@@ -52,6 +57,9 @@ extension RepositoryStore {
     private func loadSnapshot() async {
         guard let root else { return }
         let capturedGeneration = generation
+        #if DEBUG
+            noteSnapshotLoad()
+        #endif
         setLoading(true)
         defer { setLoading(false) }
 
