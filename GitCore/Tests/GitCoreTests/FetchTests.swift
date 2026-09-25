@@ -317,6 +317,53 @@ import Testing
                 "the good remote's refs moved even though the fetch failed")
     }
 
+    /// `--all` where one remote's ssh prints the askpass line the streaming runner's
+    /// `SSH_ASKPASS_REQUIRE=force` produces when no askpass is installed. The "ssh" here is a
+    /// script named by `core.sshCommand` that prints ssh's measured words and exits 255: it
+    /// contacts nothing, and `fake.invalid` resolves nowhere anyway.
+    ///
+    /// A partial fetch throws git's own words (above), and the askpass line is not among them:
+    /// it says only that ssh could not ask, and would otherwise be the first thing the banner
+    /// and the automatic fetch's mark show — ahead of the real cause.
+    @Test func gitsOwnWordsForAPartialFetchLeaveTheAskpassLineOut() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        let fakeSSH = repo.root.deletingLastPathComponent()
+            .appendingPathComponent("\(repo.root.lastPathComponent)-fake-ssh.sh")
+        defer { try? FileManager.default.removeItem(at: fakeSSH) }
+        try """
+            #!/bin/sh
+            # git's variant probe (`-G`) first: answer as OpenSSH would, then fail the connection.
+            [ "$1" = "-G" ] && exit 0
+            echo 'ssh_askpass: exec(/usr/X11R6/bin/ssh-askpass): No such file or directory' >&2
+            echo 'git@fake.invalid: Permission denied (publickey).' >&2
+            exit 255
+
+            """.write(to: fakeSSH, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: fakeSSH.path)
+        try await repo.git(["config", "core.sshCommand", fakeSSH.path])
+        try await repo.git(["remote", "add", "overssh", "ssh://git@fake.invalid/x.git"])
+
+        var thrown: Error?
+        do {
+            try await CLIGitBackend().fetch(remote: nil, at: repo.root, progress: { _ in })
+        } catch {
+            thrown = error
+        }
+
+        guard case .commandFailed(_, let stderr)? = thrown as? GitError else {
+            Issue.record("expected GitError.commandFailed, got \(String(describing: thrown))")
+            return
+        }
+        #expect(stderr.contains("error: could not fetch overssh"), "\(stderr)")
+        #expect(stderr.contains("Permission denied (publickey)"), "\(stderr)")
+        #expect(!stderr.contains("ssh_askpass"), "\(stderr)")
+    }
+
     /// The predicate that tells the two apart, on the fixtures rather than through git: a line
     /// that *begins* `error: could not fetch ` is git saying it gave up on one remote out of
     /// several. `remote:` lines are the server's own output and say nothing about this fetch —

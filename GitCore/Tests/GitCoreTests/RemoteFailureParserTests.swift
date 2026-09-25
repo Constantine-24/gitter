@@ -143,6 +143,58 @@ import Testing
         #expect(RemoteFailureParser.parse(stderr: tail) == nil)
     }
 
+    // MARK: - ssh's askpass line is not a cause
+
+    /// Measured in Task 11's review with real OpenSSH, isolated (no config, no agent, a scratch
+    /// passphrase key, `sshd -i` over a pipe): with `SSH_ASKPASS_REQUIRE=force` — which the
+    /// streaming runner sets when the environment names no askpass — and no askpass program
+    /// installed, ssh prints this line *above* the real cause. It says only that ssh could not
+    /// ask; what failed is the line after it, and that is what the parser must find.
+    static let askpassCouldNotStart =
+        "ssh_askpass: exec(/usr/X11R6/bin/ssh-askpass): No such file or directory"
+
+    static let couldNotRead = """
+        fatal: Could not read from remote repository.
+
+        Please make sure you have the correct access rights
+        and the repository exists.
+
+        """
+
+    @Test func aRefusedKeyUnderTheAskpassLineIsStillARefusedKey() {
+        let stderr = Self.askpassCouldNotStart + "\n"
+            + "git@fake.invalid: Permission denied (publickey).\n" + Self.couldNotRead
+        #expect(
+            RemoteFailureParser.parse(stderr: stderr)
+                == .authenticationFailed(url: "git@fake.invalid"))
+    }
+
+    @Test func anUnknownHostKeyUnderTheAskpassLineIsStillAnUnknownHostKey() {
+        let stderr = Self.askpassCouldNotStart + "\n" + "Host key verification failed.\n"
+            + Self.couldNotRead
+        #expect(RemoteFailureParser.parse(stderr: stderr) == .hostKeyNotTrusted)
+    }
+
+    /// Git's own words — what is shown when the parser recognises nothing, or when `fetch --all`
+    /// failed for some remotes only — leave the askpass line out, keep every other line, and
+    /// are redacted as before.
+    @Test func gitsOwnWordsLeaveTheAskpassLineOut() {
+        let stderr = Self.askpassCouldNotStart + "\n"
+            + "fatal: unable to access 'https://alice:s3cr3t@host.invalid/x.git/': boom\n"
+            + "error: could not fetch broken\n"
+        let shown = RemoteFailureParser.gitsOwnWords(stderr)
+        #expect(!shown.contains("ssh_askpass"), "\(shown)")
+        #expect(!shown.contains("s3cr3t"), "\(shown)")
+        #expect(shown.contains("error: could not fetch broken"), "\(shown)")
+        #expect(shown.contains("boom"), "\(shown)")
+    }
+
+    /// Only ssh's own line: a `remote:` line is the server's, and says what it says.
+    @Test func aServerLineThatMentionsTheAskpassIsKept() {
+        let stderr = "remote: " + Self.askpassCouldNotStart + "\n"
+        #expect(RemoteFailureParser.gitsOwnWords(stderr) == stderr)
+    }
+
     // MARK: - From the design document, not re-measured
 
     /// The design document's measured row, unchanged: a credential git cannot ask for because

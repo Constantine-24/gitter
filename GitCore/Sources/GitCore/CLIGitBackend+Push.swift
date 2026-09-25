@@ -313,7 +313,7 @@ extension CLIGitBackend {
     private func diagnosed(exitCode: Int32, stderr: String) -> Error {
         RemoteFailureParser.parse(stderr: stderr)
             ?? GitError.commandFailed(
-                exitCode: exitCode, stderr: RemoteFailureParser.redactingCredentials(stderr))
+                exitCode: exitCode, stderr: RemoteFailureParser.gitsOwnWords(stderr))
     }
 
     /// Refuses a branch name that would not survive being written into a refspec.

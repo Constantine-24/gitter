@@ -54,7 +54,8 @@ import Foundation
 /// words, and those words carry the same URL.
 ///
 /// **`remote:` lines are the server talking, and diagnose nothing about this connection.** They
-/// are dropped before any cause is looked for — see `isServerOutput`.
+/// are dropped before any cause is looked for — see `isServerOutput`. So is ssh's
+/// `ssh_askpass: exec(…)` line, which says only that it could not ask — see `isAskpassNoise`.
 ///
 /// **An unknown remote name is not distinguishable here, and is not guessed at.** Measured:
 /// `git fetch nosuch` and a configured remote whose path holds no repository print the *same*
@@ -68,7 +69,7 @@ public enum RemoteFailureParser {
         // `isServerOutput`. Everything below therefore speaks about *this* connection.
         let lines = stderr.split(separator: "\n", omittingEmptySubsequences: false)
             .map(String.init)
-            .filter { !isServerOutput($0) }
+            .filter { !isServerOutput($0) && !isAskpassNoise($0) }
 
         // Most specific first. Each `first(where:)` walks the whole text, so a success block
         // above the failure cannot end the search early.
@@ -117,6 +118,29 @@ public enum RemoteFailureParser {
         stderr.split(separator: "\n", omittingEmptySubsequences: false)
             .map(String.init)
             .contains { !isServerOutput($0) && $0.hasPrefix("error: could not fetch ") }
+    }
+
+    /// Git's stderr as it is shown when it is not diagnosed — a partial `fetch --all`, or words
+    /// the parser does not recognise: redacted (`redactingCredentials`), and without ssh's
+    /// askpass line (`isAskpassNoise`), every other line kept as git wrote it.
+    public static func gitsOwnWords(_ stderr: String) -> String {
+        let kept = stderr.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !isAskpassNoise($0) }
+        return redactingCredentials(kept.joined(separator: "\n"))
+    }
+
+    /// Whether `line` is ssh saying that it could not run its askpass program — `ssh_askpass:
+    /// exec(/usr/X11R6/bin/ssh-askpass): No such file or directory`, measured in Task 11's
+    /// review with real, isolated OpenSSH.
+    ///
+    /// The streaming runner sets `SSH_ASKPASS_REQUIRE=force` when the environment names no
+    /// askpass, so that ssh never stops on a terminal (see `ProcessRunner.runStreaming`); on a
+    /// Mac with no askpass installed every passphrase or host-key question then prints this
+    /// line, **above** the real cause (`Permission denied (publickey).`, `Host key verification
+    /// failed.`). It says only that ssh could not ask, so it is dropped before anything is
+    /// diagnosed or shown. A `remote:` line is the server's, and is not this.
+    static func isAskpassNoise(_ line: some StringProtocol) -> Bool {
+        line.hasPrefix("ssh_askpass: ")
     }
 
     /// `text` with the credentials taken out of every URL and address in it — the one place

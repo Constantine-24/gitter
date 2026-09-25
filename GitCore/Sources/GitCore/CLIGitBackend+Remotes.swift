@@ -50,7 +50,7 @@ extension CLIGitBackend: GitRemoteBackend {
                 // Redacted, because these words can contain the credential the user wrote into
                 // a remote URL, and this error is shown as it is.
                 throw GitError.commandFailed(
-                    exitCode: code, stderr: RemoteFailureParser.redactingCredentials(stderr))
+                    exitCode: code, stderr: RemoteFailureParser.gitsOwnWords(stderr))
             }
             throw failure
         }

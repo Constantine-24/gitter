@@ -843,17 +843,88 @@ private final class Locked<Value>: @unchecked Sendable {
     /// environment and the `/dev/null` stdin are written out twice. One script through both,
     /// compared, is what would notice if one of them drifted. Reading stdin rather than testing
     /// `[ -t 0 ]` is deliberate: a closed or inherited descriptor is not a terminal either.
+    ///
+    /// **One deliberate difference:** `runStreaming` also sets `SSH_ASKPASS_REQUIRE=force` when
+    /// the environment names no askpass of its own (see the tests below and the runner's doc).
+    /// Only `runStreaming` ever talks to a remote — every fetch, pull and push goes through it,
+    /// and `run` carries the local reads and writes — so only it can start ssh, and `run` is
+    /// left as it is.
     @Test func bothRunnersGiveTheChildTheSameEnvironmentAndStdin() async throws {
         let script = """
             printf '%s|%s|%s|%s|' \
             "$GIT_TERMINAL_PROMPT" "$LC_ALL" "$GIT_OPTIONAL_LOCKS" "$GIT_EDITOR"
             if read -r line; then printf 'stdin:%s\\n' "$line"; else printf 'stdin:EOF\\n'; fi
+            printf 'askpass:%s\\n' "${SSH_ASKPASS_REQUIRE-unset}"
             """
         let plain = try await ProcessRunner().run("/bin/sh", ["-c", script], cwd: Self.root)
         let (streamed, _) = try await runScript(script)
-        let text = String(decoding: plain, as: UTF8.self)
-        #expect(text == "0|C|0|true|stdin:EOF\n")
-        #expect(String(decoding: streamed.stdout, as: UTF8.self) == text)
+        let plainLines = String(decoding: plain, as: UTF8.self).split(separator: "\n")
+        let streamedLines = String(decoding: streamed.stdout, as: UTF8.self)
+            .split(separator: "\n")
+        #expect(plainLines.first == "0|C|0|true|stdin:EOF")
+        #expect(streamedLines.first == plainLines.first)
+
+        let inherited = ProcessInfo.processInfo.environment
+        #expect(plainLines.last == "askpass:\(inherited["SSH_ASKPASS_REQUIRE"] ?? "unset")")
+        #expect(
+            streamedLines.last
+                == "askpass:\(Self.expectedAskpassRequire(inheriting: inherited))")
+    }
+
+    // MARK: - ssh never stops on a terminal
+
+    /// What `runStreaming` must hand ssh for `SSH_ASKPASS_REQUIRE`, given what it inherits.
+    private static func expectedAskpassRequire(inheriting inherited: [String: String]) -> String {
+        if inherited["SSH_ASKPASS"] == nil && inherited["SSH_ASKPASS_REQUIRE"] == nil {
+            return "force"
+        }
+        return inherited["SSH_ASKPASS_REQUIRE"] ?? "unset"
+    }
+
+    /// The two askpass variables as the child sees them, `unset` for an absent one, with
+    /// `inherited` as the environment the runner builds the child's from.
+    private func askpassVariables(inheriting inherited: [String: String]?) async throws -> String {
+        let result = try await ProcessRunner().runStreaming(
+            "/bin/sh",
+            ["-c", "printf '%s|%s' \"${SSH_ASKPASS_REQUIRE-unset}\" \"${SSH_ASKPASS-unset}\""],
+            cwd: Self.root, onLaunch: nil, inheritedEnvironment: inherited, onStderr: { _ in })
+        return String(decoding: result.stdout, as: UTF8.self)
+    }
+
+    /// Measured in Task 11's review with real OpenSSH, isolated (no config, no agent, a scratch
+    /// passphrase key, `sshd -i` over a pipe — no socket, no host): started from a terminal,
+    /// ssh opens `/dev/tty` to ask for a passphrase or about an unknown host key, and — being
+    /// in a background process group, the runner's own — is stopped by SIGTTOU as it turns
+    /// echo off, before any prompt is printed. git and ssh then sit stopped (state T) until the
+    /// automatic fetch's timeout, or forever for a manual one. With `SSH_ASKPASS_REQUIRE=force`
+    /// ssh never touches the terminal: it runs the askpass program, and with none installed
+    /// fails in milliseconds with the real cause.
+    @Test func forcesTheAskpassWhenTheEnvironmentNamesNone() async throws {
+        #expect(try await askpassVariables(inheriting: ["PATH": "/usr/bin:/bin"]) == "force|unset")
+    }
+
+    /// A user who configured an askpass — or said how ssh should use one — keeps it exactly:
+    /// the variable is only ever added, never overwritten, and `SSH_ASKPASS` is never touched.
+    @Test(arguments: [
+        ["SSH_ASKPASS": "/opt/scratch/askpass"],
+        ["SSH_ASKPASS_REQUIRE": "never"],
+        ["SSH_ASKPASS_REQUIRE": "prefer"],
+        ["SSH_ASKPASS": "/opt/scratch/askpass", "SSH_ASKPASS_REQUIRE": "prefer"],
+    ])
+    func leavesAnAskpassTheUserConfiguredAlone(_ askpass: [String: String]) async throws {
+        let inherited = askpass.merging(["PATH": "/usr/bin:/bin"]) { mine, _ in mine }
+        let expected =
+            "\(askpass["SSH_ASKPASS_REQUIRE"] ?? "unset")|\(askpass["SSH_ASKPASS"] ?? "unset")"
+        #expect(try await askpassVariables(inheriting: inherited) == expected)
+    }
+
+    /// The public overload builds from this process's own environment, by the same rule.
+    @Test func thePublicRunnerAppliesTheSameRuleToThisProcesssEnvironment() async throws {
+        let inherited = ProcessInfo.processInfo.environment
+        let (result, _) = try await runScript("printf '%s' \"${SSH_ASKPASS_REQUIRE-unset}\"")
+        #expect(
+            String(decoding: result.stdout, as: UTF8.self)
+                == Self.expectedAskpassRequire(inheriting: inherited))
     }
 
     // MARK: - Helpers

@@ -104,7 +104,26 @@ extension ProcessRunner {
     /// The environment, the `/dev/null` stdin and the pipe-draining rule are `run`'s; see
     /// `ProcessRunner.run` for why nothing but a readability handler ever reads a pipe.
     /// `StreamingRunnerTests.bothRunnersGiveTheChildTheSameEnvironmentAndStdin` pins the two
-    /// hand-written copies together.
+    /// hand-written copies together — with one deliberate difference, below.
+    ///
+    /// **ssh's questions.** Every fetch, pull and push runs here, and only here: `run` carries
+    /// the local reads and writes and never talks to a remote, so it is left as it is. git's
+    /// `GIT_TERMINAL_PROMPT=0` and the `/dev/null` stdin do not reach ssh, which opens
+    /// `/dev/tty` itself to ask for a key's passphrase or about an unknown host key. Measured in
+    /// Task 11's review with real OpenSSH, isolated (no config, no agent, a scratch passphrase
+    /// key, `sshd -i` over a pipe — no socket, no host): when Gitter was started from a
+    /// terminal, ssh — in this runner's own, background, process group — was stopped by SIGTTOU
+    /// within 0.1 s as it turned echo off, before printing any prompt; git and ssh then sat
+    /// stopped (state T), the automatic fetch until its timeout plus the grace (SIGTERM stays
+    /// pending on a stopped process; only SIGKILL ends it), a manual fetch or push until Stop.
+    /// Started from the Dock or Finder there is no terminal and ssh failed at once.
+    ///
+    /// So when the environment names no askpass of its own — neither `SSH_ASKPASS` nor
+    /// `SSH_ASKPASS_REQUIRE` — this sets `SSH_ASKPASS_REQUIRE=force`: ssh then never touches the
+    /// terminal and asks through the askpass program instead; with none installed (a stock Mac)
+    /// it fails in milliseconds with the real cause, under a line `RemoteFailureParser` drops
+    /// (`isAskpassNoise`). A user's own askpass, `core.sshCommand` and `GIT_SSH_COMMAND` are
+    /// left exactly as they are.
     ///
     /// - Throws: `GitError.launchFailed` if the executable cannot be started,
     ///   `GitError.commandFailed` on an exit code that is neither 0 nor in `allowedExitCodes`,
@@ -138,6 +157,9 @@ extension ProcessRunner {
     ///   before a reaped leader's group is signalled — the one `kill(-pgid, …)` the runner
     ///   makes by a remembered number rather than through a live child. A test records it to
     ///   prove when that call is *not* made.
+    /// - Parameter inheritedEnvironment: the environment the child's is built from, in place of
+    ///   this process's own, so a test can show what the runner adds to an environment that
+    ///   has, or lacks, a given variable. Production callers use the public overload.
     func runStreaming(
         _ executable: String, _ arguments: [String], cwd: URL,
         allowedExitCodes: Set<Int32> = [],
@@ -145,6 +167,7 @@ extension ProcessRunner {
         reapedGroupWindow: Duration = .seconds(5),
         onLaunch: (@Sendable (Int32) -> Void)?,
         onReapedGroupSignal: (@Sendable (pid_t, Int32) -> Void)? = nil,
+        inheritedEnvironment: [String: String]? = nil,
         onStderr: @escaping @Sendable (String) -> Void
     ) async throws -> StreamedResult {
         // Built before the cancellation handler is installed, because `onCancel` can run at
@@ -162,11 +185,15 @@ extension ProcessRunner {
                 process.arguments = arguments
                 process.currentDirectoryURL = cwd
 
-                var env = ProcessInfo.processInfo.environment
+                var env = inheritedEnvironment ?? ProcessInfo.processInfo.environment
                 env["GIT_TERMINAL_PROMPT"] = "0"
                 env["LC_ALL"] = "C"
                 env["GIT_OPTIONAL_LOCKS"] = "0"
                 env["GIT_EDITOR"] = "true"
+                // Never a question on a terminal: "ssh's questions" in the public doc above.
+                if env["SSH_ASKPASS"] == nil && env["SSH_ASKPASS_REQUIRE"] == nil {
+                    env["SSH_ASKPASS_REQUIRE"] = "force"
+                }
                 process.environment = env
 
                 let stdout = Pipe()
