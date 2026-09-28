@@ -11,16 +11,18 @@ public enum PatchDirection: Sendable, Hashable {
 /// A unified diff ready for `git apply --cached [--reverse]`.
 public struct Patch: Sendable, Hashable {
     public let text: String
-    /// True when some emitted hunk carries no context line at all. With `-U3` such a hunk
-    /// covers the whole file, and `git apply` without `--unidiff-zero` (which Gitter never
-    /// passes) anchors it to the start and end of the file: it applies only to a file that is
-    /// exactly its preimage. Staging needs nothing more than that; line discard (A1 Task 5)
-    /// is to refuse a context-free partial selection on this flag.
-    public let needsUnidiffZero: Bool
+    /// True when some emitted hunk carries no context line at all.
+    ///
+    /// With `-U3` such a hunk covers the whole file on both sides. `git apply` anchors it to
+    /// the start and the end of the file, so it applies only to a file that is exactly its
+    /// preimage and never at an offset — as long as `--unidiff-zero` is not passed, and the
+    /// scanner forbids that option everywhere (A1 inserted fix 2). Staging does not read this;
+    /// line discard (A1 Task 5) is to refuse a context-free partial selection on it.
+    public let hasContextFreeHunk: Bool
 
-    public init(text: String, needsUnidiffZero: Bool) {
+    public init(text: String, hasContextFreeHunk: Bool) {
         self.text = text
-        self.needsUnidiffZero = needsUnidiffZero
+        self.hasContextFreeHunk = hasContextFreeHunk
     }
 }
 
@@ -82,7 +84,7 @@ public enum PatchBuilder {
         else { return nil }
 
         var body = ""
-        var needsUnidiffZero = false
+        var hasContextFreeHunk = false
         // Net line-count change contributed by the hunks emitted so far. Omitted hunks change
         // nothing, so they do not count.
         var delta = 0
@@ -92,11 +94,11 @@ public enum PatchBuilder {
                     hunk: hunk, lineIDs: lineIDs, direction: direction, delta: delta)
             else { continue }
             body += rendered.text
-            needsUnidiffZero = needsUnidiffZero || !rendered.hasContext
+            hasContextFreeHunk = hasContextFreeHunk || !rendered.hasContext
             delta += rendered.newCount - rendered.oldCount
         }
         guard !body.isEmpty, let path = file.newPath ?? file.oldPath else { return nil }
-        return Patch(text: fileHeader(for: path) + body, needsUnidiffZero: needsUnidiffZero)
+        return Patch(text: fileHeader(for: path) + body, hasContextFreeHunk: hasContextFreeHunk)
     }
 
     // MARK: - Hunks

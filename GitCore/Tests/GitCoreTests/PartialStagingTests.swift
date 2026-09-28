@@ -302,7 +302,7 @@ import Testing
             repo, file, direction: .stage, lines: changedLineIDs(file, "new"))
 
         // The unselected `-` became context, so this hunk still has one.
-        #expect(!patch.needsUnidiffZero)
+        #expect(!patch.hasContextFreeHunk)
         #expect(try await indexText(repo, "solo.txt") == "old\nnew\n")
         assertWorktreeUnchanged(repo, since: before)
     }
@@ -321,7 +321,7 @@ import Testing
         let patch = try await applySelection(
             repo, file, direction: .stage, lines: changedLineIDs(file, "old"))
 
-        #expect(patch.needsUnidiffZero)
+        #expect(patch.hasContextFreeHunk)
         #expect(try await indexText(repo, "solo.txt") == "")
         assertWorktreeUnchanged(repo, since: before)
     }

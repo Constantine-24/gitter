@@ -97,7 +97,7 @@ import Testing
             repo, file, direction: c.direction, lines: Self.lineIDs(file, c.selected))
 
         // The case is what it claims to be: a hunk with no context line.
-        #expect(patch.needsUnidiffZero, "\(patch.text)")
+        #expect(patch.hasContextFreeHunk, "\(patch.text)")
         let index = try await indexText(repo, Self.path)
         #expect(index == c.expected)
         expectNoJoinedLines(index, sources: ["a", "b", "X", "Y"])
@@ -147,7 +147,7 @@ import Testing
             PatchBuilder.patch(
                 file: file, hunkIDs: everyHunkID(file), lineIDs: Self.lineIDs(file, c.selected),
                 direction: c.direction))
-        #expect(patch.needsUnidiffZero, "\(patch.text)")
+        #expect(patch.hasContextFreeHunk, "\(patch.text)")
 
         // The index moves on after the diff was loaded; the worktree does not.
         try await Self.rewriteIndex(repo, to: c.staleIndex)

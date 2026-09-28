@@ -33,7 +33,7 @@ public protocol GitWorkingCopyBackend: Sendable {
     /// A patch that no longer matches the index — because the index moved on after the diff
     /// was loaded — throws `GitError.commandFailed` with git's stderr unchanged, and `git
     /// apply` leaves the index exactly as it was. That includes a hunk with no context line
-    /// (`patch.needsUnidiffZero`): `--unidiff-zero` is never passed, so git applies such a
+    /// (`patch.hasContextFreeHunk`): `--unidiff-zero` is never passed, so git applies such a
     /// hunk only to an index that is exactly its preimage, never at an offset.
     func applyToIndex(patch: Patch, reverse: Bool, at root: URL) async throws
 

@@ -845,23 +845,23 @@ import Testing
             """)
     }
 
-    // MARK: - needsUnidiffZero
+    // MARK: - hasContextFreeHunk
 
-    @Test func contextlessHunkNeedsUnidiffZero() throws {
+    @Test func aContextlessHunkIsMarkedContextFree() throws {
         let file = try Self.file(Self.contextlessFixture)
-        #expect(Self.build(file, .stage)?.needsUnidiffZero == true)
-        #expect(Self.build(file, .unstage)?.needsUnidiffZero == true)
+        #expect(Self.build(file, .stage)?.hasContextFreeHunk == true)
+        #expect(Self.build(file, .unstage)?.hasContextFreeHunk == true)
     }
 
-    @Test func hunksWithContextDoNotNeedUnidiffZero() throws {
+    @Test func hunksWithContextAreNotMarkedContextFree() throws {
         let file = try Self.file(Self.additionFixture)
-        #expect(Self.build(file, .stage)?.needsUnidiffZero == false)
+        #expect(Self.build(file, .stage)?.hasContextFreeHunk == false)
         let twoHunks = try Self.file(Self.twoHunkFixture)
-        #expect(Self.build(twoHunks, .unstage)?.needsUnidiffZero == false)
+        #expect(Self.build(twoHunks, .unstage)?.hasContextFreeHunk == false)
         // The added-file hunk has no context either.
         let added = try Self.file(Self.addedFileFixture)
         #expect(
-            Self.build(added, .unstage, Self.changedIDs(added, "n1", "n2"))?.needsUnidiffZero
+            Self.build(added, .unstage, Self.changedIDs(added, "n1", "n2"))?.hasContextFreeHunk
                 == false)
     }
 }
