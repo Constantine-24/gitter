@@ -1123,11 +1123,26 @@ import Testing
             ["stash", "list", "-z", "--format=%H%x1f%gd%x1f%gs%x1f%ct%x1f%P"], cwd: root)
         """,
         #"_ = try await run(["stash", "store", "-q", "-m", m, sha], cwd: root)"#,
+        // Task 4 runs the push through `runWithEnvironment`, as the apply: a refused push says
+        // `f: needs merge` on stdout, which `run`'s thrown error does not carry (M 13).
+        """
+        let result = try await runWithEnvironment(
+            includeUntracked
+                ? ["stash", "push", "-q", "--message", m, "--include-untracked"]
+                : ["stash", "push", "-q", "--message", m],
+            cwd: root, extra: [:], allowedExitCodes: [1, 128])
+        """,
         #"_ = try await runWithEnvironment(["stash", "apply", "-q", "--no-index", sha], cwd: root, extra: Self.rerereOff(env))"#,
         #"_ = try await run(["stash", "drop", "-q", "stash@{\(n)}"], cwd: root)"#,
         #"_ = try await run(["rev-parse", "-q", "--verify", "stash@{\(n)}"], cwd: root, allowedExitCodes: [1, 128])"#,
         #"_ = try await run(["rev-parse", "-q", "--verify", "refs/stash"], cwd: root, allowedExitCodes: [1])"#,
         #"_ = try await run(["ls-files", "-s", "-z", "--", literalPathspec(p)], cwd: root)"#,
+        // Task 4's reads beside the stash vectors: each one literal, optionally `+ paths`.
+        #"_ = try await run(["ls-files", "-u", "-z"], cwd: root)"#,
+        #"_ = try await run(["ls-files", "-o", "-z", "--exclude-standard", "--", literalPathspec(directory)], cwd: root)"#,
+        #"_ = try await run(["ls-tree", "-z", "--full-tree", "--name-only", rev, "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"_ = try await run(["status", "--porcelain=v2", "-z", "--untracked-files=normal"], cwd: root)"#,
+        #"_ = try await run(t ? ["rev-parse", "\(s)^{tree}", "\(s)^3^{tree}"] : ["rev-parse", "\(s)^{tree}"], cwd: root)"#,
         #"_ = try await run(["commit-tree", tree, "-p", "HEAD", "-m", m], cwd: root)"#,
         #"_ = try await run(["commit-tree", tree, "-p", "HEAD", "-p", i, "-m", m], cwd: root)"#,
         #"_ = try await run(["restore", "--no-recurse-submodules", "--worktree", "--"] + paths.map(literalPathspec), cwd: root)"#,
