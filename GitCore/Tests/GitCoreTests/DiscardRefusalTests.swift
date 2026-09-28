@@ -184,6 +184,26 @@ import Testing
         try await expectRefused(request, .needsWholeFile("one"), in: repo)
     }
 
+    /// Fix round 3 (review, measured with plain git 2.54): a worktree `git apply` writes the
+    /// whole file back through the checkout conversion, so a file not in its checkout form has
+    /// every line's ending rewritten, not only the selected ones — `autocrlf=true` turns an LF
+    /// file all CRLF, `autocrlf=input` a CRLF file all LF. Such a file is discarded whole or
+    /// not at all: refused, with the file, the index and `refs/stash` as they were.
+    @Test(arguments: ["true/lf", "input/crlf"])
+    func aFileNotInItsCheckoutFormNeedsTheWholeFile(_ shape: String) async throws {
+        let repo = try await makeDiscardLab()
+        defer { repo.cleanUp() }
+        let (autocrlf, ending) = shape == "true/lf" ? ("true", "\n") : ("input", "\r\n")
+        try await repo.git(["config", "core.autocrlf", autocrlf])
+        func bytes(_ text: String) -> Data { Data(text.replacingOccurrences(of: "\n", with: ending).utf8) }
+        try bytes(numbered(30, [3: "3 A", 15: "15 B", 27: "27 C"])).write(to: repo.root.appendingPathComponent("f3"))
+        let file = try await loadDiff(repo, "f3")
+        let request = try linesRequest(file, hunks: [try hunkID(file, containing: "15 B")], lines: nil)
+
+        try await expectRefused(request, .needsWholeFile("f3"), in: repo)
+        #expect(try repo.bytes("f3") == bytes(numbered(30, [3: "3 A", 15: "15 B", 27: "27 C"])))
+    }
+
     @Test func aBinaryARenameOrADeletionNeedsTheWholeFile() async throws {
         let repo = try await makeDiscardLab()
         defer { repo.cleanUp() }

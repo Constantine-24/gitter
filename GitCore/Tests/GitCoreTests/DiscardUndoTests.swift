@@ -187,10 +187,11 @@ import Testing
         let discarded = try await backend.discard(
             try await DiscardCase.linesOneHunkOfThree.request(repo), trasher: trasher, at: repo.root)
         let record = try #require(discarded.record)
+        #expect(discarded.recordedForm == .raw)
         try repo.write("f3", numbered(30, [3: "3 A", 27: "27 C", 29: "29 unseen"]))
         let receipt = DiscardReceipt(
             request: discarded.request, record: record, headAtDiscard: discarded.headAtDiscard, trashed: [:],
-            afterDiscard: try await backend.discardedFileState(of: "f3", at: repo.root))
+            afterDiscard: try await backend.discardedFileState(of: "f3", at: repo.root), recordedForm: discarded.recordedForm)
 
         let outcome = try await backend.undoDiscard(receipt, trasher: trasher, at: repo.root)
 
@@ -271,6 +272,7 @@ import Testing
         let receipt = try await backend.discard(
             try linesRequest(file, hunks: [try hunkID(file, containing: "15 B")], lines: nil), trasher: trasher, at: repo.root)
         #expect(try repo.bytes("f") == crlf(numbered(30, [3: "3 A", 27: "27 C"])))
+        #expect(receipt.recordedForm == .checkout)
 
         let outcome = try await backend.undoDiscard(receipt, trasher: trasher, at: repo.root)
 

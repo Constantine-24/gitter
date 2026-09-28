@@ -106,17 +106,33 @@ public struct DiscardReceipt: Sendable, Hashable {
     /// undo git itself refuses over an edit, and for a `.lines` discard whose state could not
     /// be read afterwards — its undo then refuses.
     public let afterDiscard: DiscardedFileState?
+    /// For `.lines`: which form of the record's blob the file's bytes were before the discard —
+    /// the only form the undo accepts as "exactly as before" when it decides to drop the record.
+    public let recordedForm: RecordedForm?
 
     public init(
         request: DiscardRequest, record: Stash?, headAtDiscard: String, trashed: [String: URL],
-        afterDiscard: DiscardedFileState? = nil
+        afterDiscard: DiscardedFileState? = nil, recordedForm: RecordedForm? = nil
     ) {
         self.request = request
         self.record = record
         self.headAtDiscard = headAtDiscard
         self.trashed = trashed
         self.afterDiscard = afterDiscard
+        self.recordedForm = recordedForm
     }
+}
+
+/// How a file's bytes relate to the blob the record holds for it. A line discard requires the
+/// file to be in its checkout form (`checkout`, which is `raw` when checking out converts
+/// nothing): a worktree `git apply` writes the whole file back through the checkout
+/// conversion, so any other file would have every line's ending rewritten (fix round 3).
+public enum RecordedForm: Sendable, Hashable {
+    /// The blob's own bytes (`cat-file blob`): no conversion applies to this file.
+    case raw
+    /// The blob as a checkout writes it (`cat-file --filters`), which differs from the raw
+    /// blob: CRLF under `core.autocrlf=true` or `eol=crlf`, or a smudge filter's output.
+    case checkout
 }
 
 /// One file as a line discard left it, on every layer a later change could move without the
@@ -147,7 +163,10 @@ public enum DiscardRefusal: Error, Sendable, Hashable {
     case submodules([String])
     case nestedRepositories([String])
     /// A `.lines` discard that has to be a whole-file one: the patch has a context-free hunk,
-    /// or the file is binary, renamed, not a plain modification, or not valid UTF-8.
+    /// or the file is binary, renamed, not a plain modification, or not valid UTF-8 — or its
+    /// bytes are not its checkout form (see `RecordedForm`), where applying a patch would
+    /// rewrite every line's ending. That last check needs the record's blob, so it runs after
+    /// the record is filed, and the record is dropped again before this is thrown.
     case needsWholeFile(String)
     /// The file changed after the sheet was shown ("nothing was discarded"): its diff, or the
     /// untracked item's type, size or date, is not what `expected` holds.

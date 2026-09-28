@@ -113,7 +113,8 @@ public protocol GitWorkingCopyBackend: Sendable {
     ///    directory that swapped places (the record's own refusals, run first), a path the kind
     ///    cannot take (`notTracked`), and for `.lines` anything but a plain modification of a
     ///    text file that is valid UTF-8, or a patch with a context-free hunk
-    ///    (`needsWholeFile`).
+    ///    (`needsWholeFile`). After the record, a `.lines` file must also be in its checkout
+    ///    form (`RecordedForm`), or the record is dropped again and `needsWholeFile` thrown.
     /// 2. **Stale check**: `discardExpectation` again, compared with `request.expected`;
     ///    any difference is `.changedSinceShown`, with no record written.
     /// 3. **Record** (tracked kinds): `StashRecord`, `request.recordMessage`.
@@ -150,8 +151,9 @@ public protocol GitWorkingCopyBackend: Sendable {
     ///   on, even by an edit that was then staged or committed, the forward patch's context can
     ///   match elsewhere and git would put the lines there (fix rounds 1 and 2). Then `apply
     ///   --whitespace=nowarn` of the same patch on the worktree. The record is dropped only
-    ///   when the file's bytes equal the record's copy, raw (`cat-file blob`) or as a checkout
-    ///   writes it (`cat-file --filters`); otherwise it is kept: `.restoredUnverified`.
+    ///   when the file's bytes equal the record's copy in the form they had before the discard
+    ///   (`receipt.recordedForm`): raw (`cat-file blob`) or as a checkout writes it (`cat-file
+    ///   --filters`); otherwise it is kept: `.restoredUnverified`.
     /// - `.untracked`: each item back from the Trash; one whose path exists again is not
     ///   overwritten (`.partiallyRestored`), and the others still come back.
     ///

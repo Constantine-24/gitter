@@ -114,6 +114,26 @@ extension CLIGitBackend {
         let receipt = DiscardReceipt(
             request: request, record: record, headAtDiscard: record.parents.first ?? "", trashed: [:])
 
+        // 3b. A line discard only on a file in its checkout form: `git apply` writes the whole
+        // file back through the checkout conversion, so an LF file under `autocrlf=true` would
+        // come out all CRLF, a CRLF file under `autocrlf=input` all LF (fix round 3, measured).
+        // The record's blob is the file's content as git reads it; its checkout form is what
+        // the bytes must be. Checked before anything changes, so the record is noise if it
+        // fails, and goes again.
+        var recordedForm: RecordedForm?
+        if case .lines(let path, _, _, _) = request {
+            recordedForm = try await linesForm(of: path, in: record, at: root)
+            guard recordedForm != nil else {
+                guard (try? await dropRecord(record, at: root)) == true else {
+                    throw DiscardFailure(
+                        receipt: receipt,
+                        gitsWords: "\(path) is not in its checkout form, so its lines cannot be discarded alone; "
+                            + "nothing was discarded, and the record made for it could not be removed.")
+                }
+                throw DiscardRefusal.needsWholeFile(path)
+            }
+        }
+
         // 4. Change. Between the stale check (and the record) and this command is one process
         // start: an edit made in that window is overwritten and is in no record. No git option
         // closes it; it is the same window `applyToIndex` documents.
@@ -141,7 +161,19 @@ extension CLIGitBackend {
         guard case .lines(let path, _, _, _) = request else { return receipt }
         return DiscardReceipt(
             request: request, record: record, headAtDiscard: receipt.headAtDiscard, trashed: [:],
-            afterDiscard: try? await discardedFileState(of: path, at: root))
+            afterDiscard: try? await discardedFileState(of: path, at: root), recordedForm: recordedForm)
+    }
+
+    /// Which form of the record's blob `path`'s bytes are: `raw` when they are the blob itself
+    /// and a checkout writes exactly that, `checkout` when they are the blob as a checkout
+    /// writes it and that differs from the blob. Nil otherwise — the file is not in its
+    /// checkout form — or when a side cannot be read.
+    private func linesForm(of path: String, in record: Stash, at root: URL) async throws -> RecordedForm? {
+        guard let bytes = try await worktreeBytes(of: path, at: root),
+            let checkedOut = try? await recordedBytesAsCheckedOut(of: path, in: record, at: root),
+            bytes == checkedOut
+        else { return nil }
+        return bytes == (try? await recordedBytes(of: path, in: record, at: root)) ? .raw : .checkout
     }
 
     /// `path` on every layer: its bytes, its index entry, HEAD. Throws when the file cannot be
@@ -246,20 +278,26 @@ extension CLIGitBackend {
             let now = try? await discardedFileState(of: path, at: root)
             guard let now, now == receipt.afterDiscard else {
                 return .refused(
-                    "\(path) changed since the discard.", recordKept: try await listed(record, at: root))
+                    "\(path), or HEAD, moved since the discard.", recordKept: try await listed(record, at: root))
             }
             do {
                 try await applyToWorktree(patch, reverse: false, at: root)
             } catch {
                 return .refused(Self.gitsWords(error), recordKept: try await listed(record, at: root))
             }
-            // And the record is dropped only when the file is byte for byte its copy there, raw
-            // or as a checkout writes it (`autocrlf`, `eol=crlf`: the blob is LF, the file CRLF).
-            // Both sides must be read: two failed reads are not two equal files.
+            // And the record is dropped only when the file is byte for byte its copy there, in
+            // the one form the file had before the discard (`receipt.recordedForm`): raw, or as
+            // a checkout writes it (`autocrlf`, `eol=crlf`: the blob is LF, the file CRLF). Only
+            // that form is read — a smudge filter runs only for a `checkout` file. Both sides
+            // must be read: two failed reads are not two equal files.
             let bytes = try await worktreeBytes(of: path, at: root)
-            let raw = try? await recordedBytes(of: path, in: record, at: root)
-            let checkedOut = try? await recordedBytesAsCheckedOut(of: path, in: record, at: root)
-            guard let bytes, bytes == raw || bytes == checkedOut else {
+            let recorded: Data?
+            switch receipt.recordedForm {
+            case .raw?: recorded = try? await recordedBytes(of: path, in: record, at: root)
+            case .checkout?: recorded = try? await recordedBytesAsCheckedOut(of: path, in: record, at: root)
+            case nil: recorded = nil
+            }
+            guard let bytes, bytes == recorded else {
                 return .restoredUnverified(recordKept: try await listed(record, at: root))
             }
             _ = try? await dropRecord(record, at: root)
