@@ -114,15 +114,19 @@ extension CLIGitBackend {
         let receipt = DiscardReceipt(
             request: request, record: record, headAtDiscard: record.parents.first ?? "", trashed: [:])
 
-        // 4. Change.
+        // 4. Change. Between the stale check (and the record) and this command is one process
+        // start: an edit made in that window is overwritten and is in no record. No git option
+        // closes it; it is the same window `applyToIndex` documents.
+        var afterDiscard: DiscardExpectation?
         do {
             switch request {
             case .unstaged:
                 _ = try await run(["restore", "--no-recurse-submodules", "--worktree", "--"] + survey.paths.map(literalPathspec), cwd: root)
             case .stagedAndUnstaged:
                 _ = try await run(["restore", "--no-recurse-submodules", "--source=HEAD", "--staged", "--worktree", "--"] + survey.paths.map(literalPathspec), cwd: root)
-            case .lines(_, let patch, _, _):
+            case .lines(let path, let patch, _, _):
                 try await applyToWorktree(patch, reverse: true, at: root)
+                afterDiscard = try await discardExpectation(tracked: [path], includingStaged: false, at: root)
             case .untracked:
                 break
             }
@@ -134,7 +138,9 @@ extension CLIGitBackend {
             if unchanged, (try? await dropRecord(record, at: root)) == true { throw error }
             throw DiscardFailure(receipt: receipt, gitsWords: Self.gitsWords(error))
         }
-        return receipt
+        return DiscardReceipt(
+            request: request, record: record, headAtDiscard: receipt.headAtDiscard, trashed: [:],
+            afterDiscard: afterDiscard)
     }
 
     /// `.untracked`: no record — git has no copy of an untracked file, so the Trash is the copy.
@@ -142,7 +148,11 @@ extension CLIGitBackend {
         _ paths: [String], expected: DiscardExpectation, request: DiscardRequest, trasher: any Trasher,
         at root: URL
     ) async throws -> DiscardReceipt {
-        let nested = paths.filter { StashRecord.isInsideAnotherRepository($0, under: root) }
+        // A repository further down an untracked directory (`? ud/` with `ud/inner/.git`) too:
+        // the Trash would take it whole.
+        let nested = paths.filter {
+            StashRecord.isInsideAnotherRepository($0, under: root) || Self.holdsARepository($0, under: root)
+        }
         if !nested.isEmpty { throw DiscardRefusal.nestedRepositories(nested) }
         // Status must still show each one as untracked (itself, or under an untracked
         // directory): a path git tracks, or ignores, is not what the sheet showed.
@@ -177,6 +187,19 @@ extension CLIGitBackend {
         return DiscardReceipt(request: request, record: nil, headAtDiscard: head, trashed: trashed)
     }
 
+    /// Whether a directory at `path` has a `.git` (a directory or a file) anywhere below it.
+    /// Symlinks are not followed (the enumerator does not descend into them).
+    static func holdsARepository(_ path: String, under root: URL) -> Bool {
+        let top = root.appendingPathComponent(StashRecord.withoutTrailingSlash(path)).path
+        guard let info = lstatInfo(top), info.st_mode & S_IFMT == S_IFDIR,
+            let enumerator = FileManager.default.enumerator(atPath: top)
+        else { return false }
+        for case let relative as String in enumerator where (relative as NSString).lastPathComponent == ".git" {
+            return true
+        }
+        return false
+    }
+
     /// `.lines` takes only a plain modification of a text file that is valid UTF-8, shown as
     /// exactly one diff, and a patch made from that diff with no context-free hunk.
     private static func guardLines(path: String, patch: Patch, expected: DiscardExpectation) throws {
@@ -204,14 +227,36 @@ extension CLIGitBackend {
             throw DiscardRefusal.operationInProgress(operation)
         }
 
-        if case .lines(_, let patch, _, _) = receipt.request {
+        if case .lines(let path, let patch, _, _) = receipt.request {
+            // Only onto exactly what the discard left: in a file that moved on, the patch's
+            // context can match elsewhere, and git applies it there at an offset without a word
+            // (M 9; fix round 1 measured `NEW` put into the wrong one of two identical blocks).
+            let now = try await discardExpectation(tracked: [path], includingStaged: false, at: root)
+            guard now == receipt.afterDiscard else {
+                return .refused(
+                    "\(path) changed since the discard.", recordKept: try await listed(record, at: root))
+            }
             do {
                 try await applyToWorktree(patch, reverse: false, at: root)
             } catch {
                 return .refused(Self.gitsWords(error), recordKept: try await listed(record, at: root))
             }
+            // And the record is dropped only when the file is byte for byte its copy there.
+            // Both must be read: two failed reads are not two equal files.
+            let bytes = try await worktreeBytes(of: path, at: root)
+            let recorded = try? await recordedBytes(of: path, in: record, at: root)
+            guard let bytes, bytes == recorded else {
+                return .restoredUnverified(recordKept: try await listed(record, at: root))
+            }
             _ = try? await dropRecord(record, at: root)
             return .restored
+        }
+
+        // Whether the staged side moved since the discard, which left each path's index entry
+        // at HEAD: step 2 would then overwrite that staged edit with the record's index.
+        var stagedSince = false
+        if case .stagedAndUnstaged(let paths, _) = receipt.request {
+            stagedSince = try await hasStagedChanges(paths, at: root)
         }
 
         // Step 1: the record, as a user apply would (`-q --no-index`, rerere off).
@@ -220,15 +265,19 @@ extension CLIGitBackend {
         case .applied: break
         case .refused(let files): return .refused(files.joined(separator: "\n"), recordKept: try await listed(record, at: root))
         case .conflicts(let paths): return .conflicted(paths, recordKept: try await listed(record, at: root))
-        case .partiallyApplied(let files): return .partiallyRestored(notRestored: files)
+        // Unreachable for a record, which has no untracked part (no third parent) — git reports
+        // this only for an entry's untracked files. Should it happen, the tracked part did land
+        // and something did not: kept, not dropped.
+        case .partiallyApplied: return .restoredUnverified(recordKept: try await listed(record, at: root))
         case .failed(let words): return .refused(words, recordKept: try await listed(record, at: root))
         }
 
         var outcome = UndoDiscardOutcome.restored
         if case .stagedAndUnstaged(let paths, _) = receipt.request {
-            // Step 2, only on the HEAD the record was made on: after a new commit it would
-            // stage a reversal of that commit's change (M B b).
-            if try await headSha(at: root) == receipt.headAtDiscard {
+            // Step 2, only on the HEAD the record was made on — after a new commit it would
+            // stage a reversal of that commit's change (M B b) — and only over an untouched
+            // staged side.
+            if !stagedSince, try await headSha(at: root) == receipt.headAtDiscard {
                 do {
                     try await restoreStagedPart(of: record, paths: paths, at: root)
                 } catch {
@@ -305,6 +354,23 @@ extension CLIGitBackend {
     /// The record as the list shows it now, or nil when it is no longer listed.
     private func listed(_ record: Stash, at root: URL) async throws -> Stash? {
         try await stashes(at: root).first { $0.sha == record.sha }
+    }
+
+    /// Whether any of `paths` has a staged change (the index differs from HEAD).
+    private func hasStagedChanges(_ paths: [String], at root: URL) async throws -> Bool {
+        let data = try await run(["diff", "--cached", "--name-only", "-z", "--no-renames", "--"] + paths.map(literalPathspec), cwd: root)
+        return !data.isEmpty
+    }
+
+    /// The bytes the record's worktree commit holds for `path`: `cat-file` reads the blob raw,
+    /// with no filter or conversion.
+    private func recordedBytes(of path: String, in record: Stash, at root: URL) async throws -> Data {
+        try await run(["cat-file", "blob", "\(record.sha):\(path)"], cwd: root)
+    }
+
+    /// The file's bytes on disk now; nil when it cannot be read.
+    private func worktreeBytes(of path: String, at root: URL) async throws -> Data? {
+        try? Data(contentsOf: root.appendingPathComponent(path))
     }
 
     /// Which of `paths` the index has an entry for (at any stage).

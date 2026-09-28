@@ -9,6 +9,9 @@ import Testing
 /// Moves an item into a scratch folder instead of the user's Trash, and back, with
 /// `FileManagerTrasher`'s rules: a missing parent directory is made again, and an existing
 /// item is never overwritten (`moveItem` fails with Cocoa error 516).
+///
+/// The folder goes when the trasher does (`deinit`), so one passed inline —
+/// `trasher: try FakeTrasher()` — leaves nothing in `$TMPDIR` either.
 final class FakeTrasher: Trasher, @unchecked Sendable {
     let folder: URL
 
@@ -35,6 +38,8 @@ final class FakeTrasher: Trasher, @unchecked Sendable {
     }
 
     func cleanUp() { try? FileManager.default.removeItem(at: folder) }
+
+    deinit { cleanUp() }
 }
 
 // MARK: - The whole worktree, as lstat sees it

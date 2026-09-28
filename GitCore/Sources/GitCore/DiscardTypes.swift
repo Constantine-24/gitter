@@ -31,9 +31,11 @@ public struct UntrackedItem: Sendable, Hashable {
 /// compares like with like. For `.lines` it is the one unstaged `FileDiff` the patch was built
 /// from, which is what `discardExpectation(tracked: [path], includingStaged: false, at:)` gives.
 public enum DiscardExpectation: Sendable, Hashable {
-    /// The diffs the sheet showed, compared whole: every line's text and the blob ids. A change
-    /// only in line endings or only through a clean filter changes neither, so it is invisible
-    /// to this check; the record still holds it.
+    /// The diffs the sheet showed, compared whole: every line's text and the blob ids. Three
+    /// changes made after the sheet was shown change neither, so they are invisible to this
+    /// check, and the record still holds each of them: one only in line endings, one only
+    /// through a clean filter, and one only in the executable bit (a `FileDiff` carries no
+    /// mode, and a mode-only diff has no hunks and no blob ids to differ).
     case diffs([FileDiff])
     case untracked([UntrackedItem])
 }
@@ -97,12 +99,21 @@ public struct DiscardReceipt: Sendable, Hashable {
     /// Original path (relative to the root) → where the Trash put it. The Trash may rename an
     /// item (M 15), so this URL is the only way to find it again.
     public let trashed: [String: URL]
+    /// For `.lines`: the file's unstaged diff right after the discard. The undo reads it again
+    /// and refuses when it differs: a forward patch finds its context wherever it matches, and
+    /// in a file that moved on it can put the lines back in the wrong place (fix round 1,
+    /// measured). Nil for the other kinds, whose undo git itself refuses over an edit.
+    public let afterDiscard: DiscardExpectation?
 
-    public init(request: DiscardRequest, record: Stash?, headAtDiscard: String, trashed: [String: URL]) {
+    public init(
+        request: DiscardRequest, record: Stash?, headAtDiscard: String, trashed: [String: URL],
+        afterDiscard: DiscardExpectation? = nil
+    ) {
         self.request = request
         self.record = record
         self.headAtDiscard = headAtDiscard
         self.trashed = trashed
+        self.afterDiscard = afterDiscard
     }
 }
 
@@ -172,10 +183,16 @@ public enum UndoDiscardOutcome: Sendable, Hashable {
     /// Back exactly as before the discard, both layers; the record is dropped (or, when the
     /// stash list changed under it, kept and listed — the content is back either way).
     case restored
-    /// `.stagedAndUnstaged` after HEAD moved: the content came back, but the staged split was
-    /// not restored, since that would stage a reversal of the new commit (M B b). The record is
+    /// `.stagedAndUnstaged` after HEAD moved, or after a path's staged side changed since the
+    /// discard: the content came back, but the staged split was not restored — that would
+    /// stage a reversal of the new commit (M B b), or overwrite the staged edit. The record is
     /// dropped as for `.restored`.
     case restoredUnstaged
+    /// The content was put back, but the files cannot be shown to be exactly what the record
+    /// holds, so the record is kept and listed rather than dropped: a `.lines` undo after a
+    /// change git's diff cannot see (line endings, a clean filter), where the bytes of the file
+    /// and of the record's copy differ.
+    case restoredUnverified(recordKept: Stash?)
     /// Nothing changed, because the files were edited since the discard (or git refused for
     /// another reason, given in its words). The record, when there is one, stays listed.
     case refused(String, recordKept: Stash?)

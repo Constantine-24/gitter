@@ -111,8 +111,8 @@ import Testing
         try await assertRepoUnchanged(repo, since: state, worktree: worktree)
     }
 
-    /// The lines were edited after their discard: the forward patch no longer fits, and git
-    /// refuses it atomically.
+    /// The lines were edited after their discard: the file is no longer what the discard left,
+    /// so the undo refuses before git is asked (the forward patch would no longer fit either).
     @Test func aLinesUndoAfterTheLinesWereEditedIsRefused() async throws {
         let repo = try await makeDiscardLab()
         defer { repo.cleanUp() }
@@ -131,9 +131,98 @@ import Testing
             Issue.record("expected a refusal, got \(outcome)")
             return
         }
-        #expect(words.contains("patch does not apply"), "\(words)")
+        // Refused by the re-read of what the discard left, before git is asked at all.
+        #expect(words.contains("f3"), "\(words)")
         #expect(kept?.sha == receipt.record?.sha)
         try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+    }
+
+    /// Fix round 1 (review, probed): two identical six-line blocks, `NEW` discarded from the
+    /// second; then ten lines added between the blocks. The forward patch's full context now
+    /// matches the FIRST block nearer the recorded position, and git applied `NEW` there
+    /// (`Hunk #1 succeeded at 7 (offset -6 lines)`, measured) — and the record was dropped. The
+    /// undo re-reads what the discard left and refuses when it moved; the record stays listed.
+    @Test func aLinesUndoAfterTheFileMovedIsRefusedBeforeItCanApplyAtAnOffset() async throws {
+        let repo = try await makeDiscardLab()
+        defer { repo.cleanUp() }
+        let block = "a\nb\nc\nd\ne\nf\n"
+        let filler = "f1\nf2\nf3\nf4\nf5\n"
+        try repo.write("blocks", "top\n" + filler + block + block + "end\n")
+        try await repo.git(["add", "blocks"])
+        try await repo.git(["commit", "-q", "-m", "blocks", "--", "blocks"])
+        try repo.write("blocks", "top\n" + filler + block + "a\nb\nc\nNEW\nd\ne\nf\n" + "end\n")
+        let file = try await loadDiff(repo, "blocks")
+        let trasher = try FakeTrasher()
+        defer { trasher.cleanUp() }
+        let receipt = try await backend.discard(
+            try linesRequest(file, hunks: everyHunkID(file), lines: nil), trasher: trasher, at: repo.root)
+        let record = try #require(receipt.record)
+        let between = (1...10).map { "X\($0)\n" }.joined()
+        try repo.write("blocks", "top\n" + filler + block + between + block + "end\n")
+        let state = try await RepoState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+
+        let outcome = try await backend.undoDiscard(receipt, trasher: trasher, at: repo.root)
+
+        guard case .refused(_, let kept) = outcome else {
+            Issue.record("expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(kept?.sha == record.sha)
+        #expect(try await repo.stashShas() == [record.sha])
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+    }
+
+    /// The last guard before the drop: the file must be byte for byte what the record holds.
+    /// The diff re-read cannot see a change only in line endings or through a clean filter
+    /// (`DiscardExpectation`); this stands one in with a receipt whose `afterDiscard` is the
+    /// file as it is now, edited at line 29, away from the patch. The lines come back, but the
+    /// file is not the record's copy, so the record is kept rather than trusted to be redundant.
+    @Test func aLinesUndoThatCannotProveTheFileIsAsRecordedKeepsTheRecord() async throws {
+        let repo = try await makeDiscardLab()
+        defer { repo.cleanUp() }
+        try await DiscardCase.linesOneHunkOfThree.prepare(repo)
+        let trasher = try FakeTrasher()
+        defer { trasher.cleanUp() }
+        let discarded = try await backend.discard(
+            try await DiscardCase.linesOneHunkOfThree.request(repo), trasher: trasher, at: repo.root)
+        let record = try #require(discarded.record)
+        try repo.write("f3", numbered(30, [3: "3 A", 27: "27 C", 29: "29 unseen"]))
+        let receipt = DiscardReceipt(
+            request: discarded.request, record: record, headAtDiscard: discarded.headAtDiscard, trashed: [:],
+            afterDiscard: try await backend.discardExpectation(tracked: ["f3"], includingStaged: false, at: repo.root))
+
+        let outcome = try await backend.undoDiscard(receipt, trasher: trasher, at: repo.root)
+
+        let listed = try await backend.stashes(at: repo.root).first
+        #expect(outcome == .restoredUnverified(recordKept: listed), "\(outcome)")
+        #expect(listed?.sha == record.sha)
+        #expect(try repo.bytes("f3") == Data(numbered(30, [3: "3 A", 15: "15 B", 27: "27 C", 29: "29 unseen"]).utf8))
+    }
+
+    /// Ruling 1 of fix round 1: a staged edit to `p` since a staged-side discard, HEAD unmoved.
+    /// Step 1 merges it; step 2 would overwrite that staged edit with the record's index. It is
+    /// skipped, and the user's staged edit stays staged.
+    @Test func aStagedSideUndoOverAStagedEditSinceKeepsThatEditStaged() async throws {
+        let repo = try await makeDiscardLab()
+        defer { repo.cleanUp() }
+        try await DiscardCase.stagedBothLayers.prepare(repo)
+        let trasher = try FakeTrasher()
+        defer { trasher.cleanUp() }
+        let receipt = try await backend.discard(
+            try await DiscardCase.stagedBothLayers.request(repo), trasher: trasher, at: repo.root)
+        try repo.write("p", numbered(12, [7: "7 staged since"]))
+        try await repo.git(["add", "p"])
+        let staged = try await repo.indexContent(of: "p")
+        let head = try await repo.headSha()
+
+        let outcome = try await backend.undoDiscard(receipt, trasher: trasher, at: repo.root)
+
+        #expect(outcome == .restoredUnstaged)
+        #expect(try await repo.headSha() == head)
+        #expect(try await repo.indexContent(of: "p") == staged, "the staged edit was overwritten")
+        #expect(try repo.bytes("p") == Data(numbered(12, [2: "2 staged", 7: "7 staged since", 11: "11 unstaged"]).utf8))
+        #expect(try await repo.stashRef() == nil)
     }
 
     /// An untracked item whose path exists again is not overwritten; the other comes back.

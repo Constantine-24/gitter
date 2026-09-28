@@ -128,16 +128,30 @@ public protocol GitWorkingCopyBackend: Sendable {
     /// is thrown as it is: an `index.lock` leaves no entry behind. Otherwise, or if that drop
     /// fails, `DiscardFailure` names the record. A Trash that fails part-way throws
     /// `DiscardFailure` naming what already went.
+    ///
+    /// **The window.** Between the stale check and the record, and between the record and step
+    /// 4, lie a process start or two in which another program can still edit a file. An edit in
+    /// the first window is in the record but was never shown; one in the second is overwritten
+    /// by step 4 and is in no record. No git option closes either; they are the same window
+    /// `applyToIndex` documents for staging.
     func discard(_ request: DiscardRequest, trasher: any Trasher, at root: URL) async throws -> DiscardReceipt
 
     /// Puts a discard back:
     ///
     /// - `.unstaged`: `stash apply -q --no-index` of the record (rerere off), then the drop.
     /// - `.stagedAndUnstaged`: the same apply, then — only while HEAD is still
-    ///   `receipt.headAtDiscard` — `restore --no-recurse-submodules --source=<record>^2
-    ///   --staged` of the paths W^2 or the index knows. With HEAD moved, that would stage a
-    ///   reversal of the new commit (M B b), so it is skipped: `.restoredUnstaged`.
-    /// - `.lines`: `apply --whitespace=nowarn` of the same patch on the worktree, then the drop.
+    ///   `receipt.headAtDiscard` and no path had a staged change before the apply —
+    ///   `restore --no-recurse-submodules --source=<record>^2 --staged` of the paths W^2 or the
+    ///   index knows. With HEAD moved, that would stage a reversal of the new commit (M B b);
+    ///   over a staged edit made since, it would overwrite that edit. Either way it is skipped:
+    ///   `.restoredUnstaged`.
+    /// - `.lines`: first the file's diff is read again and must equal
+    ///   `receipt.afterDiscard`, else `.refused` with nothing applied — in a file that moved
+    ///   on, the forward patch's context can match elsewhere and git would put the lines there
+    ///   (fix round 1). Then `apply --whitespace=nowarn` of the same patch on the worktree. The
+    ///   record is dropped only when the file's bytes equal the record's copy (`cat-file blob`);
+    ///   otherwise it is kept and the outcome is `.restoredUnverified` — a change in line
+    ///   endings alone passes the diff check and fails this one.
     /// - `.untracked`: each item back from the Trash; one whose path exists again is not
     ///   overwritten (`.partiallyRestored`), and the others still come back.
     ///

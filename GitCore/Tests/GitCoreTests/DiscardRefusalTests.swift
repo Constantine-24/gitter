@@ -121,6 +121,18 @@ import Testing
         try await expectRefused(try await untracked(["nested/x"], repo), .nestedRepositories(["nested/x"]), in: repo)
     }
 
+    /// Fix round 1: status shows `? ud/` for a directory that holds a repository further down
+    /// (`ud/inner/.git`); the Trash would take that repository whole. Refused as one.
+    @Test func anUntrackedDirectoryHoldingARepositoryIsRefused() async throws {
+        let repo = try await makeDiscardLab()
+        defer { repo.cleanUp() }
+        try repo.write("ud/a", "a\n")
+        try repo.write("ud/inner/x", "x\n")
+        try await TestRepo(root: repo.root.appendingPathComponent("ud/inner")).git(["init", "-q"])
+
+        try await expectRefused(try await untracked(["ud/"], repo), .nestedRepositories(["ud/"]), in: repo)
+    }
+
     @Test func aFileAndADirectoryThatSwappedAreRefused() async throws {
         let a = try await makeTypeSwapA()
         defer { a.cleanUp() }
