@@ -386,7 +386,21 @@ enum ForceFlagScanner {
         // `arguments.append("--merge")` is the same hazard written a different way. These
         // literals come from every `.append("…")` in the FILE, pooled, so they are not one
         // vector and get no carve-out — see `fragmentFindings`.
-        findings += fragmentFindings(appendedLiterals(in: source, code: code), isOneVector: false)
+        let appended = appendedLiterals(in: source, code: code)
+        findings += fragmentFindings(appended, isOneVector: false)
+        // The append pool is not one vector, so it cannot say which vector a `-m` joins. In a
+        // file that names `read-tree` at all, that is enough: the three are findings there.
+        let namesReadTree = literals(in: source, code: code)
+            .contains { spellings(of: $0.1).contains("read-tree") }
+        if namesReadTree {
+            for flag in appended.flatMap(spellings(of:)) {
+                if let reason = readTreeForbiddenFlags[flag] {
+                    findings.append(
+                        "forbidden appended \(flag.debugDescription) in a file that runs "
+                            + "`git read-tree`: \(reason)")
+                }
+            }
+        }
         return findings
     }
 

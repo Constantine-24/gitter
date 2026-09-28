@@ -936,6 +936,10 @@ import Testing
         (#"_ = try await run(["read-tree", "--reset", t], cwd: root)"#, "--reset"),
         (#"_ = try await run(["read-tree", "--reset", "-u", "HEAD"], cwd: root)"#, "--reset"),
         (#"_ = try await run([indexFlag, "read-tree", "-m", t], cwd: root)"#, "-m"),
+        // Appended, so no vector holds it: in a file that runs `read-tree`, the three are
+        // findings in the append pool too.
+        (#"var a = ["read-tree", t]; a.append("-u")"#, "-u"),
+        (#"var a = ["read-tree"]; a.append("--reset"); a.append(t)"#, "--reset"),
     ])
     func catchesAReadTreeThatWritesTheWorktreeEvenInTheRecordFile(source: String, flag: String) {
         let findings = ForceFlagScanner.findings(in: source, fileName: Self.recordFile)
