@@ -56,9 +56,11 @@ final class AutoFetchScheduler {
     }
 
     /// Starts `store`'s schedule for the repository open right now, replacing any other. The
-    /// first tick is immediate: "on open".
+    /// first tick is immediate: "on open". Never under a test host (`TestHost`): a test run
+    /// fetches nothing.
     func start(for store: RepositoryStore) {
         stop()
+        guard !TestHost.isRunningTests else { return }
         #if DEBUG
             RepositoryStore.logAutoFetch(
                 "schedule: every \(interval), stopped after \(timeout) (store \(store.debugSerial))")

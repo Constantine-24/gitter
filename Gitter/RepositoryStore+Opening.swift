@@ -40,7 +40,9 @@ extension RepositoryStore {
 
     // MARK: - Reopening
 
+    /// Never under a test host: the path is the user's, and a test run must not open it.
     func reopenLastRepository() {
+        guard !TestHost.isRunningTests else { return }
         guard let path = UserDefaults.standard.string(forKey: Self.lastRepositoryPathKey) else { return }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {

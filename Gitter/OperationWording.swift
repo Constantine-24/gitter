@@ -166,7 +166,7 @@ extension RepositoryOperation {
     /// The five sentences `AbortSheet` is built from.
     ///
     /// They live here rather than in the view for the same reason as everything above: they are
-    /// pure functions of the operation, the app has no test target to pin a view with, and the
+    /// pure functions of the operation, a test can pin them where it could not pin a view, and the
     /// wording is the safety promise — six operations' worth of "what goes, what stays", each
     /// line traceable to one cell of the kept/lost table in `GitBranchBackend.abort`. A view is
     /// the one place where that is neither readable next to its siblings nor reachable from

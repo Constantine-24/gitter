@@ -219,12 +219,22 @@ xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -config
 cd GitCore && swift test
 ```
 
-730 tests in 58 suites. Most of them run real `git` against a temporary repository rather
-than a fake — the remote tests against local bare repositories standing in for a server,
-with a second clone as "the colleague" who pushes in between — including one that greps
-`GitCore`'s own sources for forbidden force flags. The suite isolates itself from your git
-configuration (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`) and never touches the
-network.
+Or both test targets — `GitCoreTests` and the app's `GitterTests` — through the scheme:
+
+```sh
+xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
+```
+
+`GitterTests` is hosted by the app and pins the wording the UI shows (`OperationWording`,
+`RemoteWording`). Under a test host the app reopens no repository and starts no automatic
+fetch (`TestHost`), so a run never touches the repository you last had open.
+
+`GitCoreTests` has 730 tests in 58 suites. Most of them run real `git` against a temporary
+repository rather than a fake — the remote tests against local bare repositories standing in
+for a server, with a second clone as "the colleague" who pushes in between — including one
+that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
+your git configuration (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`) and never
+touches the network.
 
 The run also reports **6 known issues, and they are meant to be there** — please do not
 "fix" them. They are deliberate negative controls: tests that make an assertion helper fail
@@ -246,10 +256,10 @@ Deleting any of them would take the proof away and the suite would go on looking
 
 Every `.swift` file in the two product targets — 92 of them, which is what `find
 GitCore/Sources Gitter -name '*.swift' | wc -l` prints — with the ones inside `Models/`,
-`Parsers/` and `Views/` named in prose rather than one per line. The 64 test files and
-`GitCore/Package.swift` are summarised rather than listed, which is also why the check is
-that command and not a bare `find . -name '*.swift'`: that one reaches them too, and the
-generated sources under `.build` as well.
+`Parsers/` and `Views/` named in prose rather than one per line. The 67 test files (64 in
+`GitCore/Tests`, 3 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
+listed, which is also why the check is that command and not a bare `find . -name '*.swift'`:
+that one reaches them too, and the generated sources under `.build` as well.
 
 ```
 GitCore/                  SwiftPM package, no SwiftUI dependency
@@ -318,6 +328,9 @@ Gitter/                   macOS app (SwiftUI)
                               RemoteToolbar, TrackingBadge and the ten sheets (NewBranch,
                               Rename, Merge, DeleteBranch, Abort, LeaveDetached, Pull,
                               Publish, ForcePush, DeleteRemoteBranch)
+
+GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app): wording
+                          and the test-host check
 ```
 
 ## Debug launch hooks

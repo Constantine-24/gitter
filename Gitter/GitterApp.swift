@@ -24,6 +24,19 @@ enum AppModel {
     static var openWindow: (() -> Void)?
 }
 
+/// Whether this process is the host of a test bundle (`GitterTests`) rather than the app a
+/// person launched: Xcode's test runner sets `XCTestConfigurationFilePath` in the host's
+/// environment.
+///
+/// Under a test host the app reopens no repository (`reopenLastRepository`) and starts no
+/// automatic fetch (`AutoFetchScheduler.start`), so a test run never opens, let alone fetches,
+/// whatever repository the user last had open.
+enum TestHost {
+    static var isRunningTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+}
+
 /// Hands the window's `openWindow` action to `AppModel.openWindow`.
 private struct RemembersHowToOpenTheWindow: ViewModifier {
     @Environment(\.openWindow) private var openWindow

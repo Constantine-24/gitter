@@ -43,6 +43,18 @@ targets:
       path: Gitter/Gitter.entitlements
       properties:
         com.apple.security.app-sandbox: false
+  GitterTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [GitterTests]
+    dependencies:
+      - target: Gitter
+      - package: GitCore
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        GENERATE_INFOPLIST_FILE: YES
 schemes:
   Gitter:
     build:
@@ -54,3 +66,4 @@ schemes:
       config: Debug
       targets:
         - package: GitCore/GitCoreTests
+        - GitterTests

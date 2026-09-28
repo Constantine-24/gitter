@@ -4,9 +4,9 @@ import GitCore
 /// Every sentence the app says about the network, and every decision about whether a network
 /// action is available, as pure functions over plain values.
 ///
-/// Pure so that they can be read, and one day tested, without a store: the app has no test
-/// target yet (see `docs/BACKLOG.md`), so today they are exercised through the DEBUG harness,
-/// which logs the three blocked reasons after every step.
+/// Pure so that they can be read and tested without a store. `GitterTests` pins `plain` and
+/// `pullRequestLinks`; the rest is exercised through the DEBUG harness, which logs the three
+/// blocked reasons after every step (see `docs/BACKLOG.md`).
 ///
 /// **Two rules hold for everything here.**
 /// - **Text that came from the network is never shown raw.** A remote's URL can carry a token
