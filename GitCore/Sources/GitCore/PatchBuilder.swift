@@ -11,8 +11,11 @@ public enum PatchDirection: Sendable, Hashable {
 /// A unified diff ready for `git apply --cached [--reverse]`.
 public struct Patch: Sendable, Hashable {
     public let text: String
-    /// True when some emitted hunk carries no context line at all. `git apply` refuses such a
-    /// hunk unless it is also given `--unidiff-zero`.
+    /// True when some emitted hunk carries no context line at all. With `-U3` such a hunk
+    /// covers the whole file, and `git apply` without `--unidiff-zero` (which Gitter never
+    /// passes) anchors it to the start and end of the file: it applies only to a file that is
+    /// exactly its preimage. Staging needs nothing more than that; line discard (A1 Task 5)
+    /// is to refuse a context-free partial selection on this flag.
     public let needsUnidiffZero: Bool
 
     public init(text: String, needsUnidiffZero: Bool) {

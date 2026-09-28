@@ -23,18 +23,18 @@ public protocol GitWorkingCopyBackend: Sendable {
     /// command would otherwise fail with "pathspec '.' did not match any files").
     func unstageAll(at root: URL) async throws
 
-    /// `git apply --cached --whitespace=nowarn [--unidiff-zero] [--reverse] <tmpfile>`, the
+    /// `git apply --cached --whitespace=nowarn [--reverse] <tmpfile>`, the
     /// hunk- and line-level half of staging.
     ///
     /// `--cached` patches the index alone, so the worktree is never read or written; that is
     /// what makes staging a subset of a file's changes safe. Pass `reverse: true` for a patch
     /// `PatchBuilder` built with `.unstage`, whose new side is the current index.
-    /// `--unidiff-zero` is passed exactly when `patch.needsUnidiffZero`, i.e. when some hunk
-    /// came out with no context line at all; `git apply` may otherwise refuse such a hunk.
     ///
     /// A patch that no longer matches the index — because the index moved on after the diff
     /// was loaded — throws `GitError.commandFailed` with git's stderr unchanged, and `git
-    /// apply` leaves the index exactly as it was.
+    /// apply` leaves the index exactly as it was. That includes a hunk with no context line
+    /// (`patch.needsUnidiffZero`): `--unidiff-zero` is never passed, so git applies such a
+    /// hunk only to an index that is exactly its preimage, never at an offset.
     func applyToIndex(patch: Patch, reverse: Bool, at root: URL) async throws
 
     /// `git commit -q [-a] [--amend] -F <tmpfile>`, then `git rev-parse HEAD` to return the

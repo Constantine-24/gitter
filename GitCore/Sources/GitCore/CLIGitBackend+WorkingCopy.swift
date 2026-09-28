@@ -60,8 +60,13 @@ extension CLIGitBackend: GitWorkingCopyBackend {
         defer { try? FileManager.default.removeItem(at: file) }
         try patch.text.write(to: file, atomically: true, encoding: .utf8)
 
+        // Never with `--unidiff-zero`, even for a hunk with no context line (the only kind
+        // `patch.needsUnidiffZero` marks). Without it git anchors such a hunk to the start and
+        // end of the file, so it applies only to an index that is exactly its preimage; with
+        // it, an index that changed after the diff was loaded took the hunk at an offset and
+        // gained lines the user never selected (measured in A1 Task 3, Step 5, and pinned by
+        // `PartialStagingStaleTests`). Refused, the caller shows "the file changed".
         var arguments = ["apply", "--cached", "--whitespace=nowarn"]
-        if patch.needsUnidiffZero { arguments.append("--unidiff-zero") }
         if reverse { arguments.append("--reverse") }
         // No `--` before the file: it is the patch `git apply` reads, not a pathspec, and
         // `--` would make git treat the rest as paths to restrict the patch to.

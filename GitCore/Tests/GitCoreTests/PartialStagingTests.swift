@@ -316,8 +316,8 @@ import Testing
         let before = worktreeSnapshot(repo)
         let file = try await loadDiff(repo, "solo.txt")
 
-        // Dropping the unselected `+` leaves a hunk with no context at all: the
-        // `--unidiff-zero` path.
+        // Dropping the unselected `+` leaves a hunk with no context at all, which git anchors
+        // to the whole file (see `PartialStagingStaleTests`).
         let patch = try await applySelection(
             repo, file, direction: .stage, lines: changedLineIDs(file, "old"))
 
