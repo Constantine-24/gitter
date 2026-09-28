@@ -165,9 +165,13 @@ public enum PatchBuilder {
             hunk: hunk, oldCount: oldCount, newCount: newCount, direction: direction, delta: delta)
         let header = "@@ -\(oldStart),\(oldCount) +\(newStart),\(newCount) @@"
             + sectionHeading(hunk.header)
+        // Each line's text keeps its own `\r` when the file has CRLF endings, and the `\n`
+        // appended here completes it: the bytes come out exactly as the diff had them. The
+        // marker is tested as a byte for the same reason `DiffParser` reads it as one: a text
+        // starting with a combining mark would join the `" "` into a different `Character`.
         return RenderedHunk(
             text: ([header] + lines).map { $0 + "\n" }.joined(), oldCount: oldCount,
-            newCount: newCount, hasContext: lines.contains { $0.first == " " })
+            newCount: newCount, hasContext: lines.contains { $0.utf8.first == UInt8(ascii: " ") })
     }
 
     /// Recomputes the hunk's start lines.

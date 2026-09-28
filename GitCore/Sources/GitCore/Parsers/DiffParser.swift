@@ -2,15 +2,23 @@ import Foundation
 
 /// Parses the output of `git diff --no-color -U3` / `git show --format= -U3`
 /// (a unified diff) into an array of `FileDiff`.
+///
+/// **Lines are split on the `\n` byte, never on the `Character` `"\n"`.** Swift reads `"\r\n"`
+/// as one `Character`, so a character split never breaks a CRLF line: a whole CRLF hunk used
+/// to arrive as a single line, and every patch built from it was wrong. Split on the byte,
+/// each line keeps its own trailing `\r` as content, and `PatchBuilder` gives it back byte
+/// for byte. A hunk line's marker (` `, `+`, `-`, `\`) is likewise read as its first byte, so
+/// content that starts with a combining mark — which Swift would glue to the marker into one
+/// `Character` — is still recognised and kept whole.
 public enum DiffParser {
     public static func parse(_ data: Data) -> [FileDiff] {
-        let text = String(decoding: data, as: UTF8.self)
-        guard !text.isEmpty else { return [] }
+        guard !data.isEmpty else { return [] }
 
-        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        if lines.last == "" {
-            lines.removeLast()
+        var raw = [UInt8](data).split(separator: newline, omittingEmptySubsequences: false)
+        if raw.last?.isEmpty == true {
+            raw.removeLast()
         }
+        let lines = raw.map { String(decoding: $0, as: UTF8.self) }
 
         var files: [FileDiff] = []
         var index = 0
@@ -75,48 +83,53 @@ public enum DiffParser {
                     var newNumber = hunkStart.newStart
 
                     hunkLoop: while index < lines.count {
-                        let hunkLine = lines[index]
-                        if hunkLine.hasPrefix(" ") {
+                        // The marker is the first byte and the text every byte after it.
+                        let hunkLine = raw[index]
+                        let text = String(decoding: hunkLine.dropFirst(), as: UTF8.self)
+                        switch hunkLine.first {
+                        case UInt8(ascii: " "):
                             hunkLines.append(
                                 DiffLine(
                                     id: lineCounter, kind: .context, oldNumber: oldNumber,
-                                    newNumber: newNumber, text: String(hunkLine.dropFirst(1))
+                                    newNumber: newNumber, text: text
                                 )
                             )
                             lineCounter += 1
                             oldNumber += 1
                             newNumber += 1
                             index += 1
-                        } else if hunkLine.hasPrefix("+") {
+                        case UInt8(ascii: "+"):
                             hunkLines.append(
                                 DiffLine(
                                     id: lineCounter, kind: .added, oldNumber: nil,
-                                    newNumber: newNumber, text: String(hunkLine.dropFirst(1))
+                                    newNumber: newNumber, text: text
                                 )
                             )
                             lineCounter += 1
                             newNumber += 1
                             index += 1
-                        } else if hunkLine.hasPrefix("-") {
+                        case UInt8(ascii: "-"):
                             hunkLines.append(
                                 DiffLine(
                                     id: lineCounter, kind: .removed, oldNumber: oldNumber,
-                                    newNumber: nil, text: String(hunkLine.dropFirst(1))
+                                    newNumber: nil, text: text
                                 )
                             )
                             lineCounter += 1
                             oldNumber += 1
                             index += 1
-                        } else if hunkLine.hasPrefix("\\") {
+                        case UInt8(ascii: "\\"):
+                            // `\ No newline at end of file`: the text after the `"\ "`.
                             hunkLines.append(
                                 DiffLine(
                                     id: lineCounter, kind: .noNewline, oldNumber: nil,
-                                    newNumber: nil, text: String(hunkLine.dropFirst(min(2, hunkLine.count)))
+                                    newNumber: nil,
+                                    text: String(decoding: hunkLine.dropFirst(2), as: UTF8.self)
                                 )
                             )
                             lineCounter += 1
                             index += 1
-                        } else {
+                        default:
                             break hunkLoop
                         }
                     }
@@ -151,8 +164,15 @@ public enum DiffParser {
         let newCount: Int
     }
 
+    private static let newline = UInt8(ascii: "\n")
+
+    /// The section heading after the second `@@` is free text from the file (a function
+    /// line), so `.` has to match a `\r` in it too, or the whole hunk would go unrecognised.
     private static func parseHunkHeader(_ line: String) -> HunkStart? {
-        guard let match = line.wholeMatch(of: /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/) else { return nil }
+        guard
+            let match = line.wholeMatch(
+                of: /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/.dotMatchesNewlines())
+        else { return nil }
         let oldStart = Int(match.1) ?? 0
         let oldCount = match.2.map { Int($0) ?? 1 } ?? 1
         let newStart = Int(match.3) ?? 0

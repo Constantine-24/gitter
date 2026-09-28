@@ -128,7 +128,7 @@ private struct DiffLineRow: View {
         // and +/- marker level with the *first* one, not centred across the whole wrapped height.
         HStack(alignment: .top, spacing: 0) {
             gutter
-            Text(line.text.isEmpty ? " " : line.text)
+            Text(line.displayText.isEmpty ? " " : line.displayText)
                 .font(.system(.body, design: .monospaced))
                 .italic(line.kind == .noNewline)
                 .foregroundStyle(

@@ -8,7 +8,16 @@ public struct DiffLine: Sendable, Hashable, Identifiable {
     public let kind: DiffLineKind
     public let oldNumber: Int?
     public let newNumber: Int?
-    public let text: String              // without the leading +/-/space
+    /// Without the leading +/-/space, and otherwise byte for byte: a CRLF line keeps its `\r`,
+    /// because `PatchBuilder` builds patches from this text and must give every byte back.
+    public let text: String
+
+    /// `text` as the diff view shows it: one trailing `\r` (a CRLF line ending) dropped, for
+    /// display only.
+    public var displayText: String {
+        guard text.unicodeScalars.last == "\r" else { return text }
+        return String(text.unicodeScalars.dropLast())
+    }
 
     public init(id: Int, kind: DiffLineKind, oldNumber: Int?, newNumber: Int?, text: String) {
         self.id = id

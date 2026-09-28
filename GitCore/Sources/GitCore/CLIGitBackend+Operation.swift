@@ -75,8 +75,10 @@ extension CLIGitBackend {
                 "rev-parse", "--git-path", "rebase-apply/applying", "--git-path", "rebase-merge",
                 "--git-path", "rebase-apply", "--git-path", "SQUASH_MSG",
             ], cwd: root)
-        let paths = String(decoding: data, as: UTF8.self)
-            .split(whereSeparator: \.isNewline).map { String($0) }
+        // One path per line, cut at the `\n` byte only: a linked worktree's answers are
+        // absolute and hold the main checkout's directory name, which may contain a character
+        // `isNewline` would cut at (see `GitLines`).
+        let paths = GitLines.split(data)
         guard paths.count == 4 else { return (.none, false) }
         let rebase: RebaseState
         if exists(paths[0], relativeTo: root, directory: false) {

@@ -108,9 +108,9 @@ extension CLIGitBackend: GitRemoteBackend {
         let data = try await run(
             ["config", "--get-all", "remote." + remote + ".fetch"], cwd: root,
             allowedExitCodes: [1])
-        let refspecs = String(decoding: data, as: UTF8.self)
-            .split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        return FetchRefspec.firstUnsafe(refspecs.last == "" ? refspecs.dropLast() : refspecs)
+        // Cut at the `\n` byte: a value ending in a raw `\r` would otherwise be glued to the
+        // next one (see `GitLines`).
+        return FetchRefspec.firstUnsafe(GitLines.split(data))
     }
 
     /// The remotes `git fetch --all` visits, split into the ones that may be fetched and the
@@ -127,9 +127,10 @@ extension CLIGitBackend: GitRemoteBackend {
     private func remotesForFetchAll(
         at root: URL
     ) async throws -> (safe: [String], skipped: [(remote: String, refspec: String)]) {
-        let listing = String(decoding: try await run(["remote", "-v"], cwd: root), as: UTF8.self)
+        // Cut at the `\n` byte only: a remote's name may hold a `\r`, U+0085 or U+2028, and a
+        // name cut in two is a remote whose refspecs are never read (see `GitLines`).
         var names: [String] = []
-        for line in listing.split(whereSeparator: \.isNewline) {
+        for line in GitLines.split(try await run(["remote", "-v"], cwd: root)) {
             guard let tab = line.firstIndex(of: "\t") else { continue }
             let name = String(line[..<tab])
             if !name.isEmpty, !names.contains(name) { names.append(name) }

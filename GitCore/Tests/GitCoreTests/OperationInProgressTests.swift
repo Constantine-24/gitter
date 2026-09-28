@@ -323,4 +323,33 @@ import Testing
         #expect(try await Self.operation(at: linked) == .squash)
         #expect(try await Self.operation(in: repo) == nil)
     }
+
+    // MARK: - A line-breaking character in the repository's path
+
+    /// `--git-path` answers with an absolute path in a linked worktree, and that path holds
+    /// whatever the main checkout's directory is called. Split with `isNewline`, a U+2028,
+    /// U+0085, `\r` or vertical tab in it cut one answer into two, the count check failed, and
+    /// a rebase went unreported — the operation gate open while one was in progress.
+    @Test(arguments: ["\u{2028}", "\u{85}", "\r", "\u{0B}"])
+    func aRebaseInALinkedWorktreeIsSeenWhateverTheMainCheckoutIsCalled(breaking: String) async throws {
+        let made = try await Self.makeDivergent()
+        let parent = made.root.deletingLastPathComponent()
+        let moved = parent.appendingPathComponent(
+            "gitter-test-a\(breaking)b-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.moveItem(at: made.root, to: moved)
+        let repo = TestRepo(root: moved)
+        defer { repo.cleanUp() }
+        let linked = parent.appendingPathComponent("gitter-wt-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: linked) }
+        try await repo.git(["worktree", "add", "-q", linked.path, "side"])
+        try await repo.git(["-C", linked.path, "rebase", "main"], allowedExitCodes: [1])
+        // Not vacuous: git's answer really holds the character, and really is absolute.
+        let gitPath = String(
+            decoding: try await repo.git(["-C", linked.path, "rev-parse", "--git-path", "rebase-merge"]),
+            as: UTF8.self)
+        #expect(gitPath.hasPrefix("/") && gitPath.contains(breaking))
+
+        #expect(try await Self.operation(at: linked) == .rebase)
+        #expect(try await Self.operation(in: repo) == nil)
+    }
 }

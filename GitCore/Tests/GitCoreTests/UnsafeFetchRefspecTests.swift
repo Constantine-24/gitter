@@ -247,4 +247,62 @@ import Testing
         #expect(!fixture.markerFired)
         #expect(try await RepoState.capture(fixture.repo) == state)
     }
+
+    // MARK: - Line breaks in what git prints
+
+    /// A remote whose name holds a character Swift calls a newline (git allows U+2028 and
+    /// U+0085 in a remote name, and a `\r` through the config file) must still be found and
+    /// checked. Split with `isNewline`, `git remote -v`'s line for it was cut in two, its
+    /// unsafe refspec was never read, and the plain `--all` then ran it: the local `feat/x`
+    /// was force-moved.
+    @Test(arguments: ["m\u{2028}x", "m\u{85}x", "m\rx"])
+    func fetchAllChecksARemoteWhoseNameHoldsALineBreakingCharacter(name: String) async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.cleanUp() }
+        let bare = try await fixture.repo.addEmptyRemote(named: "mirror")
+        defer { try? FileManager.default.removeItem(at: bare) }
+        try await fixture.repo.git(["push", "-q", "mirror", "refs/heads/feature:refs/heads/feat/x"])
+        try await fixture.repo.git(["remote", "remove", "mirror"])
+        let marker = try Fixture.installUploadPackMarker(for: "mirror", origin: bare, in: fixture.repo)
+        // Written through `git config`, which takes a `\r` in a subsection that `git remote
+        // add` would refuse.
+        for (key, value) in [
+            ("url", bare.path), ("fetch", "+refs/heads/*:refs/heads/*"),
+            ("uploadpack", marker.script.path),
+        ] {
+            try await fixture.repo.git(["config", "remote.\(name).\(key)", value])
+        }
+        let listing = String(decoding: try await fixture.repo.git(["remote", "-v"]), as: UTF8.self)
+        #expect(listing.contains(name + "\t"))
+
+        let error = await remoteError {
+            try await CLIGitBackend().fetch(remote: nil, at: fixture.repo.root, progress: { _ in })
+        }
+
+        #expect(error == .unsafeFetchRefspec(remote: name, refspec: "+refs/heads/*:refs/heads/*"))
+        #expect(!FileManager.default.fileExists(atPath: marker.file.path), "the unsafe remote was fetched")
+        #expect(try await fixture.repo.revParse("refs/heads/feat/x") == fixture.localFeatX)
+    }
+
+    /// A quoted config value may end in a raw `\r`, and `git config --get-all` prints it as
+    /// `…\r\n` (measured). Split on the `Character` `"\n"`, that value and the next one were
+    /// one string, whose last `:` is the SAFE value's: the unsafe one went unseen. git refuses
+    /// such a refspec itself (`fatal: invalid refspec`), but Gitter's answer has to be right on
+    /// its own: the unsafe value is named, and nothing runs.
+    @Test func aRefspecEndingInACRIsReadAsItsOwnValue() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.cleanUp() }
+        try await fixture.setFetchRefspecs(
+            ["+refs/heads/*:refs/heads/*\r", "+refs/heads/*:refs/remotes/origin/*"])
+        let values = try await fixture.repo.git(["config", "--get-all", "remote.origin.fetch"])
+        #expect(String(decoding: values, as: UTF8.self).unicodeScalars.contains("\r"))
+
+        let error = await remoteError {
+            try await CLIGitBackend().fetch(remote: "origin", at: fixture.repo.root, progress: { _ in })
+        }
+
+        #expect(error == .unsafeFetchRefspec(remote: "origin", refspec: "+refs/heads/*:refs/heads/*\r"))
+        #expect(!fixture.markerFired)
+        #expect(try await fixture.repo.revParse("refs/heads/feat/x") == fixture.localFeatX)
+    }
 }
