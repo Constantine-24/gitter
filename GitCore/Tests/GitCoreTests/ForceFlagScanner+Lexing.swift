@@ -64,12 +64,20 @@ extension ForceFlagScanner {
         return out
     }
 
-    /// The string literal passed to each `.append("…")`, which is how a flag gets added to an
-    /// argument vector without ever appearing inside an array literal. A non-literal argument
-    /// (`arguments.append(file.path)`) yields nothing.
+    /// The string literal passed to each `.append("…")` or `.insert("…", at:)`, which is how a
+    /// flag gets added to an argument vector without ever appearing inside an array literal. A
+    /// non-literal argument (`arguments.append(file.path)`) yields nothing. (`.insert` joined in
+    /// the working-copy milestone's fix round 1: `a.insert("--", at: 0)` walked past.)
     static func appendedLiterals(in source: String, code: [Character]) -> [String] {
+        [".append(", ".insert("].flatMap {
+            literals(passedTo: Array($0), in: source, code: code)
+        }
+    }
+
+    private static func literals(
+        passedTo marker: [Character], in source: String, code: [Character]
+    ) -> [String] {
         let raw = Array(source)
-        let marker = Array(".append(")
         var result: [String] = []
         var index = 0
 
@@ -138,6 +146,9 @@ extension ForceFlagScanner {
     /// gone. See `ForceFlagScanner.findings(in:)`.
     struct ArrayLiteral {
         let elements: [ArrayElement]
+        /// Where the opening `[` sits in `source`, for the one rule that asks what the literal
+        /// is an argument *of* (`ForceFlagScanner.isInlineArgumentOfRun`).
+        var open = 0
         /// Whether the closing `]` is followed by a `+` (`["restore", …, "--"] + paths`). What is
         /// concatenated is invisible to every rule here, so an allowed *shape* has to say
         /// whether anything may follow it at all — see `ForceFlagScanner.Shape`.
@@ -172,7 +183,7 @@ extension ForceFlagScanner {
             result.append(
                 ArrayLiteral(
                     elements: elements(raw: raw, code: code, from: open + 1, to: close),
-                    followedByConcatenation: concatenated))
+                    open: open, followedByConcatenation: concatenated))
         }
         return result
     }

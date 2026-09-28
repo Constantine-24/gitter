@@ -188,6 +188,9 @@ enum ForceFlagScanner {
         var vouched = Set<Int>()
         for (array, shape) in zip(arrays, matchedShapes) {
             guard let shape else { continue }
+            // The subcommand too: `stash` is a finding file-wide (a `let sub = "stash"` would
+            // otherwise run any shape at all), so the shape that matched speaks for its own.
+            if let offset = array.elements.first?.valueOffset { vouched.insert(offset) }
             for (slot, element) in zip(shape.slots, array.elements.dropFirst()) {
                 if case .data = slot { continue }
                 if let offset = element.valueOffset { vouched.insert(offset) }
@@ -201,6 +204,12 @@ enum ForceFlagScanner {
         let appliesOnlyToTheIndex =
             !applyVectors.isEmpty && applyVectors.allSatisfy { $0.elements.contains(where: isCached) }
         let isRecordFile = fileName == recordFile
+        // Whether this file runs `stash` at all: then the words that turn an allowed stash shape
+        // into a forbidden one are findings wherever no vector holds them. See
+        // `stashWordsForbiddenOutsideAVector`.
+        let namesStash = literals(in: source, code: code)
+            .contains { spellings(of: $0.1).contains("stash") }
+        var outsideAVector: [String] = []
 
         // Which literals a `push` vector can speak for, which is what the two position-dependent
         // rules need: the lease's permission, and the delete refspec's stand-down in favour of
@@ -302,6 +311,7 @@ enum ForceFlagScanner {
                             + "subcommand: \(globalOptionReason)")
                 }
                 findings += fragmentFindings(literals, isOneVector: true)
+                outsideAVector += literals
                 continue
             }
 
@@ -313,6 +323,14 @@ enum ForceFlagScanner {
             // are listed whole. See `allowedShapes`. A matched shape is complete — every pinned
             // element is exactly what the table says, and a data slot holds no flag — so there
             // is nothing left for the per-element rules to read.
+            // A shape is matched on the array literal alone, so a stash vector bound to a name can
+            // be extended afterwards where no shape can see it (`a += paths`). It has to be
+            // written inline, as an argument of the call that runs it.
+            if subcommand == "stash", !isInlineArgumentOfRun(code: code, open: array.open) {
+                findings.append(
+                    "forbidden `git stash` vector that is not written inline as an argument of "
+                        + "`run(` or `runWithEnvironment(`: \(stashInlineReason)")
+            }
             if let shapes = allowedShapes[subcommand] {
                 if matchedShapes[arrayIndex] == nil {
                     findings.append(
@@ -388,6 +406,15 @@ enum ForceFlagScanner {
         // vector and get no carve-out — see `fragmentFindings`.
         let appended = appendedLiterals(in: source, code: code)
         findings += fragmentFindings(appended, isOneVector: false)
+        outsideAVector += appended
+        if namesStash {
+            for word in Set(outsideAVector.flatMap(spellings(of:))).sorted()
+            where stashWordsForbiddenOutsideAVector.contains(word) {
+                findings.append(
+                    "forbidden \(word.debugDescription) outside an array literal in a file that "
+                        + "runs `git stash`: \(stashOutsideAVectorReason)")
+            }
+        }
         // The append pool is not one vector, so it cannot say which vector a `-m` joins. In a
         // file that names `read-tree` at all, that is enough: the three are findings there.
         let namesReadTree = literals(in: source, code: code)
@@ -1137,13 +1164,78 @@ enum ForceFlagScanner {
     /// `stash`'s words that `GitCore/Sources` never needs (`git grep`: zero hits), so they are
     /// findings wherever a literal holds one. `show` and `branch` are left to the shape rule:
     /// both name subcommands this code could reasonably run on their own.
+    ///
+    /// `stash` itself is here too (fix round 1): it was a forbidden subcommand until this
+    /// milestone and so a finding file-wide, and without that `let sub = "stash"; run([sub,
+    /// "push", "--", p])` read as clean. The one place it may stand is as the subcommand of an
+    /// array that matched a shape, which vouches for it (`vouched` in `findings`).
     static let stashWordsForbiddenEverywhere: Set<String> = [
-        "pop", "clear", "create", "--keep-index", "--index",
+        "stash", "pop", "clear", "create", "--keep-index", "--index",
     ]
 
     static let stashWordReason =
-        "`git stash pop|clear|create`, `--keep-index` and `--index` are never run; see "
-            + "`allowedShapes` for the stash vectors Gitter writes"
+        "`git stash` is run only in the whole shapes `allowedShapes` lists, and `pop`, "
+            + "`clear`, `create`, `--keep-index` and `--index` never"
+
+    /// In a file that runs `stash`, the words that would turn an allowed stash shape into a
+    /// forbidden one are findings in a fragment, an `.append` or an `.insert` — anywhere no
+    /// vector holds them, because nothing there can say which vector they join. `--` is how a
+    /// pathspec starts; the rest are the forms `shapeWordReasons` names. Files that do not name
+    /// `stash` are untouched: `--` introduces every pathspec in this code base.
+    static let stashWordsForbiddenOutsideAVector: Set<String> = [
+        "--", "--staged", "-S", "--all", "-a", "--keep-index", "-k", "-p", "--patch", "--index",
+    ]
+
+    static let stashOutsideAVectorReason =
+        "it could be joining a stash vector as a pathspec or a forbidden option, and no shape "
+            + "can see it there"
+
+    static let stashInlineReason =
+        "a shape is read from the array literal, so a vector bound to a `var` or `let` (or "
+            + "returned) can be extended afterwards where no shape sees it"
+
+    /// Whether the array literal opening at `open` is, through nothing but a ternary, an
+    /// argument of `run(` or `runWithEnvironment(`: walking back over `code` at depth 0, the
+    /// first unmatched bracket must be a `(` right after one of those names, with no `=`
+    /// (a binding or an assignment) and no `;` on the way. `run(cond ? [a] : [b], …)` is
+    /// inline; `let a = cond ? [a] : [b]`, `return [a]`, `other([a])` and `run(([a]) + x)`
+    /// are not.
+    static func isInlineArgumentOfRun(code: [Character], open: Int) -> Bool {
+        var depth = 0
+        var index = open - 1
+        while index >= 0 {
+            let c = code[index]
+            if ")]}".contains(c) {
+                depth += 1
+            } else if "([{".contains(c) {
+                if depth == 0 {
+                    return c == "(" && runNames.contains(identifier(endingBefore: index, in: code))
+                }
+                depth -= 1
+            } else if depth == 0 {
+                if c == ";" { return false }
+                if c == "=" {
+                    let before = index > 0 ? code[index - 1] : " "
+                    let after = index + 1 < code.count ? code[index + 1] : " "
+                    if !"=!<>".contains(before), after != "=" { return false }
+                }
+            }
+            index -= 1
+        }
+        return false
+    }
+
+    static let runNames: Set<String> = ["run", "runWithEnvironment"]
+
+    private static func identifier(endingBefore index: Int, in code: [Character]) -> String {
+        var end = index
+        while end > 0, code[end - 1] == " " { end -= 1 }
+        var start = end
+        while start > 0, code[start - 1].isLetter || code[start - 1].isNumber || code[start - 1] == "_" {
+            start -= 1
+        }
+        return String(code[start..<end])
+    }
 
     /// `stash` itself in a fragment or the append pool, where no shape can be read.
     static let stashWordsForbiddenInFragments: Set<String> = ["stash"]

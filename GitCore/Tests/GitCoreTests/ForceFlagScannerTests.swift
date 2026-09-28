@@ -879,11 +879,69 @@ import Testing
         (#"let word = "clear""#, "clear"),
         (#"let word = "create""#, "create"),
         (#"let flag = "--index""#, "--index"),
+        // Fix round 1: a stash vector held in a `var` and extended where no shape can see it.
+        (#"var a = ["stash", "push", "-q", "--message", m]; a += ["--", p]"#, "stash"),
+        (#"var a = ["stash", "push", "-q", "--message", m]; a.append("--"); a.append(p)"#, "stash"),
+        (#"var a = ["stash", "push", "-q", "--message", m]; a += ["--staged"]"#, "stash"),
+        (#"var a = ["stash", "push", "-q", "--message", m]; a.append("-a")"#, "stash"),
+        (#"var a = ["stash", "push", "-q", "--message", m]; a.append("-S")"#, "stash"),
+        (#"var a = ["stash", "push", "-q", "--message", m]; a += paths"#, "stash"),
+        (#"var a = ["stash", "push", "-q", "--message", m]; a.insert(contentsOf: ["--", p], at: 5)"#, "stash"),
+        // Fix round 1: the subcommand held in a `let`, and a stray literal outside any vector.
+        (#"let sub = "stash"; _ = try await run([sub, "push", "--", p], cwd: root)"#, "stash"),
+        (#"let sub = "stash""#, "stash"),
     ])
     func catchesAStashVectorThatHidesItsShape(source: String, word: String) {
         let findings = ForceFlagScanner.findings(in: source)
         #expect(!findings.isEmpty, "missed: \(source)")
         #expect(findings.contains { $0.contains(word) }, "\(findings) should name \(word)")
+    }
+
+    /// A stash vector must be written inline as an argument of `run(` or `runWithEnvironment(`.
+    /// A shape is matched on the array literal, so a vector bound to a name — `var` or `let`,
+    /// directly or through a ternary — can be extended afterwards (`a += paths`, `a.append(x)`,
+    /// `a.insert(contentsOf:at:)`, `run(a + paths)`) where no shape can see it. Each of these
+    /// is caught by the binding rule alone: none contains a literal any other rule reads.
+    @Test(arguments: [
+        #"var a = ["stash", "push", "-q", "--message", m]; a += paths"#,
+        #"let a = ["stash", "push", "-q", "--message", m]; _ = try await run(a + paths, cwd: root)"#,
+        #"let a = untracked ? ["stash", "push", "-q", "--message", m, "--include-untracked"] : ["stash", "push", "-q", "--message", m]"#,
+        #"func arguments() -> [String] { return ["stash", "apply", "-q", "--no-index", sha] }"#,
+        #"_ = try await run((["stash", "drop", "-q", "stash@{\(n)}"]) + extra, cwd: root)"#,
+        #"_ = try await other(["stash", "drop", "-q", "stash@{\(n)}"], cwd: root)"#,
+    ])
+    func catchesAStashVectorThatIsNotAnInlineArgumentOfRun(source: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(findings.contains { $0.contains("inline") }, "missed: \(source) → \(findings)")
+    }
+
+    /// In a file that names `stash`, the words that turn an allowed stash shape into a
+    /// forbidden one are findings wherever no vector holds them — a fragment, an `.append`, an
+    /// `.insert` — whatever the stash vector itself looks like. The vector here is a clean
+    /// inline one, so only this rule can fire.
+    @Test(arguments: [
+        (#"var b = [String](); b += ["--", p]"#, "\"--\""),
+        (#"var b = [String](); b.append("--")"#, "\"--\""),
+        (#"var b = [String](); b.insert("--", at: 0)"#, "\"--\""),
+        (#"var b = [String](); b += ["--staged"]"#, "--staged"),
+        (#"var b = [String](); b.append("-S")"#, "\"-S\""),
+        (#"var b = [String](); b.append("-a")"#, "\"-a\""),
+        (#"var b = [String](); b.append("-k")"#, "\"-k\""),
+        (#"var b = [String](); b.append("--patch")"#, "--patch"),
+        (#"var b = [String](); b.insert(contentsOf: ["--all"], at: 0)"#, "--all"),
+    ])
+    func catchesAStashWordAddedOutsideAnyVectorInAFileThatRunsStash(extra: String, word: String) {
+        let clean = #"_ = try await run(["stash", "push", "-q", "--message", m], cwd: root)"#
+        #expect(ForceFlagScanner.findings(in: clean).isEmpty,
+                "the baseline must be clean: \(ForceFlagScanner.findings(in: clean))")
+        let findings = ForceFlagScanner.findings(in: clean + "\n" + extra)
+        #expect(findings.contains { $0.contains(word) }, "missed: \(extra) → \(findings)")
+        // And the same words are not findings in a file that does not name `stash`: `--` is
+        // how every pathspec in this code base is introduced.
+        if word == "\"--\"" {
+            #expect(ForceFlagScanner.findings(in: extra).isEmpty,
+                    "false positive without stash: \(ForceFlagScanner.findings(in: extra))")
+        }
     }
 
     /// `restore` overwrites files on disk through `--worktree` and `--source=…`, and with
@@ -994,6 +1052,13 @@ import Testing
         #"_ = try await run(["diff-tree", "-p", "--no-color", "--no-ext-diff", "-U3", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "\(sha)^3"], cwd: root)"#,
         #"_ = try await run(["stash", "push", "-q", "--message", m], cwd: root)"#,
         #"_ = try await run(["stash", "push", "-q", "--message", m, "--include-untracked"], cwd: root)"#,
+        // The optional flag chosen inline, the one way to choose it now that a stash vector
+        // may not be bound to a name.
+        #"_ = try await run(untracked ? ["stash", "push", "-q", "--message", m, "--include-untracked"] : ["stash", "push", "-q", "--message", m], cwd: root)"#,
+        """
+        let data = try await run(
+            ["stash", "list", "-z", "--format=%H%x1f%gd%x1f%gs%x1f%ct%x1f%P"], cwd: root)
+        """,
         #"_ = try await run(["stash", "store", "-q", "-m", m, sha], cwd: root)"#,
         #"_ = try await runWithEnvironment(["stash", "apply", "-q", "--no-index", sha], cwd: root, extra: Self.rerereOff(env))"#,
         #"_ = try await run(["stash", "drop", "-q", "stash@{\(n)}"], cwd: root)"#,
