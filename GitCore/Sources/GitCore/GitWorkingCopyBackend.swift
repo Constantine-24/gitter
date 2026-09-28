@@ -145,13 +145,13 @@ public protocol GitWorkingCopyBackend: Sendable {
     ///   index knows. With HEAD moved, that would stage a reversal of the new commit (M B b);
     ///   over a staged edit made since, it would overwrite that edit. Either way it is skipped:
     ///   `.restoredUnstaged`.
-    /// - `.lines`: first the file's diff is read again and must equal
+    /// - `.lines`: first the file's bytes, index entry and HEAD are read again and must equal
     ///   `receipt.afterDiscard`, else `.refused` with nothing applied — in a file that moved
-    ///   on, the forward patch's context can match elsewhere and git would put the lines there
-    ///   (fix round 1). Then `apply --whitespace=nowarn` of the same patch on the worktree. The
-    ///   record is dropped only when the file's bytes equal the record's copy (`cat-file blob`);
-    ///   otherwise it is kept and the outcome is `.restoredUnverified` — a change in line
-    ///   endings alone passes the diff check and fails this one.
+    ///   on, even by an edit that was then staged or committed, the forward patch's context can
+    ///   match elsewhere and git would put the lines there (fix rounds 1 and 2). Then `apply
+    ///   --whitespace=nowarn` of the same patch on the worktree. The record is dropped only
+    ///   when the file's bytes equal the record's copy, raw (`cat-file blob`) or as a checkout
+    ///   writes it (`cat-file --filters`); otherwise it is kept: `.restoredUnverified`.
     /// - `.untracked`: each item back from the Trash; one whose path exists again is not
     ///   overwritten (`.partiallyRestored`), and the others still come back.
     ///

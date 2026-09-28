@@ -211,6 +211,48 @@ func makeTypeSwapB() async throws -> TestRepo {
         #expect(try FileManager.default.contentsOfDirectory(atPath: temporary.path) == [])
     }
 
+    /// Fix round 2: no way through a record leaves its temporary index (or a `.lock` beside it)
+    /// behind — a success, a refusal, a failure after `read-tree` made the file, a failure at
+    /// the very last step (`stash store` against a locked `refs/stash`), and a cancelled one.
+    /// Every refusal comes before the file exists; the `defer` that removes it is registered
+    /// before the first git call that could create it.
+    @Test func noWayThroughARecordLeavesItsTemporaryIndex() async throws {
+        let repo = try await makeRecordLab()
+        defer { repo.cleanUp() }
+        try repo.write("d/e", "e\n")
+        try await repo.git(["add", "d/e"])
+        try await repo.git(["commit", "-q", "-m", "d", "--", "d/e"])
+        try repo.write("d/e", "e\nchanged\n")
+        try repo.write("n", "n\n")
+        try await repo.git(["add", "-N", "n"])
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitter-record-dir-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        func record(_ paths: [String]) async throws -> StashRecord {
+            try await StashRecord.make(
+                paths: paths, message: "Discarded by Gitter: m", backend: CLIGitBackend(), at: repo.root,
+                temporaryDirectory: temporary)
+        }
+        func leftBehind() throws -> [String] { try FileManager.default.contentsOfDirectory(atPath: temporary.path) }
+
+        _ = try await record(["p"])
+        #expect(try leftBehind() == [], "after a success")
+        await #expect(throws: StashRefusal.intentToAdd(["n"])) { _ = try await record(["n"]) }
+        #expect(try leftBehind() == [], "after a refusal")
+        await #expect(throws: GitError.self) { _ = try await record(["d"]) }
+        #expect(try leftBehind() == [], "after update-index failed half-way")
+        let lock = repo.root.appendingPathComponent(".git/refs/stash.lock")
+        try Data().write(to: lock)
+        await #expect(throws: GitError.self) { _ = try await record(["k"]) }
+        try FileManager.default.removeItem(at: lock)
+        #expect(try leftBehind() == [], "after stash store failed")
+        let task = Task { try await record(["k"]) }
+        task.cancel()
+        _ = await task.result
+        #expect(try leftBehind() == [], "after a cancelled record")
+    }
+
     /// The negative control for `assertRecordPure`: an index rewritten with the very same bytes
     /// (only its mtime moves) must fail it, and so must a new branch.
     @Test func assertRecordPureNoticesARewrittenIndexAndANewRef() async throws {

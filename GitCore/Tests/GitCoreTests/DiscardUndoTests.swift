@@ -173,11 +173,11 @@ import Testing
         try await assertRepoUnchanged(repo, since: state, worktree: worktree)
     }
 
-    /// The last guard before the drop: the file must be byte for byte what the record holds.
-    /// The diff re-read cannot see a change only in line endings or through a clean filter
-    /// (`DiscardExpectation`); this stands one in with a receipt whose `afterDiscard` is the
-    /// file as it is now, edited at line 29, away from the patch. The lines come back, but the
-    /// file is not the record's copy, so the record is kept rather than trusted to be redundant.
+    /// The last guard before the drop: the file must be byte for byte what the record holds,
+    /// raw or as a checkout would write it. This stands in for a state the guard before the
+    /// apply cannot tell apart with a receipt whose `afterDiscard` is the file as it is now,
+    /// edited at line 29, away from the patch. The lines come back, and the record is kept
+    /// rather than trusted to be redundant.
     @Test func aLinesUndoThatCannotProveTheFileIsAsRecordedKeepsTheRecord() async throws {
         let repo = try await makeDiscardLab()
         defer { repo.cleanUp() }
@@ -190,7 +190,7 @@ import Testing
         try repo.write("f3", numbered(30, [3: "3 A", 27: "27 C", 29: "29 unseen"]))
         let receipt = DiscardReceipt(
             request: discarded.request, record: record, headAtDiscard: discarded.headAtDiscard, trashed: [:],
-            afterDiscard: try await backend.discardExpectation(tracked: ["f3"], includingStaged: false, at: repo.root))
+            afterDiscard: try await backend.discardedFileState(of: "f3", at: repo.root))
 
         let outcome = try await backend.undoDiscard(receipt, trasher: trasher, at: repo.root)
 
@@ -198,6 +198,85 @@ import Testing
         #expect(outcome == .restoredUnverified(recordKept: listed), "\(outcome)")
         #expect(listed?.sha == record.sha)
         #expect(try repo.bytes("f3") == Data(numbered(30, [3: "3 A", 15: "15 B", 27: "27 C", 29: "29 unseen"]).utf8))
+    }
+
+    /// Fix round 2 (review, probed): a line discard that took every unstaged change of the
+    /// file leaves an empty unstaged diff — and it stays empty when the user then edits the
+    /// file and stages or commits the edit. The forward patch then went into the wrong block.
+    /// The receipt holds the file's bytes, its index entry and HEAD; any of them moved refuses.
+    @Test(arguments: ["add", "commit", "crlf"])
+    func aLinesUndoAfterTheFileMovedOnAnyLayerIsRefused(_ how: String) async throws {
+        let repo = try await makeDiscardLab()
+        defer { repo.cleanUp() }
+        let block = "a\nb\nc\nd\ne\nf\n"
+        let filler = "f1\nf2\nf3\nf4\nf5\n"
+        try repo.write("t", "top\n" + filler + block + block + "end\n")
+        try await repo.git(["add", "t"])
+        try await repo.git(["commit", "-q", "-m", "t", "--", "t"])
+        try repo.write("t", "top\n" + filler + block + "a\nb\nc\nNEW\nd\ne\nf\n" + "end\n")
+        let file = try await loadDiff(repo, "t")
+        let trasher = try FakeTrasher()
+        defer { trasher.cleanUp() }
+        let receipt = try await backend.discard(
+            try linesRequest(file, hunks: everyHunkID(file), lines: nil), trasher: trasher, at: repo.root)
+        let record = try #require(receipt.record)
+        #expect(try await backend.discardExpectation(tracked: ["t"], includingStaged: false, at: repo.root) == .diffs([]))
+        let between = (1...10).map { "X\($0)\n" }.joined()
+        switch how {
+        case "add", "commit":
+            try repo.write("t", "top\n" + filler + block + between + block + "end\n")
+            try await repo.git(["add", "t"])
+            if how == "commit" { try await repo.git(["commit", "-q", "-m", "moved", "--", "t"]) }
+        default:  // only the line endings: invisible to a diff, not to the bytes
+            let lf = try repo.bytes("t")
+            try Data(String(decoding: lf, as: UTF8.self).replacingOccurrences(of: "\n", with: "\r\n").utf8)
+                .write(to: repo.root.appendingPathComponent("t"))
+        }
+        let state = try await RepoState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+
+        let outcome = try await backend.undoDiscard(receipt, trasher: trasher, at: repo.root)
+
+        guard case .refused(_, let kept) = outcome else {
+            Issue.record("expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(kept?.sha == record.sha)
+        #expect(try await repo.stashShas() == [record.sha])
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+    }
+
+    /// Minor 2 of fix round 2: where a checkout writes CRLF (`core.autocrlf=true`, or
+    /// `eol=crlf` in `.gitattributes`) the record's blob is LF and the file CRLF. An undo right
+    /// after the discard is still exact — the bytes equal the blob as a checkout writes it
+    /// (`cat-file --filters`) — so it is `.restored` and the record goes.
+    @Test(arguments: ["autocrlf", "attributes"])
+    func aLinesUndoWhereCheckoutWritesCRLFIsRestoredAndDropsTheRecord(_ shape: String) async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        if shape == "autocrlf" {
+            try await repo.git(["config", "core.autocrlf", "true"])
+        } else {
+            try repo.write(".gitattributes", "f text eol=crlf\n")
+        }
+        func crlf(_ text: String) -> Data { Data(text.replacingOccurrences(of: "\n", with: "\r\n").utf8) }
+        try crlf(numbered(30)).write(to: repo.root.appendingPathComponent("f"))
+        try await repo.commitAll("root")
+        #expect(try await repo.blob("HEAD", "f") == Data(numbered(30).utf8), "the blob is not LF")
+        let edited = crlf(numbered(30, [3: "3 A", 15: "15 B", 27: "27 C"]))
+        try edited.write(to: repo.root.appendingPathComponent("f"))
+        let file = try await loadDiff(repo, "f")
+        let trasher = try FakeTrasher()
+        defer { trasher.cleanUp() }
+        let receipt = try await backend.discard(
+            try linesRequest(file, hunks: [try hunkID(file, containing: "15 B")], lines: nil), trasher: trasher, at: repo.root)
+        #expect(try repo.bytes("f") == crlf(numbered(30, [3: "3 A", 27: "27 C"])))
+
+        let outcome = try await backend.undoDiscard(receipt, trasher: trasher, at: repo.root)
+
+        #expect(outcome == .restored)
+        #expect(try repo.bytes("f") == edited)
+        #expect(try await repo.stashRef() == nil, "the record piled up")
     }
 
     /// Ruling 1 of fix round 1: a staged edit to `p` since a staged-side discard, HEAD unmoved.

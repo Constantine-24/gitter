@@ -117,16 +117,14 @@ extension CLIGitBackend {
         // 4. Change. Between the stale check (and the record) and this command is one process
         // start: an edit made in that window is overwritten and is in no record. No git option
         // closes it; it is the same window `applyToIndex` documents.
-        var afterDiscard: DiscardExpectation?
         do {
             switch request {
             case .unstaged:
                 _ = try await run(["restore", "--no-recurse-submodules", "--worktree", "--"] + survey.paths.map(literalPathspec), cwd: root)
             case .stagedAndUnstaged:
                 _ = try await run(["restore", "--no-recurse-submodules", "--source=HEAD", "--staged", "--worktree", "--"] + survey.paths.map(literalPathspec), cwd: root)
-            case .lines(let path, let patch, _, _):
+            case .lines(_, let patch, _, _):
                 try await applyToWorktree(patch, reverse: true, at: root)
-                afterDiscard = try await discardExpectation(tracked: [path], includingStaged: false, at: root)
             case .untracked:
                 break
             }
@@ -138,9 +136,21 @@ extension CLIGitBackend {
             if unchanged, (try? await dropRecord(record, at: root)) == true { throw error }
             throw DiscardFailure(receipt: receipt, gitsWords: Self.gitsWords(error))
         }
+        // The discard is done. What it left is read for the undo's guard; a read that fails
+        // now is not a failed discard, so the receipt goes without it, and its undo refuses.
+        guard case .lines(let path, _, _, _) = request else { return receipt }
         return DiscardReceipt(
             request: request, record: record, headAtDiscard: receipt.headAtDiscard, trashed: [:],
-            afterDiscard: afterDiscard)
+            afterDiscard: try? await discardedFileState(of: path, at: root))
+    }
+
+    /// `path` on every layer: its bytes, its index entry, HEAD. Throws when the file cannot be
+    /// read.
+    func discardedFileState(of path: String, at root: URL) async throws -> DiscardedFileState {
+        let bytes = try Data(contentsOf: root.appendingPathComponent(path))
+        let entry = try await run(["ls-files", "-s", "-z", "--", literalPathspec(path)], cwd: root)
+        return DiscardedFileState(
+            worktree: bytes, indexEntry: String(decoding: entry, as: UTF8.self), head: try await headSha(at: root))
     }
 
     /// `.untracked`: no record — git has no copy of an untracked file, so the Trash is the copy.
@@ -228,11 +238,13 @@ extension CLIGitBackend {
         }
 
         if case .lines(let path, let patch, _, _) = receipt.request {
-            // Only onto exactly what the discard left: in a file that moved on, the patch's
-            // context can match elsewhere, and git applies it there at an offset without a word
-            // (M 9; fix round 1 measured `NEW` put into the wrong one of two identical blocks).
-            let now = try await discardExpectation(tracked: [path], includingStaged: false, at: root)
-            guard now == receipt.afterDiscard else {
+            // Only onto exactly what the discard left, on every layer: in a file that moved on,
+            // the patch's context can match elsewhere, and git applies it there at an offset
+            // without a word (M 9; fix round 1 measured `NEW` put into the wrong one of two
+            // identical blocks, and round 2 the same after the edit was staged or committed,
+            // which leaves the unstaged diff as it was).
+            let now = try? await discardedFileState(of: path, at: root)
+            guard let now, now == receipt.afterDiscard else {
                 return .refused(
                     "\(path) changed since the discard.", recordKept: try await listed(record, at: root))
             }
@@ -241,11 +253,13 @@ extension CLIGitBackend {
             } catch {
                 return .refused(Self.gitsWords(error), recordKept: try await listed(record, at: root))
             }
-            // And the record is dropped only when the file is byte for byte its copy there.
-            // Both must be read: two failed reads are not two equal files.
+            // And the record is dropped only when the file is byte for byte its copy there, raw
+            // or as a checkout writes it (`autocrlf`, `eol=crlf`: the blob is LF, the file CRLF).
+            // Both sides must be read: two failed reads are not two equal files.
             let bytes = try await worktreeBytes(of: path, at: root)
-            let recorded = try? await recordedBytes(of: path, in: record, at: root)
-            guard let bytes, bytes == recorded else {
+            let raw = try? await recordedBytes(of: path, in: record, at: root)
+            let checkedOut = try? await recordedBytesAsCheckedOut(of: path, in: record, at: root)
+            guard let bytes, bytes == raw || bytes == checkedOut else {
                 return .restoredUnverified(recordKept: try await listed(record, at: root))
             }
             _ = try? await dropRecord(record, at: root)
@@ -366,6 +380,12 @@ extension CLIGitBackend {
     /// with no filter or conversion.
     private func recordedBytes(of path: String, in record: Stash, at root: URL) async throws -> Data {
         try await run(["cat-file", "blob", "\(record.sha):\(path)"], cwd: root)
+    }
+
+    /// The same blob as a checkout would write it: `cat-file --filters` runs the path's
+    /// end-of-line conversion and smudge filter over it.
+    private func recordedBytesAsCheckedOut(of path: String, in record: Stash, at root: URL) async throws -> Data {
+        try await run(["cat-file", "--filters", "\(record.sha):\(path)"], cwd: root)
     }
 
     /// The file's bytes on disk now; nil when it cannot be read.

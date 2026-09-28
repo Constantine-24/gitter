@@ -99,21 +99,42 @@ public struct DiscardReceipt: Sendable, Hashable {
     /// Original path (relative to the root) → where the Trash put it. The Trash may rename an
     /// item (M 15), so this URL is the only way to find it again.
     public let trashed: [String: URL]
-    /// For `.lines`: the file's unstaged diff right after the discard. The undo reads it again
-    /// and refuses when it differs: a forward patch finds its context wherever it matches, and
-    /// in a file that moved on it can put the lines back in the wrong place (fix round 1,
-    /// measured). Nil for the other kinds, whose undo git itself refuses over an edit.
-    public let afterDiscard: DiscardExpectation?
+    /// For `.lines`: the file right after the discard — its bytes, its index entry and HEAD.
+    /// The undo reads all three again and refuses unless each is unchanged: a forward patch
+    /// finds its context wherever it matches, and in a file that moved on it can put the lines
+    /// back in the wrong place (fix rounds 1 and 2, measured). Nil for the other kinds, whose
+    /// undo git itself refuses over an edit, and for a `.lines` discard whose state could not
+    /// be read afterwards — its undo then refuses.
+    public let afterDiscard: DiscardedFileState?
 
     public init(
         request: DiscardRequest, record: Stash?, headAtDiscard: String, trashed: [String: URL],
-        afterDiscard: DiscardExpectation? = nil
+        afterDiscard: DiscardedFileState? = nil
     ) {
         self.request = request
         self.record = record
         self.headAtDiscard = headAtDiscard
         self.trashed = trashed
         self.afterDiscard = afterDiscard
+    }
+}
+
+/// One file as a line discard left it, on every layer a later change could move without the
+/// file's unstaged diff showing it. An edit that is then staged, or committed, leaves that diff
+/// as it was — empty, when the discard took every unstaged change — and so does a change only
+/// in line endings; the bytes, the index entry or HEAD do not.
+public struct DiscardedFileState: Sendable, Hashable {
+    /// The file's bytes on disk.
+    public let worktree: Data
+    /// `ls-files -s` for the path: mode, blob and stage.
+    public let indexEntry: String
+    /// HEAD's sha, empty before the first commit.
+    public let head: String
+
+    public init(worktree: Data, indexEntry: String, head: String) {
+        self.worktree = worktree
+        self.indexEntry = indexEntry
+        self.head = head
     }
 }
 
@@ -188,10 +209,17 @@ public enum UndoDiscardOutcome: Sendable, Hashable {
     /// stage a reversal of the new commit (M B b), or overwrite the staged edit. The record is
     /// dropped as for `.restored`.
     case restoredUnstaged
-    /// The content was put back, but the files cannot be shown to be exactly what the record
-    /// holds, so the record is kept and listed rather than dropped: a `.lines` undo after a
-    /// change git's diff cannot see (line endings, a clean filter), where the bytes of the file
-    /// and of the record's copy differ.
+    /// Something was put back, but the files cannot be shown to be exactly what the record
+    /// holds, so the record is kept and listed rather than dropped. Two ways here:
+    /// - `.lines`: the forward patch applied, onto a file whose bytes, index entry and HEAD
+    ///   were all as the discard left them — but the file is then neither the record's blob
+    ///   nor that blob as a checkout writes it. The worktree holds the file with the lines
+    ///   put back where the patch's context sits, and nothing else changed; only a clean
+    ///   filter that does not round-trip is known to get here.
+    /// - `.unstaged` / `.stagedAndUnstaged`: git applied the record's tracked part but reported
+    ///   files it did not restore (`StashApplyOutcome.partiallyApplied`). A record has no
+    ///   untracked part, so this is not expected; the worktree then holds whatever that apply
+    ///   wrote, and the record holds the pre-discard content.
     case restoredUnverified(recordKept: Stash?)
     /// Nothing changed, because the files were edited since the discard (or git refused for
     /// another reason, given in its words). The record, when there is one, stays listed.
