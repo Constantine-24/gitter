@@ -204,12 +204,6 @@ enum ForceFlagScanner {
             }
         }
 
-        // `--unidiff-zero` outside an array literal (an `.append`, a `let`) belongs to no vector
-        // this scanner can read, so the file answers for it: every `apply` vector in it must be
-        // an index apply. See `unidiffZeroReason`.
-        let applyVectors = arrays.filter { $0.elements.first?.value.map(decoded) == "apply" }
-        let appliesOnlyToTheIndex =
-            !applyVectors.isEmpty && applyVectors.allSatisfy { $0.elements.contains(where: isCached) }
         let isRecordFile = fileName == recordFile
         // Whether this file runs `stash` at all: then the words that turn an allowed stash shape
         // into a forbidden one are findings wherever no vector holds them. See
@@ -256,10 +250,12 @@ enum ForceFlagScanner {
                         "forbidden literal \(spelling.debugDescription) (offset \(token)) outside "
                             + "\(recordFile): \(recordOnlyReason)")
                 }
-                if spelling == unidiffZero, !appliesOnlyToTheIndex {
+                // Wherever it sits: a vector, a fragment, an append, a `let`. No rule has to
+                // read the vector, because no vector may carry it.
+                if isUnidiffZero(spelling) {
                     findings.append(
-                        "forbidden literal \(spelling.debugDescription) (offset \(token)) in a file "
-                            + "whose `apply` vectors are not all index applies: \(unidiffZeroReason)")
+                        "forbidden literal \(spelling.debugDescription) (offset \(token)): "
+                            + unidiffZeroReason)
                 }
                 if prefixRule(matching: spelling) != nil,
                     !(isAPushElement && isPermittedLease(spelling))
@@ -359,12 +355,6 @@ enum ForceFlagScanner {
                     }
                 }
             }
-            if subcommand == "apply", literals.contains(unidiffZero),
-                !arguments.contains(where: isCached)
-            {
-                findings.append(
-                    "forbidden `git apply \(unidiffZero)` without `--cached`: \(unidiffZeroReason)")
-            }
             // Over ELEMENTS, not over the flat literal list, because one rule is positional:
             // `reset --merge` is safe and `reset --merge <commit>` moves HEAD, and only the
             // element index can tell them apart. A classified array's first element holds
@@ -454,9 +444,10 @@ enum ForceFlagScanner {
         // vector, so a `--no-commit-id` appended to one list would otherwise excuse a `-M`
         // appended to an unrelated `branch` one — the same hole in a smaller room. No
         // `.append("…")` in `GitCore/Sources` is part of a `diff-tree` list today
-        // (`git grep -E '\.append\("' -- GitCore/Sources`: eight hits — `--unidiff-zero`,
-        // `--reverse`, `-a` and `--amend` in `+WorkingCopy.swift`, and `PatchBuilder+Markers`'
-        // four `"+"`/`"-"` diff markers, which are text being written rather than arguments),
+        // (`git grep -E '\.append\("' -- GitCore/Sources`: nine hits — `--exclude=` and
+        // `--remotes` on a `rev-list` in `+Remotes.swift`, `--reverse`, `-a` and `--amend` in
+        // `+WorkingCopy.swift`, and `PatchBuilder+Markers`' four `"+"`/`"-"` diff markers, which
+        // are text being written rather than arguments),
         // so withholding it costs nothing; a future one must spell its vector as a literal.
         //
         // And it applies only to a fragment that names no subcommand of its own. `[repoFlag,
@@ -506,19 +497,13 @@ enum ForceFlagScanner {
                 + stashFragmentReason
         }
         // Within one vector a fragment can still speak for itself: `[flag, "read-tree", "-m",
-        // t]` is a `read-tree -m`, and `[flag, "apply", "--unidiff-zero", f]` has no `--cached`.
-        // The append pool is not one vector, so neither rule is asked of it.
+        // t]` is a `read-tree -m`. The append pool is not one vector, so this is not asked of it.
         if isOneVector, literals.contains("read-tree") {
             result += literals.compactMap { flag in
                 readTreeForbiddenFlags[flag].map {
                     "forbidden `git read-tree \(flag)` in an argument fragment: \($0)"
                 }
             }
-        }
-        if isOneVector, literals.contains(unidiffZero), !literals.contains(cached) {
-            result.append(
-                "forbidden \(unidiffZero.debugDescription) in an argument fragment without "
-                    + "`--cached`: \(unidiffZeroReason)")
         }
         return result
     }
@@ -1281,18 +1266,22 @@ enum ForceFlagScanner {
     ]
 
     static let unidiffZero = "--unidiff-zero"
-    static let cached = "--cached"
 
-    /// Whether an element is the index-apply flag, read as a value: a `--cached` in one arm of
-    /// a ternary is an index apply only half the time.
-    static func isCached(_ element: ArrayElement) -> Bool {
-        element.value.map(decoded) == cached
+    /// The shortest abbreviation git 2.54's `apply` accepts for `--unidiff-zero`: `--uni` and
+    /// `--un` are refused as ambiguous with `--union`, `--unid` runs the flag (measured).
+    static let unidiffZeroShortestAbbreviation = "--unid"
+
+    /// Whether git would read `literal` as `--unidiff-zero`: the flag itself, or any
+    /// abbreviation of it that parse-options accepts.
+    static func isUnidiffZero(_ literal: String) -> Bool {
+        literal.hasPrefix(unidiffZeroShortestAbbreviation) && unidiffZero.hasPrefix(literal)
     }
 
     static let unidiffZeroReason =
-        "a context-free hunk matches an identical line anywhere, so `--unidiff-zero` can remove "
-            + "the wrong line (M 9); it is permitted on an index apply (`--cached`) only, and "
-            + "outside an array literal only in a file whose every `apply` vector has `--cached`"
+        "without it git anchors a hunk with no context line to the whole file; with it such a "
+            + "hunk applies at an offset, which removed the wrong line from a worktree (M 9) and "
+            + "staged lines nobody selected into an index that changed after the diff was "
+            + "loaded (A1 Task 3, Step 5). Gitter never passes it, `--cached` or not"
 
     /// `git remote`'s destructive words, as literals, anywhere in a file.
     ///

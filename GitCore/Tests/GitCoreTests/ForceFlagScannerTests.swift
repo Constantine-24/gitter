@@ -1029,9 +1029,13 @@ import Testing
         #expect(findings.contains { $0.contains(flag) }, "\(findings) should name \(flag)")
     }
 
-    /// `--unidiff-zero` can remove the wrong line (M 9): a pure-addition hunk with no context
-    /// matches an identical line anywhere. It is permitted on an index apply (`--cached`),
-    /// which is today's line staging, and nowhere else.
+    /// `--unidiff-zero` lets a context-free hunk apply at an offset: it can remove the wrong
+    /// line from the worktree (M 9) and, on an index that changed after the diff was loaded,
+    /// stage lines nobody selected (A1 Task 3, Step 5; `PartialStagingStaleTests`). Nothing in
+    /// `GitCore/Sources` passes it any more, `--cached` or not, so it is a finding wherever it
+    /// is spelled: in any `apply` vector, a fragment, an append or a `let`, and under the
+    /// abbreviations git accepts for it (`--unid` is the shortest; `--uni` is ambiguous with
+    /// `--union`).
     @Test(arguments: [
         #"_ = try await run(["apply", "--unidiff-zero", f], cwd: root)"#,
         #"_ = try await run(["apply", "--reverse", "--whitespace=nowarn", "--unidiff-zero", f], cwd: root)"#,
@@ -1043,11 +1047,46 @@ import Testing
         var b = ["apply", "--reverse", "--whitespace=nowarn"]
         b.append("--unidiff-zero")
         """,
+        // An index apply is no longer an exception.
+        #"_ = try await run(["apply", "--cached", "--whitespace=nowarn", "--unidiff-zero", tmp.path], cwd: root)"#,
+        #"_ = try await run(["apply", "--cached", "--reverse", "--unidiff-zero", f], cwd: root)"#,
+        #"_ = try await run([applyFlag, "apply", "--cached", "--unidiff-zero", f], cwd: root)"#,
+        // The line-staging code as it was until A1's inserted fix 2.
+        """
+        var arguments = ["apply", "--cached", "--whitespace=nowarn"]
+        if patch.needsUnidiffZero { arguments.append("--unidiff-zero") }
+        if reverse { arguments.append("--reverse") }
+        """,
+        """
+        var arguments = ["apply", "--cached", "--whitespace=nowarn"]
+        let zero = "--unidiff-zero"
+        """,
+        #"_ = try await run(["apply", "--cached"] + (zero ? ["--unidiff-zero"] : []) + [f], cwd: root)"#,
+        // Abbreviated, and escaped.
+        #"_ = try await run(["apply", "--cached", "--unidiff", f], cwd: root)"#,
+        #"_ = try await run(["apply", "--unid", f], cwd: root)"#,
+        #"var a = ["apply", "--cached"]; a.append("--unidiff-zer")"#,
+        #"_ = try await run(["apply", "--cached", "--\u{75}nidiff-zero", f], cwd: root)"#,
     ])
-    func catchesUnidiffZeroOutsideAnIndexApply(source: String) {
-        let findings = ForceFlagScanner.findings(in: source)
-        #expect(!findings.isEmpty, "missed: \(source)")
-        #expect(findings.contains { $0.contains("--unidiff-zero") }, "\(findings)")
+    func catchesUnidiffZeroEverywhere(source: String) {
+        for name in [nil, "CLIGitBackend+WorkingCopy.swift", Self.recordFile] as [String?] {
+            let findings = ForceFlagScanner.findings(in: source, fileName: name)
+            #expect(!findings.isEmpty, "missed in \(name ?? "an unnamed file"): \(source)")
+            #expect(
+                findings.contains { $0.contains("--unid") }, "\(findings) should name the flag")
+        }
+    }
+
+    /// The other side of `catchesUnidiffZeroEverywhere`: it is keyed on `--unidiff-zero` and
+    /// its abbreviations, not on anything that merely starts the same way.
+    @Test(arguments: [
+        #"_ = try await run(["diff", "--no-color", "--unified=3", "--", p], cwd: root)"#,
+        #"_ = try await run(["apply", "--cached", "--whitespace=nowarn", f], cwd: root)"#,
+        #"let message = "unidiff-zero is never passed""#,
+    ])
+    func doesNotMistakeOtherWordsForUnidiffZero(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
     }
 
     /// `hash-object` follows a symlink and hashes its target's content instead of the link
@@ -1097,11 +1136,10 @@ import Testing
         #"_ = try await run(["restore", "--no-recurse-submodules", "--staged", "--"] + paths.map(literalPathspec), cwd: root)"#,
         #"_ = try await run(["apply", "--reverse", "--whitespace=nowarn", tmp.path], cwd: root)"#,
         #"_ = try await run(["apply", "--whitespace=nowarn", tmp.path], cwd: root)"#,
-        #"_ = try await run(["apply", "--cached", "--whitespace=nowarn", "--unidiff-zero", tmp.path], cwd: root)"#,
-        // Today's line staging, as `CLIGitBackend+WorkingCopy.swift` writes it.
+        // Today's line staging, as `CLIGitBackend+WorkingCopy.swift` writes it: no
+        // `--unidiff-zero` (see `catchesUnidiffZeroEverywhere`).
         """
         var arguments = ["apply", "--cached", "--whitespace=nowarn"]
-        if patch.needsUnidiffZero { arguments.append("--unidiff-zero") }
         if reverse { arguments.append("--reverse") }
         """,
     ])
