@@ -201,9 +201,13 @@ private final class FolderTrasher: Trasher, @unchecked Sendable {
         #expect(try await repo.stashRef() == nil)
     }
 
-    /// Measured: a plain `stash push` over case (b) exits 0, saves the deletion of `d/a`, and
-    /// puts the directory back over the untracked file `d`, which is in no entry and gone.
-    @Test func stashAllWithoutUntrackedRefusesAPathUnderAFile() async throws {
+    /// Case (b): a tracked `d/a` whose directory is now a file `d`. Refused whether or not
+    /// untracked files are included — one rule. Measured: a plain push puts the directory back
+    /// and the file `d` is in no entry; with `-u` a non-ignored `d` happens to be saved in the
+    /// third parent, but an ignored one is not (`-u` never takes ignored files), and the push's
+    /// reset puts `d/a` back over it all the same (fix round 2).
+    @Test(arguments: [false, true])
+    func stashAllRefusesAPathUnderAFile(includeUntracked: Bool) async throws {
         let repo = try await makeTypeSwapB()
         defer { repo.cleanUp() }
         let state = try await RepoState.capture(repo)
@@ -211,26 +215,30 @@ private final class FolderTrasher: Trasher, @unchecked Sendable {
         #expect(worktree["d"] == Data("precious\n".utf8))
 
         await #expect(throws: StashRefusal.pathTypeChanged(["d/a"])) {
-            _ = try await backend.stashAll(message: "m", includeUntracked: false, at: repo.root)
+            _ = try await backend.stashAll(message: "m", includeUntracked: includeUntracked, at: repo.root)
         }
         try await assertRepoUnchanged(repo, since: state, worktree: worktree)
         #expect(try await repo.stashRef() == nil)
     }
 
-    /// With `-u`, git saves the file `d` in the third parent and an apply brings it back
-    /// (measured, and shown here): nothing to refuse.
-    @Test func stashAllWithUntrackedSavesAFileThatReplacedADirectoryAndBringsItBack() async throws {
+    /// The reviewer's probe: the file `d` is ignored (by `.gitignore` or by
+    /// `.git/info/exclude`), so `-u` would not save it and the push's reset would delete it.
+    @Test(arguments: [".gitignore", ".git/info/exclude"])
+    func stashAllWithUntrackedRefusesAnIgnoredFileWhereADirectoryWas(ignoreFile: String) async throws {
         let repo = try await makeTypeSwapB()
         defer { repo.cleanUp() }
+        try repo.write(ignoreFile, "/d\n")
+        let ignored = String(decoding: try await repo.git(["status", "--porcelain", "--ignored"]), as: UTF8.self)
+        #expect(ignored.contains("!! d\n"), "d is not ignored: \(ignored)")
+        let state = try await RepoState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+        #expect(worktree["d"] == Data("precious\n".utf8))
 
-        let outcome = try await backend.stashAll(message: "m", includeUntracked: true, at: repo.root)
-
-        guard case .saved(let stash) = outcome else {
-            Issue.record("expected .saved, got \(outcome)")
-            return
+        await #expect(throws: StashRefusal.pathTypeChanged(["d/a"])) {
+            _ = try await backend.stashAll(message: "m", includeUntracked: true, at: repo.root)
         }
-        #expect(try await repo.blob("\(stash.sha)^3", "d") == Data("precious\n".utf8))
-        #expect(try await backend.apply(stash, at: repo.root) == .applied)
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+        #expect(try await repo.stashRef() == nil)
         #expect(try repo.bytes("d") == Data("precious\n".utf8))
     }
 

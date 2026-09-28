@@ -45,7 +45,8 @@ extension CLIGitBackend {
         if !unmerged.isEmpty { throw StashRefusal.unmergedPaths(unmerged) }
         let intentToAdd = try await intentToAddPaths(in: status, at: root)
         if !intentToAdd.isEmpty { throw StashRefusal.intentToAdd(intentToAdd) }
-        let typeChanged = Self.typeChangedDeletions(in: status, includeUntracked: includeUntracked, under: root)
+        // A file and a directory that swapped places, refused with or without `-u`.
+        let typeChanged = Self.typeChangedDeletions(in: status, under: root)
         if !typeChanged.isEmpty { throw StashRefusal.pathTypeChanged(typeChanged) }
 
         // `--message ""` is git's own `WIP on <branch>: <sha> <subject>` (M 17).
@@ -282,24 +283,22 @@ extension CLIGitBackend {
     }
 
     /// The deleted paths (and renames' original paths) that `hasChangedType` says swapped
-    /// type — what a full push would silently overwrite (measured, git 2.54):
+    /// type. **Every one is refused, with or without `--include-untracked`** — one rule, with no
+    /// ignored-file subtleties. What a full push would otherwise do (measured, git 2.54):
     /// - a tracked file replaced by a directory (`p` → `p/x`): a plain push puts the file back
     ///   and `p/x` is lost; with `-u` it is saved in the third parent, but an apply cannot put
-    ///   it back (`fatal: cannot create directory at 'p': File exists`). Refused either way.
+    ///   it back (`fatal: cannot create directory at 'p': File exists`).
     /// - a path under what is now a file (`d/a` → the file `d`): a plain push puts the
-    ///   directory back and the file `d` is lost. With `-u` it is saved in the third parent
-    ///   and an apply restores it, so only the plain push is refused.
-    static func typeChangedDeletions(
-        in status: WorkingCopyStatus, includeUntracked: Bool, under root: URL
-    ) -> [String] {
+    ///   directory back and the file `d` is lost. With `-u` a non-ignored `d` is saved in the
+    ///   third parent, but an **ignored** one is not (`-u` never takes ignored files) and the
+    ///   push's reset deletes it all the same (fix round 2).
+    static func typeChangedDeletions(in status: WorkingCopyStatus, under root: URL) -> [String] {
         let deleted = status.files.filter { !$0.isSubmodule && ($0.staged == .deleted || $0.unstaged == .deleted) }
             .map(\.path)
             + status.files.filter { $0.staged == .renamed || $0.unstaged == .renamed }.compactMap(\.originalPath)
         var seen = Set<String>()
         return deleted.filter { seen.insert($0).inserted }.filter { path in
-            let underAFile = hasChangedType(path, tracksAFile: false, under: root)
-            let overAFile = hasChangedType(path, tracksAFile: true, under: root) && !underAFile
-            return overAFile || (underAFile && !includeUntracked)
+            hasChangedType(path, tracksAFile: true, under: root)
         }
     }
 

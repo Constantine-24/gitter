@@ -87,7 +87,9 @@ public protocol GitStashBackend: Sendable {
     /// `git stash push -q --message <message>` (+ `--include-untracked`): every change.
     ///
     /// Throws `StashRefusal` before running git while an operation is in progress, while any
-    /// path is unmerged, or while any intent-to-add entry exists. A nil or empty message gives
+    /// path is unmerged, while any intent-to-add entry exists, or while any tracked path shown
+    /// as deleted swapped type with what is on disk (`pathTypeChanged`) — the last with or
+    /// without `includeUntracked`, since `-u` never takes an ignored file. A nil or empty message gives
     /// git's own `WIP on <branch>: <sha> <subject>`. An entry git files although it holds
     /// nothing (an untracked nested repository with `-u`, M A.7) is dropped again by its
     /// verified position and reported as `.nothingToSave`.
