@@ -27,7 +27,9 @@ import Testing
         // literals it actually saw, so an empty result is evidence rather than silence.
         var literalCount = 0
         for (path, text) in sources.sorted(by: { $0.key < $1.key }) {
-            let findings = ForceFlagScanner.findings(in: text)
+            // The file's path relative to `Sources/GitCore`, because one rule is per file:
+            // `read-tree`, `update-index` and `write-tree` are allowed in one file only.
+            let findings = ForceFlagScanner.findings(in: text, fileName: path)
             #expect(findings.isEmpty, "\(path): \(findings.joined(separator: "; "))")
             let code = ForceFlagScanner.strippingCommentsAndStringContents(text)
             literalCount += ForceFlagScanner.literals(in: text, code: code).count
@@ -79,8 +81,16 @@ import Testing
         #"_ = try await run(["reset", "--hard", sha], cwd: root)"#,
         #"_ = try await run(["checkout", "--", path], cwd: root)"#,
         #"_ = try await run(["clean", "-d", path], cwd: root)"#,
-        #"_ = try await run(["stash", "push"], cwd: root)"#,
         #"_ = try await run(["restore", "--worktree", "--", path], cwd: root)"#,
+        // The working-copy milestone: `stash` left the forbidden subcommands for a table of
+        // allowed shapes, and these are the shapes that stay forbidden.
+        #"_ = try await run(["stash", "pop", s], cwd: root)"#,
+        #"_ = try await run(["stash", "clear"], cwd: root)"#,
+        #"_ = try await run(["stash", "apply", "--index", s], cwd: root)"#,
+        #"_ = try await run(["stash", "push", "--", p], cwd: root)"#,
+        #"_ = try await run(["read-tree", "-u", t], cwd: root)"#,
+        #"_ = try await run(["apply", "--unidiff-zero", f], cwd: root)"#,
+        #"_ = try await run(["hash-object", "-w", "--", p], cwd: root)"#,
         // `--quit` leaves the sequencer's state behind instead of undoing it, and `--skip`
         // throws away the commit git stopped on. Neither is ever what Gitter's "Abort" means.
         #"_ = try await run(["cherry-pick", "--quit"], cwd: root)"#,
@@ -202,7 +212,9 @@ import Testing
         #"_ = try await run(["reset", "--merge"], cwd: root)"#,
         #"_ = try await run(["switch", "--no-guess", "--end-of-options", branch], cwd: root)"#,
         #"_ = try await run(["switch", "--detach", "--end-of-options", revision], cwd: root)"#,
-        #"_ = try await run(["restore", "--staged", "--"] + paths, cwd: root)"#,
+        // `--no-recurse-submodules` joined the unstage vector in the working-copy milestone,
+        // when every `restore` without it became a finding.
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--staged", "--"] + paths, cwd: root)"#,
         #"_ = try await run(["reset", "-q"], cwd: root)"#,
     ])
     func allowsTheOperationsThisMilestoneNeeds(source: String) {
@@ -511,6 +523,9 @@ import Testing
         (#"_ = try await run(["-C", dir, "push", "--force-with-lease=\(ref):\(sha)", r], cwd: root)"#, "-C"),
         (#"_ = try await run(["--git-dir", dir, "branch", "--end-of-options", name], cwd: root)"#, "--git-dir"),
         (#"_ = try await run(["--work-tree", dir, "status", "--porcelain"], cwd: root)"#, "--work-tree"),
+        // Rerere is turned off through the environment (`runWithEnvironment` + `rerereOff`),
+        // never with a leading `-c`, which would hide the `stash` shape from this scanner.
+        (#"_ = try await run(["-c", "rerere.enabled=false", "stash", "apply", "-q", "--no-index", s], cwd: root)"#, "-c"),
     ])
     func catchesAGlobalOptionBeforeTheSubcommand(source: String, option: String) {
         let findings = ForceFlagScanner.findings(in: source)
@@ -813,5 +828,209 @@ import Testing
             _ = try await run(["branch", "--end-of-options", name] + (start.map { [$0] } ?? []), cwd: root)
             """#
         #expect(ForceFlagScanner.findings(in: source).isEmpty)
+    }
+
+    // MARK: - Working copy: stash, restore, the record's plumbing, apply
+
+    /// The one file the record's plumbing may be written in, and two it may not.
+    static let recordFile = "CLIGitBackend+StashRecord.swift"
+
+    /// `stash` is permitted in five whole shapes and nothing else. Its dangerous forms are
+    /// subcommands (`pop`, `clear`, `create`, `branch`, `show`), options (`--index`,
+    /// `--keep-index`, `--staged`, `--all`, `-p`) and a pathspec, so a deny table would have to
+    /// know every one of them; the allowed shapes invert the rule, as `remote -v` did.
+    @Test(arguments: [
+        (#"_ = try await run(["stash", "push"], cwd: root)"#, "stash"),
+        (#"_ = try await run(["stash"], cwd: root)"#, "stash"),
+        (#"_ = try await run(["stash", "create"], cwd: root)"#, "create"),
+        (#"_ = try await run(["stash", "branch", b, s], cwd: root)"#, "branch"),
+        (#"_ = try await run(["stash", "show", "-p", s], cwd: root)"#, "show"),
+        (#"_ = try await run(["stash", "push", "-q", "--message", m, "--keep-index"], cwd: root)"#, "--keep-index"),
+        (#"_ = try await run(["stash", "push", "-q", "--message", m, "--staged"], cwd: root)"#, "--staged"),
+        (#"_ = try await run(["stash", "push", "-q", "--message", m, "--all"], cwd: root)"#, "--all"),
+        (#"_ = try await run(["stash", "push", "-q", "--message", m, "-p"], cwd: root)"#, "-p"),
+        (#"_ = try await run(["stash", "push", "-q", "--message", m, "--", p], cwd: root)"#, "stash"),
+        (#"_ = try await run(["stash", "push", "-q", "--message", m] + paths, cwd: root)"#, "stash"),
+        (#"_ = try await run(["stash", "push", "-q", "--message", m, "--include-untracked"] + ["--", p], cwd: root)"#, "stash"),
+        (#"_ = try await run(["stash", "push", "-q", "--message", "--all"], cwd: root)"#, "--all"),
+        (#"_ = try await run(["stash", "push", "-q", "--message", keep ? "--keep-index" : m], cwd: root)"#, "--keep-index"),
+        (#"_ = try await run(["stash", "apply", "-q", s], cwd: root)"#, "stash"),
+        (#"_ = try await run(["stash", "apply", "-q", "--no-index", "--index", s], cwd: root)"#, "--index"),
+        (#"_ = try await run(["stash", "drop", s], cwd: root)"#, "stash"),
+        (#"_ = try await run(["stash", "drop", "-q"], cwd: root)"#, "stash"),
+        (#"_ = try await run(["stash", "drop", "-q", a, b], cwd: root)"#, "stash"),
+        (#"_ = try await run(["stash", "store", "-q", sha], cwd: root)"#, "stash"),
+        (#"_ = try await run(["stash", "list", "-z", "--date=iso", "--format=%H%x1f%gd%x1f%gs%x1f%ct%x1f%P"], cwd: root)"#, "stash"),
+    ])
+    func catchesAStashVectorOutsideTheAllowedShapes(source: String, word: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains(word) }, "\(findings) should name \(word)")
+    }
+
+    /// A stash vector that hides its shape: a leading non-literal makes it a fragment, and an
+    /// appended word belongs to no vector. `stash` is a finding in either place, and the words
+    /// that can only be `stash`'s are findings wherever a literal holds one.
+    @Test(arguments: [
+        (#"_ = try await run([repoFlag, "stash", "pop"], cwd: root)"#, "stash"),
+        (#"var a = [String](); a.append("stash")"#, "stash"),
+        (#"var a = ["stash", "push", "-q", "--message", m]; a.append("--keep-index")"#, "--keep-index"),
+        (#"let word = "pop""#, "pop"),
+        (#"let word = "clear""#, "clear"),
+        (#"let word = "create""#, "create"),
+        (#"let flag = "--index""#, "--index"),
+    ])
+    func catchesAStashVectorThatHidesItsShape(source: String, word: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains(word) }, "\(findings) should name \(word)")
+    }
+
+    /// `restore` overwrites files on disk through `--worktree` and `--source=…`, and with
+    /// `submodule.recurse=true` it discards work inside a submodule unless
+    /// `--no-recurse-submodules` is given (M A.5). So its vectors are whole shapes too: the
+    /// unstage vector and the three discard literals, each with `--no-recurse-submodules`.
+    @Test(arguments: [
+        (#"_ = try await run(["restore", "--staged", "--"] + paths, cwd: root)"#, "restore"),
+        (#"_ = try await run(["restore", "--source=HEAD", "--staged", "--worktree", "--"] + paths, cwd: root)"#, "restore"),
+        (#"_ = try await run(["restore", "--no-recurse-submodules", "--source=\(sha)", "--worktree", "--"] + paths, cwd: root)"#, "restore"),
+        (#"_ = try await run(["restore", "--no-recurse-submodules", "--source=\(sha)^2extra", "--staged", "--"] + paths, cwd: root)"#, "restore"),
+        (#"_ = try await run(["restore", "--no-recurse-submodules", "--source=HEAD~1^2", "--staged", "--"] + paths, cwd: root)"#, "restore"),
+        (#"_ = try await run(["restore", "--no-recurse-submodules", "-W", "--"] + paths, cwd: root)"#, "restore"),
+        (#"_ = try await run(["restore", "--no-recurse-submodules", "--worktree", p], cwd: root)"#, "restore"),
+        (#"_ = try await run(["restore", "--no-recurse-submodules", "--worktree"] + ["--", p], cwd: root)"#, "restore"),
+        (#"var a = ["restore", "--no-recurse-submodules", "--staged", "--"]; a.append("--worktree")"#, "--worktree"),
+        (#"let source = "--source=HEAD""#, "--source="),
+        (#"let w = "--worktree""#, "--worktree"),
+    ])
+    func catchesARestoreVectorOutsideTheDiscardLiterals(source: String, word: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains(word) }, "\(findings) should name \(word)")
+    }
+
+    /// The scanner's first per-file rule. Without `GIT_INDEX_FILE`, `read-tree HEAD` overwrites
+    /// the real index and drops every staged change, and a scanner cannot see an environment, so
+    /// the three plumbing subcommands are confined to the one file that owns the temporary index.
+    @Test(arguments: [
+        #"_ = try await run(["read-tree", "HEAD"], cwd: root)"#,
+        #"_ = try await run(["update-index", "--add", "--remove", "--"] + paths, cwd: root)"#,
+        #"_ = try await run(["write-tree"], cwd: root)"#,
+        #"let sub = "update-index""#,
+        #"var a = [String](); a.append("write-tree")"#,
+    ])
+    func confinesTheRecordsPlumbingToOneFile(source: String) {
+        for name in [nil, "CLIGitBackend+Stash.swift", "Parsers/" + Self.recordFile] as [String?] {
+            let findings = ForceFlagScanner.findings(in: source, fileName: name)
+            #expect(!findings.isEmpty, "missed in \(name ?? "an unnamed file"): \(source)")
+        }
+        #expect(ForceFlagScanner.findings(in: source, fileName: Self.recordFile).isEmpty,
+                "false positive in the record's own file: \(ForceFlagScanner.findings(in: source, fileName: Self.recordFile))")
+    }
+
+    /// `read-tree -u`, `-m` and `--reset` write the worktree or merge into the index, and are
+    /// findings even in the one file allowed to name `read-tree`.
+    @Test(arguments: [
+        (#"_ = try await run(["read-tree", "-u", t], cwd: root)"#, "-u"),
+        (#"_ = try await run(["read-tree", "-m", t], cwd: root)"#, "-m"),
+        (#"_ = try await run(["read-tree", "--reset", t], cwd: root)"#, "--reset"),
+        (#"_ = try await run(["read-tree", "--reset", "-u", "HEAD"], cwd: root)"#, "--reset"),
+        (#"_ = try await run([indexFlag, "read-tree", "-m", t], cwd: root)"#, "-m"),
+    ])
+    func catchesAReadTreeThatWritesTheWorktreeEvenInTheRecordFile(source: String, flag: String) {
+        let findings = ForceFlagScanner.findings(in: source, fileName: Self.recordFile)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains(flag) }, "\(findings) should name \(flag)")
+    }
+
+    /// `--unidiff-zero` can remove the wrong line (M 9): a pure-addition hunk with no context
+    /// matches an identical line anywhere. It is permitted on an index apply (`--cached`),
+    /// which is today's line staging, and nowhere else.
+    @Test(arguments: [
+        #"_ = try await run(["apply", "--unidiff-zero", f], cwd: root)"#,
+        #"_ = try await run(["apply", "--reverse", "--whitespace=nowarn", "--unidiff-zero", f], cwd: root)"#,
+        #"var a = ["apply", "--whitespace=nowarn"]; a.append("--unidiff-zero")"#,
+        #"let zero = "--unidiff-zero""#,
+        #"_ = try await run([applyFlag, "apply", "--unidiff-zero", f], cwd: root)"#,
+        """
+        var a = ["apply", "--cached", "--whitespace=nowarn"]
+        var b = ["apply", "--reverse", "--whitespace=nowarn"]
+        b.append("--unidiff-zero")
+        """,
+    ])
+    func catchesUnidiffZeroOutsideAnIndexApply(source: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains("--unidiff-zero") }, "\(findings)")
+    }
+
+    /// `hash-object` follows a symlink and hashes its target's content instead of the link
+    /// (M 8), so the record is built with `update-index` instead and the word stays a finding.
+    @Test(arguments: [
+        #"_ = try await run(["hash-object", "-w", "--", p], cwd: root)"#,
+        #"let sub = "hash-object""#,
+        #"var a = [String](); a.append("hash-object")"#,
+    ])
+    func catchesHashObject(source: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains("hash-object") }, "\(findings)")
+    }
+
+    /// A **contract**, like `allowsTheRemoteOperationsThisMilestoneNeeds`: the vectors the
+    /// working-copy milestone writes outside the record's file, spelled exactly as the plan
+    /// spells them. A rule that turns one red is narrowed here first.
+    ///
+    /// `--include-untracked` is spelled one way only: last, inside the complete literal. A
+    /// `+ [...]` after a `stash` vector is a finding, because a pathspec would ride along the
+    /// same way.
+    @Test(arguments: [
+        #"_ = try await run(["stash", "list", "-z", "--format=%H%x1f%gd%x1f%gs%x1f%ct%x1f%P"], cwd: root)"#,
+        #"_ = try await run(["diff-tree", "-p", "--no-color", "--no-ext-diff", "-U3", "-M", "\(sha)^1", sha], cwd: root)"#,
+        #"_ = try await run(["diff-tree", "-p", "--no-color", "--no-ext-diff", "-U3", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "\(sha)^3"], cwd: root)"#,
+        #"_ = try await run(["stash", "push", "-q", "--message", m], cwd: root)"#,
+        #"_ = try await run(["stash", "push", "-q", "--message", m, "--include-untracked"], cwd: root)"#,
+        #"_ = try await run(["stash", "store", "-q", "-m", m, sha], cwd: root)"#,
+        #"_ = try await runWithEnvironment(["stash", "apply", "-q", "--no-index", sha], cwd: root, extra: Self.rerereOff(env))"#,
+        #"_ = try await run(["stash", "drop", "-q", "stash@{\(n)}"], cwd: root)"#,
+        #"_ = try await run(["rev-parse", "-q", "--verify", "stash@{\(n)}"], cwd: root, allowedExitCodes: [1, 128])"#,
+        #"_ = try await run(["rev-parse", "-q", "--verify", "refs/stash"], cwd: root, allowedExitCodes: [1])"#,
+        #"_ = try await run(["ls-files", "-s", "-z", "--", literalPathspec(p)], cwd: root)"#,
+        #"_ = try await run(["commit-tree", tree, "-p", "HEAD", "-m", m], cwd: root)"#,
+        #"_ = try await run(["commit-tree", tree, "-p", "HEAD", "-p", i, "-m", m], cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--worktree", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--source=HEAD", "--staged", "--worktree", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--source=\(sha)^2", "--staged", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--staged", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"_ = try await run(["apply", "--reverse", "--whitespace=nowarn", tmp.path], cwd: root)"#,
+        #"_ = try await run(["apply", "--whitespace=nowarn", tmp.path], cwd: root)"#,
+        #"_ = try await run(["apply", "--cached", "--whitespace=nowarn", "--unidiff-zero", tmp.path], cwd: root)"#,
+        // Today's line staging, as `CLIGitBackend+WorkingCopy.swift` writes it.
+        """
+        var arguments = ["apply", "--cached", "--whitespace=nowarn"]
+        if patch.needsUnidiffZero { arguments.append("--unidiff-zero") }
+        if reverse { arguments.append("--reverse") }
+        """,
+    ])
+    func allowsTheWorkingCopyOperationsThisMilestoneNeeds(source: String) {
+        for name in [nil, "CLIGitBackend+Stash.swift", Self.recordFile] as [String?] {
+            #expect(ForceFlagScanner.findings(in: source, fileName: name).isEmpty,
+                    "false positive in \(name ?? "an unnamed file"): \(ForceFlagScanner.findings(in: source, fileName: name))")
+        }
+    }
+
+    /// The record's own vectors, which are findings anywhere but its file (see
+    /// `confinesTheRecordsPlumbingToOneFile`).
+    @Test(arguments: [
+        #"_ = try await runWithEnvironment(["read-tree", "HEAD"], cwd: root, extra: index)"#,
+        #"_ = try await runWithEnvironment(["update-index", "--add", "--cacheinfo", "\(mode),\(sha),\(path)"], cwd: root, extra: index)"#,
+        #"_ = try await runWithEnvironment(["update-index", "--force-remove", "--", p], cwd: root, extra: index)"#,
+        #"_ = try await runWithEnvironment(["write-tree"], cwd: root, extra: index)"#,
+        #"_ = try await runWithEnvironment(["update-index", "--add", "--remove", "--"] + paths, cwd: root, extra: index)"#,
+        #"_ = try await run(["stash", "store", "-q", "-m", message, w], cwd: root)"#,
+    ])
+    func allowsTheRecordsVectorsInItsOwnFile(source: String) {
+        #expect(ForceFlagScanner.findings(in: source, fileName: Self.recordFile).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source, fileName: Self.recordFile))")
     }
 }

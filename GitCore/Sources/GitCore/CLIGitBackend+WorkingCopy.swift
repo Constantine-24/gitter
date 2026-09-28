@@ -11,7 +11,13 @@ extension CLIGitBackend: GitWorkingCopyBackend {
     public func unstage(paths: [String], at root: URL) async throws {
         guard !paths.isEmpty else { return }
         if try await hasCommits(at: root) {
-            _ = try await run(["restore", "--staged", "--"] + paths.map(literalPathspec), cwd: root)
+            // `--no-recurse-submodules` changes nothing here (`--staged` never touches the
+            // worktree; measured with `submodule.recurse=true`: the submodule's checkout and
+            // an untracked file inside it were kept), and the scanner requires it of every
+            // `restore` vector, because on `--worktree` it is what keeps a submodule's work.
+            _ = try await run(
+                ["restore", "--no-recurse-submodules", "--staged", "--"] + paths.map(literalPathspec),
+                cwd: root)
         } else {
             // `--ignore-unmatch`: without commits, a caller may pass a mix of paths that are
             // and aren't in the index (e.g. after another change already removed one). Without

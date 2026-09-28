@@ -138,6 +138,10 @@ extension ForceFlagScanner {
     /// gone. See `ForceFlagScanner.findings(in:)`.
     struct ArrayLiteral {
         let elements: [ArrayElement]
+        /// Whether the closing `]` is followed by a `+` (`["restore", …, "--"] + paths`). What is
+        /// concatenated is invisible to every rule here, so an allowed *shape* has to say
+        /// whether anything may follow it at all — see `ForceFlagScanner.Shape`.
+        var followedByConcatenation = false
     }
 
     /// Each `[...]` array literal's top-level elements.
@@ -158,8 +162,17 @@ extension ForceFlagScanner {
                 close += 1
             }
             guard found, close > open + 1 else { continue }
+            var next = close + 1
+            while next < code.count, code[next] == " " || code[next] == "\n" || code[next] == "\t" {
+                next += 1
+            }
+            let concatenated =
+                next < code.count && code[next] == "+"
+                && (next + 1 >= code.count || code[next + 1] != "=")
             result.append(
-                ArrayLiteral(elements: elements(raw: raw, code: code, from: open + 1, to: close)))
+                ArrayLiteral(
+                    elements: elements(raw: raw, code: code, from: open + 1, to: close),
+                    followedByConcatenation: concatenated))
         }
         return result
     }

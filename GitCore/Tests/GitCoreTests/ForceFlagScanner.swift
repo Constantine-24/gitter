@@ -52,10 +52,16 @@ import Foundation
 /// - **A word.** `git remote prune|remove|rm|set-url|rename|add|update|set-head|set-branches`
 ///   rewrites the user's remotes, and not one of them is a flag. Two rules, because one cannot
 ///   do it: `allowedShapes` inverts the rule for a vector the scanner managed to classify —
-///   the permitted vectors are listed whole, and `["remote", "-v"]` is the only one — while
+///   the permitted vectors are listed whole, and `["remote", "-v"]` is the only `remote` one
+///   (`stash` and `restore` joined the table in the working-copy milestone) — while
 ///   `remoteWordsForbiddenEverywhere` and `remoteWordsForbiddenInFragments` forbid the words
 ///   themselves, because a vector that hides its shape (`[repoFlag, "remote", "rm", r]`, or a
 ///   word appended on its own) is beyond any shape rule by construction.
+/// - **A file.** `read-tree`, `update-index` and `write-tree` rewrite whichever index
+///   `GIT_INDEX_FILE` names — the real one when it names none — and no scanner can see an
+///   environment. They are findings in every file but `recordFile`, the one that owns the
+///   temporary index: the first rule here that asks *where* a literal is written, which is why
+///   `findings` takes a file name.
 /// - **A hiding place.** `["-c", "push.default=matching", "push", r]` is a complete git command
 ///   that this scanner reads as a fragment, losing every per-subcommand rule at once. An array
 ///   literal beginning with one of `globalOptionsBeforeSubcommand` is therefore a finding
@@ -155,7 +161,10 @@ import Foundation
 ///   otherwise flag themselves. The app target runs no git commands of its own.
 enum ForceFlagScanner {
     /// A human-readable description of each violation found in `source`, empty when clean.
-    static func findings(in source: String) -> [String] {
+    ///
+    /// - Parameter fileName: the file's path relative to `Sources/GitCore`, for the one rule
+    ///   that is per file (`recordOnlySubcommands`). Nil is a file that is not the record's.
+    static func findings(in source: String, fileName: String? = nil) -> [String] {
         // Before anything else, and on the RAW text: the lexer pairs `"` characters, so a
         // multi-line or raw literal containing an unpaired quote shifts every element boundary
         // after it — silently, for the rest of the file. A scanner that has lost its place must
@@ -171,6 +180,27 @@ enum ForceFlagScanner {
         let code = strippingCommentsAndStringContents(source)
         let arrays = argumentArrays(in: source, code: code)
         var findings: [String] = []
+
+        // Which arrays match one of their subcommand's allowed shapes, decided once, before the
+        // sweep: an element a matched shape pins (`"--worktree"` in a discard literal) is
+        // vouched for by that shape, and the sweep stands down for it and for nothing else.
+        let matchedShapes = arrays.map(matchesAllowedShape)
+        var vouched = Set<Int>()
+        for (array, shape) in zip(arrays, matchedShapes) {
+            guard let shape else { continue }
+            for (slot, element) in zip(shape.slots, array.elements.dropFirst()) {
+                if case .data = slot { continue }
+                if let offset = element.valueOffset { vouched.insert(offset) }
+            }
+        }
+
+        // `--unidiff-zero` outside an array literal (an `.append`, a `let`) belongs to no vector
+        // this scanner can read, so the file answers for it: every `apply` vector in it must be
+        // an index apply. See `unidiffZeroReason`.
+        let applyVectors = arrays.filter { $0.elements.first?.value.map(decoded) == "apply" }
+        let appliesOnlyToTheIndex =
+            !applyVectors.isEmpty && applyVectors.allSatisfy { $0.elements.contains(where: isCached) }
+        let isRecordFile = fileName == recordFile
 
         // Which literals a `push` vector can speak for, which is what the two position-dependent
         // rules need: the lease's permission, and the delete refspec's stand-down in favour of
@@ -189,13 +219,31 @@ enum ForceFlagScanner {
 
         for (token, literal) in literals(in: source, code: code) {
             let isAPushElement = pushVectorElements.contains(token)
+            let isVouched = vouched.contains(token)
             for spelling in spellings(of: literal) {
-                if fileWideForbidden.contains(spelling) {
+                if fileWideForbidden.contains(spelling), !isVouched {
                     let why =
                         remoteWordsForbiddenEverywhere.contains(spelling)
-                        ? ": \(remoteWordReason)" : ""
+                        ? ": \(remoteWordReason)"
+                        : stashWordsForbiddenEverywhere.contains(spelling)
+                            ? ": \(stashWordReason)" : ""
                     findings.append(
                         "forbidden literal \(spelling.debugDescription) (offset \(token))\(why)")
+                }
+                if spelling.hasPrefix(restoreSourcePrefix), !isVouched {
+                    findings.append(
+                        "forbidden literal \(spelling.debugDescription) (offset \(token)): "
+                            + restoreReason)
+                }
+                if recordOnlySubcommands.contains(spelling), !isRecordFile {
+                    findings.append(
+                        "forbidden literal \(spelling.debugDescription) (offset \(token)) outside "
+                            + "\(recordFile): \(recordOnlyReason)")
+                }
+                if spelling == unidiffZero, !appliesOnlyToTheIndex {
+                    findings.append(
+                        "forbidden literal \(spelling.debugDescription) (offset \(token)) in a file "
+                            + "whose `apply` vectors are not all index applies: \(unidiffZeroReason)")
                 }
                 if prefixRule(matching: spelling) != nil,
                     !(isAPushElement && isPermittedLease(spelling))
@@ -220,7 +268,7 @@ enum ForceFlagScanner {
             }
         }
 
-        for array in arrays {
+        for (arrayIndex, array) in arrays.enumerated() {
             let arguments = array.elements
             // Every literal in every element, not one per element: a flag chosen by a ternary
             // (`cond ? "--squash" : "--merge"`) lives in an element that has no single value,
@@ -261,21 +309,36 @@ enum ForceFlagScanner {
                 findings.append("forbidden git subcommand \(subcommand.debugDescription): \(reason)")
                 continue
             }
-            // A subcommand whose dangerous forms are words rather than flags, so no table can
-            // see them: the permitted vectors are listed whole. See `allowedShapes`.
+            // A subcommand whose dangerous forms no flag table can see: the permitted vectors
+            // are listed whole. See `allowedShapes`. A matched shape is complete — every pinned
+            // element is exactly what the table says, and a data slot holds no flag — so there
+            // is nothing left for the per-element rules to read.
             if let shapes = allowedShapes[subcommand] {
-                let tail = arguments.dropFirst().map { $0.value.map(decoded) }
-                let matches = shapes.contains {
-                    $0.count == tail.count && zip($0, tail).allSatisfy { $0 == $1 }
-                }
-                if !matches {
+                if matchedShapes[arrayIndex] == nil {
                     findings.append(
-                        "forbidden `git \(subcommand)` vector: the only permitted form is "
+                        "forbidden `git \(subcommand)` vector: the only permitted forms are "
                             + spelling(of: subcommand, shapes) + ", because "
-                            + "\(subcommand)'s other forms are words rather than flags and no "
-                            + "flag table can see them")
-                    continue
+                            + (shapeReasons[subcommand] ?? "") + shapeConcatenationNote)
+                    for word in literals.dropFirst().flatMap(spellings(of:)) {
+                        if let reason = (shapeWordReasons[subcommand] ?? [:])[word] {
+                            findings.append("forbidden `git \(subcommand) … \(word)`: \(reason)")
+                        }
+                    }
                 }
+                continue
+            }
+            if subcommand == "read-tree" {
+                for flag in literals.dropFirst().flatMap(spellings(of:)) {
+                    if let reason = readTreeForbiddenFlags[flag] {
+                        findings.append("forbidden `git read-tree \(flag)`: \(reason)")
+                    }
+                }
+            }
+            if subcommand == "apply", literals.contains(unidiffZero),
+                !arguments.contains(where: isCached)
+            {
+                findings.append(
+                    "forbidden `git apply \(unidiffZero)` without `--cached`: \(unidiffZeroReason)")
             }
             // Over ELEMENTS, not over the flat literal list, because one rule is positional:
             // `reset --merge` is safe and `reset --merge <commit>` moves HEAD, and only the
@@ -388,6 +451,26 @@ enum ForceFlagScanner {
             "forbidden literal \($0.debugDescription) in an argument fragment: "
                 + remoteFragmentReason
         }
+        // `stash` the same way, and for the same reason: its shape is the whole rule.
+        result += literals.filter(stashWordsForbiddenInFragments.contains).map {
+            "forbidden literal \($0.debugDescription) in an argument fragment: "
+                + stashFragmentReason
+        }
+        // Within one vector a fragment can still speak for itself: `[flag, "read-tree", "-m",
+        // t]` is a `read-tree -m`, and `[flag, "apply", "--unidiff-zero", f]` has no `--cached`.
+        // The append pool is not one vector, so neither rule is asked of it.
+        if isOneVector, literals.contains("read-tree") {
+            result += literals.compactMap { flag in
+                readTreeForbiddenFlags[flag].map {
+                    "forbidden `git read-tree \(flag)` in an argument fragment: \($0)"
+                }
+            }
+        }
+        if isOneVector, literals.contains(unidiffZero), !literals.contains(cached) {
+            result.append(
+                "forbidden \(unidiffZero.debugDescription) in an argument fragment without "
+                    + "`--cached`: \(unidiffZeroReason)")
+        }
         return result
     }
 
@@ -451,11 +534,19 @@ enum ForceFlagScanner {
     /// step decided by config Gitter did not write, so the user is told afterwards what
     /// happened to their work. The store fetches, re-reads tracking, shows a sheet and then
     /// merges or rebases itself, which is the only way the sheet can say what will happen.
+    ///
+    /// `stash` was here until the working-copy milestone, which runs five shapes of it; it is in
+    /// `allowedShapes` now, where everything else it can do is still a finding. `hash-object`
+    /// joined then: it follows a symlink and hashes the target's content rather than the link
+    /// (M 8), so a record built with it would restore the wrong thing. The record is built with
+    /// `update-index` on a temporary index instead.
     static let forbiddenSubcommands: [String: String] = [
         "clean": "deletes untracked files outright",
-        "stash": "moves the user's changes somewhere they did not ask for",
         "checkout": "`checkout -- <path>` discards a file's changes with no undo",
         "pull": "fetches and then merges or rebases in one step the user was never shown",
+        "hash-object":
+            "follows a symlink and hashes its target instead of the link (M 8); build a record "
+            + "with `update-index` on a temporary index",
     ]
 
     /// Per-subcommand flags. The allow-list is what is *absent* here: `branch -D` (behind a
@@ -901,7 +992,193 @@ enum ForceFlagScanner {
     /// append; and `remoteWordsForbiddenEverywhere` makes the rest of the words findings
     /// file-wide. Read together: **the shape rule constrains a vector that names `remote`
     /// first, and the word rules constrain everything that does not.**
-    static let allowedShapes: [String: [[String]]] = ["remote": [["-v"]]]
+    ///
+    /// **The working-copy milestone widened the rule to `stash` and `restore`**, and gave it the
+    /// two things those need: a *data* slot (a message, a sha, `stash@{\(n)}` — any element
+    /// with no flag in it) and an *interpolated* slot (`--source=\(sha)^2`). A shape also says
+    /// whether anything may be concatenated after the array literal: only after a trailing
+    /// `"--"`, where whatever follows is a path. `["stash", "push", "-q", "--message", m] +
+    /// paths` would be a pathspec on `stash push`, which is exactly what the shape forbids.
+    static let allowedShapes: [String: [Shape]] = [
+        "remote": [Shape(.literal("-v"))],
+        "stash": [
+            Shape(.literal("list"), .literal("-z"), .literal(stashListFormat)),
+            Shape(.literal("push"), .literal("-q"), .literal("--message"), .data),
+            Shape(
+                .literal("push"), .literal("-q"), .literal("--message"), .data,
+                .literal("--include-untracked")),
+            Shape(.literal("store"), .literal("-q"), .literal("-m"), .data, .data),
+            Shape(.literal("apply"), .literal("-q"), .literal("--no-index"), .data),
+            Shape(.literal("drop"), .literal("-q"), .data),
+        ],
+        // Unstage, then the discard section's three literals. Every one carries
+        // `--no-recurse-submodules`: under `submodule.recurse=true`, `restore --worktree -- sub`
+        // checks the submodule out and discards the work inside it (M A.5).
+        "restore": [
+            Shape(.literal("--no-recurse-submodules"), .literal("--staged"), .literal("--")),
+            Shape(.literal("--no-recurse-submodules"), .literal("--worktree"), .literal("--")),
+            Shape(
+                .literal("--no-recurse-submodules"), .literal("--source=HEAD"),
+                .literal("--staged"), .literal("--worktree"), .literal("--")),
+            Shape(
+                .literal("--no-recurse-submodules"),
+                .interpolated(prefix: restoreSourcePrefix, suffix: "^2"),
+                .literal("--staged"), .literal("--")),
+        ],
+    ]
+
+    /// One element of an allowed shape.
+    enum ShapeSlot {
+        /// Exactly this string literal (escapes decoded).
+        case literal(String)
+        /// Any element in which no literal begins with `-`: a message, a sha, a position.
+        /// `keep ? "--keep-index" : m` is not data, because one arm is a flag.
+        case data
+        /// One literal: `prefix`, then exactly one interpolation, then `suffix`.
+        case interpolated(prefix: String, suffix: String)
+
+        func matches(_ element: ArrayElement) -> Bool {
+            switch self {
+            case .literal(let text):
+                return element.value.map(ForceFlagScanner.decoded) == text
+            case .data:
+                return !element.literals.flatMap(ForceFlagScanner.spellings(of:))
+                    .contains { $0.hasPrefix("-") }
+            case .interpolated(let prefix, let suffix):
+                guard let value = element.value, value.hasPrefix(prefix), value.hasSuffix(suffix),
+                    value.count > prefix.count + suffix.count
+                else { return false }
+                let middle = value.dropFirst(prefix.count).dropLast(suffix.count)
+                return ForceFlagScanner.isWholeInterpolation(middle)
+            }
+        }
+    }
+
+    /// A whole permitted vector, after its subcommand.
+    struct Shape {
+        let slots: [ShapeSlot]
+        init(_ slots: ShapeSlot...) { self.slots = slots }
+
+        /// Whether `+ …` may follow the array literal: only after a trailing `"--"`.
+        var allowsConcatenation: Bool {
+            if case .literal("--") = slots.last { return true }
+            return false
+        }
+
+        func matches(_ array: ArrayLiteral) -> Bool {
+            let tail = array.elements.dropFirst()
+            guard tail.count == slots.count else { return false }
+            guard !array.followedByConcatenation || allowsConcatenation else { return false }
+            return zip(slots, tail).allSatisfy { $0.matches($1) }
+        }
+    }
+
+    /// The shape `array` matches, or nil when it matches none — or is not classified under a
+    /// subcommand that has shapes at all.
+    static func matchesAllowedShape(_ array: ArrayLiteral) -> Shape? {
+        guard let subcommand = array.elements.first?.value.map(decoded),
+            let shapes = allowedShapes[subcommand]
+        else { return nil }
+        return shapes.first { $0.matches(array) }
+    }
+
+    /// Why each subcommand in `allowedShapes` is a shape rule rather than a deny table.
+    static let shapeReasons: [String: String] = [
+        "remote":
+            "remote's other forms are words rather than flags and no flag table can see them",
+        "stash":
+            "stash's other forms move or delete the user's changes: `pop` drops an entry after "
+            + "any apply, `clear` and `drop` without a verified position delete entries, "
+            + "`--index`/`--keep-index`/`--staged`/`-p`/`--all`/a pathspec each save or restore "
+            + "something the sheet did not name",
+        "restore": restoreReason,
+    ]
+
+    static let shapeConcatenationNote =
+        ". Nothing may be concatenated after the array literal unless it ends with \"--\""
+
+    /// The words a failed `stash` shape is most likely to contain, named in the finding.
+    static let shapeWordReasons: [String: [String: String]] = [
+        "stash": [
+            "pop": "drops the entry after an apply git itself decided was good enough",
+            "clear": "deletes every stash entry",
+            "create": "makes a stash commit no ref holds",
+            "branch": "checks out a new branch and drops the entry",
+            "show": "prints a diff shaped by the user's diff config (M A.6); use diff-tree",
+            "--index": "restores the index too, and refuses the whole apply when it cannot",
+            "--keep-index": "saves the staged changes but leaves them in place",
+            "-k": "saves the staged changes but leaves them in place",
+            "--staged": "saves only the staged changes",
+            "-S": "saves only the staged changes",
+            "--all": "stashes ignored files too",
+            "-a": "stashes ignored files too",
+            "-p": "stashes a selection the sheet never showed",
+            "--patch": "stashes a selection the sheet never showed",
+        ],
+    ]
+
+    /// The `stash --format` the list is read with; `--date` would turn `%gd` into a date (M 1).
+    static let stashListFormat = "--format=%H%x1f%gd%x1f%gs%x1f%ct%x1f%P"
+
+    /// `stash`'s words that `GitCore/Sources` never needs (`git grep`: zero hits), so they are
+    /// findings wherever a literal holds one. `show` and `branch` are left to the shape rule:
+    /// both name subcommands this code could reasonably run on their own.
+    static let stashWordsForbiddenEverywhere: Set<String> = [
+        "pop", "clear", "create", "--keep-index", "--index",
+    ]
+
+    static let stashWordReason =
+        "`git stash pop|clear|create`, `--keep-index` and `--index` are never run; see "
+            + "`allowedShapes` for the stash vectors Gitter writes"
+
+    /// `stash` itself in a fragment or the append pool, where no shape can be read.
+    static let stashWordsForbiddenInFragments: Set<String> = ["stash"]
+
+    static let stashFragmentReason =
+        "a fragment cannot prove its shape, and `stash`'s permitted shapes are the whole rule. "
+            + "Spell the vector as one array literal beginning with its subcommand"
+
+    /// `restore`'s prefix that overwrites from another commit, vouched for only by a shape.
+    static let restoreSourcePrefix = "--source="
+
+    static let restoreReason =
+        "`restore` overwrites files on disk through `--worktree` and `--source=…`, and without "
+            + "`--no-recurse-submodules` it discards work inside a submodule under "
+            + "`submodule.recurse=true` (M A.5); the only permitted vectors are the unstage "
+            + "vector and the discard section's three literals"
+
+    /// The scanner's first per-file rule. Without `GIT_INDEX_FILE`, `read-tree HEAD` overwrites
+    /// the real index and drops every staged change, and this scanner cannot see an
+    /// environment — so the three subcommands that write an index are confined to the file
+    /// that owns the temporary one.
+    static let recordFile = "CLIGitBackend+StashRecord.swift"
+    static let recordOnlySubcommands: Set<String> = ["read-tree", "update-index", "write-tree"]
+
+    static let recordOnlyReason =
+        "`read-tree`, `update-index` and `write-tree` rewrite whichever index GIT_INDEX_FILE "
+            + "names, and the real one when it names none; only the record's own file, which "
+            + "owns the temporary index, may run them"
+
+    /// `read-tree`'s forms that write the worktree or merge, forbidden even in the record file.
+    static let readTreeForbiddenFlags: [String: String] = [
+        "-u": "updates the worktree from the index it reads",
+        "-m": "merges trees into the index",
+        "--reset": "discards unmerged entries, and with `-u` the worktree too",
+    ]
+
+    static let unidiffZero = "--unidiff-zero"
+    static let cached = "--cached"
+
+    /// Whether an element is the index-apply flag, read as a value: a `--cached` in one arm of
+    /// a ternary is an index apply only half the time.
+    static func isCached(_ element: ArrayElement) -> Bool {
+        element.value.map(decoded) == cached
+    }
+
+    static let unidiffZeroReason =
+        "a context-free hunk matches an identical line anywhere, so `--unidiff-zero` can remove "
+            + "the wrong line (M 9); it is permitted on an index apply (`--cached`) only, and "
+            + "outside an array literal only in a file whose every `apply` vector has `--cached`"
 
     /// `git remote`'s destructive words, as literals, anywhere in a file.
     ///
@@ -956,10 +1233,19 @@ enum ForceFlagScanner {
         + "\"-v\"] and nothing else — is the whole rule. Spell the vector as one array literal "
         + "beginning with its subcommand, so the shape can be read"
 
-    private static func spelling(of subcommand: String, _ shapes: [[String]]) -> String {
-        shapes.map { ([subcommand] + $0).map(\.debugDescription).joined(separator: ", ") }
-            .map { "[\($0)]" }
-            .joined(separator: " or ")
+    private static func spelling(of subcommand: String, _ shapes: [Shape]) -> String {
+        shapes.map { shape in
+            let slots = shape.slots.map { slot -> String in
+                switch slot {
+                case .literal(let text): return text.debugDescription
+                case .data: return "<data>"
+                case .interpolated(let prefix, let suffix): return "\"\(prefix)\\(…)\(suffix)\""
+                }
+            }
+            let tail = shape.allowsConcatenation ? " + paths" : ""
+            return "[" + ([subcommand.debugDescription] + slots).joined(separator: ", ") + "]" + tail
+        }
+        .joined(separator: " or ")
     }
 
     /// What a *fragment* is checked against: the union of every table above, because a
@@ -1016,7 +1302,12 @@ enum ForceFlagScanner {
     /// sweep skips the token and the array rules see an element with no literal in it. Seven
     /// tokens wide rather than the whole union it used to be, but narrower, not closed.
     ///
-    /// Everything else in the union — `checkout`, `clean`, `stash`, `pull`, `--ours`, `-C`,
+    /// `--worktree` is the one token in the union that `GitCore/Sources` now writes on
+    /// purpose (the discard literals, from the working-copy milestone), and it is not
+    /// subtracted: the sweep stands down only for an element of an array that matched one of
+    /// `allowedShapes`, at that element's own offset (`vouched` in `findings`).
+    ///
+    /// Everything else in the union — `checkout`, `clean`, `pull`, `--ours`, `-C`,
     /// `-X`, `--autostash`, `--mirror`, `--prune`, `--prune-tags`, `--delete`, `--no-verify`,
     /// `--force-if-includes`, `--force-rebase` and the rest — appears in no source file, so
     /// widening onto them produced no false positive
@@ -1027,6 +1318,7 @@ enum ForceFlagScanner {
         .subtracting(sweepExempt)
         .union(forbiddenSubcommands.keys)
         .union(remoteWordsForbiddenEverywhere)
+        .union(stashWordsForbiddenEverywhere)
 
     /// Tokens the sweep must skip because `GitCore/Sources` uses each of them legitimately,
     /// under a subcommand the sweep cannot see. Every entry is a fact about this codebase,
