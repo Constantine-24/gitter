@@ -178,6 +178,26 @@ import Testing
         #expect(diffs[1].hunks.flatMap(\.lines).map(\.text) == ["untracked"])
     }
 
+    /// The two parts kept apart, for the detail's "Untracked" heading: a tracked file *added*
+    /// in the entry (staged) is an addition too, and must not be taken for an untracked one.
+    @Test func anEntrysContentsKeepTheTrackedAndTheUntrackedPartApart() async throws {
+        let repo = try await makeRepo()
+        defer { repo.cleanUp() }
+        try repo.write("a.txt", "one\ntwo\n")
+        try repo.write("new.txt", "staged new\n")
+        try await repo.git(["add", "new.txt"])
+        try repo.write("u.txt", "untracked\n")
+        try await repo.git(["stash", "push", "-q", "-u", "-m", "both"])
+        let stash = try #require(try await CLIGitBackend().stashes(at: repo.root).first)
+
+        let contents = try await CLIGitBackend().stashContents(stash, at: repo.root)
+
+        #expect(contents.tracked.map(\.displayPath) == ["a.txt", "new.txt"])
+        #expect(contents.tracked.map(\.kind) == [.modified, .added])
+        #expect(contents.untracked.map(\.displayPath) == ["u.txt"])
+        #expect(contents.all == (try await CLIGitBackend().stashDiff(stash, at: repo.root)))
+    }
+
     @Test func showingAnEntryWithoutUntrackedFilesGivesOnlyTheTrackedPart() async throws {
         let repo = try await makeRepo()
         defer { repo.cleanUp() }

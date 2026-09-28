@@ -75,6 +75,24 @@ public enum StashApplyOutcome: Sendable, Hashable {
     case appliedButKept(reason: String)
 }
 
+/// What an entry holds, in its two parts: what the detail view lists under the entry's files
+/// and under "Untracked".
+public struct StashContents: Sendable, Hashable {
+    /// `W^1` → `W`, with renames: every tracked change, staged or not, as the entry's worktree
+    /// had it. A tracked file added in the entry is an addition here, not an untracked file.
+    public let tracked: [FileDiff]
+    /// The third parent's files, each as an addition. Empty for an entry without one.
+    public let untracked: [FileDiff]
+
+    public init(tracked: [FileDiff], untracked: [FileDiff]) {
+        self.tracked = tracked
+        self.untracked = untracked
+    }
+
+    /// Both parts, tracked first: `stashDiff`.
+    public var all: [FileDiff] { tracked + untracked }
+}
+
 /// The stash: reading the list and showing an entry, pushing, applying, popping and dropping.
 public protocol GitStashBackend: Sendable {
     /// Every entry of `refs/stash`'s reflog, newest first (`stash@{0}` first). Empty when there
@@ -88,6 +106,9 @@ public protocol GitStashBackend: Sendable {
     /// has a third parent — every untracked file in it as an addition. Both are read with
     /// `diff-tree` and explicit flags, which the user's diff config cannot reshape (M A.6).
     func stashDiff(_ stash: Stash, at root: URL) async throws -> [FileDiff]
+
+    /// The same two diffs as `stashDiff`, kept apart: the tracked part and the untracked part.
+    func stashContents(_ stash: Stash, at root: URL) async throws -> StashContents
 
     /// `git stash push -q --message <message>` (+ `--include-untracked`): every change.
     ///
