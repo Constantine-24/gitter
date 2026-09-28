@@ -52,12 +52,15 @@ enum NoticeWording {
 enum NoticeLinks {
     /// Lines are the host's `remote:` lines as `PushResult.remoteMessages` gives them
     /// (already redacted). Returns whole http(s) URLs in order, deduplicated, trailing
-    /// `.,;:)` trimmed, userinfo removed; never capped in length.
+    /// `.,;:` trimmed (and a `)` when unbalanced), userinfo removed; never capped in length.
     static func extract(fromRemoteLines lines: [String]) -> [URL] {
         var found: [URL] = []
         for line in lines {
             // Redacted once more: cheap, and this function must not depend on its caller for
-            // the one thing that would put a token on the pasteboard.
+            // the one thing that would put a token on the pasteboard. Not enough on its own —
+            // the redactor looks at the first `://` of a run and does not cut at an escape, so
+            // `ftp://x/https://u:t@h/p` passes it whole — which is why `link(in:)` also drops
+            // the userinfo `URLComponents` finds.
             let redacted = RemoteFailureParser.redactingCredentials(line)
             for run in runs(in: redacted) {
                 guard let url = link(in: run), !found.contains(url) else { continue }
@@ -102,7 +105,28 @@ enum NoticeLinks {
         return runs
     }
 
-    private static let trailing: Set<Character> = [".", ",", ";", ":", ")"]
+    /// Sentence punctuation after an address, always trimmed. A `)` is trimmed only when it is
+    /// unbalanced (`trimmingTrailingPunctuation`).
+    private static let trailing: Set<Character> = [".", ",", ";", ":"]
+
+    /// `candidate` without the punctuation a sentence put after it. A closing parenthesis goes
+    /// only while the address holds more `)` than `(`: `(https://h/x)` loses its wrapper, but
+    /// `https://h/wiki/Foo_(bar)` and `?q=(1)` keep theirs.
+    private static func trimmingTrailingPunctuation(_ candidate: Substring) -> Substring {
+        var candidate = candidate
+        while let last = candidate.last {
+            if trailing.contains(last) {
+                candidate = candidate.dropLast()
+            } else if last == ")",
+                candidate.filter({ $0 == ")" }).count > candidate.filter({ $0 == "(" }).count
+            {
+                candidate = candidate.dropLast()
+            } else {
+                break
+            }
+        }
+        return candidate
+    }
 
     /// The address that starts at the first `http://` or `https://` in `run`, trimmed, without
     /// userinfo; nil if there is none or it has no host.
@@ -113,8 +137,7 @@ enum NoticeLinks {
                 run.range(of: "http://", options: .caseInsensitive),
             ].compactMap({ $0?.lowerBound }).min()
         else { return nil }
-        var candidate = run[start...]
-        while let last = candidate.last, trailing.contains(last) { candidate = candidate.dropLast() }
+        let candidate = trimmingTrailingPunctuation(run[start...])
         guard var components = URLComponents(string: String(candidate)),
             let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
             let host = components.host, !host.isEmpty

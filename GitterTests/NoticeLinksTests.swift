@@ -1,4 +1,5 @@
 import Foundation
+import GitCore
 import Testing
 
 @testable import Gitter
@@ -78,6 +79,40 @@ import Testing
     @Test func aUserNameWithoutAPasswordIsRemovedToo() {
         let found = NoticeLinks.extract(fromRemoteLines: ["https://user@host/o/r/pull/1"])
         #expect(found.map(\.absoluteString) == ["https://host/o/r/pull/1"])
+    }
+
+    /// Userinfo the redactor passes through: it strips only the first `://` of a run, and it
+    /// does not cut at control characters, where `extract` does. The link must lose it anyway.
+    @Test func userinfoAfterAnotherSchemeInTheSameRunIsRemoved() {
+        #expect(
+            RemoteFailureParser.redactingCredentials("ftp://x/https://user:tok@host/p")
+                == "ftp://x/https://user:tok@host/p")
+        let found = NoticeLinks.extract(fromRemoteLines: ["ftp://x/https://user:tok@host/p"])
+        #expect(found.map(\.absoluteString) == ["https://host/p"])
+    }
+
+    @Test func userinfoAfterAnEscapeInTheSameRunIsRemoved() {
+        let line = "x://y\u{1B}https://u:tok@h/p"
+        #expect(RemoteFailureParser.redactingCredentials(line) == line)
+        let found = NoticeLinks.extract(fromRemoteLines: [line])
+        #expect(found.map(\.absoluteString) == ["https://h/p"])
+    }
+
+    // MARK: - Parentheses (controller ruling: a `)` goes only when it is unbalanced)
+
+    @Test func aBalancedParenthesisInThePathStays() {
+        let found = NoticeLinks.extract(fromRemoteLines: ["https://h/wiki/Foo_(bar)"])
+        #expect(found.map(\.absoluteString) == ["https://h/wiki/Foo_(bar)"])
+    }
+
+    @Test func aBalancedParenthesisInTheQueryStays() {
+        let found = NoticeLinks.extract(fromRemoteLines: ["https://h/search?q=(1)"])
+        #expect(found.map(\.absoluteString) == ["https://h/search?q=(1)"])
+    }
+
+    @Test func aWrappedLinkWithBalancedParenthesesLosesOnlyTheWrapper() {
+        let found = NoticeLinks.extract(fromRemoteLines: ["(https://h/a_(b))"])
+        #expect(found.map(\.absoluteString) == ["https://h/a_(b)"])
     }
 
     @Test func plainHTTPIsAccepted() {
