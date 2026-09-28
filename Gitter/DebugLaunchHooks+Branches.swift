@@ -32,6 +32,7 @@
     ///     autofetchfailed:<reason>     copyurls
     ///     quit                         alert               alertbutton:<title>
     ///     menuitem:<menu>:<title>
+    ///     notice                       openlink
     ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
@@ -82,6 +83,12 @@
     /// equivalent) of each sheet on screen: the snapshot draws an alert's frame and its tinted
     /// buttons but not its text, which is drawn with vibrancy (the sidebar's problem, below).
     ///
+    /// `notice` logs both notice slots — each one's text, links and button titles:
+    /// `notice transient: <…> | links: [...] | actions: [...]` and the same for `sticky`.
+    /// `openlink` runs the sticky notice's Open button through `RepositoryStore.perform` with an
+    /// opener that only logs `openlink: <url>` — the harness never starts a browser — and a
+    /// private pasteboard; with no Open on screen it logs `openlink: no link`.
+    ///
     /// The automatic fetch prints its own lines, `AUTOFETCH …`, one per tick and one per ending;
     /// `QUIT …` lines say what quitting decided.
     ///
@@ -128,7 +135,7 @@
                 "\($0.kind)(\($0.remote ?? "all"), progress: \($0.progress ?? "nil"))"
             }
             log(
-                "result: \(describe(store.activeSheet, store)) | notice: \(flat(store.notice)) "
+                "result: \(describe(store.activeSheet, store)) | notice: \(flat(store.notice?.text)) "
                     + "| error: \(flat(store.lastError)) "
                     + "| head: \(store.headLabel) | selection: \(store.selection)")
             log(
@@ -288,6 +295,10 @@
                 }
             case "menuitem":
                 if let first, let second { fireMenuItem(second, inMenu: first) }
+            case "notice":
+                log("notice transient: \(describe(store.notice))")
+                log("notice sticky: \(describe(store.stickyNotice))")
+            case "openlink": openLink(store: store)
             case "stageall": store.stageAll()
             case "commit":
                 // The composer's own path: the subject goes into the draft, then `commit()`.
@@ -351,6 +362,31 @@
                     log("copy \(remote.name) \"\(item.title)\": \(raw ?? "nil") -> \(back)")
                 }
             }
+        }
+
+        private static func describe(_ notice: Notice?) -> String {
+            guard let notice else { return "nil" }
+            return "\(flat(notice.text)) | links: \(notice.links.map(\.absoluteString)) "
+                + "| actions: \(notice.actions.map(NoticeWording.title))"
+        }
+
+        /// The sticky banner's Open, as its button runs it, except that the opener only logs.
+        private static func openLink(store: RepositoryStore) {
+            let open = store.stickyNotice?.actions.first {
+                if case .openLink = $0 { true } else { false }
+            }
+            guard let open else {
+                log("openlink: no link")
+                return
+            }
+            let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.debug-openlink"))
+            defer { pasteboard.releaseGlobally() }
+            var opened = false
+            store.perform(open, pasteboard: pasteboard) { url in
+                opened = true
+                log("openlink: \(url.absoluteString)")
+            }
+            if !opened { log("openlink: refused") }
         }
 
         private static func sheet(_ which: String?, _ name: String?, store: RepositoryStore)

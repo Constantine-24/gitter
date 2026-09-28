@@ -63,13 +63,23 @@ struct MainWindow: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
                 if let notice = store.notice {
-                    NoticeBanner(message: notice) { store.dismissNotice() }
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                    NoticeBanner(notice: notice, perform: { store.perform($0) }) {
+                        store.dismissNotice()
+                    }
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                // Under the transient one: it stays while other notices come and go.
+                if let sticky = store.stickyNotice {
+                    NoticeBanner(notice: sticky, perform: { store.perform($0) }) {
+                        store.dismissStickyNotice()
+                    }
+                    .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
         }
         .animation(.default, value: store.lastError)
         .animation(.default, value: store.notice)
+        .animation(.default, value: store.stickyNotice)
     }
 
     /// "Pull" and "Force Push…" beside the banner of a push the server refused for having

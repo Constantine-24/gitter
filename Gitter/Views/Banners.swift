@@ -86,20 +86,27 @@ struct ErrorBanner: View {
     }
 }
 
-/// The store's `notice`: something did happen ("Created branch \"x\"."). Deliberately not the
-/// error style — nothing is wrong — and it clears itself after a few seconds, so the close
-/// button here is for impatience rather than for getting the window back.
+/// The store's `notice` and `stickyNotice`: something did happen ("Created branch \"x\".").
+/// Deliberately not the error style — nothing is wrong. The transient one clears itself after a
+/// few seconds, so its close button is for impatience rather than for getting the window back;
+/// the sticky one (a pushed branch's pull-request link) stays until its × is pressed.
 ///
 /// Neutral grey rather than the accent colour for the strip itself: the accent is the user's
 /// choice and on an orange-accented Mac an accent-tinted banner is the yellow warning again.
 /// The tick keeps the accent, which is the one place it cannot be mistaken for anything.
 struct NoticeBanner: View {
-    let message: String
+    let notice: Notice
+    /// Runs a button's `NoticeAction` — `RepositoryStore.perform(_:)`.
+    let perform: (NoticeAction) -> Void
     let dismiss: () -> Void
 
     var body: some View {
         Banner(
-            message: message, systemImage: "checkmark.circle.fill", iconTint: .accentColor,
-            tint: .secondary, dismissLabel: "Dismiss message", dismiss: dismiss)
+            message: notice.text, systemImage: "checkmark.circle.fill", iconTint: .accentColor,
+            tint: .secondary, dismissLabel: "Dismiss message",
+            actions: notice.actions.map { action in
+                BannerAction(title: NoticeWording.title(action)) { perform(action) }
+            },
+            dismiss: dismiss)
     }
 }

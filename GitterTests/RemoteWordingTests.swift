@@ -32,20 +32,38 @@ import Testing
         #expect(RemoteWording.plain(line) == line)
     }
 
-    // MARK: - pullRequestLinks
+    // MARK: - pullRequestLines
 
-    /// GitHub's hint after a push of a new branch: the link, and the line that introduces it.
-    @Test func pullRequestLinksKeepsTheLinkAndItsIntroduction() {
+    /// GitHub's hint after a push of a new branch, as `PushResult.remoteMessages` gives it (the
+    /// `remote:` prefix already gone): the line with the link, and the line that introduces it.
+    /// The link itself is `NoticeLinks`'s; these are the notice's words.
+    @Test func pullRequestLinesKeepTheLinkLineAndItsIntroduction() {
         let messages = [
-            "remote: ",
-            "remote: Create a pull request for 'b' on GitHub by visiting:",
-            "remote:      https://github.com/o/r/pull/new/b",
-            "remote: ",
+            "",
+            "Create a pull request for 'b' on GitHub by visiting:",
+            "     https://github.com/o/r/pull/new/b",
+            "",
         ]
         #expect(
-            RemoteWording.pullRequestLinks(messages) == [
-                "remote: Create a pull request for 'b' on GitHub by visiting:",
-                "remote:      https://github.com/o/r/pull/new/b",
+            RemoteWording.pullRequestLines(messages) == [
+                "Create a pull request for 'b' on GitHub by visiting:",
+                "https://github.com/o/r/pull/new/b",
             ])
+    }
+
+    /// The words are capped like every server line; the link `NoticeLinks` finds on the same
+    /// line is not.
+    @Test func pullRequestLinesCapTheTextButNotTheLink() {
+        let base = "https://example.invalid/o/r/pull/new/"
+        let url = base + String(repeating: "a", count: 400 - base.count)
+        let lines = RemoteWording.pullRequestLines([url])
+        #expect(lines.count == 1)
+        #expect(lines.first?.count == 200)
+        #expect(NoticeLinks.extract(fromRemoteLines: [url]).map(\.absoluteString) == [url])
+    }
+
+    /// A line is picked for the link `NoticeLinks` finds on it, not for a scheme on its own.
+    @Test func pullRequestLinesPickOnlyLinesWithALink() {
+        #expect(RemoteWording.pullRequestLines(["visit https:// later", "ftp://h/x"]).isEmpty)
     }
 }

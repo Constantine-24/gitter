@@ -295,13 +295,17 @@ extension RepositoryStore {
                         result, branch: name, remote: remote, remoteRef: remoteRef,
                         previousUpstream: previousUpstream))
             }
-            var notice = lines.compactMap { $0 }.joined(separator: " ")
-            let links = RemoteWording.pullRequestLinks(result.remoteMessages)
-            if !links.isEmpty { notice += "\n" + links.joined(separator: "\n") }
+            var text = lines.compactMap { $0 }.joined(separator: " ")
+            let hostLines = RemoteWording.pullRequestLines(result.remoteMessages)
+            if !hostLines.isEmpty { text += "\n" + hostLines.joined(separator: "\n") }
             // Pushed, but the upstream was not set, or could not be checked: a success that says
             // something is wrong, which a quit must not carry away unread (`QuitGuard`).
             let warns = result.upstream == .notSet || result.upstream == .unknown
-            return LaneEnding(notice: notice, mustBeRead: warns)
+            return LaneEnding(
+                notice: Notice.linked(
+                    text: text,
+                    links: NoticeLinks.extract(fromRemoteLines: result.remoteMessages)),
+                mustBeRead: warns)
         }
     }
 
@@ -499,7 +503,7 @@ extension RepositoryStore {
             guard generation == lane.generation else { return }
             // What a held quit must not carry away unread (`QuitGuard`).
             if let told = failure ?? sheet.map({ "a question: \($0)" })
-                ?? (ending.mustBeRead ? ending.notice : nil)
+                ?? (ending.mustBeRead ? ending.notice?.text : nil)
             {
                 noteLaneMessageToRead(told)
             }
@@ -507,7 +511,14 @@ extension RepositoryStore {
             // on screen may be behind by it, so it gets the reload it was denied.
             if missedWatcherEvent { scheduleRefresh() }
             if let rejected = ending.rejected { setRejectedPush(rejected) }
-            if let notice = ending.notice, !notice.isEmpty { showNotice(notice) }
+            if let notice = ending.notice {
+                // A link must outlive the four-second fade; everything else fades as before.
+                if !notice.links.isEmpty {
+                    showStickyNotice(notice)
+                } else if !notice.text.isEmpty {
+                    showNotice(notice.text)
+                }
+            }
             // Quitting: a pull's merge or a write's follow-up fetch would only be cut short. Kept,
             // though, in case the quit is called off (`endTerminating`).
             guard !isTerminating else {
@@ -558,7 +569,9 @@ enum PushKind: Equatable {
 /// What one piece of lane work came to: what to say, what to open, and what to start once the
 /// lane (and the slot) are free again.
 struct LaneEnding {
-    var notice: String?
+    /// Shown by `runOnLane`: in the sticky slot when it carries links (a pushed branch's
+    /// pull-request link), in the transient one otherwise.
+    var notice: Notice?
     var failure: String?
     var sheet: BranchSheet?
     var rejected: RejectedPush?
@@ -579,13 +592,19 @@ struct LaneEnding {
         rejected: RejectedPush? = nil, alreadyRefreshed: Bool = false, mustBeRead: Bool = false,
         then: (@MainActor () -> Void)? = nil
     ) {
-        self.notice = notice
+        self.notice = notice.map { Notice(text: $0) }
         self.failure = failure
         self.sheet = sheet
         self.rejected = rejected
         self.alreadyRefreshed = alreadyRefreshed
         self.mustBeRead = mustBeRead
         self.then = then
+    }
+
+    /// A push's success, whose notice may carry links (`Notice.linked`).
+    init(notice: Notice, mustBeRead: Bool = false) {
+        self.init(mustBeRead: mustBeRead)
+        self.notice = notice
     }
 }
 

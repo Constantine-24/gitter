@@ -35,6 +35,9 @@ quiet fetch in the background. There is still no discard and no stash; those are
   the last answer is remembered
 - Publish a branch that has no upstream (`push -u`), choosing the remote when there is more
   than one (`origin` preselected); Re-publish one whose upstream was deleted on the server
+- A hosting service's pull-request link after a push stays on screen, with **Open** and
+  **Copy Link**, until you close it, push again or open another repository — the link whole,
+  without any user name or token; other notices still fade after a few seconds
 - When the server refuses a push because it has commits you don't, the banner offers
   **Pull** and **Force Push…**; the force push is leased on the exact sha it showed you
 - Delete a branch on a remote from the sidebar ("Delete on "origin"…"), with a warning that
@@ -392,6 +395,8 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `autofetchfailed:<reason>` | set the failure the Fetch item's quiet mark stands for, without waiting for a real automatic fetch to fail |
 | `menuitem:<menu>:<title>` | choose that main-menu item (`NSMenu.performActionForItem`) — how "Fetch Automatically" is toggled; `menu:<title>` a second later shows its tick as `state=on` |
 | `quit` | quit as ⌘Q does, from the run loop, so the steps after it run while the quit is held: `start:push;wait:1;quit;wait:1;start:snapshot:alert;alert;alertbutton:Wait`. `QUIT …` lines say what was decided and when |
+| `notice` | log both notice slots, the transient one and the sticky one: each one's text, links and button titles |
+| `openlink` | press the sticky notice's **Open** through the store's own call, with an opener that only logs `openlink: <url>` — the harness never starts a browser |
 | `alert` / `alertbutton:<title>` | log every text and button (with its key equivalent) of the alert on screen — the snapshot draws an alert's buttons but not its text — and click one of its buttons |
 
 A step that starts network work waits for the lane to free as well, for up to 120 seconds; a

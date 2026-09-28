@@ -50,10 +50,16 @@ final class RepositoryStore {
 
     /// A short, non-error message about something that just succeeded ("Fast-forwarded to
     /// feature."). Unlike `lastError` it is never sticky and clears itself after a few seconds.
-    private(set) var notice: String?
+    private(set) var notice: Notice?
+
+    /// A notice that stays until it is dismissed or replaced: one that carries something to act
+    /// on, like a pushed branch's pull-request link. Shown under `notice`, and never cleared by
+    /// it. Also ends when another repository is opened, and — for one with links — when the
+    /// next push or publish starts. See `RepositoryStore+Notices`.
+    private(set) var stickyNotice: Notice?
 
     /// The auto-clear for `notice`. Bookkeeping only; views must not touch it.
-    // internal (not private): used by +Branches.swift's `showNotice(_:)`
+    // internal (not private): used by +Notices.swift's `showNotice(_:)`
     var noticeTask: Task<Void, Never>?
 
     /// The network lane: the one fetch, pull, push, publish, force push or remote delete that
@@ -251,6 +257,8 @@ final class RepositoryStore {
         // looking at any more.
         activeSheet = nil
         dismissNotice()
+        // Its link or its undo is for the repository being left.
+        stickyNotice = nil
         // A half-written message belongs to the repository it was written for, and a mutation
         // in flight can only be for the old one.
         draft.reset()
@@ -331,10 +339,16 @@ final class RepositoryStore {
         detailFiles = files
     }
 
-    /// internal (not private(set) write): used by +Branches.swift's `showNotice(_:)`/
+    /// internal (not private(set) write): used by +Notices.swift's `showNotice(_:)`/
     /// `dismissNotice()`, which own the auto-clear timing.
-    func setNotice(_ message: String?) {
-        notice = message
+    func setNotice(_ newNotice: Notice?) {
+        notice = newNotice
+    }
+
+    /// internal (not private(set) write): used by +Notices.swift's `showStickyNotice(_:)`/
+    /// `dismissStickyNotice()`.
+    func setStickyNotice(_ newNotice: Notice?) {
+        stickyNotice = newNotice
     }
 
     /// internal (not private(set) write): used by +Refresh.swift, +Detail.swift, +Errors.swift
@@ -516,6 +530,12 @@ final class RepositoryStore {
         // user did, and must not take that answer away every ten minutes. (The force push reads
         // its lease with a fetch of its own, so a tracking ref moved meanwhile changes nothing.)
         if kind != .autoFetch { rejectedPush = nil }
+        // A pushed branch's link is about the push before this one; this one says its own.
+        switch kind {
+        case .push, .publish, .forcePush:
+            if stickyNotice?.links.isEmpty == false { stickyNotice = nil }
+        case .fetch, .autoFetch, .pull, .deleteRemoteBranch: break
+        }
         laneToken += 1
         remoteActivity = RemoteActivity(kind: kind, remote: remote, progress: nil)
         return (

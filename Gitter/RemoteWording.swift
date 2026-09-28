@@ -5,7 +5,7 @@ import GitCore
 /// action is available, as pure functions over plain values.
 ///
 /// Pure so that they can be read and tested without a store. `GitterTests` pins `plain` and
-/// `pullRequestLinks`; the rest is exercised through the DEBUG harness, which logs the three
+/// `pullRequestLines`; the rest is exercised through the DEBUG harness, which logs the three
 /// blocked reasons after every step (see `docs/BACKLOG.md`).
 ///
 /// **Two rules hold for everything here.**
@@ -1075,14 +1075,16 @@ enum RemoteWording {
         serverLines(lines).joined(separator: " ")
     }
 
-    /// The server lines worth a notice after a successful push: the ones carrying a URL (a
-    /// hosting service's "create a pull request" link), each with the line before it when that
-    /// one introduces it ("…by visiting:"). Made plain and capped like every other server line.
-    static func pullRequestLinks(_ messages: [String]) -> [String] {
+    /// The server lines worth a notice's **text** after a successful push: the ones carrying a
+    /// link `NoticeLinks` takes (a hosting service's "create a pull request" link), each with
+    /// the line before it when that one introduces it ("…by visiting:"). Made plain and capped
+    /// like every other server line — the link in a line may be cut here; the notice's `links`,
+    /// which Open and Copy Link use, are `NoticeLinks.extract`'s and are whole.
+    static func pullRequestLines(_ messages: [String]) -> [String] {
         let lines = messages.map(plain)
         var picked: [String] = []
         for (index, line) in lines.enumerated()
-        where line.contains("https://") || line.contains("http://") {
+        where !NoticeLinks.extract(fromRemoteLines: [messages[index]]).isEmpty {
             if index > 0, lines[index - 1].hasSuffix(":"), picked.last != lines[index - 1] {
                 picked.append(lines[index - 1])
             }

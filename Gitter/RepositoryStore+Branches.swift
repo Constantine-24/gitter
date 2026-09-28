@@ -101,30 +101,6 @@ extension RepositoryStore {
         }
     }
 
-    // MARK: - Notices
-
-    /// Shows a transient, non-error message and schedules its own removal.
-    ///
-    /// The timer is cancelled by the next notice and by `open()`, and it re-checks `generation`
-    /// before clearing, so a notice raised for a repository opened since is not cleared by an
-    /// older one's timer.
-    // internal (not private): used by +BranchSheets.swift too
-    func showNotice(_ message: String) {
-        noticeTask?.cancel()
-        setNotice(message)
-        let generation = self.generation
-        noticeTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(4))
-            guard !Task.isCancelled, let self, self.generation == generation else { return }
-            setNotice(nil)
-        }
-    }
-
-    func dismissNotice() {
-        noticeTask?.cancel()
-        setNotice(nil)
-    }
-
     // MARK: - Running one of the five
 
     /// The one path every HEAD-moving action takes: refuse while an operation is in progress,

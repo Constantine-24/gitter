@@ -238,12 +238,15 @@ extension RepositoryStore {
                 try? await backend.fetch(remote: remote, at: root, progress: progress)
                 return LaneEnding(failure: banner)
             }
-            var notice = RemoteWording.pushed(
+            var text = RemoteWording.pushed(
                 result.outcome, branch: branch, remote: remote, remoteRef: remoteRef,
                 publishing: false, wasGone: false) ?? ""
-            let links = RemoteWording.pullRequestLinks(result.remoteMessages)
-            if !links.isEmpty { notice += "\n" + links.joined(separator: "\n") }
-            return LaneEnding(notice: notice)
+            let hostLines = RemoteWording.pullRequestLines(result.remoteMessages)
+            if !hostLines.isEmpty { text += "\n" + hostLines.joined(separator: "\n") }
+            return LaneEnding(
+                notice: Notice.linked(
+                    text: text,
+                    links: NoticeLinks.extract(fromRemoteLines: result.remoteMessages)))
         }
     }
 
