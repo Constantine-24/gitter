@@ -68,6 +68,11 @@ public enum StashApplyOutcome: Sendable, Hashable {
     case partiallyApplied(untrackedNotRestored: [String])
     /// Anything else, in git's own words.
     case failed(gitsWords: String)
+    /// Pop only: the apply was clean, but the entry was not dropped. Either the list changed
+    /// between the apply and the drop, so `stash@{index}` no longer named the entry, or the
+    /// drop itself failed (`reason` is git's words then). The changes are in the files *and*
+    /// the entry is still listed; nothing may call this "popped".
+    case appliedButKept(reason: String)
 }
 
 /// The stash: reading the list and showing an entry, pushing, applying, popping and dropping.
@@ -117,9 +122,9 @@ public protocol GitStashBackend: Sendable {
     /// the entry, as git's own pop does. Gitter never runs the `pop` subcommand.
     ///
     /// Throws `StashRefusal.stashListChanged` before applying when `stash@{index}` is no longer
-    /// `stash.sha`. If the list changes between the apply and the drop, the entry is kept and
-    /// the outcome is still `.applied`: the changes are in the files, and the entry stays
-    /// listed where the next read shows it.
+    /// `stash.sha`. If the list changes between the apply and the drop, or the drop fails, the
+    /// entry is kept and the outcome is `.appliedButKept(reason:)`: the changes are in the
+    /// files, and the entry stays listed where the next read shows it.
     func pop(_ stash: Stash, at root: URL) async throws -> StashApplyOutcome
 
     /// `git stash drop -q stash@{index}`, only after `rev-parse stash@{index}` gave `stash.sha`.

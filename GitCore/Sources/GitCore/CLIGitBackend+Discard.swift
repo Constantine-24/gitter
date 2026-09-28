@@ -319,8 +319,10 @@ extension CLIGitBackend {
         case .conflicts(let paths): return .conflicted(paths, recordKept: try await listed(record, at: root))
         // Unreachable for a record, which has no untracked part (no third parent) — git reports
         // this only for an entry's untracked files. Should it happen, the tracked part did land
-        // and something did not: kept, not dropped.
-        case .partiallyApplied: return .restoredUnverified(recordKept: try await listed(record, at: root))
+        // and something did not: kept, not dropped. `.appliedButKept` is pop's alone; `apply`
+        // never returns it.
+        case .partiallyApplied, .appliedButKept:
+            return .restoredUnverified(recordKept: try await listed(record, at: root))
         case .failed(let words): return .refused(words, recordKept: try await listed(record, at: root))
         }
 
@@ -454,7 +456,7 @@ extension CLIGitBackend {
     }
 
     /// git's own words for a failure, or the error's description.
-    private static func gitsWords(_ error: Error) -> String {
+    static func gitsWords(_ error: Error) -> String {
         if case GitError.commandFailed(_, let stderr) = error { return stderr }
         return error.localizedDescription
     }

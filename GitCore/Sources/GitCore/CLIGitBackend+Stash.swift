@@ -121,15 +121,34 @@ extension CLIGitBackend {
     }
 
     public func pop(_ stash: Stash, at root: URL) async throws -> StashApplyOutcome {
+        try await pop(stash, at: root, beforeDrop: {})
+    }
+
+    /// `pop`, with `beforeDrop` run between a clean apply and the drop's verification: the one
+    /// window a test cannot otherwise reach, through which it moves the list or locks the ref.
+    func pop(
+        _ stash: Stash, at root: URL, beforeDrop: () async throws -> Void
+    ) async throws -> StashApplyOutcome {
         guard try await isStill(stash, at: root) else { throw StashRefusal.stashListChanged }
         let outcome = try await apply(stash, at: root)
-        // Only a clean apply drops, and only the entry that is still this one (see the
-        // protocol for the list changing in between).
-        if outcome == .applied, try await isStill(stash, at: root) {
+        guard outcome == .applied else { return outcome }
+        // Only a clean apply drops, and only the entry that is still this one. From here the
+        // changes are in the files whatever happens, so nothing below throws: a list that moved
+        // or a drop that failed keeps the entry and says so.
+        do {
+            try await beforeDrop()
+            guard try await isStill(stash, at: root) else {
+                return .appliedButKept(reason: Self.listChangedBeforeTheDrop)
+            }
             _ = try await run(["stash", "drop", "-q", "stash@{\(stash.index)}"], cwd: root)
+        } catch {
+            return .appliedButKept(reason: Self.gitsWords(error))
         }
-        return outcome
+        return .applied
     }
+
+    /// `appliedButKept`'s reason when `stash@{index}` stopped naming the entry after the apply.
+    static let listChangedBeforeTheDrop = "The stash list changed before the entry could be dropped."
 
     public func drop(_ stash: Stash, at root: URL) async throws {
         guard try await isStill(stash, at: root) else { throw StashRefusal.stashListChanged }

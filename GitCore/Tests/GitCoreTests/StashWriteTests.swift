@@ -768,6 +768,50 @@ private final class FolderTrasher: Trasher, @unchecked Sendable {
         #expect(try await repo.revParse("stash@{1}") == stash.sha)
     }
 
+    /// The list moves between a clean apply and the drop (a push from a terminal, reached
+    /// through `pop`'s `beforeDrop` seam). The changes are in the files, the entry is not
+    /// dropped — and the outcome must not read as a pop.
+    @Test func aPopWhoseListMovesBeforeTheDropKeepsTheEntryAndSaysSo() async throws {
+        let (repo, stash) = try await makeRepoWithEntry()
+        defer { repo.cleanUp() }
+
+        let outcome = try await backend.pop(stash, at: repo.root, beforeDrop: {
+            try repo.write("g", "g changed\n")
+            try await repo.git(["stash", "push", "-q", "-m", "newer", "--", "g"])
+        })
+
+        guard case .appliedButKept(let reason) = outcome else {
+            Issue.record("expected .appliedButKept, got \(outcome)")
+            return
+        }
+        #expect(reason.contains("stash list changed"), "\(reason)")
+        #expect(try repo.bytes("f") == Data("f1\nstashed\nf3\n".utf8))
+        #expect(try await repo.stashCount() == 2)
+        #expect(try await repo.revParse("stash@{1}") == stash.sha)
+    }
+
+    /// The drop itself fails after a clean apply: `refs/stash.lock` is held, as by another git
+    /// process. git's words come back, and the entry stays.
+    @Test func aPopWhoseDropFailsKeepsTheEntryInGitsWords() async throws {
+        let (repo, stash) = try await makeRepoWithEntry()
+        defer { repo.cleanUp() }
+        let lock = repo.root.appendingPathComponent(".git/refs/stash.lock")
+
+        let outcome = try await backend.pop(stash, at: repo.root, beforeDrop: {
+            try Data().write(to: lock)
+        })
+        try? FileManager.default.removeItem(at: lock)
+
+        guard case .appliedButKept(let reason) = outcome else {
+            Issue.record("expected .appliedButKept, got \(outcome)")
+            return
+        }
+        #expect(reason.contains("stash.lock"), "\(reason)")
+        #expect(try repo.bytes("f") == Data("f1\nstashed\nf3\n".utf8))
+        #expect(try await repo.stashRef() == stash.sha)
+        #expect(try await repo.stashCount() == 1)
+    }
+
     // MARK: drop
 
     @Test func dropRemovesTheEntryItNames() async throws {
