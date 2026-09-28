@@ -49,23 +49,10 @@ struct StashRecord {
         paths named: [String], message: String, backend: CLIGitBackend, at root: URL,
         temporaryDirectory: URL = URL(fileURLWithPath: NSTemporaryDirectory())
     ) async throws -> StashRecord {
-        guard !named.isEmpty else { throw StashRefusal.nothingSelected }
-        // `ud/` and `ud` are one path to git's index. A trailing slash would make `update-index`
-        // skip a directory with only "Ignoring path ud/" and exit 0 — a record silently missing
-        // it — where the bare name fails loudly ("is a directory").
-        var seen = Set<String>()
-        let paths = named.map(Self.withoutTrailingSlash).filter { seen.insert($0).inserted }
-
-        // 1. Survey. Read-only: every call here leaves the index alone (`GIT_OPTIONAL_LOCKS=0`).
-        let status = try await backend.stashStatus(at: root)
-        var entries: [String: [(mode: String, sha: String, stage: String, path: String)]] = [:]
-        for p in paths {
-            let data = try await backend.run(["ls-files", "-s", "-z", "--", backend.literalPathspec(p)], cwd: root)
-            entries[p] = CLIGitBackend.indexRecords(data)
-        }
-        let headModes = try await backend.modes(of: paths, in: "HEAD", at: root)
-        try await refuse(named, entries: entries, headModes: headModes, status: status, backend: backend, at: root)
-        let inHEAD = Set(headModes.keys)
+        // 1. Survey and refusals.
+        let survey = try await survey(paths: named, backend: backend, at: root)
+        let (paths, entries) = (survey.paths, survey.entries)
+        let inHEAD = Set(survey.headModes.keys)
 
         // 2–4. Build I and W in a temporary index.
         let temporaryIndex = temporaryDirectory.appendingPathComponent(temporaryIndexPrefix + UUID().uuidString)
@@ -128,6 +115,39 @@ struct StashRecord {
                 exitCode: 0, stderr: "git stash store did not file \(w).")
         }
         return try await backend.listedStash(w, at: root)
+    }
+
+    /// What step 1 learns about the named paths: each one's real index entries and HEAD mode.
+    struct Survey {
+        /// The named paths without a trailing slash, each once, in order.
+        let paths: [String]
+        /// `ls-files -s` of each path: empty when the index has no entry for it.
+        let entries: [String: [(mode: String, sha: String, stage: String, path: String)]]
+        /// Each path HEAD has an entry for, with its mode.
+        let headModes: [String: String]
+    }
+
+    /// Step 1 alone: the read-only survey, then every refusal (`StashRefusal`) the record
+    /// would throw, in its order. Writes nothing. `discard` runs it before its stale check, so
+    /// that a refusal is reported as one even when the file also changed.
+    static func survey(paths named: [String], backend: CLIGitBackend, at root: URL) async throws -> Survey {
+        guard !named.isEmpty else { throw StashRefusal.nothingSelected }
+        // `ud/` and `ud` are one path to git's index. A trailing slash would make `update-index`
+        // skip a directory with only "Ignoring path ud/" and exit 0 — a record silently missing
+        // it — where the bare name fails loudly ("is a directory").
+        var seen = Set<String>()
+        let paths = named.map(Self.withoutTrailingSlash).filter { seen.insert($0).inserted }
+
+        // Read-only: every call here leaves the index alone (`GIT_OPTIONAL_LOCKS=0`).
+        let status = try await backend.stashStatus(at: root)
+        var entries: [String: [(mode: String, sha: String, stage: String, path: String)]] = [:]
+        for p in paths {
+            let data = try await backend.run(["ls-files", "-s", "-z", "--", backend.literalPathspec(p)], cwd: root)
+            entries[p] = CLIGitBackend.indexRecords(data)
+        }
+        let headModes = try await backend.modes(of: paths, in: "HEAD", at: root)
+        try await refuse(named, entries: entries, headModes: headModes, status: status, backend: backend, at: root)
+        return Survey(paths: paths, entries: entries, headModes: headModes)
     }
 
     // MARK: - Steps
@@ -200,7 +220,7 @@ struct StashRecord {
 
     /// Whether `path`, or a directory on the way to it, holds a `.git` (a directory, or the
     /// file a linked worktree or submodule has) — a repository git will not look inside.
-    private static func isInsideAnotherRepository(_ path: String, under root: URL) -> Bool {
+    static func isInsideAnotherRepository(_ path: String, under root: URL) -> Bool {
         var directory = root
         for component in withoutTrailingSlash(path).split(separator: "/") {
             directory = directory.appendingPathComponent(String(component))

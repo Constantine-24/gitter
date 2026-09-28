@@ -62,6 +62,37 @@ public enum PatchBuilder {
         }
     }
 
+    /// Whether some unstaged lines of `file` can be discarded without the rest: a plain
+    /// modification of a text file that is valid UTF-8, with hunks. Anything else is discarded
+    /// whole (a deletion, a rename, a mode-only change, a binary file).
+    public static func supportsPartialDiscard(_ file: FileDiff) -> Bool {
+        file.kind == .modified && supportsPartial(file, direction: .unstage)
+    }
+
+    /// The patch that discards the chosen unstaged lines of `file` — a worktree diff — when
+    /// reverse-applied to the worktree (`DiscardRequest.lines`). Nil when `file` does not
+    /// `supportsPartialDiscard`, or nothing is selected.
+    ///
+    /// It is built as `.unstage` builds, not `.stage`: the patch is matched against the
+    /// **worktree**, the diff's new side, which is what `.unstage` keeps whole — an unselected
+    /// `+` line is still in the file and stays as context, an unselected `-` line is already gone
+    /// from it and is dropped, and each hunk is anchored at its worktree position. A `.stage`
+    /// patch keeps the index side instead: with a line of the same hunk left unselected, git
+    /// refuses it (`error: f: patch does not apply`, measured), and a later hunk alone would
+    /// apply only at an offset.
+    public static func discardPatch(file: FileDiff, hunkIDs: Set<Hunk.ID>, lineIDs: Set<DiffLine.ID>?) -> Patch? {
+        guard supportsPartialDiscard(file) else { return nil }
+        return patch(file: file, hunkIDs: hunkIDs, lineIDs: lineIDs, direction: .unstage)
+    }
+
+    /// How many changed lines a selection holds: every `+` and `-` line of the chosen hunks,
+    /// or of those only the ones in `lineIDs`. What `DiscardRequest.lines` names in its record.
+    public static func selectedLineCount(file: FileDiff, hunkIDs: Set<Hunk.ID>, lineIDs: Set<DiffLine.ID>?) -> Int {
+        file.hunks.filter { hunkIDs.contains($0.id) }.flatMap(\.lines).filter { line in
+            (line.kind == .added || line.kind == .removed) && (lineIDs?.contains(line.id) ?? true)
+        }.count
+    }
+
     /// Whether the selection covers the entire change of a file that is being created or
     /// removed, rather than a part of it.
     ///

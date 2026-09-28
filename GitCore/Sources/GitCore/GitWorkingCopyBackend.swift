@@ -89,4 +89,66 @@ public protocol GitWorkingCopyBackend: Sendable {
     ///
     /// Returns `""` in a repository with no commits yet, where `log` would otherwise fail.
     func headMessage(at root: URL) async throws -> String
+
+    // MARK: - Discard
+
+    /// What a discard sheet for tracked paths shows, and exactly what `discard` re-reads for
+    /// its stale check: per path, in order, `workingCopyDiff(staged: true)` when
+    /// `includingStaged`, then `workingCopyDiff(staged: false)` when the index has the path (a
+    /// staged deletion or rename source has no unstaged side). `.unstaged` and `.lines` use
+    /// `includingStaged: false`, `.stagedAndUnstaged` `true`.
+    func discardExpectation(tracked paths: [String], includingStaged: Bool, at root: URL) async throws
+        -> DiscardExpectation
+
+    /// What a discard sheet for untracked items shows, and what `discard` stats again: each
+    /// item's type, size and date (see `UntrackedItem`). A path that does not exist is left
+    /// out, so it cannot match what a sheet showed.
+    func discardExpectation(untracked paths: [String], at root: URL) async throws -> DiscardExpectation
+
+    /// Discards what `request` names, after recording it (tracked kinds) or on its way to the
+    /// Trash (untracked). In this order, each step only if the one before it passed:
+    ///
+    /// 1. **Guard**, before anything runs: `DiscardRefusal` for an operation in progress,
+    ///    unmerged, intent-to-add, submodule and nested-repository paths, a file and a
+    ///    directory that swapped places (the record's own refusals, run first), a path the kind
+    ///    cannot take (`notTracked`), and for `.lines` anything but a plain modification of a
+    ///    text file that is valid UTF-8, or a patch with a context-free hunk
+    ///    (`needsWholeFile`).
+    /// 2. **Stale check**: `discardExpectation` again, compared with `request.expected`;
+    ///    any difference is `.changedSinceShown`, with no record written.
+    /// 3. **Record** (tracked kinds): `StashRecord`, `request.recordMessage`.
+    /// 4. **Change**: `restore --no-recurse-submodules --worktree`, `restore
+    ///    --no-recurse-submodules --source=HEAD --staged --worktree`, `apply --reverse
+    ///    --whitespace=nowarn` of the patch on the worktree (never `--unidiff-zero`), or the
+    ///    Trash, one item at a time.
+    ///
+    /// When step 4 fails for a tracked kind, the same diffs are read once more. If they are
+    /// still exactly `expected`, git changed nothing (`restore` and `apply` are all or nothing,
+    /// M 9, A.5), so the record is dropped again — by its verified position — and git's error
+    /// is thrown as it is: an `index.lock` leaves no entry behind. Otherwise, or if that drop
+    /// fails, `DiscardFailure` names the record. A Trash that fails part-way throws
+    /// `DiscardFailure` naming what already went.
+    func discard(_ request: DiscardRequest, trasher: any Trasher, at root: URL) async throws -> DiscardReceipt
+
+    /// Puts a discard back:
+    ///
+    /// - `.unstaged`: `stash apply -q --no-index` of the record (rerere off), then the drop.
+    /// - `.stagedAndUnstaged`: the same apply, then — only while HEAD is still
+    ///   `receipt.headAtDiscard` — `restore --no-recurse-submodules --source=<record>^2
+    ///   --staged` of the paths W^2 or the index knows. With HEAD moved, that would stage a
+    ///   reversal of the new commit (M B b), so it is skipped: `.restoredUnstaged`.
+    /// - `.lines`: `apply --whitespace=nowarn` of the same patch on the worktree, then the drop.
+    /// - `.untracked`: each item back from the Trash; one whose path exists again is not
+    ///   overwritten (`.partiallyRestored`), and the others still come back.
+    ///
+    /// Every drop is the verified one (`GitStashBackend.drop`), of the record found again **by
+    /// sha** in the current list — so an entry pushed since, which moved the record down, is
+    /// never the one dropped. If the list changes between that read and the drop, the drop is
+    /// refused and the record kept; the outcome is still `.restored`, since the content is
+    /// back. A refused or conflicted apply keeps the record.
+    ///
+    /// Throws `DiscardRefusal.operationInProgress` (or `.unmerged`) before anything runs for a
+    /// tracked kind; `DiscardFailure` when step 2 of a staged-side undo fails.
+    func undoDiscard(_ receipt: DiscardReceipt, trasher: any Trasher, at root: URL) async throws
+        -> UndoDiscardOutcome
 }
