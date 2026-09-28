@@ -6,12 +6,18 @@ public struct RepoSnapshot: Sendable, Hashable {
     public let refs: RefCollection
     public let commits: [Commit]
     public let graph: [GraphRow]         // same order/count as commits
+    /// The stash list, newest first (see `GitStashBackend.stashes`).
+    public let stashes: [Stash]
 
-    public init(root: URL, status: WorkingCopyStatus, refs: RefCollection, commits: [Commit], graph: [GraphRow]) {
+    public init(
+        root: URL, status: WorkingCopyStatus, refs: RefCollection, commits: [Commit], graph: [GraphRow],
+        stashes: [Stash] = []
+    ) {
         self.root = root
         self.status = status
         self.refs = refs
         self.commits = commits
         self.graph = graph
+        self.stashes = stashes
     }
 }

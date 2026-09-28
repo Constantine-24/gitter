@@ -75,7 +75,8 @@ public enum StatusParser {
         let path = String(fields[8])
         return FileStatus(
             path: path, originalPath: nil,
-            staged: ChangeKind.from(porcelain: x), unstaged: ChangeKind.from(porcelain: y)
+            staged: ChangeKind.from(porcelain: x), unstaged: ChangeKind.from(porcelain: y),
+            isSubmodule: isSubmodule(fields[2]), isIntentToAdd: isIntentToAdd(y)
         )
     }
 
@@ -88,8 +89,28 @@ public enum StatusParser {
         let path = String(fields[9])
         return FileStatus(
             path: path, originalPath: originalPath,
-            staged: ChangeKind.from(porcelain: x), unstaged: ChangeKind.from(porcelain: y)
+            staged: ChangeKind.from(porcelain: x), unstaged: ChangeKind.from(porcelain: y),
+            isSubmodule: isSubmodule(fields[2]), isIntentToAdd: isIntentToAdd(y)
         )
+    }
+
+    /// The `sub` field: `N...` for an ordinary path, `S<c><m><u>` for a submodule.
+    private static func isSubmodule(_ sub: Substring) -> Bool {
+        sub.first == "S"
+    }
+
+    /// Whether the worktree side says the index entry is intent-to-add (`git add -N`).
+    ///
+    /// Measured on git 2.54, porcelain v2 shows such an entry as `1 .A N... 000000 000000
+    /// 100644 <zeros> <zeros> path` — zero modes and shas, not the empty blob `ls-files -s`
+    /// shows (M A.0). The worktree side (Y) can only be `A` for an intent-to-add entry, since
+    /// a path the index does not hold is untracked (`?`) instead. It can only be `R` for one
+    /// too: git pairs a deleted i-t-a entry with a new i-t-a entry as a worktree rename
+    /// (`2 .R N... … R100 e`, then `q`), and the new path is the i-t-a entry. The deleted one
+    /// has no status line of its own then. `C` is the same pairing under
+    /// `status.renames=copies`.
+    private static func isIntentToAdd(_ y: Character) -> Bool {
+        y == "A" || y == "R" || y == "C"
     }
 
     /// `u XY sub m1 m2 m3 mW h1 h2 h3 path`

@@ -47,15 +47,39 @@ public struct CLIGitBackend: GitBackend {
         // Porcelain v2 says nothing about a merge, cherry-pick, revert or rebase that is
         // part-way through, so that comes from its own commands alongside these.
         async let operation = operationInProgress(at: root)
+        async let stashList = stashes(at: root)
 
-        let status = StatusParser.parse(try await statusData)
-            .with(operationInProgress: try await operation)
+        let status = Self.markingNestedRepositories(
+            in: StatusParser.parse(try await statusData), under: root
+        ).with(operationInProgress: try await operation)
         let refs = RefParser.parse(try await refData)
             .with(remotes: RemoteParser.parse(String(decoding: try await remoteData, as: UTF8.self)))
         let log = try await commits
         let graph = GraphLayout.layout(log)
 
-        return RepoSnapshot(root: root, status: status, refs: refs, commits: log, graph: graph)
+        return RepoSnapshot(
+            root: root, status: status, refs: refs, commits: log, graph: graph,
+            stashes: try await stashList)
+    }
+
+    /// Porcelain v2 lists a nested repository as an ordinary untracked directory (`? nested/`,
+    /// even with `-uall`; M 16), and git never looks inside it — so stashing or trashing it
+    /// is a different thing from doing that to a directory of files. One stat per untracked
+    /// directory entry tells them apart: a `.git` inside, a directory or a file (a linked
+    /// worktree's or a separated git dir's `gitdir:` file).
+    static func markingNestedRepositories(
+        in status: WorkingCopyStatus, under root: URL
+    ) -> WorkingCopyStatus {
+        guard status.files.contains(where: { $0.isUntracked && $0.path.hasSuffix("/") }) else {
+            return status
+        }
+        return status.with(
+            files: status.files.map { file in
+                guard file.isUntracked, file.path.hasSuffix("/") else { return file }
+                let dotGit = root.appendingPathComponent(file.path).appendingPathComponent(".git")
+                return file.with(
+                    isNestedRepository: FileManager.default.fileExists(atPath: dotGit.path))
+            })
     }
 
     public func workingCopyDiff(at root: URL, path: String, staged: Bool) async throws -> [FileDiff] {
@@ -140,6 +164,36 @@ public struct CLIGitBackend: GitBackend {
                 let trimmed = segment.trimmingCharacters(in: .whitespaces)
                 if !trimmed.isEmpty { progress(trimmed) }
             })
+    }
+
+    /// `run` with variables of the caller's own added to the child's environment, for the
+    /// one call that needs them: the record's `GIT_INDEX_FILE`, and the `GIT_CONFIG_COUNT`
+    /// parameters that turn rerere off for a stash apply (`rerereOff`). A leading `-c` would do
+    /// the latter too, and the scanner forbids it, because it hides the subcommand.
+    ///
+    /// It goes through the streaming runner's internal overload, whose `inheritedEnvironment`
+    /// replaces `ProcessInfo.processInfo.environment` as the base; this passes that environment
+    /// merged with `extra` (`extra` wins). The runner then sets `GIT_TERMINAL_PROMPT`,
+    /// `LC_ALL`, `GIT_OPTIONAL_LOCKS` and `GIT_EDITOR` over it as it does for every call, so
+    /// `extra` cannot change those four, and stdin is `/dev/null`. `ProcessRunner.swift`
+    /// itself is untouched. The one difference from `run`'s environment is the streaming
+    /// runner's `SSH_ASKPASS_REQUIRE=force`, which no local command reads.
+    ///
+    /// Failures are `run`'s: an exit code that is neither 0 nor in `allowedExitCodes` throws
+    /// `GitError.commandFailed` with the trimmed stderr, and a launch failure
+    /// `GitError.launchFailed`. On success the result carries stdout, the untrimmed stderr and
+    /// the exit code — which matters for an apply, where exit 1 is a conflict to report.
+    ///
+    /// Here rather than in `CLIGitBackend+Environment.swift` because `gitPath` and `runner`
+    /// are private to this file (see `runStreaming`).
+    func runWithEnvironment(
+        _ arguments: [String], cwd: URL, extra: [String: String],
+        allowedExitCodes: Set<Int32> = []
+    ) async throws -> ProcessRunner.StreamedResult {
+        let environment = ProcessInfo.processInfo.environment.merging(extra) { _, added in added }
+        return try await runner.runStreaming(
+            gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes, onLaunch: nil,
+            inheritedEnvironment: environment, onStderr: { _ in })
     }
 
     /// Turns a path into a pathspec that means exactly that one path.

@@ -40,14 +40,39 @@ public struct FileStatus: Sendable, Hashable, Identifiable {
     public let staged: ChangeKind?       // index side (X). nil when unchanged.
     public let unstaged: ChangeKind?     // worktree side (Y). nil when unchanged.
 
+    /// A submodule (gitlink): porcelain v2's `sub` field begins with `S`. Stash ignores one
+    /// (M 14), so stash and discard refuse it.
+    public let isSubmodule: Bool
+    /// An entry added with `git add -N`: in the index with no content yet. A record would turn
+    /// it into a staged empty file (M A.0), so stash and discard refuse it.
+    public let isIntentToAdd: Bool
+    /// An untracked directory (`? dir/`) that holds a `.git` of its own — another repository,
+    /// whose files git will not look inside (M 4, 16). Set by the backend, which stats the
+    /// directory: porcelain v2 does not say.
+    public let isNestedRepository: Bool
+
     public var id: String { path }
     public var isUntracked: Bool { unstaged == .untracked }
 
-    public init(path: String, originalPath: String?, staged: ChangeKind?, unstaged: ChangeKind?) {
+    /// The same entry with `isNestedRepository` set.
+    func with(isNestedRepository: Bool) -> FileStatus {
+        FileStatus(
+            path: path, originalPath: originalPath, staged: staged, unstaged: unstaged,
+            isSubmodule: isSubmodule, isIntentToAdd: isIntentToAdd,
+            isNestedRepository: isNestedRepository)
+    }
+
+    public init(
+        path: String, originalPath: String?, staged: ChangeKind?, unstaged: ChangeKind?,
+        isSubmodule: Bool = false, isIntentToAdd: Bool = false, isNestedRepository: Bool = false
+    ) {
         self.path = path
         self.originalPath = originalPath
         self.staged = staged
         self.unstaged = unstaged
+        self.isSubmodule = isSubmodule
+        self.isIntentToAdd = isIntentToAdd
+        self.isNestedRepository = isNestedRepository
     }
 }
 
@@ -135,6 +160,15 @@ public struct WorkingCopyStatus: Sendable, Hashable {
         self.behind = behind
         self.files = files
         self.operationInProgress = operationInProgress
+    }
+
+    /// The same status with `files` replaced — how the backend adds what only the file system
+    /// can say (`FileStatus.isNestedRepository`).
+    func with(files: [FileStatus]) -> WorkingCopyStatus {
+        WorkingCopyStatus(
+            headSha: headSha, branch: branch, upstream: upstream, ahead: ahead, behind: behind,
+            files: files, operationInProgress: operationInProgress
+        )
     }
 
     /// The same status with `operationInProgress` replaced — how the backend completes what
