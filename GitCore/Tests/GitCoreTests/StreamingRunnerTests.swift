@@ -794,12 +794,22 @@ private final class Locked<Value>: @unchecked Sendable {
         try marker.run()
         try await Task.sleep(for: .milliseconds(100))
         #expect(Self.processCount(matching: token) >= 1)
-        let markerGroup = getpgid(marker.processIdentifier)
+        let markerPID = marker.processIdentifier
+        let markerGroup = getpgid(markerPID)
         marker.terminate()
-        marker.waitUntilExit()
-        // The marker's own `sleep` child carries no token, and `waitUntilExit` returns as soon
-        // as the shell is reaped — so wait the whole group out before the stress begins, or it
-        // shows up as a process this test left behind.
+        // Not `marker.waitUntilExit()`, which hung the Xcode scheme's run for good. Foundation
+        // notes each task it launches, by raw pointer, in a list kept per launching thread and
+        // never pruned, and tells a task without a `terminationHandler` of its exit on the
+        // launching thread's run loop; `waitUntilExit` waits for that news whenever the task's
+        // address is in the *waiting* thread's list. After the `await` above this test resumes
+        // on another cooperative thread, where the address of a task launched earlier and since
+        // freed (a probe's, or a runner's) could be the marker's own: it then waited for a run
+        // loop that no one runs (measured: that list held 39 addresses, the marker's among
+        // them). So the kernel is asked, for a bounded
+        // time: the shell is reaped — Foundation reaps it off any run loop — and then its group,
+        // since the marker's own `sleep` child carries no token and would otherwise count as a
+        // process the stress left behind.
+        #expect(await Self.waitForReap(markerPID), "the marker shell outlived its SIGTERM")
         #expect(await Self.groupIsGone(markerGroup))
 
         let clock = ContinuousClock()
@@ -969,6 +979,9 @@ private final class Locked<Value>: @unchecked Sendable {
         return false
     }
 
+    /// This probe and the one below call `waitUntilExit` on the thread that launched them, with
+    /// no `await` in between — the one way it cannot hang (see the stress test's marker). Keep
+    /// them synchronous.
     private static func killProcesses(matching token: String) {
         let probe = Process()
         probe.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
