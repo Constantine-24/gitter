@@ -1,7 +1,7 @@
 import GitCore
 import SwiftUI
 
-/// Repository outline: the working copy, local branches, remotes and tags.
+/// Repository outline: the working copy, local branches, stashes, remotes and tags.
 ///
 /// Selecting a branch or tag selects the commit it points at in the commit list. Right-clicking
 /// one opens its menu (see `SidebarMenus.swift`), and double-clicking does the obvious thing for
@@ -49,6 +49,8 @@ struct SidebarView: View {
                     }
                 }
             }
+
+            StashesSection()
 
             // The groups come from the configured remotes, not from splitting a branch name on
             // "/": a remote nothing has been fetched from still gets a (empty) group of its

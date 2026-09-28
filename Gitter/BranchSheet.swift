@@ -38,6 +38,13 @@ enum BranchSheet: Identifiable, Hashable {
     /// Delete `branch` on `remote`, at the **full** `tip` read right after a fetch — the lease
     /// — with `onlyThere` commits held by no branch, tag or other remote-tracking ref.
     case deleteRemoteBranch(remote: String, branch: String, tip: String, onlyThere: Int)
+    /// Stash Changes…: `selectedPaths` is what "Selected files" would stash — the working copy's
+    /// selected file (and a rename's original path) when the sheet opened; empty offers only
+    /// "All changes".
+    case stash(selectedPaths: [String])
+    /// Drop Stash…, about this entry: its sha, and the position it had when the sheet opened,
+    /// which `confirmDropStash` hands to GitCore's verified drop as it is.
+    case dropStash(Stash)
 
     var id: Self { self }
 

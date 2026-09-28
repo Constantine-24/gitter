@@ -1,8 +1,8 @@
 import Foundation
 import GitCore
 
-/// Loading the detail pane: the file list for the current selection, and the diff for the
-/// currently selected path within it.
+/// Loading the detail pane: the file list for the current selection (a stash entry's is its
+/// `stashContents`), and the diff for the currently selected path within it.
 extension RepositoryStore {
 
     // MARK: - Detail loading
@@ -27,6 +27,8 @@ extension RepositoryStore {
 
         detailTask = Task {
             var files: [FileStatus] = []
+            var contents: StashContents?
+            var stashGone = false
             var loadError: Error?
 
             switch capturedSelection {
@@ -38,12 +40,32 @@ extension RepositoryStore {
                 } catch {
                     loadError = error
                 }
+            case .stash(let sha):
+                // By sha, from the snapshot just loaded: its position is whatever the list says now.
+                if let stash = self.stashes.first(where: { $0.sha == sha }) {
+                    do {
+                        contents = try await self.backend.stashContents(stash, at: root)
+                    } catch {
+                        loadError = error
+                    }
+                } else {
+                    stashGone = true
+                }
             }
 
             guard !Task.isCancelled,
                 self.generation == capturedGeneration,
                 self.selection == capturedSelection
             else { return }
+
+            if stashGone {
+                // Popped or dropped — here or in a terminal. The pop's or drop's own notice says
+                // what happened; the pane goes back to the working copy, where a pop's changes are.
+                self.selection = .workingCopy
+                self.setStashContents(nil)
+                self.loadDetail()
+                return
+            }
 
             if let loadError {
                 self.clearSticky()
@@ -57,6 +79,13 @@ extension RepositoryStore {
                     self.setError("That commit is no longer in the repository.")
                     self.loadDetail()
                     return
+                case .stash:
+                    // The entry is listed but could not be read: say why, and leave the pane.
+                    self.selection = .workingCopy
+                    self.setStashContents(nil)
+                    self.setError(Self.describe(loadError))
+                    self.loadDetail()
+                    return
                 case .workingCopy:
                     // Unreachable today (the working-copy branch above never throws); kept so
                     // this switch stays exhaustive if that ever changes.
@@ -65,9 +94,16 @@ extension RepositoryStore {
                 }
             } else {
                 self.setDetailFiles(files)
+                if case .stash = capturedSelection { self.setStashContents(contents) }
             }
 
-            if let selectedPath = self.selectedPath, !self.detailFiles.contains(where: { $0.path == selectedPath }) {
+            let paths: Set<String> =
+                if case .stash = capturedSelection {
+                    Set((self.stashContents?.all ?? []).map(\.displayPath))
+                } else {
+                    Set(self.detailFiles.map(\.path))
+                }
+            if let selectedPath = self.selectedPath, !paths.contains(selectedPath) {
                 self.selectedPath = nil
             }
 
@@ -102,6 +138,10 @@ extension RepositoryStore {
                     )
                 case .commit(let sha):
                     result = try await self.backend.commitDiff(at: root, sha: sha, path: capturedPath)
+                case .stash:
+                    // Already read with the entry's files: both parts, so a path in each shows
+                    // both. Read-only — `canPartiallyStage` is false off the working copy.
+                    result = (self.stashContents?.all ?? []).filter { $0.displayPath == capturedPath }
                 }
             } catch {
                 loadError = error

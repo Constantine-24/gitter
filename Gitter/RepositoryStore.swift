@@ -3,10 +3,12 @@ import Foundation
 import GitCore
 import Observation
 
-/// What is shown in the detail pane: the working copy, or a specific commit.
+/// What is shown in the detail pane: the working copy, a specific commit, or a stash entry.
 enum Selection: Hashable {
     case workingCopy
     case commit(String)
+    /// A stash entry, by its sha: its position moves whenever an entry above it is dropped.
+    case stash(String)
 }
 
 @Observable @MainActor
@@ -19,6 +21,9 @@ final class RepositoryStore {
     var selection: Selection = .workingCopy
     var selectedPath: String?
     private(set) var detailFiles: [FileStatus] = []
+    /// The selected stash entry's files and diffs, both parts; nil unless a stash is selected
+    /// and loaded. See `RepositoryStore+Detail`.
+    private(set) var stashContents: StashContents?
     private(set) var diff: [FileDiff] = []
     /// Which side the loaded `diff` came from. `stagedView` flips the instant the user picks a
     /// row, while the matching `git diff` is still running, so for the time in between the two
@@ -162,9 +167,10 @@ final class RepositoryStore {
     private var errorIsSticky = false
 
     /// Everything the store can ask git to do: reads, index and commit writes, branch,
-    /// checkout and merge writes, and the network. Four protocols so a fake can implement any
-    /// one on its own.
+    /// checkout and merge writes, the network, and the stash. Five protocols so a fake can
+    /// implement any one on its own.
     typealias Backend = any GitBackend & GitWorkingCopyBackend & GitBranchBackend & GitRemoteBackend
+        & GitStashBackend
 
     let backend: Backend
     // internal (not private): used by +Opening.swift's `checkGitAvailability()`
@@ -247,6 +253,7 @@ final class RepositoryStore {
         // on screen (or gets raced against) while the new repository's first snapshot loads.
         snapshot = nil
         detailFiles = []
+        stashContents = nil
         setDiff([], staged: stagedView)
         selection = .workingCopy
         selectedPath = nil
@@ -301,6 +308,8 @@ final class RepositoryStore {
     // MARK: - Selection
 
     func select(_ newSelection: Selection) {
+        // Another entry's files must not stand under this one's header while it loads.
+        if newSelection != selection { stashContents = nil }
         selection = newSelection
         setDiff([], staged: stagedView)
         loadDetail()
@@ -337,6 +346,11 @@ final class RepositoryStore {
     /// internal (not private(set) write): used by +Detail.swift
     func setDetailFiles(_ files: [FileStatus]) {
         detailFiles = files
+    }
+
+    /// internal (not private(set) write): used by +Detail.swift
+    func setStashContents(_ contents: StashContents?) {
+        stashContents = contents
     }
 
     /// internal (not private(set) write): used by +Notices.swift's `showNotice(_:)`/

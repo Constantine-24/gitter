@@ -4,8 +4,8 @@ import SwiftUI
 /// which question is on screen.
 ///
 /// The switch is exhaustive on purpose: every question the store can ask has a view here, and
-/// five of the ten are confirmations for actions that can lose work — three here, two on
-/// the server.
+/// six of the twelve are confirmations for actions that can lose work — four here (Drop Stash…
+/// among them), two on the server.
 struct BranchSheetHost: View {
     let sheet: BranchSheet
 
@@ -36,6 +36,10 @@ struct BranchSheetHost: View {
                 remoteTip: remoteTip, discarded: discarded, total: total)
         case .deleteRemoteBranch(let remote, let branch, let tip, let onlyThere):
             DeleteRemoteBranchSheet(remote: remote, branch: branch, tip: tip, onlyThere: onlyThere)
+        case .stash(let selectedPaths):
+            StashSheet(selectedPaths: selectedPaths)
+        case .dropStash(let stash):
+            DropStashSheet(stash: stash)
         }
     }
 }

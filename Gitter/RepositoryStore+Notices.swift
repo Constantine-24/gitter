@@ -52,6 +52,7 @@ extension RepositoryStore {
     ///   (`NoticeLinks.canOpen`); anything else is refused without a word, since no notice this
     ///   app builds carries one.
     /// - Copy Link puts the whole address on the pasteboard.
+    /// - Pop Stash pops the entry the notice names (`popStash`), with its own gates.
     ///
     /// `pasteboard` and `openURL` are the seams: a test and the DEBUG harness pass a private
     /// pasteboard and an opener that records, so neither ever touches the user's clipboard or
@@ -66,6 +67,8 @@ extension RepositoryStore {
             openURL(url)
         case .copyLink(let url):
             Clipboard.copy(url.absoluteString, to: pasteboard)
+        case .popStash(let stash):
+            popStash(stash)
         }
     }
 }

@@ -2,8 +2,8 @@ import GitCore
 import SwiftUI
 
 /// Right-hand pane. For the working copy: the staged/unstaged file list and the commit box
-/// above, the diff of the selected file below. For a commit: its header and file list above,
-/// the diff below.
+/// above, the diff of the selected file below. For a commit or a stash entry: its header and
+/// file list above, the diff below (read-only).
 struct DetailView: View {
     @Environment(RepositoryStore.self) private var store
     /// Makes the commit's file list claim keyboard focus when it is clicked, so its selection
@@ -51,6 +51,9 @@ struct DetailView: View {
                 commitFileList
             }
             .frame(minHeight: 140)
+        case .stash(let sha):
+            StashDetailView(sha: sha)
+                .frame(minHeight: 140)
         }
     }
 

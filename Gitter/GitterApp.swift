@@ -112,6 +112,12 @@ struct GitterApp: App {
                     .keyboardShortcut(".", modifiers: .command)
                     .disabled(store.activeSheet != nil || store.remoteActivity == nil)
                 Divider()
+                // Off while a sheet is up for the same reason as the four above;
+                // `stashBlockedReason` says so itself, and why otherwise.
+                Button("Stash Changes…") { store.requestStash() }
+                    .keyboardShortcut("s", modifiers: [.command, .option])
+                    .disabled(store.activeSheet != nil || store.stashBlockedReason != nil)
+                Divider()
                 // Off also stops an automatic fetch that is running; on waits for the next tick.
                 Toggle(
                     "Fetch Automatically",

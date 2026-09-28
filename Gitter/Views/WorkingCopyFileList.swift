@@ -92,6 +92,13 @@ struct WorkingCopyFileList: View {
             HStack(spacing: 8) {
                 Text("\(title) (\(files.count))")
                 Spacer()
+                // On the list's first header, which is the working copy's own: a stash takes
+                // both sides (and, when asked, untracked files), not only this section's.
+                if staged {
+                    Button("Stash…") { store.requestStash() }
+                        .buttonStyle(.borderless)
+                        .disabled(store.stashBlockedReason != nil, help: store.stashBlockedReason ?? "Stash Changes… (⌥⌘S)")
+                }
                 Button(actionTitle, action: action)
                     .buttonStyle(.borderless)
                     // A disabled button still shows its tooltip, which is the only place the

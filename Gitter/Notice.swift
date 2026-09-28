@@ -29,6 +29,9 @@ extension Notice {
 enum NoticeAction: Equatable {
     case openLink(URL)
     case copyLink(URL)
+    /// Pops the entry a stash just filed — the way back from "Your changes are in stash …".
+    /// By the `Stash` value, so GitCore's check that `stash@{index}` is still this sha guards it.
+    case popStash(Stash)
 }
 
 /// The words on a notice's buttons.
@@ -37,6 +40,7 @@ enum NoticeWording {
         switch action {
         case .openLink: "Open"
         case .copyLink: "Copy Link"
+        case .popStash: "Pop Stash"
         }
     }
 }

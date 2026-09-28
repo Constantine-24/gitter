@@ -34,6 +34,13 @@
     ///     menuitem:<menu>:<title>
     ///     notice                       openlink
     ///
+    ///   The stash (`RepositoryStore+Stash`, `DebugLaunchHooks+Stash`):
+    ///
+    ///     stash:<msg>[:u]              stashpaths:<p,p>:<msg>
+    ///     apply:<n>                    pop:<n>
+    ///     dropstash:<n>                confirmdropstash
+    ///     stashes                      selectstash:<n>[:<path>]     sheet:stash
+    ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
     /// `start:<step>` runs a step **without** waiting for its lane, which is how the steps after
@@ -299,6 +306,9 @@
                 log("notice transient: \(describe(store.notice))")
                 log("notice sticky: \(describe(store.stickyNotice))")
             case "openlink": openLink(store: store)
+            case "stash", "stashpaths", "apply", "pop", "dropstash", "confirmdropstash", "stashes",
+                "selectstash":
+                await stashStep(command, step: step, store: store)
             case "stageall": store.stageAll()
             case "commit":
                 // The composer's own path: the subject goes into the draft, then `commit()`.
@@ -409,6 +419,7 @@
             case "abort": store.requestAbort()
             // From the tracking on screen, with no fetch and no merge: this step opens a sheet.
             case "pull": store.previewPullSheet()
+            case "stash": store.requestStash()
             default: log("unknown sheet: \(which ?? "")")
             }
         }
@@ -579,10 +590,15 @@
                     + "discarded: \(discarded.map { "\($0.sha.prefix(7)) \($0.summary) <\($0.authorName)>" }))"
             case .deleteRemoteBranch(let remote, let branch, let tip, let onlyThere):
                 "deleteRemoteBranch(\(remote) \(branch), tip: \(tip), onlyThere: \(onlyThere))"
+            case .stash(let paths): "stash(selectedPaths: \(paths))"
+            // The full sha and the position: what the confirm hands to GitCore's verified drop.
+            case .dropStash(let stash):
+                "dropStash(stash@{\(stash.index)} \(stash.sha) \"\(stash.message)\")"
             }
         }
 
-        private static func log(_ message: String) {
+        // internal (not private): used by DebugLaunchHooks+Stash.swift
+        static func log(_ message: String) {
             FileHandle.standardError.write(Data("BRANCH_ACTION \(message)\n".utf8))
         }
     }
