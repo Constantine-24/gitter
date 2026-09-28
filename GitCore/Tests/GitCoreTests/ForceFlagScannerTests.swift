@@ -944,6 +944,30 @@ import Testing
         }
     }
 
+    /// Fix round 2's ruling, pinned with its message: in a file that runs `git stash`, *every*
+    /// git vector — not only the stash ones — is written as one array literal, optionally
+    /// followed by `+ paths`. A `"--"` added in a second statement cannot be attributed to a
+    /// command, so it is a finding even when the vector it joins is not `stash`; the message
+    /// says what is required rather than blaming stash.
+    @Test func inAFileThatRunsStashEveryVectorIsOneLiteral() {
+        let stash = #"_ = try await run(["stash", "store", "-q", "-m", m, sha], cwd: root)"#
+        let split = #"var args = ["update-index", "--add", "--remove"]; args += ["--"] + paths"#
+        let whole = #"_ = try await runWithEnvironment(["update-index", "--add", "--remove", "--"] + paths, cwd: root, extra: index)"#
+        let file = Self.recordFile
+
+        let findings = ForceFlagScanner.findings(in: stash + "\n" + split, fileName: file)
+        #expect(findings.count == 1, "\(findings)")
+        #expect(findings.first?.contains("write every git vector as one array literal") == true,
+                "\(findings)")
+        #expect(findings.first?.contains("\"--\"") == true, "\(findings)")
+
+        #expect(ForceFlagScanner.findings(in: stash + "\n" + whole, fileName: file).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: stash + "\n" + whole, fileName: file))")
+        // Without a stash vector in the file, the two-statement spelling is not this rule's.
+        #expect(ForceFlagScanner.findings(in: split, fileName: file).isEmpty,
+                "\(ForceFlagScanner.findings(in: split, fileName: file))")
+    }
+
     /// `restore` overwrites files on disk through `--worktree` and `--source=…`, and with
     /// `submodule.recurse=true` it discards work inside a submodule unless
     /// `--no-recurse-submodules` is given (M A.5). So its vectors are whole shapes too: the

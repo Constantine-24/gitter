@@ -62,6 +62,13 @@ import Foundation
 ///   environment. They are findings in every file but `recordFile`, the one that owns the
 ///   temporary index: the first rule here that asks *where* a literal is written, which is why
 ///   `findings` takes a file name.
+/// - **A file that runs `stash`.** A shape is read from one array literal, so in a file that
+///   names `stash` every git vector — stash or not — is written as one array literal,
+///   optionally followed by `+ paths`, and each stash vector inline in `run(`/
+///   `runWithEnvironment(`. There, `--`, `--staged`/`-S`, `--all`/`-a`, `--keep-index`/`-k`,
+///   `-p`/`--patch` and `--index` added in a fragment, an `.append` or an `.insert` are findings
+///   even when the vector they join is, say, `update-index`: this scanner cannot tell which
+///   vector they join. See `stashWordsForbiddenOutsideAVector` and `isInlineArgumentOfRun`.
 /// - **A hiding place.** `["-c", "push.default=matching", "push", r]` is a complete git command
 ///   that this scanner reads as a fragment, losing every per-subcommand rule at once. An array
 ///   literal beginning with one of `globalOptionsBeforeSubcommand` is therefore a finding
@@ -411,8 +418,9 @@ enum ForceFlagScanner {
             for word in Set(outsideAVector.flatMap(spellings(of:))).sorted()
             where stashWordsForbiddenOutsideAVector.contains(word) {
                 findings.append(
-                    "forbidden \(word.debugDescription) outside an array literal in a file that "
-                        + "runs `git stash`: \(stashOutsideAVectorReason)")
+                    "in a file that runs `git stash`, write every git vector as one array "
+                        + "literal (optionally `+ paths`): \(word.debugDescription) added "
+                        + "outside one cannot be attributed to a command. \(stashOutsideAVectorReason)")
             }
         }
         // The append pool is not one vector, so it cannot say which vector a `-m` joins. In a
@@ -1187,8 +1195,8 @@ enum ForceFlagScanner {
     ]
 
     static let stashOutsideAVectorReason =
-        "it could be joining a stash vector as a pathspec or a forbidden option, and no shape "
-            + "can see it there"
+        "It could be joining a stash vector as a pathspec or a forbidden option, and this "
+            + "scanner can only vouch for what a single literal shows"
 
     static let stashInlineReason =
         "a shape is read from the array literal, so a vector bound to a `var` or `let` (or "
