@@ -30,11 +30,18 @@ public protocol GitWorkingCopyBackend: Sendable {
     /// what makes staging a subset of a file's changes safe. Pass `reverse: true` for a patch
     /// `PatchBuilder` built with `.unstage`, whose new side is the current index.
     ///
-    /// A patch that no longer matches the index — because the index moved on after the diff
-    /// was loaded — throws `GitError.commandFailed` with git's stderr unchanged, and `git
-    /// apply` leaves the index exactly as it was. That includes a hunk with no context line
-    /// (`patch.hasContextFreeHunk`): `--unidiff-zero` is never passed, so git applies such a
-    /// hunk only to an index that is exactly its preimage, never at an offset.
+    /// **Before git runs, the index must still be exactly what the patch's diff was loaded
+    /// from**: its entry for `patch.path` holds `patch.oldBlob` when staging, and the staged
+    /// change is exactly `patch.oldBlob → patch.newBlob` (HEAD and index) when unstaging. git
+    /// would otherwise apply a hunk with context wherever its context matches — measured: `X`
+    /// staged into the wrong one of two identical blocks. A mismatch, a missing or abbreviated
+    /// id, an unmerged or missing entry all throw `GitError.commandFailed` whose first line
+    /// reads like git's own (`error: <path>: patch does not apply`), with the index untouched.
+    ///
+    /// A patch that git itself then refuses throws `GitError.commandFailed` with git's stderr
+    /// unchanged, and `git apply` leaves the index exactly as it was. That includes a hunk with
+    /// no context line (`patch.hasContextFreeHunk`): `--unidiff-zero` is never passed, so git
+    /// applies such a hunk only to an index that is exactly its preimage, never at an offset.
     func applyToIndex(patch: Patch, reverse: Bool, at root: URL) async throws
 
     /// `git commit -q [-a] [--amend] -F <tmpfile>`, then `git rev-parse HEAD` to return the

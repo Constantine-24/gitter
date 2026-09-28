@@ -179,6 +179,43 @@ import Testing
         try await assertRepoUnchanged(repo, since: state, worktree: before)
     }
 
+    /// The same stale cases with the preimage check satisfied on purpose: the patch's blob
+    /// ids are re-pointed at the stale index (and HEAD), as if the index had moved in the
+    /// instant between that check and `git apply`. git's own anchoring of a context-free hunk
+    /// to both ends of the file is then what refuses, as inserted fix 2 made it: the second
+    /// layer, still pinned.
+    @Test(arguments: stale)
+    func gitItselfStillRefusesAContextFreeHunkWhenTheCheckIsSatisfied(_ c: Case) async throws {
+        let repo = try await Self.makeRepo(c)
+        defer { repo.cleanUp() }
+        let file = try await loadDiff(repo, Self.path, staged: c.direction == .unstage)
+        let built = try #require(
+            PatchBuilder.patch(
+                file: file, hunkIDs: everyHunkID(file), lineIDs: Self.lineIDs(file, c.selected),
+                direction: c.direction))
+        try await Self.rewriteIndex(repo, to: c.staleIndex)
+        let indexID = try await repo.revParse(":" + Self.path)
+        let patch = Patch(
+            text: built.text, hasContextFreeHunk: built.hasContextFreeHunk, path: built.path,
+            oldBlob: c.direction == .stage ? indexID : built.oldBlob,
+            newBlob: c.direction == .stage ? built.newBlob : indexID)
+        let before = worktreeSnapshot(repo)
+        let state = try await RepoState.capture(repo)
+
+        let error = await #expect(throws: GitError.self) {
+            try await CLIGitBackend().applyToIndex(
+                patch: patch, reverse: c.direction == .unstage, at: repo.root)
+        }
+        if case .commandFailed(_, let stderr) = error {
+            // git's words, not the check's: "error: patch failed: src/f.txt:1".
+            #expect(stderr.contains("patch failed"), "\(stderr)")
+        } else {
+            Issue.record("expected commandFailed, got \(String(describing: error))")
+        }
+        #expect(try await indexText(repo, Self.path) == c.staleIndex)
+        try await assertRepoUnchanged(repo, since: state, worktree: before)
+    }
+
     // MARK: - Support
 
     /// HEAD holds `head`, the index `staged` (or `head`), the worktree `worktree`.

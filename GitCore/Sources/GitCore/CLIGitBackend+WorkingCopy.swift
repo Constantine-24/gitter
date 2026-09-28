@@ -53,6 +53,11 @@ extension CLIGitBackend: GitWorkingCopyBackend {
     }
 
     public func applyToIndex(patch: Patch, reverse: Bool, at root: URL) async throws {
+        // First, that the index (and HEAD, for a reverse patch) is still exactly what the diff
+        // was built from: git itself would put a hunk with context wherever that context
+        // matches, and staged `X` into the wrong block of a file (see `Patch.oldBlob`).
+        try await requireSource(of: patch, reverse: reverse, at: root)
+
         // Outside the repository on purpose: a patch file inside the worktree would itself
         // show up as an untracked change while it exists.
         let file = FileManager.default.temporaryDirectory
@@ -72,6 +77,106 @@ extension CLIGitBackend: GitWorkingCopyBackend {
         // `--` would make git treat the rest as paths to restrict the patch to.
         arguments.append(file.path)
         _ = try await run(arguments, cwd: root)
+    }
+
+    /// Throws `commandFailed` — worded like git's own "patch does not apply", which the app
+    /// turns into "The file changed since this diff was loaded…" — unless the side of the
+    /// repository `patch` is applied to is exactly the one its diff was loaded from.
+    ///
+    /// - Forward (staging, the diff was index → worktree): the path's stage-0 index entry holds
+    ///   `patch.oldBlob`, read with `ls-files -s`. An unmerged path (stages 1–3 only), a path
+    ///   with no entry and an intent-to-add entry (git shows its old side as zeros, the index
+    ///   holds the empty blob) are all refused.
+    /// - Reverse (unstaging, the diff was HEAD → index): `diff --cached --raw` for the path shows
+    ///   exactly `patch.oldBlob → patch.newBlob`. That is HEAD and the index at once, and it
+    ///   works on an unborn HEAD. HEAD counts too: after a terminal commit of the staged lines,
+    ///   the index still matches but reverse-applying would stage their DELETION from HEAD.
+    ///   A new file's absent HEAD side is all zeros on both lines. Renames are not detected
+    ///   (`--no-renames`), just as they cannot be in a diff limited to one path.
+    ///
+    /// Blob ids that are missing or abbreviated prove nothing and are refused; the working-copy
+    /// diff always asks for full ones (`--full-index`). Mode is not compared: a partial patch
+    /// is a plain modification and changes content only, whatever the modes. What is left is
+    /// the moment between this read and `git apply`, which no git option closes.
+    private func requireSource(of patch: Patch, reverse: Bool, at root: URL) async throws {
+        func refuse(_ why: String) -> GitError {
+            let side = reverse ? "index or HEAD" : "index"
+            return .commandFailed(
+                exitCode: -1,
+                stderr: "error: \(patch.path): patch does not apply\n"
+                    + "the \(side) no longer holds what the diff was loaded from: \(why)\n")
+        }
+        guard let old = patch.oldBlob, let new = patch.newBlob,
+            Self.isFullObjectID(old), Self.isFullObjectID(new)
+        else {
+            throw refuse("the diff named no full blob id to check against")
+        }
+
+        let pathspec = literalPathspec(patch.path)
+        if reverse {
+            let data = try await run(
+                ["diff", "--cached", "--raw", "-z", "--no-abbrev", "--no-renames", "--no-color", "--", pathspec],
+                cwd: root)
+            let found = Self.rawDiffRecords(data)
+            guard found.count == 1, found[0].path == Array(patch.path.utf8) else {
+                throw refuse("\(found.count) staged changes where the diff showed one")
+            }
+            guard found[0].old == old, found[0].new == new else {
+                throw refuse("\(found[0].old)..\(found[0].new), the diff showed \(old)..\(new)")
+            }
+        } else {
+            let data = try await run(["ls-files", "-s", "-z", "--", pathspec], cwd: root)
+            let entries = Self.indexEntries(data)
+            guard entries.count == 1, entries[0].path == Array(patch.path.utf8),
+                entries[0].stage == "0"
+            else {
+                throw refuse("\(entries.count) index entries where the diff had one at stage 0")
+            }
+            guard entries[0].blob == old else {
+                throw refuse("\(entries[0].blob), the diff showed \(old)")
+            }
+        }
+    }
+
+    /// 40 (SHA-1) or 64 (SHA-256) lowercase hex digits; zeros included, as git's name for a
+    /// side that does not exist.
+    static func isFullObjectID(_ id: String) -> Bool {
+        (id.utf8.count == 40 || id.utf8.count == 64)
+            && id.utf8.allSatisfy { (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0)
+                || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains($0) }
+    }
+
+    /// `ls-files -s -z`: `<mode> SP <object> SP <stage> TAB <path> NUL` per entry. The path is
+    /// kept as bytes, so it compares exactly.
+    static func indexEntries(_ data: Data) -> [(blob: String, stage: String, path: [UInt8])] {
+        [UInt8](data).split(separator: 0, omittingEmptySubsequences: true).compactMap { record in
+            guard let tab = record.firstIndex(of: UInt8(ascii: "\t")) else { return nil }
+            let fields = record[..<tab].split(separator: UInt8(ascii: " "))
+            guard fields.count == 3 else { return nil }
+            return (
+                String(decoding: fields[1], as: UTF8.self), String(decoding: fields[2], as: UTF8.self),
+                Array(record[record.index(after: tab)...])
+            )
+        }
+    }
+
+    /// `diff --raw -z --no-renames`: `:<mode> SP <mode> SP <old> SP <new> SP <status> NUL <path>
+    /// NUL` per change.
+    static func rawDiffRecords(_ data: Data) -> [(old: String, new: String, path: [UInt8])] {
+        let fields = [UInt8](data).split(separator: 0, omittingEmptySubsequences: false)
+        var records: [(old: String, new: String, path: [UInt8])] = []
+        var index = 0
+        while index + 1 < fields.count, fields[index].first == UInt8(ascii: ":") {
+            let meta = fields[index].split(separator: UInt8(ascii: " "))
+            if meta.count == 5 {
+                records.append((
+                    String(decoding: meta[2], as: UTF8.self), String(decoding: meta[3], as: UTF8.self),
+                    Array(fields[index + 1])
+                ))
+            }
+            index += 2
+        }
+        return records
     }
 
     public func commit(message: String, amend: Bool, allTracked: Bool, at root: URL) async throws -> String {

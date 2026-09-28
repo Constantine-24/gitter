@@ -83,15 +83,18 @@ public struct CLIGitBackend: GitBackend {
     }
 
     public func workingCopyDiff(at root: URL, path: String, staged: Bool) async throws -> [FileDiff] {
+        // `--full-index`: the `index` line carries full object ids, which is what a patch
+        // built from this diff is checked against before it is applied (see `Patch.oldBlob`).
         if staged {
             let data = try await run(
-                ["diff", "--cached", "--no-color", "-U3", "-M", "--", literalPathspec(path)], cwd: root)
+                ["diff", "--cached", "--no-color", "--full-index", "-U3", "-M", "--", literalPathspec(path)],
+                cwd: root)
             return DiffParser.parse(data)
         }
 
         if try await isTracked(path, at: root) {
             let data = try await run(
-                ["diff", "--no-color", "-U3", "--", literalPathspec(path)], cwd: root)
+                ["diff", "--no-color", "--full-index", "-U3", "--", literalPathspec(path)], cwd: root)
             return DiffParser.parse(data)
         }
 
@@ -101,7 +104,7 @@ public struct CLIGitBackend: GitBackend {
         // No `:(literal)` here: `--no-index` compares two *files* given by name, not
         // pathspecs, so the prefix would become part of the name git tries to open.
         let data = try await run(
-            ["diff", "--no-color", "-U3", "--no-index", "--", "/dev/null", path],
+            ["diff", "--no-color", "--full-index", "-U3", "--no-index", "--", "/dev/null", path],
             cwd: root, allowedExitCodes: [1]
         )
         return DiffParser.parse(data)

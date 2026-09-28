@@ -34,6 +34,7 @@ public enum DiffParser {
             var newPath: String? = header.newPath
             var kind: FileDiffKind = .modified
             var isBinary = false
+            var blobs: (old: String, new: String)?
             var hunks: [Hunk] = []
             var lineCounter = 0
 
@@ -63,6 +64,9 @@ public enum DiffParser {
                 } else if line.hasPrefix("copy to ") {
                     newPath = unquoteIfNeeded(String(line.dropFirst("copy to ".count)))
                     kind = .copied
+                    index += 1
+                } else if hunks.isEmpty, let ids = parseIndexLine(line) {
+                    blobs = ids
                     index += 1
                 } else if line.hasPrefix("Binary files ") && line.hasSuffix(" differ") {
                     isBinary = true
@@ -147,7 +151,9 @@ public enum DiffParser {
             }
 
             files.append(
-                FileDiff(oldPath: oldPath, newPath: newPath, kind: kind, isBinary: isBinary, hunks: hunks)
+                FileDiff(
+                    oldPath: oldPath, newPath: newPath, kind: kind, isBinary: isBinary, hunks: hunks,
+                    oldBlob: blobs?.old, newBlob: blobs?.new)
             )
         }
 
@@ -165,6 +171,14 @@ public enum DiffParser {
     }
 
     private static let newline = UInt8(ascii: "\n")
+
+    /// `index <old>..<new>`, with ` <mode>` after it when the mode did not change. The ids are
+    /// whatever length git printed: full under `--full-index`, abbreviated otherwise.
+    private static func parseIndexLine(_ line: String) -> (old: String, new: String)? {
+        guard let match = line.wholeMatch(of: /^index ([0-9a-f]+)\.\.([0-9a-f]+)(?: [0-7]+)?$/)
+        else { return nil }
+        return (String(match.1), String(match.2))
+    }
 
     /// The section heading after the second `@@` is free text from the file (a function
     /// line), so `.` has to match a `\r` in it too, or the whole hunk would go unrecognised.

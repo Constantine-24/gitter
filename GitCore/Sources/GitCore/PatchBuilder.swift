@@ -19,10 +19,27 @@ public struct Patch: Sendable, Hashable {
     /// scanner forbids that option everywhere (A1 inserted fix 2). Staging does not read this;
     /// line discard (A1 Task 5) is to refuse a context-free partial selection on it.
     public let hasContextFreeHunk: Bool
+    /// The file the patch changes, as its header names it.
+    public let path: String
+    /// `FileDiff.oldBlob` and `newBlob` of the diff the patch was built from.
+    ///
+    /// A patch fits only the file it was built from: git will apply a hunk with context
+    /// wherever that context matches, at an offset if need be, with no option to forbid it. So
+    /// `applyToIndex` requires the side it applies to to be exactly this: applied forward
+    /// (staging) the index must hold `oldBlob`; reversed (unstaging), the index `newBlob` and
+    /// HEAD `oldBlob`. Anything else is refused as a file that changed since the diff was
+    /// loaded — nil or abbreviated ids included, since they prove nothing.
+    public let oldBlob: String?
+    public let newBlob: String?
 
-    public init(text: String, hasContextFreeHunk: Bool) {
+    public init(
+        text: String, hasContextFreeHunk: Bool, path: String, oldBlob: String?, newBlob: String?
+    ) {
         self.text = text
         self.hasContextFreeHunk = hasContextFreeHunk
+        self.path = path
+        self.oldBlob = oldBlob
+        self.newBlob = newBlob
     }
 }
 
@@ -98,7 +115,9 @@ public enum PatchBuilder {
             delta += rendered.newCount - rendered.oldCount
         }
         guard !body.isEmpty, let path = file.newPath ?? file.oldPath else { return nil }
-        return Patch(text: fileHeader(for: path) + body, hasContextFreeHunk: hasContextFreeHunk)
+        return Patch(
+            text: fileHeader(for: path) + body, hasContextFreeHunk: hasContextFreeHunk, path: path,
+            oldBlob: file.oldBlob, newBlob: file.newBlob)
     }
 
     // MARK: - Hunks

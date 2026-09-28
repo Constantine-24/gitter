@@ -51,15 +51,27 @@ public struct FileDiff: Sendable, Hashable, Identifiable {
     public let kind: FileDiffKind
     public let isBinary: Bool
     public let hunks: [Hunk]
+    /// The object ids on the diff's `index <old>..<new>` line: full with `--full-index`,
+    /// all zeros for a side that does not exist (a new or deleted file), nil when the diff had
+    /// no such line (a pure rename, a mode-only change). For a working-copy diff the index
+    /// side is what `applyToIndex` checks the index against before it applies a patch — see
+    /// `Patch.oldBlob`.
+    public let oldBlob: String?
+    public let newBlob: String?
 
     public var displayPath: String { newPath ?? oldPath ?? "" }
     public var id: String { (oldPath ?? "") + "→" + (newPath ?? "") }
 
-    public init(oldPath: String?, newPath: String?, kind: FileDiffKind, isBinary: Bool, hunks: [Hunk]) {
+    public init(
+        oldPath: String?, newPath: String?, kind: FileDiffKind, isBinary: Bool, hunks: [Hunk],
+        oldBlob: String? = nil, newBlob: String? = nil
+    ) {
         self.oldPath = oldPath
         self.newPath = newPath
         self.kind = kind
         self.isBinary = isBinary
         self.hunks = hunks
+        self.oldBlob = oldBlob
+        self.newBlob = newBlob
     }
 }
