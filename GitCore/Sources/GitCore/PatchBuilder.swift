@@ -51,9 +51,11 @@ public enum PatchBuilder {
     /// Whether `file` can be staged or unstaged hunk- or line-wise at all.
     ///
     /// A staged deletion has no index entry left to patch, and an unstaged addition is an
-    /// untracked file, so both are file-level only.
+    /// untracked file, so both are file-level only. So is a diff that was not valid UTF-8
+    /// (`FileDiff.isValidUTF8`): its lines hold U+FFFD where the file has other bytes, and a
+    /// patch built from them would write `EF BF BD` into the index or the worktree.
     public static func supportsPartial(_ file: FileDiff, direction: PatchDirection) -> Bool {
-        guard !file.isBinary, !file.hunks.isEmpty else { return false }
+        guard !file.isBinary, !file.hunks.isEmpty, file.isValidUTF8 else { return false }
         switch direction {
         case .stage: return file.kind == .modified || file.kind == .deleted
         case .unstage: return file.kind == .modified || file.kind == .added
@@ -89,13 +91,14 @@ public enum PatchBuilder {
     /// The patch for the hunks in `hunkIDs`, restricted to the changed lines in `lineIDs`.
     ///
     /// `lineIDs == nil` selects every changed line of those hunks (hunk-level staging).
-    /// Returns nil when no chosen hunk has a changed line left, or when the selection is a
-    /// whole-file change (see `isWholeFileChange`).
+    /// Returns nil when no chosen hunk has a changed line left, when the selection is a
+    /// whole-file change (see `isWholeFileChange`), and for a diff that was not valid UTF-8,
+    /// whose text cannot give its bytes back (see `supportsPartial`).
     public static func patch(
         file: FileDiff, hunkIDs: Set<Hunk.ID>, lineIDs: Set<DiffLine.ID>?,
         direction: PatchDirection
     ) -> Patch? {
-        guard
+        guard file.isValidUTF8,
             !isWholeFileChange(
                 file: file, hunkIDs: hunkIDs, lineIDs: lineIDs, direction: direction)
         else { return nil }

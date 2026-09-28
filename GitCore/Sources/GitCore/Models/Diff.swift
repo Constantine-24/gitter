@@ -58,13 +58,18 @@ public struct FileDiff: Sendable, Hashable, Identifiable {
     /// `Patch.oldBlob`.
     public let oldBlob: String?
     public let newBlob: String?
+    /// Whether every byte of this file's part of the diff was valid UTF-8. `DiffLine.text` is a
+    /// `String`, so a byte that is not (a Latin-1 `é`) arrives as U+FFFD, and a patch built from
+    /// it would write `EF BF BD` back. `PatchBuilder` builds no patch for such a diff; the file
+    /// can still be staged, unstaged or discarded whole, which git does from the bytes.
+    public let isValidUTF8: Bool
 
     public var displayPath: String { newPath ?? oldPath ?? "" }
     public var id: String { (oldPath ?? "") + "→" + (newPath ?? "") }
 
     public init(
         oldPath: String?, newPath: String?, kind: FileDiffKind, isBinary: Bool, hunks: [Hunk],
-        oldBlob: String? = nil, newBlob: String? = nil
+        oldBlob: String? = nil, newBlob: String? = nil, isValidUTF8: Bool = true
     ) {
         self.oldPath = oldPath
         self.newPath = newPath
@@ -73,5 +78,6 @@ public struct FileDiff: Sendable, Hashable, Identifiable {
         self.hunks = hunks
         self.oldBlob = oldBlob
         self.newBlob = newBlob
+        self.isValidUTF8 = isValidUTF8
     }
 }

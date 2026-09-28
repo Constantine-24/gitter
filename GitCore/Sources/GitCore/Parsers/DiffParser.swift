@@ -28,6 +28,7 @@ public enum DiffParser {
                 index += 1
                 continue
             }
+            let firstLine = index
             index += 1
 
             var oldPath: String? = header.oldPath
@@ -150,10 +151,13 @@ public enum DiffParser {
                 }
             }
 
+            // Every byte of this file's part, header included, checked before the lossy
+            // decoding above is trusted: see `FileDiff.isValidUTF8`.
+            let isValidUTF8 = raw[firstLine..<index].allSatisfy { String(validating: $0, as: UTF8.self) != nil }
             files.append(
                 FileDiff(
                     oldPath: oldPath, newPath: newPath, kind: kind, isBinary: isBinary, hunks: hunks,
-                    oldBlob: blobs?.old, newBlob: blobs?.new)
+                    oldBlob: blobs?.old, newBlob: blobs?.new, isValidUTF8: isValidUTF8)
             )
         }
 
