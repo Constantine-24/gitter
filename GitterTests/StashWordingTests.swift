@@ -279,6 +279,11 @@ import Testing
             StashWording.dropped(Self.stash())
                 == "Dropped \"half-done login\" (a1b2c3d). \"git stash apply a1b2c3d\" brings it "
                 + "back until git's cleanup removes it.")
+        // An entry with an empty message is named by its position, never by `""`.
+        #expect(
+            StashWording.dropped(Self.stash("On main: ", index: 3))
+                == "Dropped stash@{3} (a1b2c3d). \"git stash apply a1b2c3d\" brings it back until "
+                + "git's cleanup removes it.")
     }
 
     @Test func theDropSheetSaysWhatItDropsAndWhenItIsStale() {

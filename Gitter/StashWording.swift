@@ -230,7 +230,7 @@ enum StashWording {
     /// gone, and what brings it back (the commit lives until git's garbage collection).
     static func dropped(_ stash: Stash) -> String {
         let short = String(stash.sha.prefix(7))
-        return "Dropped \"\(stash.message)\" (\(short)). \"git stash apply \(short)\" brings it "
+        return "Dropped \(name(stash)) (\(short)). \"git stash apply \(short)\" brings it "
             + "back until git's cleanup removes it."
     }
 
