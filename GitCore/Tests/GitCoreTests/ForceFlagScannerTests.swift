@@ -1140,7 +1140,7 @@ import Testing
         // Task 4's reads beside the stash vectors: each one literal, optionally `+ paths`.
         #"_ = try await run(["ls-files", "-u", "-z"], cwd: root)"#,
         #"_ = try await run(["ls-files", "-o", "-z", "--exclude-standard", "--", literalPathspec(directory)], cwd: root)"#,
-        #"_ = try await run(["ls-tree", "-z", "--full-tree", "--name-only", rev, "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"_ = try await run(["ls-tree", "-z", "--full-tree", rev, "--"] + paths.map(literalPathspec), cwd: root)"#,
         #"_ = try await run(["status", "--porcelain=v2", "-z", "--untracked-files=normal"], cwd: root)"#,
         #"_ = try await run(t ? ["rev-parse", "\(s)^{tree}", "\(s)^3^{tree}"] : ["rev-parse", "\(s)^{tree}"], cwd: root)"#,
         #"_ = try await run(["commit-tree", tree, "-p", "HEAD", "-m", m], cwd: root)"#,

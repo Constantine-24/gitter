@@ -63,8 +63,9 @@ struct StashRecord {
             let data = try await backend.run(["ls-files", "-s", "-z", "--", backend.literalPathspec(p)], cwd: root)
             entries[p] = CLIGitBackend.indexRecords(data)
         }
-        try await refuse(named, entries: entries, status: status, backend: backend, at: root)
-        let inHEAD = try await backend.paths(paths, in: "HEAD", at: root)
+        let headModes = try await backend.modes(of: paths, in: "HEAD", at: root)
+        try await refuse(named, entries: entries, headModes: headModes, status: status, backend: backend, at: root)
+        let inHEAD = Set(headModes.keys)
 
         // 2–4. Build I and W in a temporary index.
         let temporaryIndex = temporaryDirectory.appendingPathComponent(temporaryIndexPrefix + UUID().uuidString)
@@ -153,10 +154,11 @@ struct StashRecord {
     // MARK: - Refusals
 
     /// Throws the first refusal that applies, in the order unmerged, intent-to-add,
-    /// submodule, nested repository. Each lists the named paths it covers, as they were named.
+    /// submodule, nested repository, type changed. Each lists the named paths it covers, as
+    /// they were named.
     private static func refuse(
         _ named: [String], entries: [String: [(mode: String, sha: String, stage: String, path: String)]],
-        status: WorkingCopyStatus, backend: CLIGitBackend, at root: URL
+        headModes: [String: String], status: WorkingCopyStatus, backend: CLIGitBackend, at root: URL
     ) async throws {
         func entriesFor(_ p: String) -> [(mode: String, sha: String, stage: String, path: String)] {
             entries[withoutTrailingSlash(p)] ?? []
@@ -182,6 +184,18 @@ struct StashRecord {
 
         let nested = named.filter { isInsideAnotherRepository($0, under: root) }
         if !nested.isEmpty { throw StashRefusal.nestedRepositories(nested) }
+
+        // A file and a directory swapped (fix round 1): `update-index --add --remove -- p` over
+        // a directory drops `p` without recording what is inside, and the restore puts the file
+        // back over it; a path under what is now a file makes the restore delete that file.
+        let typeChanged = named.filter { p in
+            let bare = withoutTrailingSlash(p)
+            let isFileOrLink: (String) -> Bool = { $0 != "040000" && $0 != "160000" }
+            let tracksAFile = entriesFor(p).contains { $0.path == bare && isFileOrLink($0.mode) }
+                || headModes[bare].map(isFileOrLink) == true
+            return CLIGitBackend.hasChangedType(p, tracksAFile: tracksAFile, under: root)
+        }
+        if !typeChanged.isEmpty { throw StashRefusal.pathTypeChanged(typeChanged) }
     }
 
     /// Whether `path`, or a directory on the way to it, holds a `.git` (a directory, or the
@@ -252,13 +266,23 @@ extension CLIGitBackend {
             if !record.tracked.isEmpty {
                 _ = try await run(["restore", "--no-recurse-submodules", "--source=HEAD", "--staged", "--worktree", "--"] + record.tracked.map(literalPathspec), cwd: root)
             }
-            for p in record.untracked {
-                _ = try trasher.trash(root.appendingPathComponent(p))
-            }
         } catch GitError.commandFailed(_, let stderr) {
             return .savedWithError(record.stash, gitsWords: stderr)
         } catch {
             return .savedWithError(record.stash, gitsWords: error.localizedDescription)
+        }
+        // One at a time, keeping each URL: a failure part-way must say what already went and
+        // where, or those items could not be found again (the Trash may rename them, M 15).
+        var trashed: [String: URL] = [:]
+        for p in record.untracked {
+            do {
+                trashed[p] = try trasher.trash(root.appendingPathComponent(p))
+            } catch {
+                return .savedWithError(
+                    record.stash,
+                    gitsWords: "\(p) could not be moved to the Trash: \(error.localizedDescription)",
+                    trashed: trashed)
+            }
         }
         return .saved(record.stash)
     }

@@ -22,6 +22,12 @@ public enum StashRefusal: Error, Sendable, Hashable {
     /// Untracked directories that are repositories of their own, or paths inside one. git
     /// does not look inside them (M 4, 16).
     case nestedRepositories([String])
+    /// A file and a directory swapped places: a tracked file or symlink whose path is now a
+    /// real directory on disk (`p` → `p/x`), or a path with a leading component that is now a
+    /// file or symlink (`d/a` → the file `d`). Status shows only a deletion, and neither the
+    /// record nor a plain push would hold the untracked content, which the restore then
+    /// overwrites (measured, fix round 1).
+    case pathTypeChanged([String])
     /// `stash@{index}` no longer names the entry's sha: the list changed since the `Stash`
     /// value was read (another push, a drop in a terminal, or another linked worktree, M 17).
     case stashListChanged
@@ -40,8 +46,11 @@ public enum StashPushOutcome: Sendable, Hashable {
     /// which Gitter dropped again, M A.7).
     case nothingToSave
     /// The entry was filed, but git (or the step after it) then failed: the changes are in the
-    /// entry *and* may still be in the files. `gitsWords` is what failed, verbatim.
-    case savedWithError(Stash, gitsWords: String)
+    /// entry *and* may still be in the files. `gitsWords` is what failed, verbatim. `trashed`
+    /// names every untracked item `stashPaths` had already moved to the Trash before the
+    /// failure — original path (relative to the root) → where it went — so each can be found
+    /// and put back; the Trash may rename an item, so the URL is the only way to find it (M 15).
+    case savedWithError(Stash, gitsWords: String, trashed: [String: URL] = [:])
 }
 
 /// What an apply (or the apply half of a pop) did.

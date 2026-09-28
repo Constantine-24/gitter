@@ -153,7 +153,7 @@ private final class FolderTrasher: Trasher, @unchecked Sendable {
 
         let outcome = try await backend.stashAll(message: "m", includeUntracked: false, at: repo.root)
 
-        guard case .savedWithError(let stash, let words) = outcome else {
+        guard case .savedWithError(let stash, let words, _) = outcome else {
             Issue.record("expected .savedWithError, got \(outcome)")
             return
         }
@@ -178,6 +178,135 @@ private final class FolderTrasher: Trasher, @unchecked Sendable {
         }
         #expect(try await repo.stashRef() == nil)
         assertWorktreeUnchanged(repo, since: worktree)
+    }
+
+    // MARK: stashAll and a file/directory swap (fix round 1)
+
+    /// Measured (git 2.54): a plain `stash push` over case (a) exits 0 and puts the file `p`
+    /// back over the directory — `p/x` is in no entry and gone. With `-u`, `p/x` is saved in
+    /// the third parent, but applying it back fails (`fatal: cannot create directory at 'p':
+    /// File exists`). Refused either way.
+    @Test(arguments: [false, true])
+    func stashAllRefusesATrackedFileReplacedByADirectory(includeUntracked: Bool) async throws {
+        let repo = try await makeTypeSwapA()
+        defer { repo.cleanUp() }
+        let state = try await RepoState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+        #expect(worktree["p/x"] == Data("precious\n".utf8))
+
+        await #expect(throws: StashRefusal.pathTypeChanged(["p"])) {
+            _ = try await backend.stashAll(message: "m", includeUntracked: includeUntracked, at: repo.root)
+        }
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+        #expect(try await repo.stashRef() == nil)
+    }
+
+    /// Measured: a plain `stash push` over case (b) exits 0, saves the deletion of `d/a`, and
+    /// puts the directory back over the untracked file `d`, which is in no entry and gone.
+    @Test func stashAllWithoutUntrackedRefusesAPathUnderAFile() async throws {
+        let repo = try await makeTypeSwapB()
+        defer { repo.cleanUp() }
+        let state = try await RepoState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+        #expect(worktree["d"] == Data("precious\n".utf8))
+
+        await #expect(throws: StashRefusal.pathTypeChanged(["d/a"])) {
+            _ = try await backend.stashAll(message: "m", includeUntracked: false, at: repo.root)
+        }
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+        #expect(try await repo.stashRef() == nil)
+    }
+
+    /// With `-u`, git saves the file `d` in the third parent and an apply brings it back
+    /// (measured, and shown here): nothing to refuse.
+    @Test func stashAllWithUntrackedSavesAFileThatReplacedADirectoryAndBringsItBack() async throws {
+        let repo = try await makeTypeSwapB()
+        defer { repo.cleanUp() }
+
+        let outcome = try await backend.stashAll(message: "m", includeUntracked: true, at: repo.root)
+
+        guard case .saved(let stash) = outcome else {
+            Issue.record("expected .saved, got \(outcome)")
+            return
+        }
+        #expect(try await repo.blob("\(stash.sha)^3", "d") == Data("precious\n".utf8))
+        #expect(try await backend.apply(stash, at: repo.root) == .applied)
+        #expect(try repo.bytes("d") == Data("precious\n".utf8))
+    }
+
+    @Test func stashPathsRefusesATrackedFileReplacedByADirectory() async throws {
+        let repo = try await makeTypeSwapA()
+        defer { repo.cleanUp() }
+        let state = try await RepoState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+
+        await #expect(throws: StashRefusal.pathTypeChanged(["p"])) {
+            _ = try await backend.stashPaths(["p"], message: "m", at: repo.root)
+        }
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+        #expect(try await repo.stashRef() == nil)
+    }
+
+    // MARK: The identical entry (fix round 1)
+
+    /// Pushed, applied back, pushed again in the same second: the second entry is the very
+    /// commit already at `stash@{0}`, which git files by adding nothing (measured), while the
+    /// files are cleaned all the same. That is a save, of the listed entry.
+    ///
+    /// The second has to match, so each attempt starts on a fresh second; an attempt that
+    /// straddles one still has to report `.saved` (with a new entry), and the identical case
+    /// has to be reached at least once in five.
+    @Test func anIdenticalPushInTheSameSecondIsSavedAsTheListedEntry() async throws {
+        var reachedIdentical = false
+        for _ in 0..<5 where !reachedIdentical {
+            let repo = try await makeRepo()
+            defer { repo.cleanUp() }
+            try repo.write("f", "f1\nchanged\nf3\n")
+            let now = Date().timeIntervalSince1970
+            try await Task.sleep(nanoseconds: UInt64((ceil(now) - now) * 1_000_000_000) + 5_000_000)
+
+            guard case .saved(let first) = try await backend.stashAll(message: "m", includeUntracked: false, at: repo.root)
+            else {
+                Issue.record("the first push did not save")
+                return
+            }
+            #expect(try await backend.apply(first, at: repo.root) == .applied)
+            let second = try await backend.stashAll(message: "m", includeUntracked: false, at: repo.root)
+
+            guard case .saved(let stash) = second else {
+                Issue.record("expected .saved, got \(second)")
+                return
+            }
+            #expect(try repo.bytes("f") == Data("f1\nf2\nf3\n".utf8), "the files were not cleaned")
+            #expect(stash.index == 0)
+            #expect(stash.sha == (try await repo.stashRef()))
+            if stash.sha == first.sha {
+                reachedIdentical = true
+                #expect(try await repo.stashCount() == 1)
+            }
+        }
+        #expect(reachedIdentical, "no attempt pushed twice within one second")
+    }
+
+    /// And the other side: changes git will not save (a submodule's moved commit only, M 14)
+    /// stay `.nothingToSave` even with an entry already listed.
+    @Test func onlyAMovedSubmoduleIsStillNothingToSaveWithAnEntryListed() async throws {
+        let repo = try await makeRepo()
+        defer { repo.cleanUp() }
+        let sub = TestRepo(root: repo.root.appendingPathComponent("sub"))
+        try repo.write("sub/s", "s\n")
+        try await sub.git(["init", "-q", "-b", "main"])
+        try await sub.git(["-c", "user.name=T", "-c", "user.email=t@t", "add", "s"])
+        try await sub.git(["-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "-m", "s"])
+        try await repo.git(["add", "sub"])
+        try await repo.git(["commit", "-q", "-m", "sub"])
+        try repo.write("f", "changed\n")
+        try await repo.git(["stash", "push", "-q", "-m", "listed"])
+        try repo.write("sub/s", "s2\n")
+        try await sub.git(["-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "-am", "s2"])
+
+        #expect(try await backend.stashAll(message: "m", includeUntracked: false, at: repo.root) == .nothingToSave)
+        #expect(try await repo.stashCount() == 1)
     }
 
     @Test func anIntentToAddEntryIsRefused() async throws {
@@ -403,7 +532,7 @@ private final class FolderTrasher: Trasher, @unchecked Sendable {
 
         let outcome = try await backend.stashPaths(["p"], message: "m", at: repo.root)
 
-        guard case .savedWithError(let stash, let words) = outcome else {
+        guard case .savedWithError(let stash, let words, _) = outcome else {
             Issue.record("expected .savedWithError, got \(outcome)")
             return
         }
@@ -417,6 +546,45 @@ private final class FolderTrasher: Trasher, @unchecked Sendable {
         func restore(_ trashed: URL, to original: URL) throws { throw CocoaError(.fileWriteNoPermission) }
     }
 
+    /// Moves the first item into a folder and fails on every later one.
+    private final class FailsOnSecondTrasher: Trasher, @unchecked Sendable {
+        let inner: FolderTrasher
+        private let lock = NSLock()
+        private var calls = 0
+        init() throws { inner = try FolderTrasher() }
+        func trash(_ url: URL) throws -> URL {
+            let call = lock.withLock { calls += 1; return calls }
+            guard call == 1 else { throw CocoaError(.fileWriteNoPermission) }
+            return try inner.trash(url)
+        }
+        func restore(_ trashed: URL, to original: URL) throws { try inner.restore(trashed, to: original) }
+    }
+
+    /// A Trash that fails part-way: the outcome says which items already went, and where, so
+    /// they can be found and put back (Task 5's undo needs the URLs).
+    @Test func aTrashThatFailsPartWayReportsWhatItAlreadyMoved() async throws {
+        let repo = try await makeRecordLab()
+        defer { repo.cleanUp() }
+        let trasher = try FailsOnSecondTrasher()
+        defer { trasher.inner.cleanUp() }
+        try repo.write("u1", "one\n")
+        try repo.write("u2", "two\n")
+
+        let outcome = try await backend.stashPaths(["u1", "u2"], message: "m", trasher: trasher, at: repo.root)
+
+        guard case .savedWithError(let stash, let words, let trashed) = outcome else {
+            Issue.record("expected .savedWithError, got \(outcome)")
+            return
+        }
+        #expect(Set(try await repo.nameStatus(from: "\(stash.sha)^1", to: stash.sha)) == ["A\tu1", "A\tu2"])
+        #expect(Array(trashed.keys) == ["u1"])
+        let moved = try #require(trashed["u1"])
+        #expect(try Data(contentsOf: moved) == Data("one\n".utf8))
+        #expect(!FileManager.default.fileExists(atPath: repo.root.appendingPathComponent("u1").path))
+        #expect(try repo.bytes("u2") == Data("two\n".utf8))
+        #expect(words.contains("u2"), "\(words)")
+    }
+
     @Test func aTrashThatFailsLeavesTheFileAndSaysSo() async throws {
         let repo = try await makeRecordLab()
         defer { repo.cleanUp() }
@@ -424,7 +592,7 @@ private final class FolderTrasher: Trasher, @unchecked Sendable {
 
         let outcome = try await backend.stashPaths(["u"], message: "m", trasher: FailingTrasher(), at: repo.root)
 
-        guard case .savedWithError(let stash, _) = outcome else {
+        guard case .savedWithError(let stash, _, _) = outcome else {
             Issue.record("expected .savedWithError, got \(outcome)")
             return
         }

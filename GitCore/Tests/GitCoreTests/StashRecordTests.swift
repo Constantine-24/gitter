@@ -121,6 +121,29 @@ func makeRecordLab() async throws -> TestRepo {
     return repo
 }
 
+/// Case (a): a committed file `p` replaced on disk by a directory holding `p/x`; `h` is
+/// committed and unchanged.
+func makeTypeSwapA() async throws -> TestRepo {
+    let repo = try await TestRepo.makeEmpty()
+    try repo.write("p", "p\n")
+    try repo.write("h", "h\n")
+    try await repo.commitAll("root")
+    try FileManager.default.removeItem(at: repo.root.appendingPathComponent("p"))
+    try repo.write("p/x", "precious\n")
+    return repo
+}
+
+/// Case (b): a committed `d/a` whose directory was replaced on disk by a file `d`.
+func makeTypeSwapB() async throws -> TestRepo {
+    let repo = try await TestRepo.makeEmpty()
+    try repo.write("d/a", "a\n")
+    try repo.write("h", "h\n")
+    try await repo.commitAll("root")
+    try FileManager.default.removeItem(at: repo.root.appendingPathComponent("d"))
+    try repo.write("d", "precious\n")
+    return repo
+}
+
 // MARK: - The record
 
 /// Gitter's own path-limited stash commit (M A.0): built in a temporary index, filed with
@@ -523,6 +546,68 @@ func makeRecordLab() async throws -> TestRepo {
 
         try await expectRefusal(.nestedRepositories(["nested/"]), recording: ["p", "nested/"], in: repo)
         try await expectRefusal(.nestedRepositories(["nested/x"]), recording: ["nested/x"], in: repo)
+    }
+
+    // MARK: A file and a directory swapped (fix round 1)
+
+    /// A tracked file `p` replaced by a directory holding `p/x`. Status shows only ` D p`, and
+    /// `update-index --add --remove -- p` would drop `p` without recording `p/x`; the restore
+    /// would then put the file back over the directory. Refused before anything runs.
+    @Test func aTrackedFileReplacedByADirectoryIsRefused() async throws {
+        let repo = try await makeTypeSwapA()
+        defer { repo.cleanUp() }
+        #expect(worktreeSnapshot(repo)["p/x"] == Data("precious\n".utf8))
+
+        try await expectRefusal(.pathTypeChanged(["p"]), recording: ["p", "h"], in: repo)
+    }
+
+    /// A tracked `d/a` whose directory was replaced by an untracked file `d`: ` D d/a` and
+    /// `? d`. The restore of `d/a` would delete the file `d`. Refused before anything runs.
+    @Test func aPathUnderAFileIsRefused() async throws {
+        let repo = try await makeTypeSwapB()
+        defer { repo.cleanUp() }
+        #expect(worktreeSnapshot(repo)["d"] == Data("precious\n".utf8))
+
+        try await expectRefusal(.pathTypeChanged(["d/a"]), recording: ["d/a"], in: repo)
+    }
+
+    /// A tracked symlink that now points at a directory is a symlink, not a directory: it is
+    /// recorded as the link.
+    @Test func aSymlinkToADirectoryAtATrackedSymlinkIsRecorded() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("dirA/a", "a\n")
+        try repo.write("dirB/b", "b\n")
+        try FileManager.default.createSymbolicLink(
+            atPath: repo.root.appendingPathComponent("link").path, withDestinationPath: "dirA")
+        try await repo.commitAll("root")
+        try FileManager.default.removeItem(at: repo.root.appendingPathComponent("link"))
+        try FileManager.default.createSymbolicLink(
+            atPath: repo.root.appendingPathComponent("link").path, withDestinationPath: "dirB")
+
+        let stash = try await record(["link"], in: repo)
+
+        #expect(try await repo.mode(stash.sha, "link") == "120000")
+        #expect(try await repo.blob(stash.sha, "link") == Data("dirB".utf8))
+    }
+
+    /// Naming the untracked file inside the swapped directory (`p/x`, where the index still
+    /// holds the file `p`): git refuses to put both into one index ("appears as both a file and
+    /// as a directory", exit 128), so the record fails loudly and writes nothing.
+    @Test func aFileInsideTheSwappedDirectoryFailsLoudlyAndWritesNothing() async throws {
+        let repo = try await makeTypeSwapA()
+        defer { repo.cleanUp() }
+        let state = try await RepoState.capture(repo)
+        let purity = try await RecordPurity.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+
+        await #expect(throws: (any Error).self) {
+            _ = try await record(["p/x"], in: repo)
+        }
+
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+        try await assertRecordPure(repo, since: purity, worktree: worktree)
+        #expect(try await repo.stashRef() == nil)
     }
 
     @Test func noPathsIsNothingSelected() async throws {

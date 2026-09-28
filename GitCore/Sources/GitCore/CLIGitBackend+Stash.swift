@@ -45,6 +45,8 @@ extension CLIGitBackend {
         if !unmerged.isEmpty { throw StashRefusal.unmergedPaths(unmerged) }
         let intentToAdd = try await intentToAddPaths(in: status, at: root)
         if !intentToAdd.isEmpty { throw StashRefusal.intentToAdd(intentToAdd) }
+        let typeChanged = Self.typeChangedDeletions(in: status, includeUntracked: includeUntracked, under: root)
+        if !typeChanged.isEmpty { throw StashRefusal.pathTypeChanged(typeChanged) }
 
         // `--message ""` is git's own `WIP on <branch>: <sha> <subject>` (M 17).
         let m = message ?? ""
@@ -59,14 +61,17 @@ extension CLIGitBackend {
         guard let after, after != before else {
             // Nothing filed. Exit 0 is "no local changes to save" (M 5); anything else is a
             // refusal to name, or git's own words.
-            //
-            // One exit 0 lands here with the files cleaned: an entry that is the very commit
-            // already at `stash@{0}` (same trees, parents and message, made in the same second),
-            // which `stash store` files by adding nothing (measured). What left the files is
-            // then exactly that listed entry, so nothing is lost; it is reported as nothing to
-            // save.
-            if result.exitCode == 0 { return .nothingToSave }
-            throw Self.pushFailure(result)
+            guard result.exitCode == 0 else { throw Self.pushFailure(result) }
+            // Except one exit 0 that did save: an entry that is the very commit already at
+            // `stash@{0}` (same trees, parents and message, made in the same second), which git
+            // files by adding nothing (measured) while it cleans the files all the same. Told
+            // apart by the files: changes git saves were there before and are gone now.
+            if let before, Self.hasChangesAPushSaves(status, includeUntracked: includeUntracked),
+                !Self.hasChangesAPushSaves(try await stashStatus(at: root), includeUntracked: includeUntracked)
+            {
+                return .saved(try await listedStash(before, at: root))
+            }
+            return .nothingToSave
         }
         let stash = try await listedStash(after, at: root)
         if result.exitCode != 0 {
@@ -193,13 +198,49 @@ extension CLIGitBackend {
         return (marked + candidates.filter { !inHEAD.contains($0) }).filter { seen.insert($0).inserted }
     }
 
-    /// Which of `paths` the tree of `rev` has an entry for (a blob, a link or a gitlink).
-    /// `ls-tree` takes pathspecs, so each is literal.
+    /// Which of `paths` the tree of `rev` has an entry for (a blob, a link, a gitlink, or a
+    /// tree for a directory).
     func paths(_ paths: [String], in rev: String, at root: URL) async throws -> Set<String> {
-        guard !paths.isEmpty else { return [] }
+        Set(try await modes(of: paths, in: rev, at: root).keys)
+    }
+
+    /// Each of `paths` that the tree of `rev` has an entry for, with its mode (`100644`,
+    /// `100755`, `120000`, `160000`, or `040000` for a directory). `ls-tree` takes pathspecs, so
+    /// each is literal; `<mode> SP <type> SP <object> TAB <path> NUL` per entry.
+    func modes(of paths: [String], in rev: String, at root: URL) async throws -> [String: String] {
+        guard !paths.isEmpty else { return [:] }
         let data = try await run(
-            ["ls-tree", "-z", "--full-tree", "--name-only", rev, "--"] + paths.map(literalPathspec), cwd: root)
-        return Set(String(decoding: data, as: UTF8.self).split(separator: "\0").map(String.init))
+            ["ls-tree", "-z", "--full-tree", rev, "--"] + paths.map(literalPathspec), cwd: root)
+        var result: [String: String] = [:]
+        for record in String(decoding: data, as: UTF8.self).split(separator: "\0") {
+            guard let tab = record.firstIndex(of: "\t"), let space = record.firstIndex(of: " ") else { continue }
+            result[String(record[record.index(after: tab)...])] = String(record[..<space])
+        }
+        return result
+    }
+
+    /// How `path` sits on disk against what git tracks there, read with `lstat` semantics (a
+    /// symlink is a symlink, never what it points at):
+    /// - a leading component that is a file or a symlink (`d` for `d/a`): git cannot see past
+    ///   it, and restoring `d/a` would delete it;
+    /// - a real directory where git tracks a file or a symlink (`tracksAFile`): status shows
+    ///   only a deletion, and what is inside the directory is invisible to it.
+    /// Either way, what is on disk is in no record, and a restore would overwrite it.
+    static func hasChangedType(_ path: String, tracksAFile: Bool, under root: URL) -> Bool {
+        let components = StashRecord.withoutTrailingSlash(path).split(separator: "/").map(String.init)
+        var url = root
+        for component in components.dropLast() {
+            url = url.appendingPathComponent(component)
+            guard let type = fileType(url) else { return false }  // absent: nothing hidden below
+            if type != .typeDirectory { return true }
+        }
+        guard let last = components.last else { return false }
+        return tracksAFile && fileType(url.appendingPathComponent(last)) == .typeDirectory
+    }
+
+    /// `lstat`'s answer: `attributesOfItem` does not follow a final symlink. Nil when absent.
+    private static func fileType(_ url: URL) -> FileAttributeType? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType
     }
 
     /// `ls-files -s -z` / `ls-files -u -z`: `<mode> SP <object> SP <stage> TAB <path> NUL`.
@@ -228,6 +269,38 @@ extension CLIGitBackend {
         let trees = GitLines.split(data)
         guard trees.count >= 3, trees[0] == trees[1], trees[2] == trees[1] else { return false }
         return !stash.hasUntrackedPart || trees.count == 4 && trees[3] == Self.emptyTree
+    }
+
+    /// Whether `status` shows something a push takes: a tracked change that is not a
+    /// submodule's (stash leaves those alone, M 14), or with `-u` an untracked file or
+    /// directory that is not a nested repository (M 4).
+    private static func hasChangesAPushSaves(_ status: WorkingCopyStatus, includeUntracked: Bool) -> Bool {
+        status.files.contains { file in
+            if file.isUntracked { return includeUntracked && !file.isNestedRepository }
+            return file.unstaged != .ignored && !file.isSubmodule
+        }
+    }
+
+    /// The deleted paths (and renames' original paths) that `hasChangedType` says swapped
+    /// type — what a full push would silently overwrite (measured, git 2.54):
+    /// - a tracked file replaced by a directory (`p` → `p/x`): a plain push puts the file back
+    ///   and `p/x` is lost; with `-u` it is saved in the third parent, but an apply cannot put
+    ///   it back (`fatal: cannot create directory at 'p': File exists`). Refused either way.
+    /// - a path under what is now a file (`d/a` → the file `d`): a plain push puts the
+    ///   directory back and the file `d` is lost. With `-u` it is saved in the third parent
+    ///   and an apply restores it, so only the plain push is refused.
+    static func typeChangedDeletions(
+        in status: WorkingCopyStatus, includeUntracked: Bool, under root: URL
+    ) -> [String] {
+        let deleted = status.files.filter { !$0.isSubmodule && ($0.staged == .deleted || $0.unstaged == .deleted) }
+            .map(\.path)
+            + status.files.filter { $0.staged == .renamed || $0.unstaged == .renamed }.compactMap(\.originalPath)
+        var seen = Set<String>()
+        return deleted.filter { seen.insert($0).inserted }.filter { path in
+            let underAFile = hasChangedType(path, tracksAFile: false, under: root)
+            let overAFile = hasChangedType(path, tracksAFile: true, under: root) && !underAFile
+            return overAFile || (underAFile && !includeUntracked)
+        }
     }
 
     /// git's empty tree.
