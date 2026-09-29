@@ -25,7 +25,9 @@
     ///                                       click on a toolbar button did
     ///
     /// `DebugLaunchHooks+Events` adds the ones that click and type;
-    /// `DebugLaunchHooks+Branches` the ones that run branch actions and open their sheets.
+    /// `DebugLaunchHooks+Branches` the ones that run branch actions and open their sheets;
+    /// `DebugLaunchHooks+Stash` and `DebugLaunchHooks+Discard` the stash and discard steps of
+    /// that same step list (its header lists every step).
     @MainActor
     enum DebugLaunchHooks {
 
