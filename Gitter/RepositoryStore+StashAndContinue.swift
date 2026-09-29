@@ -11,8 +11,12 @@ struct StashAndContinueOffer: Equatable {
     /// The refusal named an untracked file: a stash without `-u` would leave it in the way, and
     /// the retry would be refused over it again.
     let includeUntracked: Bool
-    /// `Gitter: before switching to "b"`, `… merging "b"`, `… pulling` (`StashWording`).
+    /// `Gitter: before switching to b`, `… merging b`, `… pulling` (`StashWording`).
     let message: String
+    /// What was refused. `.treeNotClean` (a pull's rebase) is the one refusal a change inside
+    /// a submodule can cause, which a stash cannot hold; the nothing-stashed sentence says so
+    /// only then.
+    let refusal: BranchOperationError
 }
 
 /// Which refusals a stash answers. Pure.
@@ -20,14 +24,12 @@ enum StashAndContinue {
 
     /// The offer for `refusal`, or nil.
     ///
-    /// Offered for the two refusals over local changes (M 12): `.wouldOverwrite` (switch,
-    /// checkout, merge, a pull's merge step, and a rebase over an untracked file) and
-    /// `.treeNotClean` (a pull's rebase). Never for anything else — a name, a branch, a moved
-    /// tip, or an operation part-way through, where `stashAll` refuses anyway.
-    ///
-    /// `.indexNotClean` (a true merge or a squash over a staged change to a file the merge does
-    /// not touch) is not offered: the spec lists the two above only. A stash would answer it;
-    /// see `docs/BACKLOG.md`.
+    /// Offered for the three refusals over local changes (M 12): `.wouldOverwrite` (switch,
+    /// checkout, merge, a pull's merge step, and a rebase over an untracked file),
+    /// `.indexNotClean` (a true merge or a squash over any staged change — a stash resets the
+    /// index to HEAD, so the retry passes merge-ort's check and `requireACleanIndexForASquash`)
+    /// and `.treeNotClean` (a pull's rebase). Never for anything else — a name, a branch, a
+    /// moved tip, or an operation part-way through, where `stashAll` refuses anyway.
     static func offer(for refusal: BranchOperationError, action: PendingBranchAction)
         -> StashAndContinueOffer?
     {
@@ -35,17 +37,19 @@ enum StashAndContinue {
         switch refusal {
         case .wouldOverwrite(_, let named):
             untracked = !named.isEmpty
-        case .treeNotClean:
-            // A rebase never refuses over an untracked file this way (M 12).
+        case .treeNotClean, .indexNotClean:
+            // Neither is about an untracked file: a rebase refuses over one as
+            // `.wouldOverwrite(untracked:)` instead (M 12), and merge-ort's index check
+            // looks only at the index.
             untracked = false
-        case .indexNotClean, .operationInProgress, .invalidName, .branchExists,
+        case .operationInProgress, .invalidName, .branchExists,
             .cannotDeleteCurrent, .branchMoved, .noSuchBranch, .noOperationInProgress,
             .operationMismatch:
             return nil
         }
         return StashAndContinueOffer(
             action: action, includeUntracked: untracked,
-            message: StashWording.continueMessage(for: action))
+            message: StashWording.continueMessage(for: action), refusal: refusal)
     }
 
     /// `error` as the action that met it throws it on: a `BranchActionFailure` a stash answers
@@ -136,7 +140,7 @@ extension RepositoryStore {
                 Notice(text: StashWording.continued(stash: stash), actions: [.popStash(stash)]))
             retry(offer.action)
         case .nothingToSave:
-            showStickyError(StashWording.continueNothingStashed(offer.action))
+            showStickyError(StashWording.continueNothingStashed(offer))
         case .savedWithError(let stash, let gitsWords, let trashed):
             showStickyError(
                 StashWording.continueSavedWithError(

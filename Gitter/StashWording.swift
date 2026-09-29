@@ -279,32 +279,39 @@ enum StashWording {
 
     /// The message the stash is filed under (git adds `On <branch>: `): what was about to
     /// happen, so the entry says why it is there when it turns up in the list weeks later.
+    /// Unquoted, as the spec writes it: a branch name holds no space, and every sentence that
+    /// names a stash quotes its message already (`stash "Gitter: before merging b"`).
     static func continueMessage(for action: PendingBranchAction) -> String {
         switch action {
-        case .switchTo(let branch): "Gitter: before switching to \"\(branch)\""
-        case .createAndSwitch(let name, _): "Gitter: before switching to \"\(name)\""
-        case .track(let remoteBranch): "Gitter: before checking out \"\(remoteBranch)\""
-        case .detach(let revision): "Gitter: before checking out \"\(revision)\""
-        case .merge(let branch, _): "Gitter: before merging \"\(branch)\""
+        case .switchTo(let branch): "Gitter: before switching to \(branch)"
+        case .createAndSwitch(let name, _): "Gitter: before switching to \(name)"
+        case .track(let remoteBranch): "Gitter: before checking out \(remoteBranch)"
+        case .detach(let revision): "Gitter: before checking out \(revision)"
+        case .merge(let branch, _): "Gitter: before merging \(branch)"
         case .pull: "Gitter: before pulling"
         }
     }
 
     /// The sticky notice, with Pop Stash, put up once the stash is filed and before the retry
     /// runs — so it stays whatever the retry ends in: done, a conflict, a new refusal, the
-    /// pull's question.
+    /// pull's question. Stash Changes…'s own sentence for a filed entry, so the two cannot
+    /// drift apart.
     static func continued(stash: Stash) -> String {
-        "Your changes are in stash \(name(stash))."
+        pushOutcome(.saved(stash), includeUntracked: false, onlySelected: false)
     }
 
-    /// `stashAll` filed nothing. The changes git named may be gone (then the retry would work),
-    /// or be something a stash cannot hold — a change inside a submodule, which Gitter's rebase
-    /// check refuses over and a stash leaves where it is (then it would be refused again). The
-    /// sentence cannot tell which, so nothing was run, and it says both.
-    static func continueNothingStashed(_ action: PendingBranchAction) -> String {
-        "Nothing was stashed: there are no changes a stash can hold, so Gitter did not try to "
-            + "\(action.summary) again. If the changes are gone, try again; a change inside a "
-            + "submodule has to be committed in the submodule."
+    /// `stashAll` filed nothing, so nothing was run: the changes git named may be gone (then the
+    /// retry would work). Only for a pull's rebase (`.treeNotClean`) can the cause also be a
+    /// change a stash cannot hold — a submodule with changes inside it, which Gitter's own
+    /// clean-tree check refuses over and a stash leaves where it is — so only that sentence
+    /// says so. A switch or merge is refused by git over files, never over a submodule's
+    /// content.
+    static func continueNothingStashed(_ offer: StashAndContinueOffer) -> String {
+        let text =
+            "Nothing was stashed: there are no changes a stash can hold, so Gitter did not try "
+            + "to \(offer.action.summary) again. If the changes are gone, try again"
+        guard offer.refusal == .treeNotClean else { return text + "." }
+        return text + "; a change inside a submodule has to be committed in the submodule."
     }
 
     /// The entry was filed and something after it failed: the changes are in the stash and may

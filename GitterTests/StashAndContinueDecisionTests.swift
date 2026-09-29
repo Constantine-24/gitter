@@ -26,7 +26,8 @@ import Testing
             offer
                 == StashAndContinueOffer(
                     action: .switchTo("b"), includeUntracked: false,
-                    message: "Gitter: before switching to \"b\""))
+                    message: "Gitter: before switching to b",
+                    refusal: .wouldOverwrite(tracked: ["f"], untracked: [])))
     }
 
     /// The refusal named an untracked file: a stash without `-u` would leave it where it is and
@@ -43,7 +44,7 @@ import Testing
             for: .wouldOverwrite(tracked: ["f"], untracked: ["n"]),
             action: .merge("b", .alwaysMergeCommit))
         #expect(offer?.includeUntracked == true)
-        #expect(offer?.message == "Gitter: before merging \"b\"")
+        #expect(offer?.message == "Gitter: before merging b")
     }
 
     /// A pull's rebase refuses any tracked change, and never an untracked file (that one arrives
@@ -54,7 +55,8 @@ import Testing
         #expect(
             offer
                 == StashAndContinueOffer(
-                    action: action, includeUntracked: false, message: "Gitter: before pulling"))
+                    action: action, includeUntracked: false, message: "Gitter: before pulling",
+                    refusal: .treeNotClean))
     }
 
     @Test func aPullsMergeStepRefusedOverAFileOffersAStash() {
@@ -68,12 +70,12 @@ import Testing
     @Test func eachActionNamesItselfInTheMessage() {
         let refusal = BranchOperationError.wouldOverwrite(tracked: ["f"], untracked: [])
         let messages: [(PendingBranchAction, String)] = [
-            (.switchTo("feature/x"), "Gitter: before switching to \"feature/x\""),
-            (.track("origin/b"), "Gitter: before checking out \"origin/b\""),
-            (.detach("v1.0"), "Gitter: before checking out \"v1.0\""),
-            (.merge("b", .fastForwardIfPossible), "Gitter: before merging \"b\""),
-            (.merge("b", .squash), "Gitter: before merging \"b\""),
-            (.createAndSwitch(name: "n", startPoint: "origin/b"), "Gitter: before switching to \"n\""),
+            (.switchTo("feature/x"), "Gitter: before switching to feature/x"),
+            (.track("origin/b"), "Gitter: before checking out origin/b"),
+            (.detach("v1.0"), "Gitter: before checking out v1.0"),
+            (.merge("b", .fastForwardIfPossible), "Gitter: before merging b"),
+            (.merge("b", .squash), "Gitter: before merging b"),
+            (.createAndSwitch(name: "n", startPoint: "origin/b"), "Gitter: before switching to n"),
             (.pull(upstream: "origin/main", mode: .alwaysMergeCommit), "Gitter: before pulling"),
         ]
         for (action, message) in messages {
@@ -81,11 +83,27 @@ import Testing
         }
     }
 
+    /// A true merge (or a squash) refused over a staged change, even to a file the merge never
+    /// touches: a stash resets the index to HEAD, so the retry passes merge-ort's index check
+    /// and the squash's own. The refusal names no file, so no `-u`.
+    @Test func aStagedChangeRefusingAMergeOffersAStashWithoutUntrackedFiles() {
+        let action = PendingBranchAction.pull(upstream: "origin/main", mode: .alwaysMergeCommit)
+        #expect(
+            StashAndContinue.offer(for: .indexNotClean, action: action)
+                == StashAndContinueOffer(
+                    action: action, includeUntracked: false, message: "Gitter: before pulling",
+                    refusal: .indexNotClean))
+        #expect(
+            StashAndContinue.offer(for: .indexNotClean, action: .merge("b", .squash))
+                == StashAndContinueOffer(
+                    action: .merge("b", .squash), includeUntracked: false,
+                    message: "Gitter: before merging b", refusal: .indexNotClean))
+    }
+
     // MARK: - Not offered
 
-    /// Every other refusal: a stash cannot answer it (a name, a branch, an operation part-way
-    /// through — where `stashAll` refuses anyway), or, for `.indexNotClean`, the spec does not
-    /// list it (see the report).
+    /// Every other refusal: a stash cannot answer it (a name, a branch, a moved tip, an
+    /// operation part-way through — where `stashAll` refuses anyway).
     @Test func noOtherRefusalOffersAStash() {
         let refusals: [BranchOperationError] = [
             .operationInProgress("merging"),
@@ -96,7 +114,6 @@ import Testing
                 name: "b", expected: String(repeating: "1", count: 40),
                 actual: String(repeating: "2", count: 40)),
             .noSuchBranch("b"),
-            .indexNotClean,
             .noOperationInProgress,
             .operationMismatch(expected: .merge, actual: .rebase),
         ]
@@ -141,16 +158,52 @@ import Testing
 
     @Test func theNoticeSaysWhereTheChangesAre() {
         #expect(
-            StashWording.continued(stash: Self.stash("Gitter: before switching to \"b\""))
-                == "Your changes are in stash \"Gitter: before switching to \"b\"\".")
+            StashWording.continued(stash: Self.stash("Gitter: before switching to b"))
+                == "Your changes are in stash \"Gitter: before switching to b\".")
     }
 
-    @Test func nothingStashedSaysNothingWasTriedAgain() {
+    /// The same sentence Stash Changes… says for a filed entry, so the two cannot drift.
+    @Test func theNoticeIsStashChangesOwnSentence() {
+        let stash = Self.stash("Gitter: before merging b")
         #expect(
-            StashWording.continueNothingStashed(.switchTo("b"))
+            StashWording.continued(stash: stash)
+                == StashWording.pushOutcome(
+                    .saved(stash), includeUntracked: false, onlySelected: false))
+    }
+
+    /// A switch or merge: git refused over files, and a stash that found nothing means they are
+    /// gone. Submodules are not mentioned — nothing on this path refuses over one.
+    @Test func nothingStashedForASwitchSaysNothingWasTriedAgain() {
+        let offer = StashAndContinue.offer(
+            for: .wouldOverwrite(tracked: ["f"], untracked: []), action: .switchTo("b"))
+        #expect(
+            offer.map(StashWording.continueNothingStashed)
                 == "Nothing was stashed: there are no changes a stash can hold, so Gitter did "
-                + "not try to switch to \"b\" again. If the changes are gone, try again; a "
-                + "change inside a submodule has to be committed in the submodule.")
+                + "not try to switch to \"b\" again. If the changes are gone, try again.")
+    }
+
+    @Test func nothingStashedForAMergeDoesNotMentionSubmodules() {
+        for refusal: BranchOperationError in [
+            .wouldOverwrite(tracked: ["f"], untracked: []), .indexNotClean,
+        ] {
+            let offer = StashAndContinue.offer(for: refusal, action: .merge("b", .alwaysMergeCommit))
+            let text = offer.map(StashWording.continueNothingStashed) ?? ""
+            #expect(text.hasPrefix("Nothing was stashed:"))
+            #expect(!text.contains("submodule"))
+        }
+    }
+
+    /// The pull's rebase: Gitter's own clean-tree check refuses over a submodule with changes
+    /// inside it, which a stash leaves where it is — the one path where that is the likely cause.
+    @Test func nothingStashedForAPullsRebaseMentionsSubmodules() {
+        let offer = StashAndContinue.offer(
+            for: .treeNotClean,
+            action: .pull(upstream: "origin/main", mode: .alwaysMergeCommit))
+        #expect(
+            offer.map(StashWording.continueNothingStashed)
+                == "Nothing was stashed: there are no changes a stash can hold, so Gitter did "
+                + "not try to pull from \"origin/main\" again. If the changes are gone, try "
+                + "again; a change inside a submodule has to be committed in the submodule.")
     }
 
     @Test func savedWithErrorSaysTheChangesMayBeInBothPlaces() {
