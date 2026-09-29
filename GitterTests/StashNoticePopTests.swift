@@ -69,4 +69,53 @@ import Testing
         #expect(store.lastError == nil)
         #expect(!store.isMutating)
     }
+
+    // MARK: - After a clean apply or pop from the Stashes list (final review M1)
+
+    private static func receipt(
+        _ request: DiscardRequest, record: Stash?, trashed: [String: URL] = [:]
+    ) -> DiscardReceipt {
+        DiscardReceipt(request: request, record: record, headAtDiscard: "h", trashed: trashed)
+    }
+
+    private static let record = stash(String(repeating: "c", count: 40), index: 0, "Discarded by Gitter: p")
+    private static let tracked = receipt(.unstaged(paths: ["p"], expected: .diffs([])), record: record)
+    private static let trashed = receipt(
+        .untracked(paths: ["u"], expected: .untracked([])), record: nil,
+        trashed: ["u": URL(fileURLWithPath: "/tmp/Trash/u")])
+
+    /// The record the notice's Undo would bring back was popped or applied: the Undo would
+    /// then be refused, or put it back twice. The notice goes.
+    @Test(arguments: [false, true])
+    func anUndoNoticeWhoseRecordWasRestoredGoes(popping: Bool) {
+        let notice = Notice(text: "Discarded p.", actions: [.undoDiscard([Self.tracked])])
+        #expect(RepositoryStore.stickyNoticeChange(notice, afterRestoring: Self.record, popping: popping) == .dismiss)
+    }
+
+    /// Discard All…'s notice also holds what went to the Trash: that part stays undoable, and
+    /// the notice says only it.
+    @Test(arguments: [false, true])
+    func theTrashedPartOfAnUndoNoticeStays(popping: Bool) {
+        let notice = Notice(text: "Discarded p; moved u to the Trash.", actions: [.undoDiscard([Self.tracked, Self.trashed])])
+        #expect(
+            RepositoryStore.stickyNoticeChange(notice, afterRestoring: Self.record, popping: popping)
+                == .replace(Notice(text: DiscardWording.done([Self.trashed]), actions: [.undoDiscard([Self.trashed])])))
+    }
+
+    /// Another entry, or no sticky notice: nothing to do. Matched by sha, never by position.
+    @Test func anotherEntryLeavesTheNoticeAlone() {
+        let notice = Notice(text: "Discarded p.", actions: [.undoDiscard([Self.tracked])])
+        let other = Self.stash(String(repeating: "d", count: 40), index: 0, "Discarded by Gitter: p")
+        #expect(RepositoryStore.stickyNoticeChange(notice, afterRestoring: other, popping: true) == .keep)
+        #expect(RepositoryStore.stickyNoticeChange(nil, afterRestoring: Self.record, popping: true) == .keep)
+        #expect(RepositoryStore.stickyNoticeChange(Notice(text: "Pushed."), afterRestoring: Self.record, popping: true) == .keep)
+    }
+
+    /// The Pop Stash notice goes after a pop of its entry, as before; after an apply it stays —
+    /// the entry is still listed.
+    @Test func aPopStashNoticeGoesOnlyAfterAPop() {
+        let notice = Notice(text: "Stashed.", actions: [.popStash(Self.offered)])
+        #expect(RepositoryStore.stickyNoticeChange(notice, afterRestoring: Self.offered, popping: true) == .dismiss)
+        #expect(RepositoryStore.stickyNoticeChange(notice, afterRestoring: Self.offered, popping: false) == .keep)
+    }
 }

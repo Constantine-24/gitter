@@ -147,8 +147,41 @@ extension RepositoryStore {
             } else {
                 showStickyError(text)
             }
-            if popping, outcome == .applied { dismissStickyNotice(offeringToPop: stash) }
+            if outcome == .applied {
+                switch Self.stickyNoticeChange(stickyNotice, afterRestoring: stash, popping: popping) {
+                case .keep: break
+                case .dismiss: dismissStickyNotice()
+                case .replace(let notice): showStickyNotice(notice)
+                }
+            }
         })
+    }
+
+    /// What the sticky notice becomes after a clean apply or pop of `stash` (final review M1).
+    /// A Pop Stash offering the popped entry goes. An Undo Discard whose record is that entry
+    /// would contradict what just happened — refused, or the changes put back twice — so its
+    /// receipt goes: the notice with it, or, when Discard All… also moved items to the Trash,
+    /// the notice says and undoes only those. By sha, never by position.
+    static func stickyNoticeChange(_ notice: Notice?, afterRestoring stash: Stash, popping: Bool) -> StickyNoticeChange {
+        guard let notice else { return .keep }
+        for action in notice.actions {
+            switch action {
+            case .popStash(let offered) where popping && offered.sha == stash.sha:
+                return .dismiss
+            case .undoDiscard(let receipts) where receipts.contains(where: { $0.record?.sha == stash.sha }):
+                let rest = receipts.filter { $0.record?.sha != stash.sha && DiscardWording.isUndoable($0) }
+                guard !rest.isEmpty else { return .dismiss }
+                return .replace(Notice(text: DiscardWording.done(rest), actions: [.undoDiscard(rest)]))
+            default:
+                continue
+            }
+        }
+        return .keep
+    }
+
+    enum StickyNoticeChange: Equatable {
+        case keep, dismiss
+        case replace(Notice)
     }
 
     // MARK: - Drop Stash…
