@@ -18,9 +18,10 @@ import SwiftUI
 /// are, disabled, with the store's "Wait for … to finish" in their tooltips, and the progress
 /// line has a fixed width so a counter ticking from 9% to 10% does not nudge its neighbours.
 ///
-/// **The activity is drawn only once the lane has run for `ActivityReveal.delay`** (0.4 s); the
-/// button is disabled at once. A lane that ends sooner — a fetch with nothing to download, as a
-/// retried pull's usually is — never resizes the toolbar. Growing the item by ~240 points and
+/// **The activity is drawn only once the lane has run for `ActivityReveal.delay`** (0.4 s), and
+/// once drawn it stays for at least that long, even after the lane ends; the button is disabled
+/// at once. A lane that ends sooner, like a fetch with nothing to download, never resizes the
+/// toolbar, and no lane shrinks the item within 0.4 s of growing it. Growing the item by ~240 points and
 /// shrinking it again inside AppKit's own animation of the toolbar's glass groups made its layout
 /// alternate by 1e-11 points on every pass, each pass re-invalidating the SwiftUI hosting view,
 /// until AppKit threw "more Update Constraints in Window passes than there are views in the
@@ -42,16 +43,32 @@ struct RemoteToolbarItem: View {
 
     @Environment(RepositoryStore.self) private var store
 
-    /// The `startedAt` of the lane this item has waited `ActivityReveal.delay` for — view state,
-    /// not the store's: it only decides when the activity is drawn.
-    @State private var revealed: Date?
+    /// When this item revealed its lane's activity, and for which lane: view state, not the
+    /// store's, since it only decides what is drawn (`ActivityReveal`).
+    @State private var revealed: ActivityReveal.Revealed?
+    /// The last activity drawn, kept so it can stay on screen after its lane has ended.
+    @State private var lastShown: RemoteActivity?
+
+    private var owned: RemoteActivity? {
+        store.remoteActivity.flatMap { Self.owner(of: $0.kind) == action ? $0 : nil }
+    }
+
+    private var lane: ActivityReveal.Lane? {
+        store.remoteActivity.map {
+            ActivityReveal.Lane(startedAt: $0.startedAt, owner: Self.owner(of: $0.kind))
+        }
+    }
 
     var body: some View {
-        let owned = store.remoteActivity.flatMap { Self.owner(of: $0.kind) == action ? $0 : nil }
+        let step = ActivityReveal.step(lane: lane, item: action, revealed: revealed, now: .now)
+        let drawn: RemoteActivity? =
+            switch step.drawn {
+            case .button: nil
+            case .lane: owned
+            case .lingering: lastShown
+            }
         Group {
-            if let activity = owned,
-                ActivityReveal.shows(laneStartedAt: activity.startedAt, revealed: revealed)
-            {
+            if let activity = drawn {
                 HStack(spacing: 2) {
                     RemoteActivityItem(activity: activity)
                     // Disabled by the lane-busy reason like the other two, and in the same place
@@ -62,14 +79,30 @@ struct RemoteToolbarItem: View {
                 button
             }
         }
-        // Restarted by every new lane, and cancelled by its end: a lane shorter than the delay
-        // never reveals anything.
-        .task(id: owned?.startedAt) {
-            guard let started = owned?.startedAt else { return }
-            try? await Task.sleep(for: ActivityReveal.delay)
-            guard !Task.isCancelled else { return }
-            revealed = started
+        .onChange(of: owned, initial: true) { _, activity in
+            if let activity { lastShown = activity }
         }
+        // Run again whenever the lane or the reveal changes: it applies the step's new reveal,
+        // or sleeps until the moment the step names (the delay is up, or the minimum is over).
+        .task(id: TaskKey(lane: lane, revealed: revealed)) {
+            let now = Date.now
+            let current = ActivityReveal.step(lane: lane, item: action, revealed: revealed, now: now)
+            if current.revealed != revealed {
+                revealed = current.revealed
+                return
+            }
+            guard let wakeAt = current.wakeAt else { return }
+            try? await Task.sleep(for: .seconds(max(0, wakeAt.timeIntervalSince(now))))
+            guard !Task.isCancelled else { return }
+            revealed =
+                ActivityReveal.step(lane: lane, item: action, revealed: revealed, now: .now)
+                .revealed
+        }
+    }
+
+    private struct TaskKey: Equatable {
+        let lane: ActivityReveal.Lane?
+        let revealed: ActivityReveal.Revealed?
     }
 
     /// The item that shows a lane's progress and stop button. Every kind has one, so the stop
@@ -232,6 +265,12 @@ private struct RemoteActivityItem: View {
     /// is the tail of the click that started it, not a decision to stop; it is dropped. ⌘. and
     /// the menu go straight to `cancelRemoteActivity()` and are never held back.
     private func stop() {
+        // Drawn after its lane has ended (`ActivityReveal`'s minimum): nothing of its own to
+        // stop, and the lane running now may be another item's.
+        guard
+            ActivityReveal.stopActs(
+                shownLane: activity.startedAt, runningLane: store.remoteActivity?.startedAt)
+        else { return }
         guard StopClick.isDeliberate(
             startedAt: activity.startedAt, now: .now,
             doubleClickInterval: NSEvent.doubleClickInterval)
@@ -246,23 +285,91 @@ private struct RemoteActivityItem: View {
     }
 }
 
-/// When a network item draws its lane's activity: once that same lane has run for `delay`.
+/// When a network item draws its lane's activity (Stop, spinner, progress line).
 ///
-/// The item waits `delay` after its lane starts and then records the lane's `startedAt` as
-/// `revealed`; the activity shows only while the running lane is that one. A lane shorter than
-/// `delay` therefore never changes the toolbar's size, and a reveal left over from an earlier lane
-/// never shows the next one early.
+/// What the design guarantees, by construction:
+/// - **Late:** an item draws a lane's activity only once that lane has run for `delay`. A lane
+///   that ends sooner never changes the toolbar's size at all.
+/// - **Held:** once drawn, the activity stays for at least `delay`, even past its lane's end (the
+///   last one drawn stays, and its Stop does nothing: `stopActs`). So every growth of an item is
+///   followed by at least `delay` without a shrink, whatever the lane's length.
+/// - **Carried over:** a new lane of the same item that starts while the activity is still drawn
+///   (Fetch pressed during a revealed automatic fetch) keeps it drawn, with no shrink and regrow.
+///   A lane of another item waits its own `delay`.
 ///
-/// `delay` is longer than AppKit's animation of the toolbar's glass groups (measured at about
-/// 0.3 s), so a short lane can no longer grow the item and shrink it again inside that animation —
-/// the pattern behind the constraint-loop crash. It is shorter than the default double-click
-/// interval (0.5 s), during which Stop ignores a click anyway (`StopClick.isDeliberate`); ⌘. and
-/// the menu's Stop work from the lane's first moment.
+/// `delay` is longer than AppKit's animation of the toolbar's glass groups (about 0.3 s, measured
+/// with a frame probe). So no item grows and shrinks again inside one animation, which is the
+/// pattern that made AppKit's layout loop until it threw ("more Update Constraints in Window passes
+/// than there are views in the window", A1 inserted fix 6). It is not a guarantee about two
+/// *different* items changing within one animation; that is the BACKLOG's residual. It is shorter
+/// than the default double-click interval (0.5 s), during which Stop ignores a click anyway
+/// (`StopClick.isDeliberate`); ⌘. and the menu's Stop work from the lane's first moment.
 enum ActivityReveal {
     static let delay: Duration = .milliseconds(400)
+    static var delaySeconds: TimeInterval {
+        let parts = delay.components
+        return TimeInterval(parts.seconds) + TimeInterval(parts.attoseconds) / 1e18
+    }
 
-    static func shows(laneStartedAt: Date?, revealed: Date?) -> Bool {
-        guard let laneStartedAt else { return false }
-        return revealed == laneStartedAt
+    /// The lane running now, and the item that shows it.
+    struct Lane: Equatable {
+        let startedAt: Date
+        let owner: RemoteToolbarItem.Action
+    }
+
+    /// An item's reveal: the lane it is drawing (the latest, after a carry-over) and when the
+    /// activity first appeared.
+    struct Revealed: Equatable {
+        var lane: Date
+        var at: Date
+    }
+
+    enum Drawn: Equatable {
+        /// Only the item's own button.
+        case button
+        /// The running lane's activity.
+        case lane
+        /// The last activity drawn, after its lane has ended, until the minimum is over.
+        case lingering
+    }
+
+    /// What `item` draws at `now`, the reveal it should hold from now on, and when to look again
+    /// (nil: only when the lane or the reveal changes).
+    struct Step: Equatable {
+        let revealed: Revealed?
+        let drawn: Drawn
+        let wakeAt: Date?
+    }
+
+    static func step(lane: Lane?, item: RemoteToolbarItem.Action, revealed: Revealed?, now: Date)
+        -> Step
+    {
+        if let lane, lane.owner == item {
+            if var revealed {
+                // Revealed already: this lane, or a new one of the same item with no gap.
+                revealed.lane = lane.startedAt
+                return Step(revealed: revealed, drawn: .lane, wakeAt: nil)
+            }
+            let due = lane.startedAt.addingTimeInterval(delaySeconds)
+            if now >= due {
+                return Step(
+                    revealed: Revealed(lane: lane.startedAt, at: now), drawn: .lane, wakeAt: nil)
+            }
+            return Step(revealed: nil, drawn: .button, wakeAt: due)
+        }
+        // No lane of this item: hold what was drawn until the minimum is over.
+        if let revealed {
+            let until = revealed.at.addingTimeInterval(delaySeconds)
+            if now < until {
+                return Step(revealed: revealed, drawn: .lingering, wakeAt: until)
+            }
+        }
+        return Step(revealed: nil, drawn: .button, wakeAt: nil)
+    }
+
+    /// Whether Stop, drawn for the lane that started at `shownLane`, may stop anything: only
+    /// while that lane is the one running.
+    static func stopActs(shownLane: Date, runningLane: Date?) -> Bool {
+        shownLane == runningLane
     }
 }
