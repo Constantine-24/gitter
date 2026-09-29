@@ -18,21 +18,78 @@ extension CLIGitBackend {
 
     // MARK: - What the sheet shows
 
+    /// Per path, in the order named: its staged side (with `includingStaged`), then its
+    /// unstaged side — exactly what `workingCopyDiff` gives for that one path — read with at
+    /// most three git processes however many paths there are (final review I1: two per path
+    /// made Discard All… of 200 files take seconds). Each diff is split back to the paths it
+    /// belongs to; `DiscardScalingTests.theBatchedReadIsThePerPathRead` pins the equality.
+    ///
+    /// `--no-renames` is what keeps it equal. A single-file pathspec never pairs a rename (only
+    /// one side matches), so the per-path read showed a staged rename as its source deleted and
+    /// its destination added — and with both paths in one call, `-M` would pair them into one
+    /// diff the sheet never showed.
     public func discardExpectation(tracked paths: [String], includingStaged: Bool, at root: URL) async throws
         -> DiscardExpectation
     {
+        guard !paths.isEmpty else { return .diffs([]) }
+        let staged: [FileDiff]
+        if includingStaged {
+            staged = DiffParser.parse(try await run(["diff", "--cached", "--no-color", "--full-index", "-U3", "--no-renames", "--"] + paths.map(literalPathspec), cwd: root))
+        } else {
+            staged = []
+        }
+        // Without an index entry (a staged deletion, a rename's source) there is no unstaged
+        // side, and `workingCopyDiff` would read the path as an untracked file.
+        let indexed = Self.coveredPaths(paths, by: try await indexPaths(paths, at: root))
+        let unstaged: [FileDiff]
+        if indexed.isEmpty {
+            unstaged = []
+        } else {
+            let named = paths.filter(indexed.contains)
+            unstaged = DiffParser.parse(try await run(["diff", "--no-color", "--full-index", "-U3", "--no-renames", "--"] + named.map(literalPathspec), cwd: root))
+        }
+        let stagedOf = Self.grouping(staged, by: \.displayPath)
+        let unstagedOf = Self.grouping(unstaged, by: \.displayPath)
         var diffs: [FileDiff] = []
         for path in paths {
-            if includingStaged {
-                diffs += try await workingCopyDiff(at: root, path: path, staged: true)
-            }
-            // Without an index entry (a staged deletion, a rename's source) there is no
-            // unstaged side, and `workingCopyDiff` would read the path as an untracked file.
-            if try await !indexPaths([path], at: root).isEmpty {
-                diffs += try await workingCopyDiff(at: root, path: path, staged: false)
-            }
+            if includingStaged { diffs += stagedOf(path) }
+            if indexed.contains(path) { diffs += unstagedOf(path) }
         }
         return .diffs(diffs)
+    }
+
+    /// The named paths a literal pathspec of theirs matches in `found`: the path itself, or
+    /// something under it as a directory.
+    static func coveredPaths(_ named: [String], by found: Set<String>) -> Set<String> {
+        let directories = Set(found.flatMap { ancestors(of: $0) })
+        return Set(named.filter { found.contains($0) || directories.contains($0) })
+    }
+
+    /// `items` for one literal pathspec each, in their order: those whose path is the named one
+    /// or under it as a directory — what a read of that one path gives.
+    static func grouping<T>(_ items: [T], by path: @escaping (T) -> String) -> (String) -> [T] {
+        var exact: [String: [T]] = [:]
+        var directories = Set<String>()
+        for item in items {
+            exact[path(item), default: []].append(item)
+            directories.formUnion(ancestors(of: path(item)))
+        }
+        return { named in
+            // A directory is rare (the sheet names files); order is kept by filtering in order.
+            guard directories.contains(named) else { return exact[named] ?? [] }
+            return items.filter { path($0) == named || path($0).hasPrefix(named + "/") }
+        }
+    }
+
+    /// `a/b/c` → `a`, `a/b`.
+    private static func ancestors(of path: String) -> [String] {
+        var result: [String] = []
+        var index = path.startIndex
+        while let slash = path[index...].firstIndex(of: "/") {
+            result.append(String(path[..<slash]))
+            index = path.index(after: slash)
+        }
+        return result
     }
 
     public func discardExpectation(untracked paths: [String], at root: URL) async throws -> DiscardExpectation {

@@ -11,10 +11,12 @@ import Foundation
 /// subcommands to this file instead.
 ///
 /// The steps (M A.0), every git call through `runWithEnvironment` or `run`:
-/// 1. Read-only survey and refusals: `status`, `ls-files -s -z` per path, `ls-tree HEAD`.
+/// 1. Read-only survey and refusals: `status`, one `ls-files -s -z` for all the paths,
+///    `ls-tree HEAD`.
 /// 2. `read-tree HEAD` into the temporary index (it creates the file).
-/// 3. Per path: its real index entries via `update-index --add --cacheinfo`, or — when the
-///    real index has none (a staged deletion or rename source) — `update-index --force-remove`.
+/// 3. The paths the real index has no entry for (a staged deletion or rename source) in one
+///    `update-index --force-remove`, then every real index entry of the paths through
+///    `update-index --add --cacheinfo …`, at most `cacheinfoLimit` entries a call.
 ///    `write-tree`, `commit-tree -p HEAD`: the index commit I.
 /// 4. `update-index --add --remove -- paths` reads the worktree as git would (content,
 ///    deletion, executable bit, the link itself — never `hash-object`, which follows links).
@@ -64,18 +66,16 @@ struct StashRecord {
         let head = try await backend.headDescription(at: root)
 
         _ = try await backend.runWithEnvironment(["read-tree", "HEAD"], cwd: root, extra: index)
-        for p in paths {
-            let found = entries[p] ?? []
-            if found.isEmpty {
-                _ = try await backend.runWithEnvironment(["update-index", "--force-remove", "--", p], cwd: root, extra: index)
-            }
-            // Every entry is stage 0: an unmerged path was refused above. `--cacheinfo` because
-            // the runner's stdin is /dev/null, so `--index-info` has nothing to read; git splits
-            // its argument at the first two commas only, so a comma in a name is safe (RF4).
-            for entry in found {
-                let (mode, sha, path) = (entry.mode, entry.sha, entry.path)
-                _ = try await backend.runWithEnvironment(["update-index", "--add", "--cacheinfo", "\(mode),\(sha),\(path)"], cwd: root, extra: index)
-            }
+        // One call for the paths the real index has no entry for, then the entries in calls of
+        // at most `cacheinfoLimit` (final review I1: one process per entry made a discard of 200
+        // files take seconds). The two sets are disjoint — a path with no entry has none under
+        // it either — so removing first is the per-path order's result.
+        let removed = paths.filter { (entries[$0] ?? []).isEmpty }
+        if !removed.isEmpty {
+            _ = try await backend.runWithEnvironment(["update-index", "--force-remove", "--"] + removed, cwd: root, extra: index)
+        }
+        for cacheinfo in cacheinfoArguments(paths.flatMap { entries[$0] ?? [] }) {
+            _ = try await backend.runWithEnvironment(["update-index", "--add"] + cacheinfo, cwd: root, extra: index)
         }
         let i = try await commit(
             tree: try await writeTree(backend, index, root), parents: nil,
@@ -89,8 +89,9 @@ struct StashRecord {
         // 5. File it.
         let stash = try await file(w, message: message, backend: backend, at: root)
         let tracked = paths.filter { !(entries[$0] ?? []).isEmpty || inHEAD.contains($0) }
+        let isTracked = Set(tracked)
         let untracked = paths.filter { p in
-            !tracked.contains(p)
+            !isTracked.contains(p)
                 && (try? FileManager.default.attributesOfItem(atPath: root.appendingPathComponent(p).path)) != nil
         }
         return StashRecord(stash: stash, untracked: untracked, tracked: tracked)
@@ -140,17 +141,37 @@ struct StashRecord {
 
         // Read-only: every call here leaves the index alone (`GIT_OPTIONAL_LOCKS=0`).
         let status = try await backend.stashStatus(at: root)
+        // One `ls-files` for every path, split back to each path what its own read gave: its
+        // entry, or everything under it as a directory (final review I1: one process per path).
+        let data = try await backend.run(["ls-files", "-s", "-z", "--"] + paths.map(backend.literalPathspec), cwd: root)
+        let entriesOf = CLIGitBackend.grouping(CLIGitBackend.indexRecords(data), by: \.path)
         var entries: [String: [(mode: String, sha: String, stage: String, path: String)]] = [:]
-        for p in paths {
-            let data = try await backend.run(["ls-files", "-s", "-z", "--", backend.literalPathspec(p)], cwd: root)
-            entries[p] = CLIGitBackend.indexRecords(data)
-        }
+        for p in paths { entries[p] = entriesOf(p) }
         let headModes = try await backend.modes(of: paths, in: "HEAD", at: root)
         try await refuse(named, entries: entries, headModes: headModes, status: status, backend: backend, at: root)
         return Survey(paths: paths, entries: entries, headModes: headModes)
     }
 
     // MARK: - Steps
+
+    /// At most this many `--cacheinfo` entries go to one `update-index`: 1 000 entries of a
+    /// 200-byte path are about 250 KB of arguments, well under macOS's `ARG_MAX` (1 MB).
+    static let cacheinfoLimit = 1_000
+
+    /// `--cacheinfo <mode>,<sha>,<path>` for each entry, in order, split into calls of at most
+    /// `limit` entries. Every entry is stage 0: an unmerged path was refused in the survey.
+    /// `--cacheinfo` because the runner's stdin is /dev/null, so `--index-info` has nothing to
+    /// read; git splits the argument at the first two commas only, so a comma in a name is
+    /// safe (RF4).
+    static func cacheinfoArguments(
+        _ entries: [(mode: String, sha: String, stage: String, path: String)], limit: Int = cacheinfoLimit
+    ) -> [[String]] {
+        stride(from: 0, to: entries.count, by: max(limit, 1)).map { start in
+            entries[start..<min(start + max(limit, 1), entries.count)].flatMap { entry in
+                ["--cacheinfo", "\(entry.mode),\(entry.sha),\(entry.path)"]
+            }
+        }
+    }
 
     private static func writeTree(_ backend: CLIGitBackend, _ index: [String: String], _ root: URL) async throws -> String {
         let result = try await backend.runWithEnvironment(["write-tree"], cwd: root, extra: index)
@@ -183,9 +204,13 @@ struct StashRecord {
         func entriesFor(_ p: String) -> [(mode: String, sha: String, stage: String, path: String)] {
             entries[withoutTrailingSlash(p)] ?? []
         }
-        func record(_ p: String) -> FileStatus? {
-            status.files.first { withoutTrailingSlash($0.path) == withoutTrailingSlash(p) }
+        // The first status record for each path, looked up rather than searched for each
+        // named path (a scan per path is quadratic in a Discard All… of many files).
+        var byPath: [String: FileStatus] = [:]
+        for file in status.files where byPath[withoutTrailingSlash(file.path)] == nil {
+            byPath[withoutTrailingSlash(file.path)] = file
         }
+        func record(_ p: String) -> FileStatus? { byPath[withoutTrailingSlash(p)] }
 
         // The record's `write-tree` would fail on them (M A.0); refusing first writes nothing.
         let unmerged = named.filter { p in

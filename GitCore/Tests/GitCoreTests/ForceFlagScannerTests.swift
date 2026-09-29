@@ -1137,6 +1137,12 @@ import Testing
         #"_ = try await run(["rev-parse", "-q", "--verify", "stash@{\(n)}"], cwd: root, allowedExitCodes: [1, 128])"#,
         #"_ = try await run(["rev-parse", "-q", "--verify", "refs/stash"], cwd: root, allowedExitCodes: [1])"#,
         #"_ = try await run(["ls-files", "-s", "-z", "--", literalPathspec(p)], cwd: root)"#,
+        // Final review I1: the record's survey and the discard sheet's read, one call for every
+        // path instead of one per path. `--no-renames` keeps the batched read equal to the
+        // per-path one (`DiscardScalingTests.theBatchedReadIsThePerPathRead`).
+        #"let data = try await backend.run(["ls-files", "-s", "-z", "--"] + paths.map(backend.literalPathspec), cwd: root)"#,
+        #"let data = try await run(["diff", "--cached", "--no-color", "--full-index", "-U3", "--no-renames", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"let data = try await run(["diff", "--no-color", "--full-index", "-U3", "--no-renames", "--"] + named.map(literalPathspec), cwd: root)"#,
         // Task 4's reads beside the stash vectors: each one literal, optionally `+ paths`.
         #"_ = try await run(["ls-files", "-u", "-z"], cwd: root)"#,
         #"_ = try await run(["ls-files", "-o", "-z", "--exclude-standard", "--", literalPathspec(directory)], cwd: root)"#,
@@ -1169,8 +1175,12 @@ import Testing
     /// `confinesTheRecordsPlumbingToOneFile`).
     @Test(arguments: [
         #"_ = try await runWithEnvironment(["read-tree", "HEAD"], cwd: root, extra: index)"#,
-        #"_ = try await runWithEnvironment(["update-index", "--add", "--cacheinfo", "\(mode),\(sha),\(path)"], cwd: root, extra: index)"#,
-        #"_ = try await runWithEnvironment(["update-index", "--force-remove", "--", p], cwd: root, extra: index)"#,
+        // Final review I1: one call for every path the real index lacks, and the entries in
+        // calls of at most `cacheinfoLimit`, each `--cacheinfo` built in a fragment (it carries
+        // none of the words a stash vector could take).
+        #"_ = try await runWithEnvironment(["update-index", "--add"] + cacheinfo, cwd: root, extra: index)"#,
+        #"entries[start..<end].flatMap { entry in ["--cacheinfo", "\(entry.mode),\(entry.sha),\(entry.path)"] }"#,
+        #"_ = try await runWithEnvironment(["update-index", "--force-remove", "--"] + removed, cwd: root, extra: index)"#,
         #"_ = try await runWithEnvironment(["write-tree"], cwd: root, extra: index)"#,
         #"_ = try await runWithEnvironment(["update-index", "--add", "--remove", "--"] + paths, cwd: root, extra: index)"#,
         #"_ = try await run(["stash", "store", "-q", "-m", message, w], cwd: root)"#,
