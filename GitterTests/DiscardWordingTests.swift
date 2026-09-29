@@ -192,7 +192,8 @@ import Testing
         #expect(
             DiscardWording.done([Self.linesUnverified])
                 == "Discarded 3 lines of \"a.txt\". Undo Discard can't check the file, so it is not "
-                + "offered; the copy is in the Stashes list as \"Discarded by Gitter: a.txt\".")
+                + "offered; the copy is in the Stashes list as \"Discarded by Gitter: a.txt\". "
+                + "Stage the file's other changes before you apply it there.")
     }
 
     /// A Trash that failed part-way: the notice names only what did go.

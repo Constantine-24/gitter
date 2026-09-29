@@ -150,6 +150,33 @@ import Testing
         #expect(StashWording.applyOutcome(c.outcome, of: Self.stash(), popping: c.popping) == c.sentence)
     }
 
+    /// Final review M2: a line discard's record holds the whole file, and git refuses to apply
+    /// it while the file's other changes are unstaged — committing or stashing is not what it
+    /// takes; staging (or committing) the rest is. Only such a record gets that advice.
+    @Test func aLineDiscardsRecordIsAppliedOnceTheFilesOtherChangesAreStaged() {
+        let lines = Self.stash("Discarded by Gitter: 3 lines in a.txt")
+        let one = Self.stash("Discarded by Gitter: 1 line in a.txt")
+        let files = Self.stash("Discarded by Gitter: a.txt")
+
+        #expect(StashWording.isLinesRecord(lines))
+        #expect(StashWording.isLinesRecord(one))
+        #expect(!StashWording.isLinesRecord(files))
+        #expect(!StashWording.isLinesRecord(Self.stash("On main: 3 lines in a.txt")))
+        #expect(
+            StashWording.applyOutcome(.refused(wouldOverwrite: ["a.txt"]), of: lines, popping: false)
+                == "Can't apply stash \"Discarded by Gitter: 3 lines in a.txt\": it would overwrite "
+                + "\"a.txt\". Stage or commit its other changes first. Nothing changed.")
+        #expect(
+            StashWording.applyOutcome(.refused(wouldOverwrite: ["a.txt"]), of: one, popping: true)
+                == "Can't pop stash \"Discarded by Gitter: 1 line in a.txt\": it would overwrite "
+                + "\"a.txt\". Stage or commit its other changes first. Nothing changed.")
+        // Any other entry keeps the general advice.
+        #expect(
+            StashWording.applyOutcome(.refused(wouldOverwrite: ["a.txt"]), of: files, popping: false)
+                == "Can't apply stash \"Discarded by Gitter: a.txt\": it would overwrite \"a.txt\". "
+                + "Commit, stash or move it first. Nothing changed.")
+    }
+
     /// Only `.applied` is a notice; everything else stays up until it is read.
     @Test func onlyACleanApplyIsANotice() {
         for c in Self.applyCases {

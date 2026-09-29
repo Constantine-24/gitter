@@ -119,13 +119,29 @@ enum StashWording {
                 : "files of those names already exist and were left as they are"
             return "Stash \(name) applied, except its untracked \(names(files)): \(clause). \(kept)"
         case .refused(let files):
+            let advice =
+                isLinesRecord(stash)
+                ? "Stage or commit \(number(files.count, "its", "their")) other changes first."
+                : "Commit, stash or move \(number(files.count, "it", "them")) first."
             return "Can't \(popping ? "pop" : "apply") stash \(name): it would overwrite "
-                + "\(names(files)). Commit, stash or move \(number(files.count, "it", "them")) "
-                + "first. Nothing changed."
+                + "\(names(files)). \(advice) Nothing changed."
         case .failed(let gitsWords):
             return "Couldn't \(popping ? "pop" : "apply") stash \(name): \(sentence(gitsWords)) "
                 + kept
         }
+    }
+
+    /// Whether `stash` is the record of a line discard (`Discarded by Gitter: <n> line(s) in
+    /// <name>`, `DiscardRequest.recordMessage`). It holds the whole file as it was, so git
+    /// refuses to apply it while the file's other changes are unstaged, and applies it once they
+    /// are staged (measured, final review M2).
+    static func isLinesRecord(_ stash: Stash) -> Bool {
+        guard stash.kind == .discarded else { return false }
+        let rest = stash.reflogSubject.dropFirst(Stash.discardPrefix.count)
+        let count = rest.prefix { $0.isASCII && $0.isNumber }
+        guard !count.isEmpty else { return false }
+        let after = rest.dropFirst(count.count)
+        return after.hasPrefix(" line in ") || after.hasPrefix(" lines in ")
     }
 
     // MARK: - Refusals

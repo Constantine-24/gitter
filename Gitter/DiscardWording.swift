@@ -171,8 +171,12 @@ enum DiscardWording {
         text += trashed.isEmpty ? "." : "; moved \(names(trashed)) to the Trash, where \(putBack)."
         for receipt in tracked where !isUndoable(receipt) {
             if let record = receipt.record {
+                // Only a line discard is not undoable with a record, and its record holds the
+                // whole file: git applies it only once the file's other changes are staged
+                // (final review M2).
                 text += " Undo Discard can't check the file, so it is not offered; the copy is in the "
-                    + "Stashes list as \"\(record.message)\"."
+                    + "Stashes list as \"\(record.message)\". Stage the file's other changes before "
+                    + "you apply it there."
             }
         }
         return text
