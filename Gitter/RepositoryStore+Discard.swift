@@ -358,14 +358,22 @@ extension RepositoryStore {
     /// model. The requests go to GitCore as the sheet had them — with the diffs it showed — and
     /// GitCore refuses (`changedSinceShown`) when the files moved on meanwhile.
     ///
-    /// Discard All… runs its tracked request first and its untracked one second (ruling 1); when
-    /// the second fails, the notice still names what the first did, with its Undo.
+    /// Discard All… runs its tracked request first and its untracked one second (ruling 1).
+    /// Each request's own stale check runs only as it starts, so a sheet of two is checked whole
+    /// before either runs: an untracked item changed while the sheet was up must refuse the
+    /// confirm, not be found after the tracked files were already discarded (fix round 1). What
+    /// is left is the window of the tracked discard itself; when the second fails then, the
+    /// notice still names what the first did, with its Undo.
     func confirmDiscard(_ model: DiscardSheetModel) {
         guard case .discard(let shown) = activeSheet, shown == model else { return }
         activeSheet = nil
         let trasher = self.trasher
-        mutate(result: { backend, root in
+        mutate(result: { [self] backend, root in
             var run = DiscardRun()
+            if model.requests.count > 1, await discardSheetIsStale(model) {
+                run.failure = DiscardWording.refusal(.changedSinceShown(model.requests.flatMap(\.paths)))
+                return run
+            }
             for request in model.requests {
                 do {
                     run.receipts.append(try await backend.discard(request, trasher: trasher, at: root))
@@ -384,9 +392,16 @@ extension RepositoryStore {
             }
             return run
         }, onSuccess: { [self] run in
-            let undoable = run.receipts + (run.partlyTrashed.map { [$0] } ?? [])
-            if !undoable.isEmpty {
-                showStickyNotice(Notice(text: DiscardWording.done(undoable), actions: [.undoDiscard(undoable)]))
+            let discarded = run.receipts + (run.partlyTrashed.map { [$0] } ?? [])
+            // Undo only for what it can put back (minor 1): a line discard whose after-state
+            // could not be read would be refused as "moved since the discard". The notice names
+            // that one's copy in the Stashes list instead.
+            let undoable = discarded.filter(DiscardWording.isUndoable)
+            if !discarded.isEmpty {
+                showStickyNotice(
+                    Notice(
+                        text: DiscardWording.done(discarded),
+                        actions: undoable.isEmpty ? [] : [.undoDiscard(undoable)]))
             }
             if let failure = run.failure { showStickyError(failure) }
         })

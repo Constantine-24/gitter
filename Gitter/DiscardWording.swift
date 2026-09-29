@@ -156,17 +156,43 @@ enum DiscardWording {
 
     /// The sticky notice after a discard, with Undo Discard. Discard All… names its tracked part,
     /// then after a semicolon what went to the Trash — each list is capped, and two "and"s in a
-    /// row would run them together.
+    /// row would run them together. What went to the Trash can also come back through Finder's
+    /// Put Back, which outlives this notice (a later one replaces it, and its Undo with it).
+    /// A receipt the undo could not check (`isUndoable`) is named with its copy instead.
     static func done(_ receipts: [DiscardReceipt]) -> String {
         let tracked = receipts.filter { if case .untracked = $0.request { false } else { true } }
         let trashed = receipts.filter { if case .untracked = $0.request { true } else { false } }
             .flatMap { receipt in receipt.request.paths.filter { receipt.trashed[$0] != nil } }
-        guard !tracked.isEmpty else { return "Discarded \(names(trashed)) (moved to the Trash)." }
-        let discarded = "Discarded \(tracked.map(what).joined(separator: " and "))"
-        return trashed.isEmpty ? discarded + "." : discarded + "; moved \(names(trashed)) to the Trash."
+        let putBack = "Finder's Put Back also restores \(number(trashed.count, "it", "them"))"
+        guard !tracked.isEmpty else {
+            return "Discarded \(names(trashed)) (moved to the Trash, where \(putBack))."
+        }
+        var text = "Discarded \(tracked.map(what).joined(separator: " and "))"
+        text += trashed.isEmpty ? "." : "; moved \(names(trashed)) to the Trash, where \(putBack)."
+        for receipt in tracked where !isUndoable(receipt) {
+            if let record = receipt.record {
+                text += " Undo Discard can't check the file, so it is not offered; the copy is in the "
+                    + "Stashes list as \"\(record.message)\"."
+            }
+        }
+        return text
     }
 
     static let undoButton = "Undo Discard"
+
+    /// Whether Undo Discard can put this receipt back, so the notice offers it (rulings 2 and
+    /// minor 1): a tracked kind needs its record; a line discard also needs what the file was
+    /// left as and which form its bytes had, without which GitCore's undo refuses ("…, or HEAD,
+    /// moved since the discard") although nothing moved; untracked items need something in the
+    /// Trash.
+    static func isUndoable(_ receipt: DiscardReceipt) -> Bool {
+        switch receipt.request {
+        case .unstaged, .stagedAndUnstaged: receipt.record != nil
+        case .lines:
+            receipt.record != nil && receipt.afterDiscard != nil && receipt.recordedForm != nil
+        case .untracked: !receipt.trashed.isEmpty
+        }
+    }
 
     // MARK: - Refusals
 
@@ -280,12 +306,34 @@ enum DiscardWording {
             return "Moving \(names(paths)) to the Trash did not finish: \(words). \(already)"
         }
         let paths = receipt.request.paths
+        if case .lines(let path, _, _, _) = receipt.request,
+            failure.gitsWords.contains(Self.linesRefusedButRecordKept), let record = receipt.record
+        {
+            // GitCore refused before changing anything (the file is not in its checkout form)
+            // and could not drop the record it had just made: nothing may be "partly restored".
+            return "Couldn't discard \(what(receipt)): \(quotingPaths(words, [path])). The file was "
+                + "not changed; the record is in the Stashes list as \"\(record.message)\". "
+                + "\(discardChanges) on the file discards all of its unstaged changes."
+        }
         let copy =
             receipt.record.map {
                 "a copy of the changes as they were is in the Stashes list as \"\($0.message)\"."
             } ?? "no copy of the changes was kept."
         return "Discarding \(what(receipt)) did not finish: \(words). \(names(paths)) may be partly "
             + "restored; \(copy)"
+    }
+
+    /// The words GitCore's line discard throws when it refused a file not in its checkout form
+    /// but could not drop the record it had made (`CLIGitBackend.discard`, step 3b).
+    private static let linesRefusedButRecordKept = "nothing was discarded"
+
+    /// GitCore's own sentences start with a bare path (`a.txt, or HEAD, moved since the
+    /// discard.`); every sentence here quotes a name, so a leading path is quoted.
+    private static func quotingPaths(_ words: String, _ paths: [String]) -> String {
+        for path in paths where words.hasPrefix(path + ",") || words.hasPrefix(path + " ") {
+            return names([path]) + words.dropFirst(path.count)
+        }
+        return words
     }
 
     // MARK: - Undo
@@ -330,7 +378,8 @@ enum DiscardWording {
             let lines = words.split(whereSeparator: \.isNewline).map(String.init)
             let why =
                 !lines.isEmpty && lines.allSatisfy(receipt.request.paths.contains)
-                ? "\(names(lines)) changed since the discard" : clause(words)
+                ? "\(names(lines)) changed since the discard"
+                : quotingPaths(clause(words), receipt.request.paths)
             return "Couldn't undo: \(why); \(copyLeft(kept))."
         case .conflicted(let paths, let kept):
             return "Undo brought the changes back with conflicts in \(names(paths)). Resolve them, "

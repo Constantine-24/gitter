@@ -25,7 +25,15 @@ import Testing
 
     static let unstaged = receipt(.unstaged(paths: ["a.txt"], expected: noDiffs))
     static let staged = receipt(.stagedAndUnstaged(paths: ["p"], expected: noDiffs))
-    static let lines = receipt(.lines(path: "a.txt", patch: patch, lineCount: 3, expected: noDiffs))
+    /// A line discard as GitCore returns a successful one: with what the file was left as, and
+    /// which form its bytes had — what its undo checks against.
+    static let lines = DiscardReceipt(
+        request: .lines(path: "a.txt", patch: patch, lineCount: 3, expected: noDiffs), record: record,
+        headAtDiscard: "h", trashed: [:],
+        afterDiscard: DiscardedFileState(worktree: Data("x\n".utf8), indexEntry: "e", head: "h"),
+        recordedForm: .raw)
+    /// The same discard whose state could not be read afterwards: GitCore's undo refuses it.
+    static let linesUnverified = receipt(.lines(path: "a.txt", patch: patch, lineCount: 3, expected: noDiffs))
     static let oneLine = receipt(.lines(path: "a.txt", patch: patch, lineCount: 1, expected: noDiffs))
     static let trash = URL(fileURLWithPath: "/Users/x/.Trash")
     static let untracked = receipt(
@@ -151,17 +159,40 @@ import Testing
         #expect(DiscardWording.done([Self.lines]) == "Discarded 3 lines of \"a.txt\".")
         #expect(
             DiscardWording.done([Self.untracked])
-                == "Discarded \"u.txt\" and \"ud/\" (moved to the Trash).")
+                == "Discarded \"u.txt\" and \"ud/\" (moved to the Trash, where Finder's Put Back "
+                + "also restores them).")
         #expect(
             DiscardWording.done([Self.unstaged, Self.untracked])
                 == "Discarded the unstaged changes to \"a.txt\"; moved \"u.txt\" and \"ud/\" to the "
-                + "Trash.")
+                + "Trash, where Finder's Put Back also restores them.")
         // Discard All… with more than three files: the capped list must not run into the next.
         let four = Self.receipt(.unstaged(paths: ["a", "b", "c", "d"], expected: Self.noDiffs))
         #expect(
             DiscardWording.done([four, Self.untracked])
                 == "Discarded the unstaged changes to \"a\", \"b\", \"c\" and 1 more; moved "
-                + "\"u.txt\" and \"ud/\" to the Trash.")
+                + "\"u.txt\" and \"ud/\" to the Trash, where Finder's Put Back also restores them.")
+    }
+
+    /// Minor 1: a line discard whose state could not be read afterwards cannot be undone here
+    /// (GitCore's undo would refuse it), so no Undo is offered, and the notice names the copy.
+    @Test func aDiscardTheUndoCannotCheckIsNotOfferedAndNamesItsCopy() {
+        #expect(DiscardWording.isUndoable(Self.lines))
+        #expect(!DiscardWording.isUndoable(Self.linesUnverified))
+        #expect(
+            !DiscardWording.isUndoable(
+                DiscardReceipt(
+                    request: Self.lines.request, record: Self.record, headAtDiscard: "h", trashed: [:],
+                    afterDiscard: Self.lines.afterDiscard, recordedForm: nil)))
+        #expect(DiscardWording.isUndoable(Self.unstaged))
+        #expect(DiscardWording.isUndoable(Self.staged))
+        #expect(DiscardWording.isUndoable(Self.untracked))
+        #expect(
+            !DiscardWording.isUndoable(
+                Self.receipt(.untracked(paths: ["u.txt"], expected: Self.noItems))))
+        #expect(
+            DiscardWording.done([Self.linesUnverified])
+                == "Discarded 3 lines of \"a.txt\". Undo Discard can't check the file, so it is not "
+                + "offered; the copy is in the Stashes list as \"Discarded by Gitter: a.txt\".")
     }
 
     /// A Trash that failed part-way: the notice names only what did go.
@@ -169,7 +200,9 @@ import Testing
         let partial = Self.receipt(
             .untracked(paths: ["u.txt", "v.txt"], expected: Self.noItems),
             trashed: ["u.txt": Self.trash.appending(path: "u.txt")])
-        #expect(DiscardWording.done([partial]) == "Discarded \"u.txt\" (moved to the Trash).")
+        #expect(
+            DiscardWording.done([partial])
+                == "Discarded \"u.txt\" (moved to the Trash, where Finder's Put Back also restores it).")
     }
 
     @Test func theUndoButtonIsNamed() {
@@ -260,6 +293,25 @@ import Testing
 
     /// Where the copy is, and that the file may be partly restored — never "apply it from the
     /// Stashes list", which git then refuses too (ruling 3).
+    /// Minor 2: GitCore refused a line discard (the file is not in its checkout form) and could
+    /// not drop the record it had made. Nothing was discarded, so nothing "may be partly
+    /// restored"; the record is what is left over. GitCore's own words, as it throws them.
+    @Test func aLineDiscardThatChangedNothingButLeftItsRecordSaysSo() {
+        let failure = DiscardFailure(
+            receipt: Self.linesUnverified,
+            gitsWords: "a.txt is not in its checkout form, so its lines cannot be discarded alone; "
+                + "nothing was discarded, and the record made for it could not be removed.")
+        let text = DiscardWording.failure(failure)
+        #expect(
+            text
+                == "Couldn't discard 3 lines of \"a.txt\": \"a.txt\" is not in its checkout form, so "
+                + "its lines cannot be discarded alone; nothing was discarded, and the record made "
+                + "for it could not be removed. The file was not changed; the record is in the "
+                + "Stashes list as \"Discarded by Gitter: a.txt\". Discard Changes… on the file "
+                + "discards all of its unstaged changes.")
+        #expect(!text.contains("partly"))
+    }
+
     @Test func aTrackedFailureSaysWhereTheCopyIsAndThatTheFileMayBePartlyRestored() {
         let failure = DiscardFailure(
             receipt: Self.unstaged, gitsWords: "error: unable to unlink old 'a.txt'\n")
@@ -311,7 +363,8 @@ import Testing
                 == "Restored 3 lines of \"a.txt\", but the file could not be checked against the "
                 + "copy, so the copy stays in the Stashes list.")
         #expect(
-            DiscardWording.undone(.refused("\"a.txt\", or HEAD, moved since the discard.", recordKept: Self.record),
+            // GitCore's own words, unquoted; the wording quotes the name like every other.
+            DiscardWording.undone(.refused("a.txt, or HEAD, moved since the discard.", recordKept: Self.record),
                 of: Self.lines, headMoved: false)
                 == "Couldn't undo: \"a.txt\", or HEAD, moved since the discard; the copy is still in "
                 + "the Stashes list.")
