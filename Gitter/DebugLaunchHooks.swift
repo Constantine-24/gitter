@@ -142,7 +142,8 @@
             }
         }
 
-        private static func lineIDs() -> Set<DiffLine.ID>? {
+        // internal (not private): used by DebugLaunchHooks+Discard.swift's `discardhunk:`
+        static func lineIDs() -> Set<DiffLine.ID>? {
             ProcessInfo.processInfo.environment["GITTER_DEBUG_SELECT_LINES"].map { list in
                 Set(
                     list.split(separator: ",")

@@ -54,6 +54,7 @@ extension RepositoryStore {
     /// - Copy Link puts the whole address on the pasteboard.
     /// - Pop Stash pops the entry the notice names, found again by sha (`popOfferedStash`),
     ///   with `popStash`'s own gates.
+    /// - Undo Discard puts back what the discard took (`undoDiscard`).
     ///
     /// `pasteboard` and `openURL` are the seams: a test and the DEBUG harness pass a private
     /// pasteboard and an opener that records, so neither ever touches the user's clipboard or
@@ -70,6 +71,8 @@ extension RepositoryStore {
             Clipboard.copy(url.absoluteString, to: pasteboard)
         case .popStash(let stash):
             popOfferedStash(stash)
+        case .undoDiscard(let receipts):
+            undoDiscard(receipts)
         }
     }
 }

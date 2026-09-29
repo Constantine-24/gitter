@@ -54,9 +54,13 @@ struct WorkingCopyFileList: View {
         .onChange(of: store.stagedFiles, initial: true) { followSelection() }
         .onChange(of: store.unstagedFiles) { followSelection() }
         .onKeyPress(.space) { toggleSelected() }
-        // An empty menu: this is here for `primaryAction`, which is the list's own
-        // double-click (and Return) handler, rather than a tap gesture racing the selection.
-        .contextMenu(forSelectionType: String.self) { _ in
+        // ⌫ (Edit ▸ Delete): the selected row's discard, as its context menu offers it. A
+        // blocked file says why in the banner — a key has no tooltip.
+        .onDeleteCommand { discardSelected() }
+        // The row's discard; `primaryAction` is the list's own double-click (and Return)
+        // handler, rather than a tap gesture racing the selection.
+        .contextMenu(forSelectionType: String.self) { keys in
+            discardMenu(keys)
         } primaryAction: { keys in
             guard let key = keys.first, let row = RowKey.parse(key) else { return }
             let files = row.staged ? store.stagedFiles : store.unstagedFiles
@@ -98,6 +102,12 @@ struct WorkingCopyFileList: View {
                     Button("Stash…") { store.requestStash() }
                         .buttonStyle(.borderless)
                         .disabled(store.stashBlockedReason != nil, help: store.stashBlockedReason ?? "Stash Changes… (⌥⌘S)")
+                } else {
+                    // Tracked files restored, untracked ones to the Trash, in one sheet.
+                    let reason = store.discardAllBlockedReason
+                    Button(DiscardWording.discardAll) { store.requestDiscardAllUnstaged() }
+                        .buttonStyle(.borderless)
+                        .disabled(reason != nil, help: reason ?? DiscardWording.discardAllHelp)
                 }
                 Button(actionTitle, action: action)
                     .buttonStyle(.borderless)
@@ -200,6 +210,46 @@ struct WorkingCopyFileList: View {
         } else {
             store.stage(file)
         }
+    }
+
+    // MARK: - Discarding a row
+
+    /// What a row's discard is called: the staged side takes both layers, an untracked file
+    /// goes to the Trash.
+    private func discardTitle(_ file: FileStatus, staged: Bool) -> String {
+        if staged { return DiscardWording.discardStaged }
+        return file.isUntracked ? DiscardWording.moveToTrash : DiscardWording.discardChanges
+    }
+
+    /// The row's context menu: its discard, or the item disabled with the reason under it (a
+    /// menu item shows no tooltip).
+    @ViewBuilder
+    private func discardMenu(_ keys: Set<String>) -> some View {
+        if keys.count == 1, let key = keys.first, let row = RowKey.parse(key),
+            let file = (row.staged ? store.stagedFiles : store.unstagedFiles)
+                .first(where: { $0.path == row.path })
+        {
+            let reason = store.discardBlockedReason(for: file)
+            Button(discardTitle(file, staged: row.staged)) { discard(file, staged: row.staged) }
+                .disabled(reason != nil)
+            if let reason { Text(reason) }
+        }
+    }
+
+    private func discard(_ file: FileStatus, staged: Bool) {
+        if staged {
+            store.requestDiscardStaged(file)
+        } else {
+            store.requestDiscardUnstaged([file])
+        }
+    }
+
+    /// ⌫ on the selected row.
+    private func discardSelected() {
+        let files = store.stagedView ? store.stagedFiles : store.unstagedFiles
+        guard let path = store.selectedPath, let file = files.first(where: { $0.path == path })
+        else { return }
+        discard(file, staged: store.stagedView)
     }
 
     /// Space bar stages or unstages the selected row, as in the row's own button.

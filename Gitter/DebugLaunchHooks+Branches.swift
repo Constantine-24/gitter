@@ -42,6 +42,12 @@
     ///     stashes                      selectstash:<n>[:<path>]     sheet:stash
     ///     noticepop
     ///
+    ///   Discard (`RepositoryStore+Discard`, `DebugLaunchHooks+Discard`):
+    ///
+    ///     discard:<path>               discardstaged:<path>         discardall
+    ///     discardhunk:<n>              confirmdiscard               undodiscard
+    ///     discardstale
+    ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
     /// `start:<step>` runs a step **without** waiting for its lane, which is how the steps after
@@ -310,6 +316,9 @@
             case "stash", "stashpaths", "apply", "pop", "dropstash", "confirmdropstash", "stashes",
                 "selectstash", "noticepop":
                 await stashStep(command, step: step, store: store)
+            case "discard", "discardstaged", "discardall", "discardhunk", "confirmdiscard", "undodiscard",
+                "discardstale":
+                await discardStep(command, step: step, store: store)
             case "stageall": store.stageAll()
             case "commit":
                 // The composer's own path: the subject goes into the draft, then `commit()`.
@@ -595,6 +604,12 @@
             // The full sha and the position: what the confirm hands to GitCore's verified drop.
             case .dropStash(let stash):
                 "dropStash(stash@{\(stash.index)} \(stash.sha) \"\(stash.message)\")"
+            // What the sheet asks and names: the requests GitCore gets, each row's loss, where
+            // the copy goes, and the destructive button's title.
+            case .discard(let model):
+                "discard(\(model.requests.map(describe)), title: \(model.title), "
+                    + "rows: \(model.rows.map { "\($0.name): \($0.loses)\($0.preview.isEmpty ? "" : " \($0.preview)")" }), "
+                    + "destination: \(model.destination), button: \(model.confirmTitle))"
             }
         }
 

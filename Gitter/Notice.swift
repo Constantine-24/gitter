@@ -33,6 +33,10 @@ enum NoticeAction: Equatable {
     /// The `Stash` is the entry as it was filed; the button finds it again by sha
     /// (`popOfferedStash`), and GitCore's check that `stash@{index}` is still this sha guards it.
     case popStash(Stash)
+    /// Puts back what a discard took (`RepositoryStore.undoDiscard`). Several receipts for one
+    /// confirm — Discard All…'s tracked request and its untracked one — in the order they ran;
+    /// the undo runs them in reverse.
+    case undoDiscard([DiscardReceipt])
 }
 
 /// The words on a notice's buttons.
@@ -42,6 +46,7 @@ enum NoticeWording {
         case .openLink: "Open"
         case .copyLink: "Copy Link"
         case .popStash: "Pop Stash"
+        case .undoDiscard: DiscardWording.undoButton
         }
     }
 }

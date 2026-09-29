@@ -45,6 +45,9 @@ enum BranchSheet: Identifiable, Hashable {
     /// Drop Stash…, about this entry: its sha, and the position it had when the sheet opened,
     /// which `confirmDropStash` hands to GitCore's verified drop as it is.
     case dropStash(Stash)
+    /// A discard's confirmation: the requests with what the sheet shows (`expected`), which
+    /// `confirmDiscard` hands to GitCore as they are.
+    case discard(DiscardSheetModel)
 
     var id: Self { self }
 

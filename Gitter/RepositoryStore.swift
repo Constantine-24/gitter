@@ -175,6 +175,9 @@ final class RepositoryStore {
     let backend: Backend
     // internal (not private): used by +Opening.swift's `checkGitAvailability()`
     let gitPath: String
+    /// Where a discard puts untracked items: the user's Trash. A seam, like `backend`.
+    // internal (not private): used by +Discard.swift
+    let trasher: any Trasher
 
     private var watcher: RepositoryWatcher?
     // internal (not private), bookkeeping only, views must not touch this: used by +Refresh.swift
@@ -195,10 +198,12 @@ final class RepositoryStore {
 
     init(
         backend: Backend = CLIGitBackend(),
-        gitPath: String = "/usr/bin/git"
+        gitPath: String = "/usr/bin/git",
+        trasher: any Trasher = FileManagerTrasher()
     ) {
         self.backend = backend
         self.gitPath = gitPath
+        self.trasher = trasher
         #if DEBUG
             Self.storesBuilt += 1
             debugSerial = Self.storesBuilt

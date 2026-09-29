@@ -16,7 +16,7 @@
     ///   GITTER_DEBUG_CLICK="x,y[:2|:shift|:right][;…]"  click those points (see `point(from:)`),
     ///                                            or `type=text` to type in the middle of it
     ///   GITTER_DEBUG_KEYS=space,return,cmd+return,tab   then press those keys (also period,
-    ///                                            f, l, p: cmd+period, shift+cmd+f …)
+    ///                                            f, l, p, delete: cmd+period, shift+cmd+f …)
     ///   GITTER_DEBUG_TYPE=text                   then type that text, character by character
     ///   GITTER_DEBUG_DUMP_RESPONDER=1            print the responder chain to stderr after
     ///                                            every click and key, and once more at the
@@ -243,6 +243,7 @@
             "space": (49, " "), "return": (36, "\r"), "tab": (48, "\t"),
             "escape": (53, "\u{1b}"), "down": (125, "\u{f701}"), "up": (126, "\u{f700}"),
             "period": (47, "."), "f": (3, "f"), "l": (37, "l"), "p": (35, "p"), "r": (15, "r"),
+            "delete": (51, "\u{7f}"),
         ]
 
         /// One character of `GITTER_DEBUG_TYPE`. The key code is what a keyboard would report

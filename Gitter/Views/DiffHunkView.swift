@@ -89,6 +89,7 @@ struct DiffHunkView: View {
                 .disabled(
                     store.isMutating || blocked,
                     help: blocked ? store.operationInProgress?.unstagingBlockedHelp : nil)
+                discardButton(lines: nil)
             } else {
                 let ids = selection.ids(for: hunk)
                 let blocked = store.operationBlocksApplying(file, hunkIDs: [hunk.id], lineIDs: ids)
@@ -98,11 +99,26 @@ struct DiffHunkView: View {
                 .disabled(
                     store.isMutating || blocked,
                     help: blocked ? store.operationInProgress?.unstagingBlockedHelp : nil)
+                discardButton(lines: ids)
                 // Clearing writes nothing to git, so a mutation in flight is no reason to
                 // refuse it — dropping a selection is exactly what a user does while waiting.
                 Button("Clear") { selection.clear(hunk) }
                     .buttonStyle(.borderless)
             }
+        }
+    }
+
+    /// "Discard Hunk…", "Discard N Lines…" or — when the file cannot be discarded line-wise, or
+    /// the patch would have a context-free hunk — "Discard File…" (`HunkDiscardOffer`). On the
+    /// unstaged side only: the staged side's discard is the row's, which takes both layers.
+    @ViewBuilder
+    private func discardButton(lines: Set<DiffLine.ID>?) -> some View {
+        if let offer = HunkDiscardOffer.offer(
+            for: file, hunk: hunk.id, lines: lines, onUnstagedSide: !store.diffIsStaged)
+        {
+            let reason = store.discardBlockedReason(forDiffOf: file)
+            Button(offer.title) { store.requestDiscardHunk(hunk.id, lines: lines, in: file) }
+                .disabled(reason != nil, help: reason)
         }
     }
 
