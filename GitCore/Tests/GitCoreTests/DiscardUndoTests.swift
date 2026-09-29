@@ -374,4 +374,98 @@ import Testing
         #expect(try repo.bytes("p") == pBefore)
         #expect(try await repo.stashShas() == neighbour)
     }
+
+    // MARK: - An operation begun after the discard (final review M3)
+
+    enum Begun: String, CaseIterable, Sendable { case merge, cherryPick, revert, rebase, squash, am }
+
+    enum Kind: String, CaseIterable, Sendable { case unstaged, stagedAndUnstaged, lines }
+
+    /// A discard of `keep.txt` — a file no operation below touches — made on a repository with
+    /// nothing in progress, and its receipt.
+    private func discardKeep(_ kind: Kind, in repo: TestRepo, trasher: FakeTrasher) async throws -> DiscardReceipt {
+        let request: DiscardRequest
+        switch kind {
+        case .unstaged:
+            try repo.write("keep.txt", "keep\ndirty\n")
+            request = .unstaged(
+                paths: ["keep.txt"],
+                expected: try await backend.discardExpectation(tracked: ["keep.txt"], includingStaged: false, at: repo.root))
+        case .stagedAndUnstaged:
+            try repo.write("keep.txt", "keep\nstaged\n")
+            try await repo.git(["add", "keep.txt"])
+            try repo.write("keep.txt", "keep\nstaged\nunstaged\n")
+            request = .stagedAndUnstaged(
+                paths: ["keep.txt"],
+                expected: try await backend.discardExpectation(tracked: ["keep.txt"], includingStaged: true, at: repo.root))
+        case .lines:
+            try repo.write("keep.txt", "keep\ndirty\n")
+            let file = try await loadDiff(repo, "keep.txt")
+            request = try linesRequest(file, hunks: everyHunkID(file), lines: nil)
+        }
+        return try await backend.discard(request, trasher: trasher, at: repo.root)
+    }
+
+    /// Starts `operation` and leaves it stopped, as git does on a conflict (or, for a squash,
+    /// with its message pending). Returns what GitCore reports.
+    private func begin(_ operation: Begun, in repo: TestRepo) async throws -> RepositoryOperation {
+        switch operation {
+        case .merge:
+            try await repo.git(["merge", "feature"], allowedExitCodes: [1])
+            return .merge
+        case .cherryPick:
+            try await repo.git(["cherry-pick", "feature"], allowedExitCodes: [1])
+            return .cherryPick
+        case .revert:
+            try repo.write("a.txt", "main again\n")
+            try await repo.git(["commit", "-q", "-m", "main again", "--", "a.txt"])
+            try await repo.git(["revert", "--no-edit", "HEAD~1"], allowedExitCodes: [1])
+            return .revert
+        case .rebase:
+            try await repo.git(["switch", "-q", "feature"])
+            try await repo.git(["rebase", "main"], allowedExitCodes: [1])
+            return .rebase
+        case .squash:
+            // It conflicts in a.txt, and still writes SQUASH_MSG (`OperationInProgressTests`).
+            try await repo.git(["merge", "--squash", "feature"], allowedExitCodes: [1])
+            return .squash
+        case .am:
+            let patch = try await repo.git(["format-patch", "-1", "--stdout", "feature"])
+            let file = FileManager.default.temporaryDirectory
+                .appendingPathComponent("gitter-am-\(UUID().uuidString).patch")
+            defer { try? FileManager.default.removeItem(at: file) }
+            try patch.write(to: file)
+            try await repo.git(["am", file.path], allowedExitCodes: [128])
+            return .applyingPatches
+        }
+    }
+
+    /// M 13 for the undo: an operation that began **after** the discard still refuses it, before
+    /// anything is written — HEAD, the index, every ref and the worktree as they were — and the
+    /// record stays listed for later.
+    @Test(arguments: Begun.allCases, Kind.allCases)
+    func anUndoIsRefusedDuringAnOperationBegunAfterTheDiscard(_ operation: Begun, _ kind: Kind) async throws {
+        let repo = try await TestRepo.makeConflicting()
+        defer { repo.cleanUp() }
+        let trasher = try FakeTrasher()
+        defer { trasher.cleanUp() }
+        #expect(try await backend.operationInProgress(at: repo.root) == nil)
+        let receipt = try await discardKeep(kind, in: repo, trasher: trasher)
+        let record = try #require(receipt.record)
+
+        let expected = try await begin(operation, in: repo)
+        #expect(try await backend.operationInProgress(at: repo.root) == expected)
+        let state = try await RepoState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+        let stashes = try await repo.stashShas()
+        #expect(stashes.contains(record.sha))
+
+        await #expect(throws: DiscardRefusal.operationInProgress(expected)) {
+            _ = try await backend.undoDiscard(receipt, trasher: trasher, at: repo.root)
+        }
+
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+        #expect(try await repo.stashShas() == stashes, "the record was dropped or another entry filed")
+        #expect(try repo.bytes("keep.txt") == Data("keep\n".utf8), "the discarded change came back")
+    }
 }
