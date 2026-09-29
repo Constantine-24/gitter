@@ -5,10 +5,12 @@ without the feature bloat. It opens a repo, browses branches and the commit grap
 shows diffs, all live-refreshed as the working copy changes. It stages files, hunks and
 even single lines, and commits — including amend and "commit all tracked" — from those
 diffs. It creates, switches, merges, renames and deletes branches, checks out remote
-branches and tags, and ends an operation the repository is stuck part-way through. And it
-now talks to remotes: fetch, pull and push the current branch, publish a branch, show how
-far each branch is ahead of and behind its upstream, and keep that picture current with a
-quiet fetch in the background. There is still no discard and no stash; those are next.
+branches and tags, and ends an operation the repository is stuck part-way through. It talks
+to remotes: fetch, pull and push the current branch, publish a branch, show how far each
+branch is ahead of and behind its upstream, and keep that picture current with a quiet fetch
+in the background. And it can now put work aside and throw it away: stash all or some of
+your changes and bring them back, and discard a file, a hunk or a single line — every
+discard leaves a copy, and a notice offers **Undo Discard**.
 
 ![Gitter's main window: the branch button, the sidebar, the lane graph and a diff](docs/screenshots/branches.png)
 
@@ -38,7 +40,8 @@ quiet fetch in the background. There is still no discard and no stash; those are
   than one (`origin` preselected); Re-publish one whose upstream was deleted on the server
 - A hosting service's pull-request link after a push stays on screen, with **Open** and
   **Copy Link**, until you close it, push again or open another repository — the link whole,
-  without any user name or token; other notices still fade after a few seconds
+  without any user name or token; so do the notices with a button (Pop Stash, Undo Discard)
+  and the one after a drop, while plain notices still fade after a few seconds
 - When the server refuses a push because it has commits you don't, the banner offers
   **Pull** and **Force Push…**; the force push is leased on the exact sha it showed you
 - Delete a branch on a remote from the sidebar ("Delete on "origin"…"), with a warning that
@@ -47,6 +50,17 @@ quiet fetch in the background. There is still no discard and no stash; those are
   the upstream was deleted, and `↑1 · main` when the upstream is a local branch; the Pull and
   Push buttons carry the same counts
 - Copy a remote's URL from its sidebar menu, with any password or token taken out
+- **Stash** every change or only the selected files, with a message and, if you ask, untracked
+  files too (Repository ▸ Stash Changes…, ⌥⌘S, or **Stash…** in the working copy). The sidebar's
+  **Stashes** section lists them; selecting one shows its files and diff read-only, untracked
+  files under their own heading. Apply, Pop, and Drop Stash… behind a confirmation, from the
+  row's menu
+- **Discard** unstaged changes by file, hunk or line, a staged file back to the last commit, or
+  an untracked file into the Trash — always behind a sheet that says what goes and where the
+  copy is kept, and always with **Undo Discard** afterwards (see below)
+- **Stash and Continue**: a switch, merge or pull refused because of your local changes offers
+  to stash them and run the same action again; the stash is then offered back (**Pop Stash**),
+  never popped by itself
 - Fetch quietly in the background: when a repository opens and every 10 minutes after,
   unless **Repository ▸ Fetch Automatically** is unticked (on by default). It never shows a
   banner — a failure is only a small mark on the Fetch button, with the reason in its
@@ -62,16 +76,20 @@ quiet fetch in the background. There is still no discard and no stash; those are
 
 ![Line-level staging, in dark mode, with a long line wrapped](docs/screenshots/main.png)
 
+![A stash selected in the sidebar: its tracked file and its untracked file, the diff read-only, and the sticky "Your changes are in stash" notice with Pop Stash](docs/screenshots/stash.png)
+
+![Discarding two selected lines: the sheet names them and where their copy goes](docs/screenshots/discard.png)
+
 ## Safety
 
-Gitter's own code never writes working-tree files — staging and unstaging change only the
-index (`git apply --cached`, `git add`, `git reset`) and committing writes only to the
-repository. Branch operations do change the working tree, since that is what a checkout
-is, and remote operations change another machine, so the promise is restated rather than
-dropped — in the design's words:
+Staging and unstaging change only the index (`git apply --cached`, `git add`, `git reset`)
+and committing writes only to the repository. Branch operations change the working tree,
+since that is what a checkout is; remote operations change another machine; and stash and
+discard take changes out of your files, which is their whole point. So the promise is
+restated rather than dropped — in the design's words:
 
 > **Gitter never discards uncommitted work or commits without a confirmation that names
-> what will be lost** — from this milestone, on the remote as well.
+> what will be lost** — and a discard also leaves a copy that can be brought back.
 
 Switch, detach, track and merge run plain git with **no force flag anywhere in the code**
 (`--force`, `-f`, `--discard-changes`, `-B`, `-C`, `--merge` on switch are forbidden, and
@@ -80,9 +98,15 @@ and Gitter shows the files git named rather than a wall of stderr. The same test
 for the network: a bare `--force-with-lease`, any refspec beginning with `+`, `--mirror`,
 `--prune`, `--all` on push, `--tags` and `--follow-tags`, `--delete`/`-d` on push,
 `--no-verify`, `--autostash`, `--update-refs` on rebase, and the `pull` subcommand itself
-(Gitter fetches and then merges or rebases as two steps it controls).
+(Gitter fetches and then merges or rebases as two steps it controls). For the working copy
+it allows `stash` only in five exact spellings — never with a pathspec, `--keep-index`,
+`--staged`, `--all` or `-p`, and never `pop`, `clear`, `create`, `branch`, `show` or
+`apply --index` — `restore` only with `--no-recurse-submodules`, and forbids `clean`,
+`checkout`, `hash-object` and `--unidiff-zero` everywhere; `read-tree`, `update-index` and
+`write-tree` may appear in one file only, the one that builds a discard's record in a
+temporary index.
 
-Six actions can lose something without being asked for by name, and each is behind a
+Eight actions can lose something without being asked for by name, and each is behind a
 confirmation that says what goes and what stays:
 
 | action | how it is confirmed |
@@ -93,8 +117,11 @@ confirmation that says what goes and what stays:
 | Leave a detached HEAD holding commits on no branch, tag or remote | a warning naming the count and the full sha, with "Create Branch Here…" as the safe answer; leaving anyway prints the command that brings the commits back |
 | **Force push** — only ever offered from a push the server refused because it has commits you don't | Gitter fetches, then a sheet names the remote and branch, shows **both shas in full** — the remote tip that will be replaced and your local tip that will be pushed — and lists the commits that will leave the server's branch, with their authors. On "Force Push" it re-reads your branch and refuses if it has moved since the warning; the push then carries `--force-with-lease=<remote ref>:<the remote sha shown>` and sends `<the local sha shown>:<remote ref>`, so what the server loses and what it gets are exactly what the sheet showed. If the server's branch moved meanwhile, git itself refuses (`stale info`) and nothing on the server changes |
 | **Delete a branch on a remote** (sidebar ▸ remote branch ▸ "Delete on "origin"…") | Gitter fetches that remote, then a sheet names the branch, the remote and its tip in full, and says whether its commits are **held by no branch, tag or other remote Gitter can see** (and how many). The deletion is leased on that tip (`--force-with-lease=refs/heads/<b>:<tip>` with `:refs/heads/<b>`), so a branch that moved, or is already gone, is refused by the server and nothing is deleted. The notice afterwards prints the `git push <remote> <tip>:refs/heads/<b>` that recreates it |
+| **Discard** — a file's unstaged changes, its staged and unstaged changes, a hunk, some lines, an untracked file, or Discard All | a sheet names every file with what it loses (`+12 −3`, `2 lines` with the lines themselves, `untracked → Trash`) and says where the copy goes. On confirm Gitter reads everything again and refuses if anything changed since the sheet was shown; then it **records** the tracked changes in the Stashes list before it touches a file, and moves untracked ones to the Trash (see "Stash and discard" below) |
+| **Drop a stash** | a sheet names the stash's message, its files and its full sha, with a live warning if the list moves while it is up; the drop is refused unless the entry at that position is still that sha. The notice afterwards prints the `git stash apply <sha>` that brings it back until git's cleanup removes it |
 
-In both sheets Cancel holds Return and the destructive button has no shortcut. The sha is
+In the force push, delete-on-remote, discard and drop sheets Cancel holds Return and the
+destructive button has no shortcut. A force push's sha is
 spelled out rather than left to git on purpose: a bare `--force-with-lease` leases against
 the remote-tracking ref, which Gitter's own automatic fetch rewrites — measured, in the
 situation where the explicit lease answers `stale info`, the bare one force-pushed and took
@@ -106,7 +133,8 @@ merge commit among them is flattened rather than kept. It is never a default you
 choose; the old tip stays in `ORIG_HEAD` and the reflog. A rebase that stops on a conflict
 lands in the existing rebase note, whose Abort puts everything back.
 
-Amending is the seventh, and the one with no confirmation sheet: it rewrites HEAD and leaves
+Amending is the one more — eight confirmed actions, plus amend — and the one with no
+confirmation sheet: it rewrites HEAD and leaves
 the commit it replaces reachable from no branch, tag or remote. What stands in for the sheet
 is that nothing else asks for it — you tick the Amend toggle yourself and the commit button
 then reads "Amend Commit" — plus a warning, "Amending rewrites history that has already been
@@ -189,6 +217,68 @@ terminal, ssh's own rules apply and it can still be stopped there (see the backl
   tags on every fetch, so Gitter does not fetch that remote — it says so, with the `git
   config` line that fixes it — and fetches the others.
 
+### Stash and discard: where your changes go
+
+**Stash.** "All changes" is git's own `git stash push` (with `--include-untracked` when you
+tick it). "Selected files" is not: a stash with a pathspec takes every staged file with it, so
+Gitter builds the entry itself from exactly the files you picked, in a temporary index that
+never touches yours, files it as an ordinary stash entry, and only then restores those files;
+a selected untracked file goes into the entry first and then to the Trash. Apply never puts
+back a stash's staged layer — git's `--index` would unstage your other staged files and can
+lose a staged version — so everything comes back unstaged (a new file comes back staged). **Pop
+drops the entry only after a clean apply**, and only if it is still the entry you picked: if
+the list changed in between, the notice says it was applied but not dropped, and the entry
+stays. A conflicting or refused apply keeps the entry. The one thing a stash does not keep is
+an empty untracked folder, which git deletes; the sheet says so.
+
+**Discard.** Tracked changes are **recorded first**: before any file is touched, Gitter files
+a stash entry named `Discarded by Gitter: <files>` (or `Discarded by Gitter: 2 lines in
+<file>`) holding exactly the discarded files as they were, both layers — so even a crash in
+the middle leaves at worst an extra entry. Then git does the discarding: `git restore` puts the
+unstaged side back to what is staged, or the staged side back to the last commit (index and
+disk), and a hunk or line discard reverse-applies just those lines. **Untracked files and
+folders go to the macOS Trash**, never deleted (a folder goes whole, ignored files in it too).
+The sheet is a snapshot: on confirm everything it showed is read again, and if anything
+changed — a file edited in your editor meanwhile — nothing is discarded.
+
+**Undo Discard.** The notice after a discard stays until you close it, and its **Undo
+Discard** puts things back:
+
+- a file's unstaged changes: the record is applied again and then dropped;
+- staged and unstaged changes: the same, then the staged part is staged again — unless a
+  commit was made, or something about that file was staged, since; then the changes come back
+  unstaged, and the notice says why;
+- some lines: the same lines go back, but only onto the file exactly as the discard left it
+  (its bytes, its staged version and HEAD) — anywhere else they could land in the wrong place;
+- untracked items: each one comes back from the Trash; one whose name is taken again stays in
+  the Trash, and nothing is overwritten.
+
+Undo is refused rather than forced whenever a file changed since the discard, and the record is
+dropped only when the file is back byte for byte. Whatever Undo cannot do, the copy is still
+there: the `Discarded by Gitter` entry in the Stashes list (Apply it), and Finder's **Put Back**
+for anything in the Trash.
+
+Line and hunk discard are offered only where a patch can take exactly those lines: not for a
+binary, renamed or non-UTF-8 file, a change that covers the whole file, or a file whose line
+endings are not the ones a checkout writes (under `core.autocrlf`, git would rewrite every
+line). There the hunk offers **Discard File…** instead. Nothing is discarded or stashed during
+a merge, rebase, cherry-pick, revert, `git am` or pending squash (git's own stash silently ends
+some of them), nor for a conflicted, intent-to-add (`git add -N`), submodule or nested-repository
+path, nor where a file and a folder swapped places; tracked files cannot be discarded before
+the first commit, since the record needs one.
+
+### Stash and Continue
+
+When a switch, a checkout, a merge (a squash too) or a pull is refused because of your local
+changes, the error banner offers **Stash and Continue**. It stashes every change — untracked
+files too when git named one in the way — as `Gitter: before switching to b`, `Gitter: before
+merging b` or `Gitter: before pulling`, then runs the same action again from the start (a pull
+fetches again). A notice, `Your changes are in stash "Gitter: before pulling".`, stays with a
+**Pop Stash** button, which pops that entry wherever it has moved in the list. Nothing is
+popped by itself: if the retried merge conflicts, your changes wait in the stash. If there was
+nothing a stash could hold, or the stash failed, the action is not run again and the banner
+says why.
+
 ## Design decisions
 
 | Area | Decision | Rationale |
@@ -198,10 +288,11 @@ terminal, ssh's own rules apply and it can still be stopped there (see the backl
 | Deployment | macOS 26.0 minimum, macOS 27 SDK | Dev machine runs 27 |
 | Project | xcodegen `project.yml` -> `Gitter.xcodeproj`; `GitCore` local SwiftPM package | Xcode workflow for the app; `swift test` for the core |
 | Staging | Patches built in-process (`PatchBuilder`) and applied with `git apply --cached`, never a hand-rolled index writer | The same command a user would run themselves; hunk- and line-level staging fall out of the same code path as whole-file staging |
-| Dirty switch | git's default — carry non-conflicting changes, refuse otherwise. No stash, no force | A refusal that changes nothing is a better answer than a stash the user did not ask for |
+| Dirty switch | git's default — carry non-conflicting changes, refuse otherwise. No force; the refusal offers Stash and Continue, never an automatic stash | A refusal that changes nothing is a better answer than a stash the user did not ask for |
+| Discard | Record first (a stash entry built from plumbing in a temporary index), then `git restore` or a reverse `git apply`; untracked items to the Trash | Every discard can be undone, and the copy is in a place git and the user already know |
 | Delete | `git branch -d` first, then `-D` only from the warning its refusal opened, and only if the tip is still the one that warning named | `-d` is git's own authority on "is this merged", and it changes nothing when it refuses |
 | Remotes | git's own transports and credentials; `fetch`, then merge or rebase, instead of `git pull`; an explicit-sha lease on every force; no prune, no tags | Nothing to store or ask for; every step of a pull is one Gitter can explain and stop; the lease the automatic fetch cannot arm |
-| Scope | Browsing, diffs, staging, commit, branch and remote operations are done. Discard and stash are not built yet | Ship the commit loop before touching anything that mutates the working tree |
+| Scope | Browsing, diffs, staging, commit, branch and remote operations, stash and discard are done. Conflict resolution and continuing an operation are next | Each milestone keeps the promise before it adds the next way to lose work |
 
 ## Build & run
 
@@ -229,18 +320,22 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` is hosted by the app and pins the wording the UI shows (`OperationWording`,
-`RemoteWording`). Under a test host the app reopens no repository and starts no automatic
-fetch (`TestHost`), so a run never touches the repository you last had open.
+`GitterTests` (130 tests in 12 suites) is hosted by the app and pins the wording the UI shows
+and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
+`DiscardWording`, the pull-request link extraction and the notices' lifetime, which files a
+discard is offered for, which refusals Stash and Continue answers, and when the toolbar
+reveals a lane's activity. Under a test host the app reopens no repository and starts no
+automatic fetch (`TestHost`), and no test opens a repository or touches the app's defaults,
+so a run never touches the repository you last had open.
 
-`GitCoreTests` has 730 tests in 58 suites. Most of them run real `git` against a temporary
+`GitCoreTests` has 934 tests in 76 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
 for a server, with a second clone as "the colleague" who pushes in between — including one
 that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
 your git configuration (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`) and never
 touches the network.
 
-The run also reports **6 known issues, and they are meant to be there** — please do not
+The run also reports **15 known issues, and they are meant to be there** — please do not
 "fix" them. They are deliberate negative controls: tests that make an assertion helper fail
 on purpose, inside `withKnownIssue`, to prove it *can* fail.
 
@@ -253,15 +348,25 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   on the server, and a baseline with no refs, each recording one failure of
   `assertRemoteUnchanged` — the helper behind every "the server is byte-for-byte what the
   colleague left" assertion.
+- Two come from `assertRecordPure` (`StashRecordTests`), the check that building a discard's
+  record leaves your real index byte-identical with the same timestamp: an index rewritten
+  with identical bytes, and a new branch.
+- Three come from `assertWorktreeState` (`DiscardSupport.swift`), the lstat snapshot every
+  discard and undo is checked with, which must see what a byte snapshot cannot: a changed
+  executable bit, a retargeted link and an emptied directory.
+- One comes from `Bystanders`: the unrelated file with both a staged and an unstaged layer that
+  every discard must leave alone, its staged layer unstaged on purpose.
+- Three come from the staging preimage check's `expectRefused`
+  (`PartialStagingPreimageTests`): a patch on a fresh index, which really applies.
 
 Deleting any of them would take the proof away and the suite would go on looking green.
 
 ## Project layout
 
-Every `.swift` file in the two product targets — 92 of them, which is what `find
+Every `.swift` file in the two product targets — 117 of them, which is what `find
 GitCore/Sources Gitter -name '*.swift' | wc -l` prints — with the ones inside `Models/`,
-`Parsers/` and `Views/` named in prose rather than one per line. The 67 test files (64 in
-`GitCore/Tests`, 3 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
+`Parsers/` and `Views/` named in prose rather than one per line. The 92 test files (81 in
+`GitCore/Tests`, 11 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
 listed, which is also why the check is that command and not a bare `find . -name '*.swift'`:
 that one reaches them too, and the generated sources under `.build` as well.
 
@@ -272,13 +377,21 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
     GitWorkingCopyBackend.swift Staging/commit/amend protocol and its contract
     GitBranchBackend.swift      Branch/merge/abort protocol and its contract
     GitRemoteBackend.swift      Fetch/push/lease/rebase protocol and its contract
+    GitStashBackend.swift       Stash list/push/apply/pop/drop protocol, its outcomes and refusals
+    DiscardTypes.swift          DiscardRequest, DiscardReceipt, the refusals and undo outcomes
+    Trasher.swift               Moving an untracked item to the Trash and back
     GitError.swift              commandFailed, launchFailed, and the two pre-flight refusals
     FetchRefspec.swift          Which configured fetch refspecs write outside refs/remotes/
     BranchOperationTypes.swift  MergeMode, MergeOutcome, BranchDeletion, the typed refusals
     RemoteOperationTypes.swift  PushOutcome, PushResult, RebaseOutcome, RemoteOperationError,
                                 PullPlan, PushTarget (where a push goes), StopClick
     CLIGitBackend.swift         The implementation over /usr/bin/git, plus
-      +WorkingCopy.swift          staging, commit, amend (and the amend-mid-operation refusal)
+      +WorkingCopy.swift          staging (and its preimage check), commit, amend (and the
+                                  amend-mid-operation refusal)
+      +Environment.swift          rerere turned off through the environment, for every apply
+      +Stash.swift                the stash list, an entry's contents, push, apply, pop, drop
+      +StashRecord.swift          the path-limited record in a temporary index, and stashPaths
+      +Discard.swift              discard and its undo; every worktree `git apply`
       +Branches.swift             create, switch, detach, track, rename
       +BranchDelete.swift         `branch -d`, and `-D` only against an expected tip
       +Merge.swift                the three merge modes and the name/tag comparison
@@ -292,10 +405,12 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
     GraphLayout.swift           gitk-style commit lane assignment
     PatchBuilder.swift          Builds a hunk- or line-level patch from a parsed diff, with
       +Markers.swift / +Paths.swift
-    Models/                     RepoSnapshot, Commit, FileStatus, Diff, Branch, Graph, Remote
+    Models/                     RepoSnapshot, Commit, FileStatus, Diff, Branch, Graph, Remote,
+                                Stash
     Parsers/                    Status, Log, Ref, Diff (+Paths), BranchRefusal, Remote,
-                                PushPorcelain and RemoteFailure parsers
-  Tests/GitCoreTests/           58 suites; ForceFlagScanner(+Lexing) is the force-flag grep
+                                PushPorcelain, RemoteFailure, StashList and StashFailure
+                                parsers, and GitLines (git's output split at the newline byte)
+  Tests/GitCoreTests/           76 suites; ForceFlagScanner(+Lexing) is the force-flag grep
 
 Gitter/                   macOS app (SwiftUI)
   GitterApp.swift            App entry point, the one store (`AppModel`), the Repository
@@ -313,10 +428,17 @@ Gitter/                   macOS app (SwiftUI)
   RepositoryStore+Errors.swift    Turning a refusal into the sentence the banner shows
   RepositoryStore+Remotes.swift   The network lane: fetch, pull, push, cancel, blocked reasons
   RepositoryStore+RemoteSheets.swift  Pull, publish, force push and delete-on-remote sheets
+  RepositoryStore+Notices.swift   The transient and the sticky notice, and their buttons
+  RepositoryStore+Stash.swift     Stash, apply, pop and drop; the Pop Stash notice by sha
+  RepositoryStore+Discard.swift   The discard sheet's model, the gates, discard and Undo
+  RepositoryStore+StashAndContinue.swift  Which refusals a stash answers, and the retry
   AutoFetchScheduler.swift   When the quiet automatic fetch runs (the store decides what it does)
   QuitGuard.swift            Quitting while the network lane is busy: stop, or ask first
   RemoteActivity.swift       What the lane is running, a refused push, the progress relay
   RemoteWording.swift        Every sentence about the network, and making server text plain
+  StashWording.swift         Every sentence about a stash and Stash and Continue
+  DiscardWording.swift       Every sentence a discard, its sheet and its Undo show
+  Notice.swift               A notice's text, links and buttons, and the link extraction
   BranchSheet.swift          Which confirmation or form the store wants on screen
   CommitDraft.swift          The commit message + amend toggle being edited
   RepositoryWatcher.swift    FSEvents-based debounced refresh trigger
@@ -325,22 +447,27 @@ Gitter/                   macOS app (SwiftUI)
   DebugLaunchHooks.swift     Debug-only launch hooks for screenshot verification (see below),
     +Events.swift              posted clicks, keys and the responder dump
     +Branches.swift            the `GITTER_DEBUG_BRANCH_ACTION` step list
-  Views/                     MainWindow, SidebarView, SidebarMenus, CommitListView,
-                              CommitGraphCell, DetailView, WorkingCopyFileList,
-                              CommitComposerView, DiffView, DiffHunkView, DiffLineSelection,
-                              Banners, BranchToolbar, BranchNameValidator, BranchSheetHost,
-                              RemoteToolbar, TrackingBadge and the ten sheets (NewBranch,
-                              Rename, Merge, DeleteBranch, Abort, LeaveDetached, Pull,
-                              Publish, ForcePush, DeleteRemoteBranch)
+    +Stash.swift               its stash steps
+    +Discard.swift             its discard steps
+  Views/                     MainWindow, SidebarView, SidebarMenus, StashesSection,
+                              CommitListView, CommitGraphCell, DetailView, StashDetailView,
+                              WorkingCopyFileList, CommitComposerView, DiffView, DiffHunkView,
+                              DiffLineSelection, Banners, BranchToolbar, BranchNameValidator,
+                              BranchSheetHost, RemoteToolbar, TrackingBadge and the thirteen
+                              sheets (NewBranch, Rename, Merge, DeleteBranch, Abort,
+                              LeaveDetached, Pull, Publish, ForcePush, DeleteRemoteBranch,
+                              Stash, DropStash, Discard)
 
-GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app): wording
-                          and the test-host check
+GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app): wording,
+                          notices and links, the discard and Stash and Continue decisions,
+                          the toolbar's activity reveal, and the test-host check
 ```
 
 ## Debug launch hooks
 
-`Gitter/DebugLaunchHooks.swift`, `DebugLaunchHooks+Events.swift` and
-`DebugLaunchHooks+Branches.swift` exist only in Debug builds (`#if DEBUG`, compiled out of
+`Gitter/DebugLaunchHooks.swift`, `DebugLaunchHooks+Events.swift`,
+`DebugLaunchHooks+Branches.swift`, `DebugLaunchHooks+Stash.swift` and
+`DebugLaunchHooks+Discard.swift` exist only in Debug builds (`#if DEBUG`, compiled out of
 Release) and drive the UI from environment variables, read once at startup. They exist because the verification environment has Screen Recording
 but not Accessibility, so nothing outside the process can click — without these, a diff can
 never be put on screen from a script, and a focus bug can never be reproduced.
@@ -356,7 +483,7 @@ never be put on screen from a script, and a focus bug can never be reproduced.
 | `GITTER_DEBUG_OPEN=<path>` | after the first repository has loaded, open that path as "Open Repository…" would — the only way to reach a failed open from a script |
 | `GITTER_DEBUG_APPEARANCE=light\|dark` | force the app's appearance, so a screenshot pass can shoot both without changing the machine's setting |
 | `GITTER_DEBUG_CLICK=x,y[:2\|:shift\|:right][;…]` | click those points, in points from the top-left of the *frontmost* window's content area — the sheet's own, while one is up; `:2` double-clicks, `:shift` shift-clicks, a `type=text` step types between two clicks, and `:right` posts a right-click, which is kept as a recorded negative result: it does not open a SwiftUI `.contextMenu` |
-| `GITTER_DEBUG_KEYS=space,return,cmd+return` | then press those keys (`space`, `return`, `tab`, `escape`, `up`, `down`, `period`, `f`, `l`, `p`, `r`, with `cmd+`/`shift+`/`opt+`/`ctrl+`). A key with `cmd+` is dispatched as AppKit dispatches one — the window's views, then the main menu — because a *posted* command key never reaches a menu's key equivalent (measured: a posted ⌘R ran no Refresh) |
+| `GITTER_DEBUG_KEYS=space,return,cmd+return` | then press those keys (`space`, `return`, `tab`, `escape`, `up`, `down`, `period`, `f`, `l`, `p`, `r`, `delete` (⌫), with `cmd+`/`shift+`/`opt+`/`ctrl+`). A key with `cmd+` is dispatched as AppKit dispatches one — the window's views, then the main menu — because a *posted* command key never reaches a menu's key equivalent (measured: a posted ⌘R ran no Refresh) |
 | `GITTER_DEBUG_TYPE=text` | then type that text into whatever has focus |
 | `GITTER_DEBUG_DUMP_RESPONDER=1` | print the first-responder chain, the window geometry and whether the window is key to stderr, after every click and key; a count instead of `1` repeats the final dump that many times, 200 ms apart, which is how you tell "never focused" from "focused, then lost it" |
 | `GITTER_DEBUG_BRANCH_ACTION=<step>[;<step>…]` | run branch actions and open their sheets (see below) — the sidebar's context menus are AppKit menus that in-process clicks cannot open |
@@ -378,7 +505,7 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `abort` | open the abort confirmation and answer it |
 | `confirmleave` | answer the "leaving a detached HEAD" confirmation a previous step opened |
 | `wait:<seconds>` | hold whatever is on screen (fractions allowed), so a terminal can change the repository *underneath* a confirmation — the only way to check what a stale sheet does. Clamped to 0…120 |
-| `sheet:new` / `sheet:rename:<b>` / `sheet:merge:<b>` / `sheet:delete:<b>` / `sheet:abort` / `sheet:pull` | open a sheet without acting — `sheet:delete` reads the warning's count and tip instead of letting `git branch -d` refuse, so it never deletes anything; `sheet:pull` opens the pull sheet from the tracking on screen, without fetching |
+| `sheet:new` / `sheet:rename:<b>` / `sheet:merge:<b>` / `sheet:delete:<b>` / `sheet:abort` / `sheet:pull` / `sheet:stash` | open a sheet without acting — `sheet:delete` reads the warning's count and tip instead of letting `git branch -d` refuse, so it never deletes anything; `sheet:pull` opens the pull sheet from the tracking on screen, without fetching; `sheet:stash` opens Stash Changes… without answering it |
 | `fetch[:<remote>]` | fetch one remote, or all |
 | `pull` / `pull:merge` / `pull:rebase` | pull; the two with a mode also answer the pull sheet if one opened |
 | `push` / `publish:<remote>` | push, or publish — `publish:` answers the publish sheet with that remote when there are several |
@@ -398,12 +525,25 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `quit` | quit as ⌘Q does, from the run loop, so the steps after it run while the quit is held: `start:push;wait:1;quit;wait:1;start:snapshot:alert;alert;alertbutton:Wait`. `QUIT …` lines say what was decided and when |
 | `notice` | log both notice slots, the transient one and the sticky one: each one's text, links and button titles |
 | `openlink` | press the sticky notice's **Open** through the store's own call, with an opener that only logs `openlink: <url>` — the harness never starts a browser |
+| `stash:<msg>[:u]` / `stashpaths:<p,p>:<msg>` | **acts**: Stash Changes… with every change (`:u` ticks "Include untracked files"), or as if those files were selected with "Selected files" — the sheet, then its Stash. An empty `<msg>` is git's default (all changes) or the files' names (selected) |
+| `stashes` | log the list: `stash@{n} <sha> <kind> branch: … untracked: … message: …` |
+| `selectstash:<n>[:<path>]` | show the entry at position n in the detail pane, and that file's diff; logs its tracked and untracked files |
+| `apply:<n>` / `pop:<n>` | **act**: the row menu's Apply / Pop on the entry at position n |
+| `dropstash:<n>` / `confirmdropstash` | open Drop Stash… for the entry at position n, and answer it for the entry the sheet names |
+| `noticepop` | press the sticky notice's **Pop Stash** through the store's own call; logs the entry it holds |
+| `discard:<path>` / `discardstaged:<path>` / `discardall` | open the unstaged row's "Discard Changes…" (or "Move to Trash…" for an untracked path), the staged row's "Discard Staged and Unstaged Changes…", or the header's "Discard All…" — the sheet only |
+| `discardhunk:<n>` | open the discard sheet for hunk n of the diff on screen: "Discard Hunk…", with `GITTER_DEBUG_SELECT_LINES` "Discard N Lines…", or "Discard File…" where that is what the hunk offers; logs the offer first |
+| `confirmdiscard` | **acts**: the discard sheet's destructive button, for the model the sheet shows |
+| `discardstale` | log whether the discard sheet on screen is out of date now — the check its orange line runs |
+| `undodiscard` | **acts**: the sticky notice's **Undo Discard**; logs each receipt (kind, paths, record, Trash URLs) |
+| `stashcontinue[:merge\|:rebase]` | **acts**: the error banner's **Stash and Continue**, waiting for the stash and the retry; with a mode, then answers the pull sheet if the retry opened one. Logs `stashcontinue: not offered` when the banner offers nothing |
 | `alert` / `alertbutton:<title>` | log every text and button (with its key equivalent) of the alert on screen — the snapshot draws an alert's buttons but not its text — and click one of its buttons |
 
 A step that starts network work waits for the lane to free as well, for up to 120 seconds; a
 step taken while the lane is already busy waits only for the mutation slot, so a second
 network action is refused and logged at once. After each step a second line reports the lane
-(its kind, remote and progress line), the three blocked reasons, the push button's title, the
+(its kind, remote and progress line), whether the banner offers Force Push and Stash and
+Continue (with the stash's message, `-u` and the reason it is off), the three blocked reasons, the push button's title, the
 tracking, the counts the Push and Pull buttons draw (`pushCount`, `pullCount`), the Push
 tooltip, the remembered pull mode, how many snapshot loads have run, whether "Fetch
 Automatically" is on and the last automatic fetch's failure. An automatic fetch on the lane
@@ -445,12 +585,16 @@ the current branch, publishes and re-publishes it, force-pushes behind a lease a
 confirmation, deletes a branch on a remote, and keeps ahead/behind current with a quiet
 automatic fetch.
 
-Next up, from the backlog: **discard** (file, hunk, line — the missing half of staging, and
-loss-capable, so it comes with its own confirmation) and **stash**, which would also let pull
-and rebase offer "stash, then continue". After those: conflict resolution and continuing a
-rebase inside the app (today you resolve in your editor and a stopped rebase can only be
-aborted here), prune with a confirmation plus cleaning up "gone" branches, and tags (creating
-them, then pushing one by name). Everything wanted and deliberately deferred is kept in
-[`docs/BACKLOG.md`](docs/BACKLOG.md), with what is already known about each item — including
-what only a person at the keyboard can still check about the remote work (real HTTPS and ssh
-credentials, the menus, tooltips and VoiceOver).
+Stashes (all changes or selected files, with or without untracked files), applies, pops and
+drops them behind a confirmation; discards files, hunks and lines on either side and untracked
+files into the Trash, every discard recorded first and undoable; offers Stash and Continue
+when a switch, merge or pull is refused over local changes; and keeps a pushed branch's
+pull-request link on screen until it is used.
+
+Next up is milestone **A2**: conflict resolution and continuing a rebase, merge or
+cherry-pick inside the app (today you resolve in your editor and a stopped rebase can only be
+aborted here). After that: prune with a confirmation plus cleaning up "gone" branches, and tags
+(creating them, then pushing one by name). Everything wanted and deliberately deferred is kept
+in [`docs/BACKLOG.md`](docs/BACKLOG.md), with what is already known about each item —
+including what only a person at the keyboard can still check (real HTTPS and ssh credentials,
+the menus, tooltips, VoiceOver, the Trash's Put Back in Finder).
