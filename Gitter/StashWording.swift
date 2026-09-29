@@ -272,6 +272,52 @@ enum StashWording {
     /// dropped elsewhere: nothing was attempted, and the button is gone with the notice.
     static let offeredStashGone = "That stash is no longer in the list."
 
+    // MARK: - Stash and Continue
+
+    /// The error banner's button beside a switch, merge or pull refused over local changes.
+    static let continueButton = "Stash and Continue"
+
+    /// The message the stash is filed under (git adds `On <branch>: `): what was about to
+    /// happen, so the entry says why it is there when it turns up in the list weeks later.
+    static func continueMessage(for action: PendingBranchAction) -> String {
+        switch action {
+        case .switchTo(let branch): "Gitter: before switching to \"\(branch)\""
+        case .createAndSwitch(let name, _): "Gitter: before switching to \"\(name)\""
+        case .track(let remoteBranch): "Gitter: before checking out \"\(remoteBranch)\""
+        case .detach(let revision): "Gitter: before checking out \"\(revision)\""
+        case .merge(let branch, _): "Gitter: before merging \"\(branch)\""
+        case .pull: "Gitter: before pulling"
+        }
+    }
+
+    /// The sticky notice, with Pop Stash, put up once the stash is filed and before the retry
+    /// runs — so it stays whatever the retry ends in: done, a conflict, a new refusal, the
+    /// pull's question.
+    static func continued(stash: Stash) -> String {
+        "Your changes are in stash \(name(stash))."
+    }
+
+    /// `stashAll` filed nothing. The changes git named may be gone (then the retry would work),
+    /// or be something a stash cannot hold — a change inside a submodule, which Gitter's rebase
+    /// check refuses over and a stash leaves where it is (then it would be refused again). The
+    /// sentence cannot tell which, so nothing was run, and it says both.
+    static func continueNothingStashed(_ action: PendingBranchAction) -> String {
+        "Nothing was stashed: there are no changes a stash can hold, so Gitter did not try to "
+            + "\(action.summary) again. If the changes are gone, try again; a change inside a "
+            + "submodule has to be committed in the submodule."
+    }
+
+    /// The entry was filed and something after it failed: the changes are in the stash and may
+    /// still be in the files, so nothing was run on top of them.
+    static func continueSavedWithError(
+        _ stash: Stash, gitsWords: String, trashed: [String: URL], action: PendingBranchAction
+    ) -> String {
+        pushOutcome(
+            .savedWithError(stash, gitsWords: gitsWords, trashed: trashed),
+            includeUntracked: false, onlySelected: false)
+            + " Gitter did not try to \(action.summary) again."
+    }
+
     // MARK: - The Stash Changes… sheet
 
     static let sheetTitle = "Stash Changes"

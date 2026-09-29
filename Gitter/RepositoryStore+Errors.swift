@@ -10,8 +10,10 @@ extension RepositoryStore {
     func dismissError() {
         setError(nil)
         clearSticky()
-        // The banner's "Pull" / "Force Push…" belong to the message just dismissed.
+        // The banner's "Pull" / "Force Push…" and "Stash and Continue" belong to the message
+        // just dismissed.
         setRejectedPush(nil)
+        clearStashAndContinueOffer()
     }
 
     // internal (not private): used by RepositoryStore+Refresh.swift and +Detail.swift

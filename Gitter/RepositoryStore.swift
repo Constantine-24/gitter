@@ -107,6 +107,16 @@ final class RepositoryStore {
     /// "Force Push…" is reachable from. Cleared by the next mutation or network action.
     private(set) var rejectedPush: RejectedPush?
 
+    /// What the error banner's Stash and Continue would do: set with the banner of a switch,
+    /// merge or pull refused over local changes (`finishMutation`), and cleared with it — by ×,
+    /// by the next mutation or network action, by another sticky banner, and by `open()`.
+    /// Read through `offeredStashAndContinue`, which also checks the banner on screen is still
+    /// the one it answers. See `RepositoryStore+StashAndContinue`.
+    private(set) var stashAndContinueOffer: StashAndContinueOffer?
+
+    /// The banner `stashAndContinueOffer` was made for, word for word.
+    private var stashAndContinueBanner: String?
+
     /// The task running the lane's work, so `cancelRemoteActivity()` can cancel it. Bookkeeping
     /// only, views must not touch it.
     // internal (not private): used by +Remotes.swift
@@ -285,6 +295,7 @@ final class RepositoryStore {
         remoteTask = nil
         remoteActivity = nil
         rejectedPush = nil
+        clearStashAndContinueOffer()
         // The automatic fetch belongs to the repository it fetches: the old one's schedule
         // stops here, and its mark says nothing about this one. This one's starts once its first
         // snapshot is in (below), so the first tick can see whether it has a remote at all.
@@ -407,6 +418,9 @@ final class RepositoryStore {
         // "Force Push…" answers the refusal of *that* push. Once anything else has happened the
         // branch may not be where it was, and the banner offering it goes with it.
         rejectedPush = nil
+        // Stash and Continue answers the refusal on screen, which this attempt supersedes —
+        // and it is itself a mutation, which must not find its own offer still up.
+        clearStashAndContinueOffer()
         // A new attempt supersedes the last one's message: it has been read or ignored by
         // now, and nothing should keep protecting it from the reloads that follow.
         if errorIsSticky {
@@ -429,6 +443,12 @@ final class RepositoryStore {
             // Protected from the reloads this mutation set off — its own, and the
             // watcher-driven one that git's writes inside `.git` trigger in parallel.
             errorIsSticky = true
+            // A refusal a stash answers: the banner and its Stash and Continue go up together,
+            // for this generation only (a stale one returned above).
+            if let offered = failure as? RefusalWithStashOffer {
+                stashAndContinueOffer = offered.offer
+                stashAndContinueBanner = lastError
+            }
         }
         isMutating = false
     }
@@ -548,7 +568,10 @@ final class RepositoryStore {
         // "Force Push…" answers the refusal on screen; the automatic fetch is not something the
         // user did, and must not take that answer away every ten minutes. (The force push reads
         // its lease with a fetch of its own, so a tracking ref moved meanwhile changes nothing.)
-        if kind != .autoFetch { rejectedPush = nil }
+        if kind != .autoFetch {
+            rejectedPush = nil
+            clearStashAndContinueOffer()
+        }
         // A pushed branch's link is about the push before this one; this one says its own.
         switch kind {
         case .push, .publish, .forcePush:
@@ -611,6 +634,23 @@ final class RepositoryStore {
     func showStickyError(_ message: String) {
         lastError = message
         errorIsSticky = true
+        // Another banner: the refusal Stash and Continue answered is off the screen.
+        clearStashAndContinueOffer()
+    }
+
+    /// The offer, while the banner on screen is still the refusal it was made for — never
+    /// beside some other message that happened to replace it (a failed reload, say, which
+    /// writes `lastError` without going through any of the places that clear the offer).
+    var offeredStashAndContinue: StashAndContinueOffer? {
+        guard let offer = stashAndContinueOffer, let lastError, lastError == stashAndContinueBanner
+        else { return nil }
+        return offer
+    }
+
+    // internal (not private(set) write): used by +Errors.swift's `dismissError()`
+    func clearStashAndContinueOffer() {
+        stashAndContinueOffer = nil
+        stashAndContinueBanner = nil
     }
 
     // internal (not private(set) write): used by +Remotes.swift, right after the banner it

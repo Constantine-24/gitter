@@ -70,6 +70,20 @@ extension RepositoryStore {
         perform(.pull(upstream: upstream, mode: mode))
     }
 
+    /// Stash and Continue's second half: `action` again, from scratch, with every gate it had
+    /// the first time — an operation in progress, a detached HEAD holding commits (asked again,
+    /// never taken as answered). A pull is run again whole, fetch and decision included, since
+    /// its refused step (the merge or the sheet's Rebase) was decided on tracking that a fetch
+    /// may since have changed; if it ends in the Merge-or-Rebase sheet, the user answers it again.
+    // internal (not private): used by +StashAndContinue.swift
+    func retry(_ action: PendingBranchAction) {
+        if case .pull = action {
+            pull()
+        } else {
+            perform(action)
+        }
+    }
+
     // MARK: - Actions that do not move HEAD
 
     /// Create `name`, optionally switching to it. Creating *without* switching writes one ref
@@ -145,7 +159,12 @@ extension RepositoryStore {
                     return .confirm(sha: sha, stranded: now.count)
                 }
             }
-            return .acted(try await Self.run(action, backend: backend, at: root))
+            do {
+                return .acted(try await Self.run(action, backend: backend, at: root))
+            } catch {
+                // A refusal over local changes goes up with Stash and Continue beside it.
+                throw StashAndContinue.offering(error, for: action)
+            }
         }, onSuccess: { [self] result in
             switch result {
             case .confirm(let sha, let stranded):

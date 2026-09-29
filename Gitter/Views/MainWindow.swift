@@ -83,8 +83,17 @@ struct MainWindow: View {
     }
 
     /// "Pull" and "Force Push…" beside the banner of a push the server refused for having
-    /// commits this branch lacks — the one place Force Push is reachable from.
+    /// commits this branch lacks — the one place Force Push is reachable from. "Stash and
+    /// Continue" beside a switch, merge or pull refused over local changes.
     private var bannerActions: [BannerAction] {
+        if store.offeredStashAndContinue != nil {
+            return [
+                BannerAction(
+                    title: StashWording.continueButton,
+                    disabledReason: store.stashAndContinueBlockedReason
+                ) { store.stashAndContinue() }
+            ]
+        }
         guard store.bannerOffersForcePush else { return [] }
         return [
             BannerAction(title: "Pull", disabledReason: store.pullBlockedReason) {

@@ -55,8 +55,15 @@ extension RepositoryStore {
         let target = Self.fullUpstreamRef(of: branch) ?? upstream
         let name = branch.name
         mutate(result: { backend, root in
-            try await Self.reporting(.rebaseOnto, upstream) {
-                try await backend.rebase(onto: target, at: root)
+            do {
+                return try await Self.reporting(.rebaseOnto, upstream) {
+                    try await backend.rebase(onto: target, at: root)
+                }
+            } catch {
+                // A dirty tree: Stash and Continue runs the pull again (`retry`). The mode is
+                // the diverged sheet's; a retried pull asks again rather than reading it.
+                throw StashAndContinue.offering(
+                    error, for: .pull(upstream: upstream, mode: .alwaysMergeCommit))
             }
         }, onSuccess: { [self] outcome in
             Self.rememberPullMode(.rebase)
