@@ -1253,6 +1253,76 @@ enum ForceFlagScanner {
     static let recordFile = "CLIGitBackend+StashRecord.swift"
     static let recordOnlySubcommands: Set<String> = ["read-tree", "update-index", "write-tree"]
 
+    /// Final review M6: each `read-tree`, `update-index` and `write-tree` vector in `source`
+    /// (the record's file), and a finding for every one not passed inline to
+    /// `runWithEnvironment(` with `extra: index`.
+    ///
+    /// Read from the array literal like every rule here: a vector bound to a name first is a
+    /// finding too, because what it is passed to can no longer be read off the call.
+    static func indexWritingVectorsOutsideTheTemporaryIndex(in source: String) -> (checked: [String], findings: [String]) {
+        let code = strippingCommentsAndStringContents(source)
+        var checked: [String] = []
+        var findings: [String] = []
+        for array in argumentArrays(in: source, code: code) {
+            guard let subcommand = array.elements.first?.value.map(decoded),
+                recordOnlySubcommands.contains(subcommand)
+            else { continue }
+            checked.append(subcommand)
+            guard let call = enclosingCall(code: code, open: array.open) else {
+                findings.append("`git \(subcommand)` (offset \(array.open)) is not written inline as an argument of `runWithEnvironment(`")
+                continue
+            }
+            let arguments = String(call.arguments).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            if call.name != "runWithEnvironment"
+                || arguments.range(of: #"extra: index\b"#, options: .regularExpression) == nil
+            {
+                findings.append(
+                    "`git \(subcommand)` (offset \(array.open)) runs through `\(call.name)(` without `extra: index`: "
+                        + "without GIT_INDEX_FILE it writes the real index")
+            }
+        }
+        return (checked, findings)
+    }
+
+    /// The call the array literal opening at `open` is an argument of, through nothing but a
+    /// ternary or a `+`: its name and its whole argument list. Nil for a vector bound to a name,
+    /// returned, or nested in anything else (see `isInlineArgumentOfRun`, which this follows).
+    private static func enclosingCall(code: [Character], open: Int) -> (name: String, arguments: ArraySlice<Character>)? {
+        var depth = 0
+        var index = open - 1
+        while index >= 0 {
+            let c = code[index]
+            if ")]}".contains(c) {
+                depth += 1
+            } else if "([{".contains(c) {
+                if depth == 0 {
+                    guard c == "(" else { return nil }
+                    var close = index
+                    var level = 0
+                    while close < code.count {
+                        if "([{".contains(code[close]) { level += 1 }
+                        if ")]}".contains(code[close]) {
+                            level -= 1
+                            if level == 0 { break }
+                        }
+                        close += 1
+                    }
+                    return (identifier(endingBefore: index, in: code), code[(index + 1)..<min(close, code.count)])
+                }
+                depth -= 1
+            } else if depth == 0 {
+                if c == ";" { return nil }
+                if c == "=" {
+                    let before = index > 0 ? code[index - 1] : " "
+                    let after = index + 1 < code.count ? code[index + 1] : " "
+                    if !"=!<>".contains(before), after != "=" { return nil }
+                }
+            }
+            index -= 1
+        }
+        return nil
+    }
+
     static let recordOnlyReason =
         "`read-tree`, `update-index` and `write-tree` rewrite whichever index GIT_INDEX_FILE "
             + "names, and the real one when it names none; only the record's own file, which "

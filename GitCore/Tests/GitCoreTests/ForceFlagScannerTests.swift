@@ -1190,3 +1190,49 @@ import Testing
                 "false positive: \(ForceFlagScanner.findings(in: source, fileName: Self.recordFile))")
     }
 }
+
+/// Final review M6: the scanner confines `read-tree`, `update-index` and `write-tree` to the
+/// record's file, but it cannot see an environment — so within that file nothing but this test
+/// stops an edit from running one of them on the real index. Each must be passed inline to
+/// `runWithEnvironment(` with `extra: index`, the temporary index `make` creates.
+@Suite struct RecordIndexEnvironmentTests {
+    static var recordSource: String {
+        get throws {
+            try String(
+                contentsOf: ForceFlagScannerTests.sourcesRoot.appendingPathComponent(ForceFlagScanner.recordFile),
+                encoding: .utf8)
+        }
+    }
+
+    @Test func everyIndexWritingVectorInTheRecordRunsOnTheTemporaryIndex() throws {
+        let result = ForceFlagScanner.indexWritingVectorsOutsideTheTemporaryIndex(in: try Self.recordSource)
+
+        #expect(result.findings.isEmpty, "\(result.findings)")
+        // Not vacuous: the record's five vectors were found and read.
+        #expect(result.checked.count >= 5, "\(result.checked)")
+        #expect(Set(result.checked) == ["read-tree", "update-index", "write-tree"])
+    }
+
+    /// The same file, changed in memory only — never on disk — in each way that would drop the
+    /// temporary index.
+    @Test(arguments: [
+        (#"backend.runWithEnvironment(["read-tree", "HEAD"], cwd: root, extra: index)"#,
+         #"backend.run(["read-tree", "HEAD"], cwd: root)"#),
+        (#"backend.runWithEnvironment(["write-tree"], cwd: root, extra: index)"#,
+         #"backend.runWithEnvironment(["write-tree"], cwd: root, extra: [:])"#),
+        (#"backend.runWithEnvironment(["update-index", "--add"] + cacheinfo, cwd: root, extra: index)"#,
+         #"backend.run(["update-index", "--add"] + cacheinfo, cwd: root)"#),
+        (#"_ = try await backend.runWithEnvironment(["update-index", "--add", "--remove", "--"] + paths, cwd: root, extra: index)"#,
+         #"let vector = ["update-index", "--add", "--remove", "--"] + paths; _ = try await backend.runWithEnvironment(vector, cwd: root, extra: index)"#),
+    ])
+    func catchesAVectorThatWouldRunOnTheRealIndex(original: String, mutated: String) throws {
+        let source = try Self.recordSource
+        #expect(source.contains(original), "the record no longer spells \(original)")
+        let changed = source.replacingOccurrences(of: original, with: mutated)
+        #expect(changed != source)
+
+        let result = ForceFlagScanner.indexWritingVectorsOutsideTheTemporaryIndex(in: changed)
+
+        #expect(result.findings.count == 1, "\(result.findings)")
+    }
+}
