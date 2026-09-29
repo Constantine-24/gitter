@@ -40,7 +40,7 @@
     ///     apply:<n>                    pop:<n>
     ///     dropstash:<n>                confirmdropstash
     ///     stashes                      selectstash:<n>[:<path>]     sheet:stash
-    ///     noticepop
+    ///     noticepop                    stashcontinue[:merge|:rebase]
     ///
     ///   Discard (`RepositoryStore+Discard`, `DebugLaunchHooks+Discard`):
     ///
@@ -103,6 +103,12 @@
     /// opener that only logs `openlink: <url>` — the harness never starts a browser — and a
     /// private pasteboard; with no Open on screen it logs `openlink: no link`.
     ///
+    /// `stashcontinue` is the error banner's Stash and Continue (`RepositoryStore
+    /// .stashAndContinue`): with nothing offered it logs `stashcontinue: not offered` and does
+    /// nothing. It waits for the stash **and** the retry it starts. `:merge` / `:rebase` then
+    /// answer the pull sheet a retried pull may end in, like `pull:<mode>`. The `lane` line
+    /// carries `stashContinue: <message> -u:<bool> blocked: <reason>` or `nil`.
+    ///
     /// The automatic fetch prints its own lines, `AUTOFETCH …`, one per tick and one per ending;
     /// `QUIT …` lines say what quitting decided.
     ///
@@ -154,6 +160,7 @@
                     + "| head: \(store.headLabel) | selection: \(store.selection)")
             log(
                 "lane: \(lane ?? "nil") | forcePushOffered: \(store.bannerOffersForcePush) "
+                    + "| stashContinue: \(describeStashContinue(store)) "
                     + "| reasons: fetch=\(store.fetchBlockedReason ?? "nil"); "
                     + "pull=\(store.pullBlockedReason ?? "nil"); "
                     + "push=\(store.pushBlockedReason ?? "nil") "
@@ -166,6 +173,12 @@
                     + "| autoFetch: \(AutoFetchScheduler.isEnabled ? "on" : "off"), "
                     + "failure: \(store.lastAutoFetchFailure ?? "nil") "
                     + "| stores: \(RepositoryStore.storesBuilt)")
+        }
+
+        private static func describeStashContinue(_ store: RepositoryStore) -> String {
+            guard let offer = store.offeredStashAndContinue else { return "nil" }
+            return "\(offer.message) -u:\(offer.includeUntracked) "
+                + "blocked: \(store.stashAndContinueBlockedReason ?? "nil")"
         }
 
         private static func flat(_ text: String?) -> String {
@@ -319,6 +332,19 @@
             case "discard", "discardstaged", "discardall", "discardhunk", "confirmdiscard", "undodiscard",
                 "discardstale":
                 await discardStep(command, step: step, store: store)
+            case "stashcontinue":
+                guard store.offeredStashAndContinue != nil else {
+                    log("stashcontinue: not offered")
+                    return
+                }
+                store.stashAndContinue()
+                // The stash, then the retry it starts in the same main-actor run: the slot or
+                // the lane is claimed again before either wait below can see them free.
+                _ = await wait({ store.remoteActivity == nil && !store.isMutating }, seconds: 120)
+                if let mode = first.flatMap(PullMode.init(rawValue:)) {
+                    // Does nothing without its sheet on screen.
+                    store.confirmPull(mode)
+                }
             case "stageall": store.stageAll()
             case "commit":
                 // The composer's own path: the subject goes into the draft, then `commit()`.
