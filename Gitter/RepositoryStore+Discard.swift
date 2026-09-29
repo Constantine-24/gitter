@@ -26,6 +26,94 @@ struct DiscardSheetModel: Hashable {
 
     var title: String { DiscardWording.title(requests, all: isAll) }
     var confirmTitle: String { DiscardWording.confirmButton(requests, all: isAll) }
+
+    /// What a confirm re-reads before the first request runs: the requests after it. GitCore
+    /// checks each request itself as it starts, so the first needs nothing more; a later one
+    /// changed while the sheet was up must refuse the confirm before the first has written
+    /// anything (fix round 1), not be found after it.
+    var checkedBeforeTheFirstRuns: [DiscardRequest] { Array(requests.dropFirst()) }
+}
+
+/// What the discard sheet's tracked reads depend on, read with `lstat` alone: each tracked
+/// path, the index, HEAD, and the attributes and config that change how a diff reads. The
+/// sheet's stale line reads git again only when this moved since its last read (final review
+/// I1: the whole read after every reload took 3 s for 200 files). Not covered: the user's
+/// global config and attributes file, and a `.gitattributes` in a folder that holds none of the
+/// paths — the confirm still reads everything again and refuses (GitCore's stale check).
+struct DiscardSheetFingerprint: Hashable {
+    /// One file as `lstat` sees it; absent is nil. Any write moves the times, and an editor's
+    /// save that replaces the file moves the inode too.
+    struct Stamp: Hashable {
+        let device: Int64
+        let inode: UInt64
+        let mode: UInt16
+        let size: Int64
+        let modified: [Int]
+        let changed: [Int]
+    }
+
+    struct Entry: Hashable {
+        let path: String
+        let stamp: Stamp?
+    }
+
+    let entries: [Entry]
+    let head: String?
+
+    /// Nil when the git directory cannot be found: then there is nothing to compare, and the
+    /// sheet reads again after every reload.
+    static func take(tracked paths: [String], root: URL, head: String?) -> DiscardSheetFingerprint? {
+        guard let gitDirectory = gitDirectory(of: root) else { return nil }
+        var files = paths.map { root.appendingPathComponent($0).path }
+        files += ["index", "config", "info/attributes"].map { gitDirectory.appendingPathComponent($0).path }
+        let folders = Set([""] + paths.flatMap(folders(of:))).sorted()
+        files += folders.map { root.appendingPathComponent($0).appendingPathComponent(".gitattributes").path }
+        return DiscardSheetFingerprint(entries: files.map { Entry(path: $0, stamp: stamp($0)) }, head: head)
+    }
+
+    /// `root/.git`, or where a `.git` file's `gitdir:` line points (a linked worktree).
+    static func gitDirectory(of root: URL) -> URL? {
+        let dotGit = root.appendingPathComponent(".git")
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dotGit.path, isDirectory: &isDirectory) else { return nil }
+        if isDirectory.boolValue { return dotGit }
+        guard let text = try? String(contentsOf: dotGit, encoding: .utf8),
+            let line = text.split(separator: "\n").first, line.hasPrefix("gitdir: ")
+        else { return nil }
+        let path = String(line.dropFirst("gitdir: ".count)).trimmingCharacters(in: .whitespaces)
+        return path.hasPrefix("/") ? URL(fileURLWithPath: path) : root.appendingPathComponent(path)
+    }
+
+    /// `a/b/c` → `a`, `a/b`.
+    private static func folders(of path: String) -> [String] {
+        let parts = path.split(separator: "/").dropLast()
+        return parts.indices.map { parts[...$0].joined(separator: "/") }
+    }
+
+    private static func stamp(_ path: String) -> Stamp? {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return nil }
+        return Stamp(
+            device: Int64(info.st_dev), inode: UInt64(info.st_ino), mode: UInt16(info.st_mode),
+            size: Int64(info.st_size),
+            modified: [Int(info.st_mtimespec.tv_sec), Int(info.st_mtimespec.tv_nsec)],
+            changed: [Int(info.st_ctimespec.tv_sec), Int(info.st_ctimespec.tv_nsec)])
+    }
+}
+
+/// What the sheet's stale line found last, and what its tracked reads depended on then.
+struct DiscardStaleCheck: Equatable {
+    let fingerprint: DiscardSheetFingerprint?
+    /// The tracked requests' answer, kept while the fingerprint stands still.
+    let trackedStale: Bool
+    let isStale: Bool
+
+    /// Whether the tracked requests are read again: the first check, no fingerprint now or
+    /// then, or one that moved since.
+    static func mustReadTracked(after last: DiscardStaleCheck?, now: DiscardSheetFingerprint?) -> Bool {
+        guard let last, let before = last.fingerprint, let now else { return true }
+        return before != now
+    }
 }
 
 /// Which discard a hunk header offers on the unstaged side (ruling 4).
@@ -318,11 +406,34 @@ extension RepositoryStore {
 
     /// Whether what the sheet shows is still what a confirm would find: the same reads again,
     /// and for untracked items the status still listing them as untracked. Read-only, no
-    /// mutation lock; the sheet asks after every snapshot load (RF3). A read that fails counts
-    /// as changed — the confirm cannot be shown to match either.
+    /// mutation lock. A read that fails counts as changed — the confirm cannot be shown to
+    /// match either.
     func discardSheetIsStale(_ model: DiscardSheetModel) async -> Bool {
+        await areStale(model.requests)
+    }
+
+    /// The live stale line's check, after every snapshot load (RF3): the untracked items every
+    /// time (`lstat` and the status on screen, no process), the tracked requests only when
+    /// what their reads depend on moved since `last` (`DiscardSheetFingerprint`, final review
+    /// I1). The fingerprint is taken before the reads, so a change made during them is still
+    /// found by the next check.
+    func discardSheetStaleness(_ model: DiscardSheetModel, after last: DiscardStaleCheck?) async -> DiscardStaleCheck {
+        let tracked = model.requests.filter { if case .untracked = $0 { false } else { true } }
+        let fingerprint = root.flatMap {
+            DiscardSheetFingerprint.take(tracked: tracked.flatMap(\.paths), root: $0, head: headSha)
+        }
+        let trackedStale =
+            DiscardStaleCheck.mustReadTracked(after: last, now: fingerprint)
+            ? await areStale(tracked) : last?.trackedStale ?? true
+        let untrackedStale = await areStale(model.requests.filter { if case .untracked = $0 { true } else { false } })
+        return DiscardStaleCheck(
+            fingerprint: fingerprint, trackedStale: trackedStale, isStale: trackedStale || untrackedStale)
+    }
+
+    private func areStale(_ requests: [DiscardRequest]) async -> Bool {
+        guard !requests.isEmpty else { return false }
         guard let root else { return true }
-        for request in model.requests {
+        for request in requests {
             let now: DiscardExpectation?
             switch request {
             case .unstaged(let paths, _):
@@ -359,18 +470,20 @@ extension RepositoryStore {
     /// GitCore refuses (`changedSinceShown`) when the files moved on meanwhile.
     ///
     /// Discard All… runs its tracked request first and its untracked one second (ruling 1).
-    /// Each request's own stale check runs only as it starts, so a sheet of two is checked whole
-    /// before either runs: an untracked item changed while the sheet was up must refuse the
-    /// confirm, not be found after the tracked files were already discarded (fix round 1). What
-    /// is left is the window of the tracked discard itself; when the second fails then, the
-    /// notice still names what the first did, with its Undo.
+    /// Each request's own stale check runs only as it starts, so the requests after the first
+    /// are checked before the first runs: an untracked item changed while the sheet was up must
+    /// refuse the confirm, not be found after the tracked files were already discarded (fix
+    /// round 1). The first is left to GitCore's own check, which comes before it writes
+    /// anything; reading it here as well read the whole sheet twice (final review I1). What is
+    /// left is the window of the tracked discard itself; when the second fails then, the notice
+    /// still names what the first did, with its Undo.
     func confirmDiscard(_ model: DiscardSheetModel) {
         guard case .discard(let shown) = activeSheet, shown == model else { return }
         activeSheet = nil
         let trasher = self.trasher
         mutate(result: { [self] backend, root in
             var run = DiscardRun()
-            if model.requests.count > 1, await discardSheetIsStale(model) {
+            if await areStale(model.checkedBeforeTheFirstRuns) {
                 run.failure = DiscardWording.refusal(.changedSinceShown(model.requests.flatMap(\.paths)))
                 return run
             }

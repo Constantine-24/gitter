@@ -7,14 +7,16 @@ import SwiftUI
 /// The sheet is a snapshot: `model` carries the diffs (or untracked items) its rows were built
 /// from, and the destructive button hands exactly that to GitCore, which re-reads and refuses
 /// when the files moved on. A live stale line says so before the click: after every snapshot
-/// load the same reads run again (`discardSheetIsStale`).
+/// load it asks again (`discardSheetStaleness`), reading git again only when what the tracked
+/// reads depend on moved since its last read.
 ///
 /// Cancel holds `.defaultAction`, Escape closes, and the destructive button has no shortcut.
 struct DiscardSheet: View {
     let model: DiscardSheetModel
 
     @Environment(RepositoryStore.self) private var store
-    @State private var stale = false
+    /// The stale line's last answer, and what the tracked reads depended on then.
+    @State private var check: DiscardStaleCheck?
 
     /// Past this many rows the list scrolls rather than growing the sheet off the screen.
     private static let rowsBeforeScrolling = 8
@@ -58,15 +60,17 @@ struct DiscardSheet: View {
         .frame(width: 520)
         .onExitCommand { store.activeSheet = nil }
         // Every load of the snapshot — the watcher's, after any change on disk — asks again.
-        // Read-only; cancelled with the sheet.
+        // Read-only; cancelled with the sheet. A check cut short by the next load is not kept:
+        // its reads may have failed for the cancellation alone.
         .task(id: store.isLoading) {
             guard !store.isLoading else { return }
-            stale = await store.discardSheetIsStale(model)
+            let next = await store.discardSheetStaleness(model, after: check)
+            if !Task.isCancelled { check = next }
         }
     }
 
     private var notes: [String] {
-        [stale ? DiscardWording.sheetStale : nil, store.sheetBusyReason].compactMap { $0 }
+        [check?.isStale == true ? DiscardWording.sheetStale : nil, store.sheetBusyReason].compactMap { $0 }
     }
 
     private var rows: some View {

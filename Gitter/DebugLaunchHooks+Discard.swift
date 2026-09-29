@@ -22,7 +22,8 @@
     ///                           receipts, `undodiscard: <kind> <paths> record: <sha>…`, or
     ///                           `undodiscard: no Undo Discard`.
     ///   discardstale            logs whether the sheet on screen is stale now
-    ///                           (`discardSheetIsStale`, the check its live line runs).
+    ///                           (`discardSheetIsStale`: every read again, which the live
+    ///                           line runs only when its fingerprint moved).
     ///
     /// The opening steps read git before the sheet goes up, in a task of their own; each waits
     /// for the sheet (or a banner) for up to ten seconds. A step that cannot be taken logs why.
