@@ -255,8 +255,9 @@ Discard** puts things back:
 
 Undo is refused rather than forced whenever a file changed since the discard, and the record is
 dropped only when the file is back byte for byte. Whatever Undo cannot do, the copy is still
-there: the `Discarded by Gitter` entry in the Stashes list (Apply it), and Finder's **Put Back**
-for anything in the Trash.
+there: the `Discarded by Gitter` entry in the Stashes list (Apply it; a line discard's entry
+holds the whole file, so stage that file's other changes first), and Finder's **Put Back** for
+anything in the Trash. Applying or popping that entry yourself ends the notice's Undo.
 
 Line and hunk discard are offered only where a patch can take exactly those lines: not for a
 binary, renamed or non-UTF-8 file, a change that covers the whole file, or a file whose line
@@ -320,15 +321,15 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (130 tests in 12 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (144 tests in 13 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, the pull-request link extraction and the notices' lifetime, which files a
-discard is offered for, which refusals Stash and Continue answers, and when the toolbar
-reveals a lane's activity. Under a test host the app reopens no repository and starts no
+discard is offered for and when its sheet reads git again, which refusals Stash and Continue
+answers, and when the toolbar reveals a lane's activity. Under a test host the app reopens no repository and starts no
 automatic fetch (`TestHost`), and no test opens a repository or touches the app's defaults,
 so a run never touches the repository you last had open.
 
-`GitCoreTests` has 934 tests in 76 suites. Most of them run real `git` against a temporary
+`GitCoreTests` has 942 tests in 78 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
 for a server, with a second clone as "the colleague" who pushes in between — including one
 that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
@@ -365,8 +366,8 @@ Deleting any of them would take the proof away and the suite would go on looking
 
 Every `.swift` file in the two product targets — 117 of them, which is what `find
 GitCore/Sources Gitter -name '*.swift' | wc -l` prints — with the ones inside `Models/`,
-`Parsers/` and `Views/` named in prose rather than one per line. The 92 test files (81 in
-`GitCore/Tests`, 11 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
+`Parsers/` and `Views/` named in prose rather than one per line. The 94 test files (82 in
+`GitCore/Tests`, 12 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
 listed, which is also why the check is that command and not a bare `find . -name '*.swift'`:
 that one reaches them too, and the generated sources under `.build` as well.
 
@@ -410,7 +411,7 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
     Parsers/                    Status, Log, Ref, Diff (+Paths), BranchRefusal, Remote,
                                 PushPorcelain, RemoteFailure, StashList and StashFailure
                                 parsers, and GitLines (git's output split at the newline byte)
-  Tests/GitCoreTests/           76 suites; ForceFlagScanner(+Lexing) is the force-flag grep
+  Tests/GitCoreTests/           78 suites; ForceFlagScanner(+Lexing) is the force-flag grep
 
 Gitter/                   macOS app (SwiftUI)
   GitterApp.swift            App entry point, the one store (`AppModel`), the Repository
@@ -459,8 +460,9 @@ Gitter/                   macOS app (SwiftUI)
                               Stash, DropStash, Discard)
 
 GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app): wording,
-                          notices and links, the discard and Stash and Continue decisions,
-                          the toolbar's activity reveal, and the test-host check
+                          notices and links, the discard (and its sheet's stale check) and
+                          Stash and Continue decisions, the toolbar's activity reveal, and
+                          the test-host check
 ```
 
 ## Debug launch hooks
@@ -534,7 +536,7 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `discard:<path>` / `discardstaged:<path>` / `discardall` | open the unstaged row's "Discard Changes…" (or "Move to Trash…" for an untracked path), the staged row's "Discard Staged and Unstaged Changes…", or the header's "Discard All…" — the sheet only |
 | `discardhunk:<n>` | open the discard sheet for hunk n of the diff on screen: "Discard Hunk…", with `GITTER_DEBUG_SELECT_LINES` "Discard N Lines…", or "Discard File…" where that is what the hunk offers; logs the offer first |
 | `confirmdiscard` | **acts**: the discard sheet's destructive button, for the model the sheet shows |
-| `discardstale` | log whether the discard sheet on screen is out of date now — the check its orange line runs |
+| `discardstale` | log whether the discard sheet on screen is out of date now — every read again, which its orange line runs when an `lstat` fingerprint of the files, the index and HEAD has moved |
 | `undodiscard` | **acts**: the sticky notice's **Undo Discard**; logs each receipt (kind, paths, record, Trash URLs) |
 | `stashcontinue[:merge\|:rebase]` | **acts**: the error banner's **Stash and Continue**, waiting for the stash and the retry; with a mode, then answers the pull sheet if the retry opened one. Logs `stashcontinue: not offered` when the banner offers nothing |
 | `alert` / `alertbutton:<title>` | log every text and button (with its key equivalent) of the alert on screen — the snapshot draws an alert's buttons but not its text — and click one of its buttons |
