@@ -40,6 +40,7 @@
     ///     apply:<n>                    pop:<n>
     ///     dropstash:<n>                confirmdropstash
     ///     stashes                      selectstash:<n>[:<path>]     sheet:stash
+    ///     noticepop
     ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
@@ -307,7 +308,7 @@
                 log("notice sticky: \(describe(store.stickyNotice))")
             case "openlink": openLink(store: store)
             case "stash", "stashpaths", "apply", "pop", "dropstash", "confirmdropstash", "stashes",
-                "selectstash":
+                "selectstash", "noticepop":
                 await stashStep(command, step: step, store: store)
             case "stageall": store.stageAll()
             case "commit":

@@ -1,5 +1,6 @@
 #if DEBUG
 
+    import AppKit
     import Foundation
     import GitCore
 
@@ -19,6 +20,10 @@
     ///                            message: …`.
     ///   selectstash:<n>[:<path>] shows the entry in the detail pane, and that file's diff.
     ///   sheet:stash              opens Stash Changes… without answering it.
+    ///   noticepop                the sticky notice's Pop Stash, as its button runs it
+    ///                            (`RepositoryStore.perform`, a private pasteboard). Logs the
+    ///                            entry the notice holds, `noticepop: <sha> stash@{<n>}`, or
+    ///                            `noticepop: no Pop Stash`.
     ///
     /// A step that cannot be taken — no entry at n, a blocked action — logs why and does nothing.
     extension DebugLaunchHooks {
@@ -85,6 +90,18 @@
                         + "untracked: \(contents?.untracked.map(\.displayPath) ?? []) "
                         + "diff: \(store.diff.map(\.displayPath)) "
                         + "canStage: \(store.diff.contains { store.canPartiallyStage($0) })")
+            case "noticepop":
+                let pop = store.stickyNotice?.actions.first {
+                    if case .popStash = $0 { true } else { false }
+                }
+                guard let pop, case .popStash(let offered) = pop else {
+                    log("noticepop: no Pop Stash")
+                    return
+                }
+                log("noticepop: \(offered.sha) stash@{\(offered.index)}")
+                let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.debug-noticepop"))
+                defer { pasteboard.releaseGlobally() }
+                store.perform(pop, pasteboard: pasteboard) { _ in }
             default:
                 log("unknown step: \(step)")
             }

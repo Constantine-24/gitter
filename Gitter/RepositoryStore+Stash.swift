@@ -108,10 +108,23 @@ extension RepositoryStore {
         applyOrPop(stash, popping: false)
     }
 
-    /// Also the sticky notice's Pop Stash, which may be pressed long after the notice went up:
     /// GitCore checks `stash@{index}` is still the entry first, and refuses otherwise.
     func popStash(_ stash: Stash) {
         applyOrPop(stash, popping: true)
+    }
+
+    /// The sticky notice's Pop Stash, which may be pressed long after the notice went up. The
+    /// notice holds the entry as it was filed, `stash@{0}`, and any push since — a terminal, a
+    /// discard's record — moves it down, so it is found again by sha in the list on screen and
+    /// popped at the position it has now (GitCore still checks that position names the sha).
+    /// No longer listed: the notice and its button give way to a sentence that says so, and
+    /// nothing is attempted.
+    func popOfferedStash(_ offered: Stash) {
+        guard let current = StashList.resolve(sha: offered.sha, in: stashes) else {
+            showStickyNotice(Notice(text: StashWording.offeredStashGone))
+            return
+        }
+        popStash(current)
     }
 
     private func applyOrPop(_ stash: Stash, popping: Bool) {
@@ -232,6 +245,16 @@ extension RepositoryStore {
             activeSheet = .stash(selectedPaths: paths)
         }
     #endif
+}
+
+/// Finding an entry again in the stash list.
+enum StashList {
+    /// The entry whose sha is `sha`, at the position it has in `stashes` now; nil when it is no
+    /// longer listed. By sha only: a position is whatever entry is there now, and an entry
+    /// pushed since moves every other one down.
+    static func resolve(sha: String, in stashes: [Stash]) -> Stash? {
+        stashes.first { $0.sha == sha }
+    }
 }
 
 /// A stash refusal, in `StashWording`'s sentence, for the banner.

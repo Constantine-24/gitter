@@ -266,6 +266,12 @@ enum StashWording {
             + "refused; close this and ask again."
     }
 
+    // MARK: - The notice's Pop Stash
+
+    /// What replaces a "stashed" notice whose Pop Stash is pressed after its entry was popped or
+    /// dropped elsewhere: nothing was attempted, and the button is gone with the notice.
+    static let offeredStashGone = "That stash is no longer in the list."
+
     // MARK: - The Stash Changes… sheet
 
     static let sheetTitle = "Stash Changes"

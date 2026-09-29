@@ -30,7 +30,8 @@ enum NoticeAction: Equatable {
     case openLink(URL)
     case copyLink(URL)
     /// Pops the entry a stash just filed — the way back from "Your changes are in stash …".
-    /// By the `Stash` value, so GitCore's check that `stash@{index}` is still this sha guards it.
+    /// The `Stash` is the entry as it was filed; the button finds it again by sha
+    /// (`popOfferedStash`), and GitCore's check that `stash@{index}` is still this sha guards it.
     case popStash(Stash)
 }
 
