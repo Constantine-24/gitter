@@ -18,6 +18,14 @@ import SwiftUI
 /// are, disabled, with the store's "Wait for … to finish" in their tooltips, and the progress
 /// line has a fixed width so a counter ticking from 9% to 10% does not nudge its neighbours.
 ///
+/// **The activity is drawn only once the lane has run for `ActivityReveal.delay`** (0.4 s); the
+/// button is disabled at once. A lane that ends sooner — a fetch with nothing to download, as a
+/// retried pull's usually is — never resizes the toolbar. Growing the item by ~240 points and
+/// shrinking it again inside AppKit's own animation of the toolbar's glass groups made its layout
+/// alternate by 1e-11 points on every pass, each pass re-invalidating the SwiftUI hosting view,
+/// until AppKit threw "more Update Constraints in Window passes than there are views in the
+/// window" (the A1 toolbar crash; `ActivityReveal`).
+///
 /// **The automatic fetch is the exception.** It shows on Fetch like a fetch — Stop, spinner and
 /// "Fetching automatically…", never git's counters — so a user can see why the network is busy,
 /// but it blocks nothing: all three buttons, Fetch's own included, stay enabled, and using one
@@ -34,16 +42,33 @@ struct RemoteToolbarItem: View {
 
     @Environment(RepositoryStore.self) private var store
 
+    /// The `startedAt` of the lane this item has waited `ActivityReveal.delay` for — view state,
+    /// not the store's: it only decides when the activity is drawn.
+    @State private var revealed: Date?
+
     var body: some View {
-        if let activity = store.remoteActivity, Self.owner(of: activity.kind) == action {
-            HStack(spacing: 2) {
-                RemoteActivityItem(activity: activity)
-                // Disabled by the lane-busy reason like the other two, and in the same place
-                // it was: a second click of a double-click lands here and does nothing.
+        let owned = store.remoteActivity.flatMap { Self.owner(of: $0.kind) == action ? $0 : nil }
+        Group {
+            if let activity = owned,
+                ActivityReveal.shows(laneStartedAt: activity.startedAt, revealed: revealed)
+            {
+                HStack(spacing: 2) {
+                    RemoteActivityItem(activity: activity)
+                    // Disabled by the lane-busy reason like the other two, and in the same place
+                    // it was: a second click of a double-click lands here and does nothing.
+                    button
+                }
+            } else {
                 button
             }
-        } else {
-            button
+        }
+        // Restarted by every new lane, and cancelled by its end: a lane shorter than the delay
+        // never reveals anything.
+        .task(id: owned?.startedAt) {
+            guard let started = owned?.startedAt else { return }
+            try? await Task.sleep(for: ActivityReveal.delay)
+            guard !Task.isCancelled else { return }
+            revealed = started
         }
     }
 
@@ -218,5 +243,26 @@ private struct RemoteActivityItem: View {
             return
         }
         store.cancelRemoteActivity()
+    }
+}
+
+/// When a network item draws its lane's activity: once that same lane has run for `delay`.
+///
+/// The item waits `delay` after its lane starts and then records the lane's `startedAt` as
+/// `revealed`; the activity shows only while the running lane is that one. A lane shorter than
+/// `delay` therefore never changes the toolbar's size, and a reveal left over from an earlier lane
+/// never shows the next one early.
+///
+/// `delay` is longer than AppKit's animation of the toolbar's glass groups (measured at about
+/// 0.3 s), so a short lane can no longer grow the item and shrink it again inside that animation —
+/// the pattern behind the constraint-loop crash. It is shorter than the default double-click
+/// interval (0.5 s), during which Stop ignores a click anyway (`StopClick.isDeliberate`); ⌘. and
+/// the menu's Stop work from the lane's first moment.
+enum ActivityReveal {
+    static let delay: Duration = .milliseconds(400)
+
+    static func shows(laneStartedAt: Date?, revealed: Date?) -> Bool {
+        guard let laneStartedAt else { return false }
+        return revealed == laneStartedAt
     }
 }

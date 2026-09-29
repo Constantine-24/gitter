@@ -44,7 +44,8 @@ struct RemoteActivity: Equatable {
     /// with `\r`.
     var progress: String?
     /// When the lane was claimed. The toolbar's Stop ignores a click this close to the start
-    /// (`StopClick.isDeliberate`); nothing else reads it.
+    /// (`StopClick.isDeliberate`), and the toolbar draws the activity only once the lane has run
+    /// for a moment (`ActivityReveal`), which also tells one lane from the next.
     let startedAt = Date()
 }
 

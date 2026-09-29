@@ -28,7 +28,8 @@ quiet fetch in the background. There is still no discard and no stash; those are
 - Hooks and commit signing apply as configured, because every commit runs through
   your own `git`, not a reimplementation of it
 - Fetch, Pull and Push from the toolbar (Repository menu: ⇧⌘F, ⇧⌘L, ⇧⌘P). The running one
-  shows a spinner, git's own progress line and a Stop button (⌘.); browsing is never
+  shows, once it has run for 0.4 s, a spinner, git's own progress line and a Stop button
+  (⌘. works from the start); browsing is never
   blocked, and a fetch does not block staging or committing either
 - Pull fast-forwards when it can and says so in a notice (`Fast-forwarded to
   "origin/main".`); when both sides have moved on it asks, Merge or Rebase, with the counts —

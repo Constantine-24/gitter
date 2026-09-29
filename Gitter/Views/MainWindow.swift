@@ -29,9 +29,15 @@ struct MainWindow: View {
                         NewBranchButton()
                     }
                     ToolbarItem(placement: .navigation) {
-                        if store.isLoading {
-                            ProgressView().controlSize(.small)
-                        }
+                        // Always there, and only hidden while idle: an item that comes and goes
+                        // resizes its glass group on every reload, and a toolbar item resizing
+                        // during another one's resize animation is what sent AppKit's layout
+                        // into the loop it throws for (see `ActivityReveal`). Its space is kept,
+                        // so the title no longer jumps either.
+                        ProgressView()
+                            .controlSize(.small)
+                            .opacity(store.isLoading ? 1 : 0)
+                            .accessibilityHidden(!store.isLoading)
                     }
                     // Trailing, apart from the branch items: these talk to the remotes, the
                     // ones on the left only to this repository.
