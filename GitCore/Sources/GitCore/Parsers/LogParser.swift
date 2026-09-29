@@ -1,8 +1,7 @@
 import Foundation
 
-/// Parses the output of
-/// `git log --all --topo-order -z --format='%H%x00%P%x00%an%x00%ae%x00%aI%x00%s%x00%D'`
-/// into an array of `Commit`.
+/// Parses the output of `git log --exclude=refs/stash --all --topo-order -z
+/// --format='%H%x00%P%x00%an%x00%ae%x00%aI%x00%s%x00%D'` into an array of `Commit`.
 ///
 /// `-z` NUL-terminates each record and `%x00` separates fields within a record, so the
 /// stream is a flat sequence of NUL-separated fields, 7 per commit, with no distinct

@@ -75,9 +75,12 @@ import Testing
         #expect(try await backend.commitsOnlyOn(branch: "feature", at: repo.root) == 0)
     }
 
-    /// (d), part one: `refs/stash` is a real ref under `refs/`, so `--all` includes it — a
-    /// branch whose only unmerged commit is also a stash entry's parent counts as 0.
-    @Test func isZeroWhenAStashEntryReachesTheCommit() async throws {
+    /// (d), part one: `refs/stash` is a real ref under `refs/`, but it is excluded — a stash
+    /// entry is not a place a commit is kept. A pop or a drop removes it, and `--all` sees only
+    /// `stash@{0}`, so the next entry pushed (by a terminal, or by the record every discard
+    /// files) would take the cover away without a word. A branch whose only unmerged commit is
+    /// also a stash entry's parent counts that commit.
+    @Test func countsACommitThatOnlyAStashEntryAlsoReaches() async throws {
         let repo = try await TestRepo.makeEmpty()
         defer { repo.cleanUp() }
         try repo.write("a.txt", "one\n")
@@ -88,8 +91,11 @@ import Testing
         try repo.write("a.txt", "dirty\n")
         try await repo.git(["stash", "push", "-q", "-m", "on topic"])
         try await repo.git(["switch", "-q", "main"])
+        // Baseline: the stash entry really does reach the commit.
+        let unique = try await repo.revParse("topic")
+        #expect(try await repo.revParse("refs/stash^1") == unique)
 
-        #expect(try await backend.commitsOnlyOn(branch: "topic", at: repo.root) == 0)
+        #expect(try await backend.commitsOnlyOn(branch: "topic", at: repo.root) == 1)
     }
 
     /// (d), part two: the opposite of the stash case. A surviving ref that once reached the

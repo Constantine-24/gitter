@@ -63,9 +63,15 @@ extension CLIGitBackend {
         // non-option arguments`). It is not needed for safety either: the ref is always spelled
         // `refs/heads/<name>`, a string that cannot begin with `-` regardless of `name`, so it
         // can never be misread as an option.
+        //
+        // `--exclude=refs/stash` too: a stash entry is not a place a commit is kept (see the
+        // protocol's doc comment), and both exclusions apply to the one `--all` after them.
         let ref = "refs/heads/" + branch
         return try await revListCount(
-            ["rev-list", "--count", ref, "--not", "--exclude=" + ref, "--all"], at: root)
+            [
+                "rev-list", "--count", ref, "--not", "--exclude=" + ref, "--exclude=refs/stash",
+                "--all",
+            ], at: root)
     }
 
     public func commitCount(in branch: String, notIn base: String, at root: URL) async throws -> Int {

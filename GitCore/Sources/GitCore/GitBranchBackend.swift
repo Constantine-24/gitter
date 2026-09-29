@@ -173,16 +173,19 @@ public protocol GitBranchBackend: Sendable {
     /// How many commits are reachable from `name` and from **no other ref** — what the "Delete"
     /// warning shows as "N commits exist only on this branch".
     ///
-    /// `git rev-list --count refs/heads/<name> --not --exclude=refs/heads/<name> --all`.
-    /// Verified on git 2.54, precisely:
+    /// `git rev-list --count refs/heads/<name> --not --exclude=refs/heads/<name>
+    /// --exclude=refs/stash --all`. Verified on git 2.54, precisely:
     ///
     /// - **"No other ref" means any other local branch, any remote-tracking ref
-    ///   (`refs/remotes/…`), any tag, or the stash** — `refs/stash` is a real, single ref under
-    ///   `refs/` and `--all` picks it up like any other, so a branch whose only unmerged commit
-    ///   is also the parent of a stash entry counts as 0, not 1. It does **not** mean a
-    ///   reflog entry: a commit some *other* ref's history once passed through but no longer
-    ///   points at (e.g. after `git branch -f other main`) still counts as unique here, because
-    ///   `--all` expands live ref tips only, never reflogs.
+    ///   (`refs/remotes/…`) or any tag — not the stash.** `refs/stash` is a real ref under
+    ///   `refs/` and a plain `--all` picks it up, which made a branch whose only unmerged commit
+    ///   is also the parent of a stash entry count as 0. A stash entry is not a place a commit
+    ///   is kept: a pop or a drop removes it, and `--all` sees only `stash@{0}`, so the next
+    ///   entry pushed — from a terminal, or the record every discard files — takes that cover
+    ///   away without a word. So it is excluded, and that commit counts. It does **not** mean a
+    ///   reflog entry either: a commit some *other* ref's history once passed through but no
+    ///   longer points at (e.g. after `git branch -f other main`) still counts as unique here,
+    ///   because `--all` expands live ref tips only, never reflogs.
     /// - **This is a different question from what `git branch -d` itself asks**, and the two can
     ///   disagree in one direction, not the other. `-d` compares the branch against its
     ///   `@{upstream}` if one is set, otherwise against HEAD — a single ref, and the "if one is

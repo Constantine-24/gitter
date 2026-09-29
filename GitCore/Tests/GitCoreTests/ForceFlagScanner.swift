@@ -1391,8 +1391,8 @@ enum ForceFlagScanner {
     ///   beginning with its subcommand"): **eight hits across seven array literals** — `-M`
     ///   three, `--all` two, and `-p`, `-d`, `--tags` one each. **Five** of the seven are
     ///   classified — `["diff", …, "-M", …]`, `["branch", "-d", …]`, two `["rev-list", …]` and
-    ///   `["log", "--all", …]` — so the per-subcommand rules see them for what they are. The
-    ///   other **two** are the leading-flag `diff-tree` fragments
+    ///   `["log", "--exclude=refs/stash", "--all", …]` — so the per-subcommand rules see them
+    ///   for what they are. The other **two** are the leading-flag `diff-tree` fragments
     ///   (`["--no-commit-id", "--name-status", "-z", "-r", "-M"]` and
     ///   `["--no-commit-id", "-p", "-U3", "-M", "-r"]`), which no per-subcommand rule can
     ///   reach: they are covered by `fragmentFindings`' `--no-commit-id` carve-out instead.

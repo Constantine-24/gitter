@@ -217,10 +217,19 @@ public struct CLIGitBackend: GitBackend {
         ":(literal)" + path
     }
 
+    /// History: every branch, tag and remote-tracking ref (and HEAD), **not the stash**.
+    /// `refs/stash` is a ref under `refs/`, so a plain `--all` walks the newest entry's W and I
+    /// commits (and U, a parentless root, for an entry with untracked files) and History drew
+    /// them as rows to check out. `--exclude` applies to the `--all` after it, so its place in
+    /// the argv is before it (measured on git 2.54: after it, it excludes nothing). HEAD stays:
+    /// `--all` adds it whatever the exclusion says.
     private func commitLog(at root: URL) async throws -> [Commit] {
         do {
             let data = try await run(
-                ["log", "--all", "--topo-order", "-n", "500", "-z", "--format=\(Self.logFormat)"],
+                [
+                    "log", "--exclude=refs/stash", "--all", "--topo-order", "-n", "500", "-z",
+                    "--format=\(Self.logFormat)",
+                ],
                 cwd: root
             )
             return LogParser.parse(data)
