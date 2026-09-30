@@ -89,11 +89,23 @@ public enum ContinueReadiness: Sendable, Hashable {
     case ready
     /// These paths are still unmerged; git would refuse (M 14).
     case unresolved([String])
-    /// Nothing is unmerged and the index equals HEAD (M 30): a rebase would drop the commit
-    /// without a word, and a cherry-pick or revert refuses (exit 1). Continue is allowed for a
-    /// rebase only, after the UI has said the commit will be left out; Skip is the way on for
-    /// the other two.
+    /// Nothing is unmerged and the stopped commit's result equals HEAD (M 30): a rebase would
+    /// drop the commit without a word, and a cherry-pick or revert refuses (exit 1). Continue is
+    /// allowed for a rebase only, after the UI has said the commit will be left out; Skip is the
+    /// way on for the other two. Judged on the operation's own paths (`operationPaths`; the
+    /// whole index without `AUTO_MERGE`): an unrelated staged file does not make the result
+    /// non-empty — git would commit it alone under the stopped commit's title (fix round 1).
     case emptyResult
+    /// Tracked files whose worktree differs from the index (not unmerged). A rebase refuses any
+    /// of them (exit 1, "You must edit all merge conflicts…"); a cherry-pick or revert range
+    /// commits the current commit and then refuses the next one that touches such a file,
+    /// stranding the sequence (M 17). A single pick or revert keeps them, so it is not blocked.
+    case unstagedChanges([String])
+    /// Staged paths that are not the operation's (neither unmerged nor among `operationPaths`):
+    /// git commits them into the stopped commit. Continue needs them acknowledged, by name.
+    /// Not judged without `AUTO_MERGE` (a rebase's `exec` / `break` stop refuses staged changes
+    /// itself; at an `edit` stop amending is the point).
+    case otherStagedChanges([String])
     /// No rebase, cherry-pick or revert is in progress (a merge and a squash conclude with
     /// Commit; `git am` is abort-only).
     case notContinuable
@@ -113,6 +125,11 @@ public enum ContinueOutcome: Sendable, Hashable {
     /// unstaged changes during a rebase (M 14, M 18, Task 3's RF5) — or it ended with an error.
     /// Everything git wrote, stderr then stdout, trimmed.
     case failed(gitsWords: String)
+    /// A cherry-pick or revert range made a commit and then refused the next one (local changes
+    /// or untracked files it would overwrite): `sequencer/` is left with no `CHERRY_PICK_HEAD` /
+    /// `REVERT_HEAD`, so no operation is detected, and a later `--continue` would end the
+    /// sequence silently, dropping the rest (M 17). Everything git wrote, stderr then stdout.
+    case sequenceHalted(gitsWords: String)
 }
 
 /// Whether `skip` would run.
@@ -124,7 +141,13 @@ public enum SkipReadiness: Sendable, Hashable {
     /// (M 17), and a cherry-pick or revert range could collide with them and silently drop the
     /// rest of the sequence. Skip is refused until they are committed, stashed or discarded.
     case otherChanges([String])
-    /// No rebase, cherry-pick or revert is in progress.
+    /// The stopped commit's paths git cannot reset as they stand (fix round 1, measured): an
+    /// untracked file at one of them (a path the commit deleted, recreated), refused by all
+    /// three; and for a cherry-pick or revert, one whose worktree differs from its index entry
+    /// ("Entry 'p' not uptodate. Cannot merge.", exit 128). Stage or remove them first.
+    case needsCleanPaths([String])
+    /// No rebase, cherry-pick or revert is in progress, or a rebase has no commit pending — an
+    /// `exec`, `break` or `edit` stop, where `rebase --skip` skips nothing (Ruling 19).
     case notSkippable
 }
 

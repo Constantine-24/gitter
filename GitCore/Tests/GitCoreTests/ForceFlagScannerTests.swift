@@ -1414,7 +1414,7 @@ import Testing
         #"arguments = ["rebase", "--skip"]"#,
         #"arguments = ["cherry-pick", "--skip"]"#,
         #"arguments = ["revert", "--skip"]"#,
-        #"_ = try await run(["diff", "--cached", "--quiet", "HEAD"], cwd: root)"#,
+        #"let data = try await run(["diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD"], cwd: root)"#,
         #"let data = try await run(["diff", "--name-only", "-z", "--no-renames", "HEAD", "AUTO_MERGE"], cwd: root)"#,
         #"let data = try await run(["rev-parse", "--git-path", name], cwd: root)"#,
         #"let data = try await run(["rev-parse", "-q", "--verify", name], cwd: root, allowedExitCodes: [1])"#,

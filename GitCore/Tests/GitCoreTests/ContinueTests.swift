@@ -392,6 +392,28 @@ enum SequenceFixtures {
         #expect(try await SequenceFixtures.subjects(repo, "one") == ["m", "base"])
     }
 
+    /// Fix round 1 (I1): the resolution equals HEAD and an unrelated file is staged. The index
+    /// differs from HEAD, but only by the unrelated file — the stopped commit's own result is
+    /// still empty, and git would make a commit titled as the stopped one holding only `h.txt`.
+    @Test(arguments: sequences)
+    func anEqualToHEADResolutionIsEmptyEvenWithAnUnrelatedStagedFile(operation: RepositoryOperation) async throws {
+        let repo = try await SequenceFixtures.stopped(operation, commits: 1)
+        defer { repo.cleanUp() }
+        try await repo.git(["checkout", "HEAD", "--", "f.txt"])
+        try repo.write("h.txt", "h STAGED\n")
+        try await repo.git(["add", "--", "h.txt"])
+
+        #expect(try await Self.backend.continueReadiness(at: repo.root) == .emptyResult)
+        // A rebase may continue past an empty result, but not with `h.txt` unacknowledged: it
+        // would be the whole of the commit. A pick or revert does not continue at all.
+        let untouched = try await SequenceFixtures.Untouched.capture(repo)
+        let refusal: ContinueReadiness = operation == .rebase ? .otherStagedChanges(["h.txt"]) : .emptyResult
+        await #expect(throws: OperationError.notReady(refusal)) {
+            try await Self.backend.continueOperation(operation, message: nil, at: repo.root)
+        }
+        try await untouched.assert(repo)
+    }
+
     @Test(arguments: [RepositoryOperation.cherryPick, .revert])
     func anEqualToHEADPickOrRevertIsNotContinued(operation: RepositoryOperation) async throws {
         let repo = try await SequenceFixtures.stopped(operation, commits: 1)
@@ -539,10 +561,9 @@ enum SequenceFixtures {
     }
 
     /// RF5, measured (A2 Task 3): an unrelated staged edit (`h.txt`) and an unstaged one
-    /// (`i.txt`) during a stop. A rebase refuses any unstaged change ("You must edit all merge
-    /// conflicts…", exit 1) with the stop and both edits intact. A pick or revert continues:
-    /// the unstaged edit is kept byte-exactly, and the staged one — being in the index — goes
-    /// into the stopped commit, as it would with `git commit`.
+    /// (`i.txt`) during a stop. A rebase refuses any unstaged change, so readiness says so and
+    /// nothing runs (fix round 1, I2). A single pick or revert keeps the unstaged edit, and the
+    /// staged one goes into the stopped commit — only once it is acknowledged (fix round 1, I1).
     @Test(arguments: sequences)
     func unrelatedEditsDuringAStop(operation: RepositoryOperation) async throws {
         let repo = try await SequenceFixtures.stopped(operation, commits: 1)
@@ -551,25 +572,249 @@ enum SequenceFixtures {
         try repo.write("h.txt", "h STAGED\n")
         try await repo.git(["add", "--", "h.txt"])
         try repo.write("i.txt", "i UNSTAGED\n")
-        let message = operation == .revert ? "Revert r1" : "c1 f"
-        try Data(message.utf8).write(to: try await SequenceFixtures.messageFile(repo, operation))
-        let untouched = try await SequenceFixtures.Untouched.capture(repo)
-
-        let outcome = try await Self.backend.continueOperation(operation, message: message, at: repo.root)
 
         if operation == .rebase {
-            guard case .failed(let words) = outcome else {
-                Issue.record("expected .failed, got \(outcome)")
-                return
+            #expect(try await Self.backend.continueReadiness(at: repo.root) == .unstagedChanges(["i.txt"]))
+            let untouched = try await SequenceFixtures.Untouched.capture(repo)
+            await #expect(throws: OperationError.notReady(.unstagedChanges(["i.txt"]))) {
+                try await Self.backend.continueOperation(
+                    operation, message: nil, acknowledgingOtherStaged: ["h.txt"], at: repo.root)
             }
-            #expect(words.contains("You must edit all merge conflicts"))
             try await untouched.assert(repo)
         } else {
+            #expect(try await Self.backend.continueReadiness(at: repo.root) == .otherStagedChanges(["h.txt"]))
+            let outcome = try await Self.backend.continueOperation(
+                operation, message: nil, acknowledgingOtherStaged: ["h.txt"], at: repo.root)
             #expect(outcome == .finished)
             #expect(try repo.bytes("i.txt") == Data("i UNSTAGED\n".utf8))
             #expect(try await repo.git(["show", ":i.txt"]) == Data("i\n".utf8), "the unstaged edit was staged")
             #expect(try await repo.git(["show", "HEAD:h.txt"]) == Data("h STAGED\n".utf8))
-            #expect(try repo.bytes("h.txt") == Data("h STAGED\n".utf8))
         }
+    }
+
+    // MARK: - Fix round 1: other staged paths (I1)
+
+    /// What a user may have staged that the stopped commit does not change, measured riding
+    /// into the continued commit for all three (fix round 1).
+    enum StagedShape: String, CaseIterable, Sendable {
+        case newFile, deletion, move, modeChange, stagedThenRevertedInTheWorktree
+
+        func apply(_ repo: TestRepo) async throws {
+            switch self {
+            case .newFile:
+                try repo.write("new.txt", "new\n")
+                try await repo.git(["add", "--", "new.txt"])
+            case .deletion:
+                try await repo.git(["rm", "-q", "--", "h.txt"])
+            case .move:
+                try await repo.git(["mv", "h.txt", "h2.txt"])
+            case .modeChange:
+                try repo.chmod("h.txt", 0o755)
+                try await repo.git(["add", "--", "h.txt"])
+            case .stagedThenRevertedInTheWorktree:
+                try repo.write("h.txt", "h X\n")
+                try await repo.git(["add", "--", "h.txt"])
+                try repo.write("h.txt", "h\n")
+            }
+        }
+
+        var paths: [String] {
+            switch self {
+            case .newFile: return ["new.txt"]
+            case .move: return ["h.txt", "h2.txt"]
+            default: return ["h.txt"]
+            }
+        }
+    }
+
+    static let shapes: [(RepositoryOperation, StagedShape)] =
+        sequences.flatMap { operation in StagedShape.allCases.map { (operation, $0) } }
+
+    @Test(arguments: shapes)
+    func anUnrelatedStagedChangeIsNamedAndRefused(operation: RepositoryOperation, shape: StagedShape) async throws {
+        let repo = try await SequenceFixtures.stopped(operation, commits: 1)
+        defer { repo.cleanUp() }
+        try await SequenceFixtures.resolve(repo)
+        try await shape.apply(repo)
+        // The worktree reverted under a staged change is an unstaged change too, which a rebase
+        // refuses first.
+        let expected: ContinueReadiness =
+            operation == .rebase && shape == .stagedThenRevertedInTheWorktree
+            ? .unstagedChanges(shape.paths) : .otherStagedChanges(shape.paths)
+
+        #expect(try await Self.backend.continueReadiness(at: repo.root) == expected)
+
+        let untouched = try await SequenceFixtures.Untouched.capture(repo)
+        await #expect(throws: OperationError.notReady(expected)) {
+            try await Self.backend.continueOperation(operation, message: nil, at: repo.root)
+        }
+        try await untouched.assert(repo)
+    }
+
+    @Test(arguments: sequences)
+    func anUnrelatedStagedFileInARangeIsNamed(operation: RepositoryOperation) async throws {
+        let repo = try await SequenceFixtures.stopped(operation, commits: 2)
+        defer { repo.cleanUp() }
+        try await SequenceFixtures.resolve(repo)
+        try await StagedShape.newFile.apply(repo)
+
+        #expect(try await Self.backend.continueReadiness(at: repo.root) == .otherStagedChanges(["new.txt"]))
+    }
+
+    /// Acknowledged by name, the file goes into the continued commit.
+    @Test(arguments: sequences)
+    func anAcknowledgedStagedFileIsCommitted(operation: RepositoryOperation) async throws {
+        let repo = try await SequenceFixtures.stopped(operation, commits: 1)
+        defer { repo.cleanUp() }
+        try await SequenceFixtures.resolve(repo)
+        try await StagedShape.newFile.apply(repo)
+
+        let outcome = try await Self.backend.continueOperation(
+            operation, message: nil, acknowledgingOtherStaged: ["new.txt"], at: repo.root)
+
+        #expect(outcome == .finished)
+        let files = String(decoding: try await repo.git(["show", "--name-only", "--format=", "HEAD"]), as: UTF8.self)
+        #expect(files.split(separator: "\n").contains("new.txt"))
+        #expect(files.split(separator: "\n").contains("f.txt"))
+    }
+
+    /// An acknowledgement is of a list, not a yes: a different list — a file staged or unstaged
+    /// between the click and the run — is refused with the current one, and nothing runs.
+    @Test(arguments: sequences)
+    func aStaleAcknowledgementIsRefused(operation: RepositoryOperation) async throws {
+        let repo = try await SequenceFixtures.stopped(operation, commits: 1)
+        defer { repo.cleanUp() }
+        try await SequenceFixtures.resolve(repo)
+        try await StagedShape.newFile.apply(repo)
+        try await StagedShape.deletion.apply(repo)
+        let untouched = try await SequenceFixtures.Untouched.capture(repo)
+
+        for acknowledged in [["new.txt"], ["new.txt", "h.txt", "other.txt"], ["other.txt"]] {
+            await #expect(throws: OperationError.notReady(.otherStagedChanges(["h.txt", "new.txt"]))) {
+                try await Self.backend.continueOperation(
+                    operation, message: "a message", acknowledgingOtherStaged: acknowledged, at: repo.root)
+            }
+        }
+
+        try await untouched.assert(repo)
+    }
+
+    /// An intent-to-add entry does not ride into a pick or revert (measured); a rebase refuses
+    /// it as an unstaged change.
+    @Test(arguments: sequences)
+    func anIntentToAddEntry(operation: RepositoryOperation) async throws {
+        let repo = try await SequenceFixtures.stopped(operation, commits: 1)
+        defer { repo.cleanUp() }
+        try await SequenceFixtures.resolve(repo)
+        try repo.write("new.txt", "new\n")
+        try await repo.git(["add", "-N", "--", "new.txt"])
+
+        if operation == .rebase {
+            #expect(try await Self.backend.continueReadiness(at: repo.root) == .unstagedChanges(["new.txt"]))
+        } else {
+            #expect(try await Self.backend.continueReadiness(at: repo.root) == .ready)
+            #expect(try await Self.backend.continueOperation(operation, message: nil, at: repo.root) == .finished)
+            let files = String(decoding: try await repo.git(["show", "--name-only", "--format=", "HEAD"]), as: UTF8.self)
+            #expect(!files.contains("new.txt"))
+        }
+    }
+
+    // MARK: - Fix round 1: unstaged changes and a stranded sequence (I2)
+
+    /// A range with an unstaged edit in the file the next commit touches: git would commit the
+    /// current commit, refuse the next and strand the sequence (M 17). Readiness says so first.
+    @Test(arguments: sequences)
+    func anUnstagedEditBlocksARange(operation: RepositoryOperation) async throws {
+        let repo = try await SequenceFixtures.stopped(operation, commits: 2)
+        defer { repo.cleanUp() }
+        try await SequenceFixtures.resolve(repo)
+        // The second commit's file: g.txt (c2 g), or for the revert f.txt (r1 f).
+        let next = operation == .revert ? "f.txt" : "g.txt"
+        try repo.write(next, "USER EDIT\n")
+
+        #expect(try await Self.backend.continueReadiness(at: repo.root) == .unstagedChanges([next]))
+        let untouched = try await SequenceFixtures.Untouched.capture(repo)
+        await #expect(throws: OperationError.notReady(.unstagedChanges([next]))) {
+            try await Self.backend.continueOperation(operation, message: nil, at: repo.root)
+        }
+        try await untouched.assert(repo)
+    }
+
+    /// A single pick or revert keeps an unstaged edit and has no next commit to collide with
+    /// (measured): not blocked.
+    @Test(arguments: [RepositoryOperation.cherryPick, .revert])
+    func anUnstagedEditDoesNotBlockASinglePickOrRevert(operation: RepositoryOperation) async throws {
+        let repo = try await SequenceFixtures.stopped(operation, commits: 1)
+        defer { repo.cleanUp() }
+        try await SequenceFixtures.resolve(repo)
+        try repo.write("i.txt", "i UNSTAGED\n")
+
+        #expect(try await Self.backend.continueReadiness(at: repo.root) == .ready)
+        #expect(try await Self.backend.continueOperation(operation, message: nil, at: repo.root) == .finished)
+        #expect(try repo.bytes("i.txt") == Data("i UNSTAGED\n".utf8))
+    }
+
+    /// A range whose next commit adds a file the user created untracked meanwhile: readiness
+    /// cannot see it coming. git commits the current commit and refuses the next (exit 128),
+    /// leaving `sequencer/` with no `CHERRY_PICK_HEAD` — measured. Reported as a halted
+    /// sequence, not a failure: a commit was made, and no operation is detected any more.
+    @Test func anUntrackedFileTheNextCommitAddsHaltsAPickRange() async throws {
+        let repo = try await Self.nextCommitAddsAFile()
+        defer { repo.cleanUp() }
+        try await repo.git(["cherry-pick", "base..feature"], allowedExitCodes: [1])
+        try await ConflictFixtures.requireUnmerged(repo)
+        try await SequenceFixtures.resolve(repo)
+        try repo.write("n.txt", "n USER\n")
+        #expect(try await Self.backend.continueReadiness(at: repo.root) == .ready)
+
+        let outcome = try await Self.backend.continueOperation(.cherryPick, message: nil, at: repo.root)
+
+        guard case .sequenceHalted(let words) = outcome else {
+            Issue.record("expected .sequenceHalted, got \(outcome)")
+            return
+        }
+        #expect(words.contains("untracked working tree files would be overwritten"))
+        #expect(try await Self.backend.operationProgress(at: repo.root) == nil)
+        try await ConflictFixtures.requireGitPath(repo, "sequencer")
+        #expect(try await SequenceFixtures.subjects(repo, "-1") == ["c1 f"])
+        #expect(try repo.bytes("n.txt") == Data("n USER\n".utf8))
+    }
+
+    /// The same collision in a rebase stops the rebase at the next step, still detected.
+    @Test func anUntrackedFileTheNextCommitAddsStopsARebaseAgain() async throws {
+        let repo = try await Self.nextCommitAddsAFile()
+        defer { repo.cleanUp() }
+        try await repo.git(["switch", "-q", "feature"])
+        try await repo.git(["rebase", "main"], allowedExitCodes: [1])
+        try await ConflictFixtures.requireUnmerged(repo)
+        try await SequenceFixtures.resolve(repo)
+        try repo.write("n.txt", "n USER\n")
+
+        let outcome = try await Self.backend.continueOperation(.rebase, message: nil, at: repo.root)
+
+        guard case .stoppedAgain(let progress) = outcome else {
+            Issue.record("expected .stoppedAgain, got \(outcome)")
+            return
+        }
+        #expect(progress.step == 2)
+        #expect(progress.current?.subject == "c2 adds n")
+        #expect(try repo.bytes("n.txt") == Data("n USER\n".utf8))
+    }
+
+    /// `c1 f` conflicts with main; `c2 adds n` adds `n.txt` cleanly.
+    static func nextCommitAddsAFile() async throws -> TestRepo {
+        let repo = try await TestRepo.makeEmpty()
+        try repo.write("f.txt", "a\nb\nc\n")
+        try await repo.commitAll("base")
+        try await repo.git(["tag", "base"])
+        try await repo.git(["switch", "-q", "-c", "feature"])
+        try repo.write("f.txt", "a\nb F1\nc\n")
+        try await repo.commitAll("c1 f")
+        try repo.write("n.txt", "n C2\n")
+        try await repo.commitAll("c2 adds n")
+        try await repo.git(["switch", "-q", "main"])
+        try repo.write("f.txt", "a\nb M\nc\n")
+        try await repo.commitAll("m")
+        return repo
     }
 }

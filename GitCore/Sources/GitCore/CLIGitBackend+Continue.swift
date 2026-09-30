@@ -23,6 +23,25 @@ import Foundation
 ///   resolved using git add") with the stop and the edit intact; a staged one it commits into
 ///   the replayed commit. `cherry-pick|revert --continue` keep an unstaged edit and commit a
 ///   staged one into the stopped commit, as `git commit` would.
+///
+/// **Measured in fix round 1:**
+/// - Every unrelated staged change rides into the continued commit, for all three, single and
+///   range: a new file, a staged deletion, both halves of a staged `mv`, a mode change, a staged
+///   edit whose worktree was put back. An intent-to-add entry does not (pick, revert); a rebase
+///   refuses it. With the resolution equal to HEAD plus one such file, `diff --cached --quiet
+///   HEAD` exits 1 and git commits the file alone under the stopped commit's title and author.
+/// - A pick or revert range with an unstaged edit in a file a later commit touches: git commits
+///   the current commit, refuses the next ("Your local changes to the following files would be
+///   overwritten by merge", exit 128) and leaves `sequencer/` without `CHERRY_PICK_HEAD` /
+///   `REVERT_HEAD`; a later `--continue` exits 0 and drops the rest. An untracked file the next
+///   commit adds does the same ("untracked working tree files would be overwritten"); in a
+///   rebase it stops the rebase at the next step instead. A single pick or revert keeps
+///   unstaged edits and finishes.
+/// - `cherry-pick|revert --skip` exit 128 ("Entry 'p' not uptodate. Cannot merge." / "fatal:
+///   Could not reset index file") when a path of the commit's is staged and also changed in the
+///   worktree (`MM`, `AM`); an unmerged path's worktree does not matter. All three refuse an
+///   untracked file at a path the commit deleted ("would be overwritten by reset|merge").
+/// - At a clean `edit` stop `rebase --skip` exits 0 and the commit stays.
 extension CLIGitBackend: GitOperationBackend {
     /// The message of the entry filed before a skip.
     static let skippedByGitter = "Skipped by Gitter: "
@@ -247,10 +266,75 @@ extension CLIGitBackend: GitOperationBackend {
         guard let operation = try await operationInProgress(at: root),
             Self.sequencerOperations.contains(operation)
         else { return .notContinuable }
+        return try await continueFacts(operation, at: root).readiness
+    }
+
+    /// Everything readiness and `continueOperation` decide on, read once.
+    private struct ContinueFacts {
+        let unresolved: [String]
+        /// The stopped commit's own result equals HEAD (M 30).
+        let empty: Bool
+        let unstaged: [String]
+        let otherStaged: [String]
+
+        /// In the order the UI must deal with them: an unresolved path first, then an empty
+        /// result, then what git would refuse (unstaged) or silently take in (other staged).
+        var readiness: ContinueReadiness {
+            if !unresolved.isEmpty { return .unresolved(unresolved) }
+            if empty { return .emptyResult }
+            if !unstaged.isEmpty { return .unstagedChanges(unstaged) }
+            if !otherStaged.isEmpty { return .otherStagedChanges(otherStaged) }
+            return .ready
+        }
+    }
+
+    private func continueFacts(_ operation: RepositoryOperation, at root: URL) async throws -> ContinueFacts {
         let unmerged = try await unmergedPaths(at: root)
-        if !unmerged.isEmpty { return .unresolved(unmerged) }
-        guard try await hasPendingCommit(operation, at: root) else { return .ready }
-        return try await indexEqualsHEAD(at: root) ? .emptyResult : .ready
+        if !unmerged.isEmpty {
+            return ContinueFacts(unresolved: unmerged, empty: false, unstaged: [], otherStaged: [])
+        }
+        // Fix round 1 (I1, measured): every staged path rides into the continued commit, for all
+        // three. The operation's own are `operationPaths`; without `AUTO_MERGE` there is no telling
+        // them apart, and none is needed — a rebase's `exec` / `break` stop refuses staged changes
+        // itself, and at an `edit` stop amending is the point.
+        let staged = try await stagedPaths(at: root)
+        let own = try await operationPaths(at: root).map(Set.init)
+        let empty =
+            try await hasPendingCommit(operation, at: root)
+            && (own.map { $0.isDisjoint(with: staged) } ?? staged.isEmpty)
+        let otherStaged = own.map { own in staged.filter { !own.contains($0) } } ?? []
+        // Fix round 1 (I2, measured): a rebase refuses any unstaged change; a range commits the
+        // current commit and then refuses the next that would overwrite one, stranding the
+        // sequence. A single pick or revert keeps them.
+        let unstaged = try await refusesUnstagedChanges(operation, at: root) ? try await unstagedPaths(at: root) : []
+        return ContinueFacts(unresolved: [], empty: empty, unstaged: unstaged, otherStaged: otherStaged)
+    }
+
+    /// `diff --cached --name-only HEAD`: every path whose index entry differs from HEAD's —
+    /// both sides of a staged rename (`--no-renames`), not an intent-to-add entry.
+    private func stagedPaths(at root: URL) async throws -> [String] {
+        let data = try await run(["diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD"], cwd: root)
+        return String(decoding: data, as: UTF8.self).split(separator: "\0").map(String.init)
+    }
+
+    /// Tracked paths whose worktree differs from the index — not unmerged, not a submodule (git's
+    /// own rebase check ignores submodules); an intent-to-add entry counts, as git refuses it.
+    private func unstagedPaths(at root: URL) async throws -> [String] {
+        try await stashStatus(at: root).files
+            .filter { !$0.isUntracked && !$0.isSubmodule && $0.staged != .unmerged && $0.unstaged != nil }
+            .map(\.path)
+    }
+
+    /// A rebase, and a cherry-pick or revert with a sequence still to come (`sequencer/`).
+    private func refusesUnstagedChanges(_ operation: RepositoryOperation, at root: URL) async throws -> Bool {
+        operation == .rebase ? true : try await hasSequencer(at: root)
+    }
+
+    private func hasSequencer(at root: URL) async throws -> Bool {
+        var isDirectory: ObjCBool = false
+        let found = FileManager.default.fileExists(
+            atPath: try await gitPath("sequencer", at: root).path, isDirectory: &isDirectory)
+        return found && isDirectory.boolValue
     }
 
     /// Whether the stop has a commit still to make, which is what can come out empty. A pick or
@@ -266,28 +350,22 @@ extension CLIGitBackend: GitOperationBackend {
         return has("message") && !has("amend")
     }
 
-    /// M 30: `diff --cached --quiet HEAD` exits 0 when the index is HEAD's (asked after the
-    /// unmerged check: it exits 1 for an unmerged index too).
-    private func indexEqualsHEAD(at root: URL) async throws -> Bool {
-        do {
-            _ = try await run(["diff", "--cached", "--quiet", "HEAD"], cwd: root)
-            return true
-        } catch GitError.commandFailed(exitCode: 1, stderr: _) {
-            return false
-        }
-    }
-
     public func continueOperation(
-        _ expected: RepositoryOperation, message: String?, at root: URL
+        _ expected: RepositoryOperation, message: String?, acknowledgingOtherStaged: [String], at root: URL
     ) async throws -> ContinueOutcome {
         // Asked of the repository, never of the caller's snapshot, as `abort` does.
         let actual = try await operationInProgress(at: root)
         guard actual == expected else { throw OperationError.operationMismatch(expected: expected, found: actual) }
-        let readiness = try await continueReadiness(at: root)
-        switch readiness {
-        case .ready: break
-        case .emptyResult where expected == .rebase: break
-        default: throw OperationError.notReady(readiness)
+        guard Self.sequencerOperations.contains(expected) else { throw OperationError.notReady(.notContinuable) }
+        // Each refusal on its own, not only the first the readiness names: a rebase may go on
+        // past an empty result, but never past unstaged changes or unacknowledged staged ones.
+        let facts = try await continueFacts(expected, at: root)
+        if !facts.unresolved.isEmpty { throw OperationError.notReady(.unresolved(facts.unresolved)) }
+        if facts.empty && expected != .rebase { throw OperationError.notReady(.emptyResult) }
+        if !facts.unstaged.isEmpty { throw OperationError.notReady(.unstagedChanges(facts.unstaged)) }
+        // A list, not a yes: a file staged or unstaged between the click and this read is refused.
+        if Set(facts.otherStaged) != Set(acknowledgingOtherStaged) {
+            throw OperationError.notReady(.otherStagedChanges(facts.otherStaged))
         }
         try await writeMessage(message, for: expected, at: root)
         let before = try await operationProgress(at: root)
@@ -306,7 +384,7 @@ extension CLIGitBackend: GitOperationBackend {
         case .merge, .squash, .applyingPatches:
             throw OperationError.notReady(.notContinuable)
         }
-        return try await outcome(of: result, from: before, at: root)
+        return try await outcome(of: result, from: before, expected: expected, at: root)
     }
 
     /// Validates the message and writes it, in place, where git reads it (M 15). With no
@@ -337,13 +415,18 @@ extension CLIGitBackend: GitOperationBackend {
     }
 
     /// What a continue or skip left, read from the repository (M 14: an exit code alone does not
-    /// tell the next stop from a hook's refusal). No operation: `.finishedWithConflicts` when
-    /// paths are unmerged, `.finished` on exit 0, else `.failed`. An operation: `.stoppedAgain`
-    /// when its progress moved, else `.failed` with git's words.
+    /// tell the next stop from a hook's refusal). No operation: `.sequenceHalted` when a pick or
+    /// revert left `sequencer/` behind (fix round 1, I2), `.finishedWithConflicts` when paths are
+    /// unmerged, `.finished` on exit 0, else `.failed`. An operation: `.stoppedAgain` when its
+    /// progress moved, else `.failed` with git's words.
     private func outcome(
-        of result: ProcessRunner.StreamedResult, from before: OperationProgress?, at root: URL
+        of result: ProcessRunner.StreamedResult, from before: OperationProgress?, expected: RepositoryOperation,
+        at root: URL
     ) async throws -> ContinueOutcome {
         guard let after = try await operationProgress(at: root) else {
+            if expected != .rebase, try await hasSequencer(at: root) {
+                return .sequenceHalted(gitsWords: Self.words(result))
+            }
             let unmerged = try await unmergedPaths(at: root)
             if !unmerged.isEmpty { return .finishedWithConflicts(unmerged) }
             return result.exitCode == 0 ? .finished : .failed(gitsWords: Self.words(result))
@@ -357,6 +440,9 @@ extension CLIGitBackend: GitOperationBackend {
         guard let operation = try await operationInProgress(at: root),
             Self.sequencerOperations.contains(operation)
         else { return .notSkippable }
+        // Ruling 19: a rebase with no commit pending (`exec`, `break`, `edit`) has nothing to
+        // skip — at an `edit` stop `rebase --skip` exits 0 and the commit stays (measured).
+        if operation == .rebase, !(try await hasPendingCommit(operation, at: root)) { return .notSkippable }
         let status = try await stashStatus(at: root)
         var seen = Set<String>()
         let changed = status.files
@@ -365,16 +451,28 @@ extension CLIGitBackend: GitOperationBackend {
             .filter { seen.insert($0).inserted }
         let theCommits = Set(try await unmergedPaths(at: root)).union(try await operationPaths(at: root) ?? [])
         let others = changed.filter { !theCommits.contains($0) }
-        return others.isEmpty ? .ready(paths: changed) : .otherChanges(others)
+        if !others.isEmpty { return .otherChanges(others) }
+        // Fix round 1 (I3, measured): all three refuse over an untracked file at a path they
+        // reset (a deleted file recreated); a pick or revert also over a path whose worktree
+        // differs from its index entry ("Entry 'p' not uptodate", exit 128) — unmerged ones apart.
+        let untracked = status.files.filter(\.isUntracked).map(\.path)
+        let dirty: Set<String> =
+            operation == .rebase
+            ? [] : Set(status.files.filter { !$0.isUntracked && $0.staged != .unmerged && $0.unstaged != nil }.map(\.path))
+        let unclean = changed.filter { path in
+            dirty.contains(path) || untracked.contains { $0 == path || ($0.hasSuffix("/") && path.hasPrefix($0)) }
+        }
+        return unclean.isEmpty ? .ready(paths: changed) : .needsCleanPaths(unclean)
     }
 
     public func skip(_ expected: RepositoryOperation, stoppedAt sha: String, at root: URL) async throws -> SkipOutcome {
         let actual = try await operationInProgress(at: root)
         guard actual == expected else { throw OperationError.operationMismatch(expected: expected, found: actual) }
-        guard Self.sequencerOperations.contains(expected) else { throw OperationError.skipRefused(.notSkippable) }
+        // Decided before anything is filed: a refused skip files nothing.
+        let readiness = try await skipReadiness(at: root)
+        if readiness == .notSkippable { throw OperationError.skipRefused(.notSkippable) }
         let before = try await operationProgress(at: root)
         guard let current = before?.current, current.sha == sha else { throw OperationError.stoppedCommitChanged }
-        let readiness = try await skipReadiness(at: root)
         guard case .ready(let paths) = readiness else { throw OperationError.skipRefused(readiness) }
 
         // The stopped commit's partial work, unmerged paths as their worktree bytes (M 17: every
@@ -395,7 +493,8 @@ extension CLIGitBackend: GitOperationBackend {
         case .merge, .squash, .applyingPatches: throw OperationError.skipRefused(.notSkippable)
         }
         let result = try await runWithEnvironment(arguments, cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
-        return SkipOutcome(outcome: try await outcome(of: result, from: before, at: root), recorded: recorded)
+        return SkipOutcome(
+            outcome: try await outcome(of: result, from: before, expected: expected, at: root), recorded: recorded)
     }
 
     // MARK: - Reads

@@ -36,9 +36,14 @@ public protocol GitOperationBackend: Sendable {
 
     /// Continues the rebase, cherry-pick or revert the UI showed as `expected`.
     ///
-    /// Refuses, running nothing: `.operationMismatch`; `.notReady` unless the readiness is
-    /// `.ready`, or `.emptyResult` for a rebase (the UI has said the commit will be left out,
-    /// M 30); `.emptyMessage` when the message is empty after git's cleanup. The message goes
+    /// Refuses, running nothing, each on its own (not only the first the readiness names):
+    /// `.operationMismatch`; `.notReady(.notContinuable)`; `.notReady(.unresolved)`;
+    /// `.notReady(.emptyResult)` for a cherry-pick or revert (a rebase may go on, after the UI
+    /// has said the commit will be left out, M 30); `.notReady(.unstagedChanges)`;
+    /// `.notReady(.otherStagedChanges(current))` unless `acknowledgingOtherStaged` is exactly
+    /// the current set of other staged paths (as a set; an empty one when there are none) — a
+    /// list rather than a yes, so a file staged or unstaged between the confirmation and the run
+    /// is refused; `.emptyMessage` when the message is empty after git's cleanup. The message goes
     /// only where git has a pending one (`rebase-merge/message`, `MERGE_MSG`), written in place
     /// before git runs; with none (a rebase's `exec` / `break` stop) `message` is not used.
     /// `nil` means git's own prepared message: a rebase gets it back without its comment lines
@@ -48,23 +53,41 @@ public protocol GitOperationBackend: Sendable {
     /// Runs `rebase|cherry-pick|revert --continue`, the rebase with `commit.cleanup=scissors`
     /// for this one command (M 29): git's editor template is dropped, the user's own
     /// comment-character lines are kept. A cherry-pick or revert strips them whatever the
-    /// setting (measured, A2 Task 3). Then reads the repository again: see `ContinueOutcome`.
-    func continueOperation(_ expected: RepositoryOperation, message: String?, at root: URL) async throws -> ContinueOutcome
+    /// setting (measured, A2 Task 3). Then reads the repository again: see `ContinueOutcome`
+    /// (`.sequenceHalted` when a pick or revert range made a commit and stranded the rest).
+    func continueOperation(
+        _ expected: RepositoryOperation, message: String?, acknowledgingOtherStaged: [String], at root: URL
+    ) async throws -> ContinueOutcome
 
-    /// Whether `skip` would run: every path with a tracked change (staged, unstaged or
-    /// unmerged; untracked files are not touched by any skip, M 17) must be unmerged or one of
-    /// `operationPaths` — with no `AUTO_MERGE`, unmerged only. Renames count by both names.
+    /// Whether `skip` would run. `.notSkippable` with no rebase, pick or revert, and for a rebase
+    /// with no commit pending (`exec`, `break`, `edit` stop; Ruling 19). `.otherChanges` unless
+    /// every path with a tracked change (staged, unstaged or unmerged; untracked files are not
+    /// touched by any skip, M 17) is unmerged or one of `operationPaths` — with no `AUTO_MERGE`,
+    /// unmerged only; renames count by both names. `.needsCleanPaths` for those of them git
+    /// would refuse to reset: an untracked file at the path (all three), or — for a pick or
+    /// revert — a worktree that differs from a non-unmerged index entry (fix round 1).
     func skipReadiness(at root: URL) async throws -> SkipReadiness
 
     /// Skips the commit the operation stopped on.
     ///
-    /// Refuses, running nothing: `.operationMismatch`; `.stoppedCommitChanged` unless the
-    /// current commit (`OperationProgress.current`) is `sha` — so never at a stop with no
-    /// current commit; `.skipRefused` unless `skipReadiness` is `.ready`. Then files the ready
+    /// Refuses, running nothing and filing nothing: `.operationMismatch`;
+    /// `.skipRefused(.notSkippable)`; `.stoppedCommitChanged` unless the current commit
+    /// (`OperationProgress.current`) is `sha`; `.skipRefused` unless `skipReadiness` is
+    /// `.ready`. Readiness is decided before anything is filed. Then files the ready
     /// paths — the partial resolution included, unmerged paths as their worktree bytes — as
     /// `Skipped by Gitter: <short sha> <subject>` (none filed when there are no paths), runs
     /// `rebase|cherry-pick|revert --skip`, and reads the repository again as
     /// `continueOperation` does. With only the stopped commit's changes present, every skip
     /// returns the tree to HEAD (M 32).
     func skip(_ expected: RepositoryOperation, stoppedAt sha: String, at root: URL) async throws -> SkipOutcome
+}
+
+extension GitOperationBackend {
+    /// `continueOperation` with nothing acknowledged: refused while any other staged path
+    /// exists.
+    public func continueOperation(
+        _ expected: RepositoryOperation, message: String?, at root: URL
+    ) async throws -> ContinueOutcome {
+        try await continueOperation(expected, message: message, acknowledgingOtherStaged: [], at: root)
+    }
 }
