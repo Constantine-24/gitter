@@ -85,4 +85,37 @@ import Testing
         #expect(line("a").displayText == "a")
         #expect(line("").displayText == "")
     }
+
+    // MARK: - An empty line is a blank context line (`diff.suppressBlankEmpty`)
+
+    /// Under `diff.suppressBlankEmpty=true` git writes a blank context line as `\n` alone, not
+    /// `" \n"` (measured on git 2.54, in `diff` and `diff-tree` alike). It used to end the hunk,
+    /// losing every line after it — including changed lines, which then could not be staged.
+    @Test func anEmptyLineInsideAHunkIsABlankContextLine() throws {
+        let file = try #require(
+            DiffParser.parse(Self.diff("@@ -1,4 +1,4 @@\n-a\n+A\n\n-c\n+C\n d\n")).first)
+        let hunk = try #require(file.hunks.first)
+        #expect(hunk.lines.map(\.kind) == [.removed, .added, .context, .removed, .added, .context])
+        #expect(hunk.lines.map(\.text) == ["a", "A", "", "c", "C", "d"])
+        #expect(hunk.lines.map(\.oldNumber) == [1, nil, 2, 3, nil, 4])
+        #expect(hunk.lines.map(\.newNumber) == [nil, 1, 2, nil, 3, 4])
+    }
+
+    /// The last line of the whole output can be the blank one: the diff then ends `\n\n`.
+    @Test func anEmptyLastLineOfTheOutputIsStillTheHunksLastContextLine() throws {
+        let file = try #require(DiffParser.parse(Self.diff("@@ -1,2 +1,2 @@\n-a\n+A\n\n")).first)
+        let hunk = try #require(file.hunks.first)
+        #expect(hunk.lines.map(\.kind) == [.removed, .added, .context])
+        #expect(hunk.lines.last?.text == "")
+    }
+
+    /// Only as many as the header counts, as `git apply` reads it: an empty line once both
+    /// sides are complete is not part of the hunk, and the next hunk is still found.
+    @Test func anEmptyLineAfterTheHunksCountsIsNotContext() throws {
+        let file = try #require(
+            DiffParser.parse(Self.diff("@@ -1 +1 @@\n-a\n+A\n\n@@ -5 +5 @@\n-e\n+E\n")).first)
+        #expect(file.hunks.count == 2)
+        #expect(file.hunks.first?.lines.map(\.kind) == [.removed, .added])
+        #expect(file.hunks.last?.lines.map(\.text) == ["e", "E"])
+    }
 }

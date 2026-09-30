@@ -281,7 +281,7 @@ import Testing
         #"_ = try await run(["merge", "--abort"], cwd: root)"#,
         #"_ = try await run(["reset", "--merge"], cwd: root)"#,
         #"let arguments = ["--no-commit-id", "-p", "-U3", "-M", "-r"]"#,
-        #"let arguments = ["diff", "--cached", "--no-color", "-U3", "-M", "--", path]"#,
+        #"let arguments = ["diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "-U3", "-M", "--", path]"#,
     ])
     func theWholeFileSweepDoesNotFireOnTokensTheSourcesLegitimatelyUse(source: String) {
         #expect(ForceFlagScanner.findings(in: source).isEmpty,
@@ -1080,7 +1080,7 @@ import Testing
     /// The other side of `catchesUnidiffZeroEverywhere`: it is keyed on `--unidiff-zero` and
     /// its abbreviations, not on anything that merely starts the same way.
     @Test(arguments: [
-        #"_ = try await run(["diff", "--no-color", "--unified=3", "--", p], cwd: root)"#,
+        #"_ = try await run(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--unified=3", "--", p], cwd: root)"#,
         #"_ = try await run(["apply", "--cached", "--whitespace=nowarn", f], cwd: root)"#,
         #"let message = "unidiff-zero is never passed""#,
     ])
@@ -1141,8 +1141,8 @@ import Testing
         // path instead of one per path. `--no-renames` keeps the batched read equal to the
         // per-path one (`DiscardScalingTests.theBatchedReadIsThePerPathRead`).
         #"let data = try await backend.run(["ls-files", "-s", "-z", "--"] + paths.map(backend.literalPathspec), cwd: root)"#,
-        #"let data = try await run(["diff", "--cached", "--no-color", "--full-index", "-U3", "--no-renames", "--"] + paths.map(literalPathspec), cwd: root)"#,
-        #"let data = try await run(["diff", "--no-color", "--full-index", "-U3", "--no-renames", "--"] + named.map(literalPathspec), cwd: root)"#,
+        #"let data = try await run(["diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--full-index", "-U3", "--no-renames", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"let data = try await run(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--full-index", "-U3", "--no-renames", "--"] + named.map(literalPathspec), cwd: root)"#,
         // Task 4's reads beside the stash vectors: each one literal, optionally `+ paths`.
         #"_ = try await run(["ls-files", "-u", "-z"], cwd: root)"#,
         #"_ = try await run(["ls-files", "-o", "-z", "--exclude-standard", "--", literalPathspec(directory)], cwd: root)"#,
@@ -1188,6 +1188,65 @@ import Testing
     func allowsTheRecordsVectorsInItsOwnFile(source: String) {
         #expect(ForceFlagScanner.findings(in: source, fileName: Self.recordFile).isEmpty,
                 "false positive: \(ForceFlagScanner.findings(in: source, fileName: Self.recordFile))")
+    }
+
+    // MARK: - A patch read pins its format (fix/diff-config-prefix)
+
+    /// A **contract**: the parsed `diff` reads exactly as `CLIGitBackend.swift` and
+    /// `+Discard.swift` write them, and the reads that print no patch, which need no pin.
+    @Test(arguments: [
+        #"let data = try await run(["diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--full-index", "-U3", "-M", "--", literalPathspec(path)], cwd: root)"#,
+        #"let data = try await run(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--full-index", "-U3", "--", literalPathspec(path)], cwd: root)"#,
+        #"let data = try await run(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--full-index", "-U3", "--no-index", "--", "/dev/null", path], cwd: root, allowedExitCodes: [1])"#,
+        #"_ = try await run(["diff", "--cached", "--quiet"], cwd: root)"#,
+        #"_ = try await run(["diff", "--quiet"], cwd: root)"#,
+        #"let data = try await run(["diff", "--cached", "--name-only", "-z", "--no-renames", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"let data = try await run(["diff", "--cached", "--raw", "-z", "--no-abbrev", "--no-renames", "--no-color", "--", pathspec], cwd: root)"#,
+    ])
+    func allowsTheDiffReadsGitterMakes(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
+    static let pinnedDiff =
+        #"_ = try await run(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "-U3", "--", p], cwd: root)"#
+
+    /// Each pin taken out of an otherwise clean vector, one at a time. Built from the clean
+    /// vector in memory, so the shapes it proves the rule refuses are never written anywhere.
+    static let eachPinRemoved: [(String, String)] = ForceFlagScanner.diffFormatPins.map { pin in
+        (pinnedDiff.replacingOccurrences(of: "\"\(pin)\", ", with: ""), pin)
+    }
+
+    @Test(arguments: eachPinRemoved + [
+        // After `--` it is a pathspec, not an option.
+        (#"_ = try await run(["diff", "--no-color", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--", "--no-ext-diff"], cwd: root)"#, "--no-ext-diff"),
+        // One arm of a ternary is a pin only half the time.
+        (#"_ = try await run(["diff", e ? "--no-ext-diff" : "-U3", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--", p], cwd: root)"#, "--no-ext-diff"),
+        // The flags added where the array literal cannot show them.
+        (#"_ = try await run(["diff"] + format + ["--", p], cwd: root)"#, "--src-prefix=a/"),
+        // `-p` puts a patch back beside a non-patch format.
+        (#"_ = try await run(["diff", "--raw", "-p", "--", p], cwd: root)"#, "--no-ext-diff"),
+    ])
+    func catchesAPatchReadThatDoesNotPinItsFormat(source: String, pin: String) {
+        #expect(source != Self.pinnedDiff)
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(findings.contains { $0.contains(pin) }, "missed \(pin) in \(source): \(findings)")
+    }
+
+    /// A pin taken back later in the same vector: git reads the last of each.
+    @Test(arguments: ["--ext-diff", "--textconv", "--no-prefix", "--src-prefix=X/", "--dst-prefix=", "--submodule=log", "--submodule"])
+    func catchesAPinTakenBack(flag: String) {
+        let source = Self.pinnedDiff.replacingOccurrences(of: #""-U3""#, with: #""-U3", "\#(flag)""#)
+        #expect(source != Self.pinnedDiff)
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(findings.contains { $0.contains(flag) }, "missed \(flag): \(findings)")
+    }
+
+    /// Not vacuous: the real sources hold exactly the five parsed reads, and the rule read them.
+    @Test func everyParsedDiffReadInTheSourcesIsChecked() throws {
+        let sources = try ForceFlagScanner.gitCoreSources(root: Self.sourcesRoot)
+        let checked = sources.values.map(ForceFlagScanner.patchDiffVectorCount(in:)).reduce(0, +)
+        #expect(checked == 5, "the rule checked \(checked) patch-reading `diff` vectors")
     }
 }
 

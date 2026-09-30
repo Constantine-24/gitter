@@ -27,14 +27,15 @@ extension CLIGitBackend {
     /// `--no-renames` is what keeps it equal. A single-file pathspec never pairs a rename (only
     /// one side matches), so the per-path read showed a staged rename as its source deleted and
     /// its destination added — and with both paths in one call, `-M` would pair them into one
-    /// diff the sheet never showed.
+    /// diff the sheet never showed. The format flags are `workingCopyDiff`'s, for its reasons:
+    /// without them a user's `diff.noprefix` left every tracked discard `nothingSelected`.
     public func discardExpectation(tracked paths: [String], includingStaged: Bool, at root: URL) async throws
         -> DiscardExpectation
     {
         guard !paths.isEmpty else { return .diffs([]) }
         let staged: [FileDiff]
         if includingStaged {
-            staged = DiffParser.parse(try await run(["diff", "--cached", "--no-color", "--full-index", "-U3", "--no-renames", "--"] + paths.map(literalPathspec), cwd: root))
+            staged = DiffParser.parse(try await run(["diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--full-index", "-U3", "--no-renames", "--"] + paths.map(literalPathspec), cwd: root))
         } else {
             staged = []
         }
@@ -46,7 +47,7 @@ extension CLIGitBackend {
             unstaged = []
         } else {
             let named = paths.filter(indexed.contains)
-            unstaged = DiffParser.parse(try await run(["diff", "--no-color", "--full-index", "-U3", "--no-renames", "--"] + named.map(literalPathspec), cwd: root))
+            unstaged = DiffParser.parse(try await run(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--full-index", "-U3", "--no-renames", "--"] + named.map(literalPathspec), cwd: root))
         }
         let stagedOf = Self.grouping(staged, by: \.displayPath)
         let unstagedOf = Self.grouping(unstaged, by: \.displayPath)

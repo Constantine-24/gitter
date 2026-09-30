@@ -104,7 +104,8 @@ public protocol GitStashBackend: Sendable {
 
     /// What an entry holds: the tracked part (`W^1` → `W`, with renames), then — when the entry
     /// has a third parent — every untracked file in it as an addition. Both are read with
-    /// `diff-tree` and explicit flags, which the user's diff config cannot reshape (M A.6).
+    /// `diff-tree` and explicit flags, which the user's diff config cannot reshape (M A.6) —
+    /// but for `diff.suppressBlankEmpty`, whose empty context line `DiffParser` reads.
     func stashDiff(_ stash: Stash, at root: URL) async throws -> [FileDiff]
 
     /// The same two diffs as `stashDiff`, kept apart: the tracked part and the untracked part.

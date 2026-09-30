@@ -15,7 +15,8 @@ extension CLIGitBackend: GitStashBackend {
 
     /// `diff-tree` with two tree-ish arguments prints no commit-id line, and with explicit
     /// `--no-color --no-ext-diff -U3` it ignores `diff.noprefix`, `diff.srcPrefix`,
-    /// `color.ui`, `diff.external` and `diff.context` (M A.6).
+    /// `color.ui`, `diff.external` and `diff.context` (M A.6). Not `diff.suppressBlankEmpty`
+    /// (measured, fix/diff-config-prefix): `DiffParser` reads the empty line it writes.
     public func stashDiff(_ stash: Stash, at root: URL) async throws -> [FileDiff] {
         try await stashContents(stash, at: root).all
     }

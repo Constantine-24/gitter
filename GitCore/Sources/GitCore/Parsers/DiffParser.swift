@@ -86,12 +86,22 @@ public enum DiffParser {
                     var hunkLines: [DiffLine] = []
                     var oldNumber = hunkStart.oldStart
                     var newNumber = hunkStart.newStart
+                    // What the header says is still to come on each side, which is all that
+                    // tells a blank context line written empty from the end of the hunk.
+                    var oldLeft = hunkStart.oldCount
+                    var newLeft = hunkStart.newCount
 
                     hunkLoop: while index < lines.count {
                         // The marker is the first byte and the text every byte after it.
                         let hunkLine = raw[index]
                         let text = String(decoding: hunkLine.dropFirst(), as: UTF8.self)
-                        switch hunkLine.first {
+                        // `diff.suppressBlankEmpty=true` writes a blank context line as `\n`
+                        // alone, not `" \n"`, in `diff` and `diff-tree` alike (measured on git
+                        // 2.54; no option turns it off). `git apply` reads it as context while
+                        // both counts want more lines, and so does this; `PatchBuilder` writes
+                        // it back as `" "`, which is the same line.
+                        let marker = hunkLine.first ?? (oldLeft > 0 && newLeft > 0 ? UInt8(ascii: " ") : nil)
+                        switch marker {
                         case UInt8(ascii: " "):
                             hunkLines.append(
                                 DiffLine(
@@ -102,6 +112,8 @@ public enum DiffParser {
                             lineCounter += 1
                             oldNumber += 1
                             newNumber += 1
+                            oldLeft -= 1
+                            newLeft -= 1
                             index += 1
                         case UInt8(ascii: "+"):
                             hunkLines.append(
@@ -112,6 +124,7 @@ public enum DiffParser {
                             )
                             lineCounter += 1
                             newNumber += 1
+                            newLeft -= 1
                             index += 1
                         case UInt8(ascii: "-"):
                             hunkLines.append(
@@ -122,6 +135,7 @@ public enum DiffParser {
                             )
                             lineCounter += 1
                             oldNumber += 1
+                            oldLeft -= 1
                             index += 1
                         case UInt8(ascii: "\\"):
                             // `\ No newline at end of file`: the text after the `"\ "`.

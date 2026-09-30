@@ -85,16 +85,27 @@ public struct CLIGitBackend: GitBackend {
     public func workingCopyDiff(at root: URL, path: String, staged: Bool) async throws -> [FileDiff] {
         // `--full-index`: the `index` line carries full object ids, which is what a patch
         // built from this diff is checked against before it is applied (see `Patch.oldBlob`).
+        //
+        // `--no-ext-diff --no-textconv --submodule=short --src-prefix=a/ --dst-prefix=b/`: this
+        // is porcelain `diff`, which reads the user's config, and the parser reads git's default
+        // output only. Measured on git 2.54 (fix/diff-config-prefix): `diff.mnemonicPrefix`,
+        // `diff.noprefix`, `diff.srcPrefix`/`dstPrefix` hid every diff; `diff.external` and
+        // `GIT_EXTERNAL_DIFF` failed every read; a textconv driver replaced the file's lines
+        // with its own output under the real blob ids; `diff.submodule=log|diff` replaced a
+        // gitlink's lines. Explicit prefixes rather than `--default-prefix` (git 2.41+): they
+        // override all four keys on every git, `--no-index` included. `ForceFlagScanner`
+        // requires the five on every `diff` that prints a patch (`diffFormatPins`).
         if staged {
             let data = try await run(
-                ["diff", "--cached", "--no-color", "--full-index", "-U3", "-M", "--", literalPathspec(path)],
+                ["diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--full-index", "-U3", "-M", "--", literalPathspec(path)],
                 cwd: root)
             return DiffParser.parse(data)
         }
 
         if try await isTracked(path, at: root) {
             let data = try await run(
-                ["diff", "--no-color", "--full-index", "-U3", "--", literalPathspec(path)], cwd: root)
+                ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--full-index", "-U3", "--", literalPathspec(path)],
+                cwd: root)
             return DiffParser.parse(data)
         }
 
@@ -104,7 +115,7 @@ public struct CLIGitBackend: GitBackend {
         // No `:(literal)` here: `--no-index` compares two *files* given by name, not
         // pathspecs, so the prefix would become part of the name git tries to open.
         let data = try await run(
-            ["diff", "--no-color", "--full-index", "-U3", "--no-index", "--", "/dev/null", path],
+            ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--full-index", "-U3", "--no-index", "--", "/dev/null", path],
             cwd: root, allowedExitCodes: [1]
         )
         return DiffParser.parse(data)

@@ -69,6 +69,10 @@ import Foundation
 ///   `-p`/`--patch` and `--index` added in a fragment, an `.append` or an `.insert` are findings
 ///   even when the vector they join is, say, `update-index`: this scanner cannot tell which
 ///   vector they join. See `stashWordsForbiddenOutsideAVector` and `isInlineArgumentOfRun`.
+/// - **A format.** A `git diff` that prints a patch is parsed, and staged or discarded from, so
+///   the user's `diff.*` config must not reshape it: every such classified vector carries
+///   `diffFormatPins` before its `--`, and nothing that takes one back. Not a force flag, but
+///   the same kind of absence. See `diffFormatFindings`.
 /// - **A hiding place.** `["-c", "push.default=matching", "push", r]` is a complete git command
 ///   that this scanner reads as a fragment, losing every per-subcommand rule at once. An array
 ///   literal beginning with one of `globalOptionsBeforeSubcommand` is therefore a finding
@@ -322,6 +326,9 @@ enum ForceFlagScanner {
                 findings.append("forbidden git subcommand \(subcommand.debugDescription): \(reason)")
                 continue
             }
+            // Not a flag that destroys work but a format the parser cannot read, which a
+            // stage or discard would then act on. See `diffFormatPins`.
+            if subcommand == "diff" { findings += diffFormatFindings(array) }
             // A subcommand whose dangerous forms no flag table can see: the permitted vectors
             // are listed whole. See `allowedShapes`. A matched shape is complete — every pinned
             // element is exactly what the table says, and a data slot holds no flag — so there
@@ -1497,4 +1504,84 @@ enum ForceFlagScanner {
     /// under a subcommand the sweep cannot see. Every entry is a fact about this codebase,
     /// checked with `git grep`, not a softening of the rule — see `fileWideForbidden`.
     static let sweepExempt: Set<String> = ["-M", "-p", "-d", "--all", "--tags"]
+
+    // MARK: - A patch read pins its format
+
+    /// What every `git diff` vector that prints a patch must carry as lone-literal elements
+    /// before its `--`, because porcelain `diff` reads the user's config and `DiffParser` reads
+    /// only git's default output (fix/diff-config-prefix, measured on git 2.54):
+    ///
+    /// - `--src-prefix=a/`, `--dst-prefix=b/`: `diff.mnemonicPrefix`, `diff.noprefix`,
+    ///   `diff.srcPrefix` and `diff.dstPrefix` each rename the `a/` `b/` the parser reads, and
+    ///   every diff vanished. Explicit rather than `--default-prefix`, which needs git 2.41.
+    /// - `--no-ext-diff`: `diff.external` or `GIT_EXTERNAL_DIFF` runs another program in git's
+    ///   place, and each read died with exit 128.
+    /// - `--no-textconv`: a textconv driver prints its own output where the file's lines go,
+    ///   with the real blob ids on the `index` line — a patch built from it would pass the
+    ///   preimage check with lines that are not in the file.
+    /// - `--submodule=short`: `diff.submodule=log|diff` prints a gitlink as a log or as the
+    ///   submodule's own files instead of its two `Subproject commit` lines.
+    ///
+    /// `diff-tree` is plumbing and ignores all of these (measured), so it is not in this rule.
+    /// `diff.suppressBlankEmpty` has no command-line override; `DiffParser` reads its empty
+    /// context line instead.
+    static let diffFormatPins = [
+        "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/",
+    ]
+
+    /// A `diff` vector carrying one of these prints no patch, unless it also carries one of
+    /// `diffPatchOutputs`.
+    static let diffNonPatchOutputs: Set<String> = [
+        "--quiet", "--name-only", "--name-status", "--raw", "--stat", "--numstat", "--shortstat",
+        "--summary", "--check", "--no-patch", "-s",
+    ]
+    static let diffPatchOutputs: Set<String> = ["-p", "-u", "--patch", "--patch-with-raw", "--patch-with-stat"]
+
+    /// Whether a literal takes a pin back: git reads the last of each option, so a pin followed
+    /// by one of these in the same vector pins nothing.
+    static func undoesADiffPin(_ literal: String) -> Bool {
+        if diffFormatPins.contains(literal) { return false }
+        return ["--ext-diff", "--textconv", "--no-prefix"].contains(literal)
+            || literal.hasPrefix("--src-prefix=") || literal.hasPrefix("--dst-prefix=")
+            || literal == "--submodule" || literal.hasPrefix("--submodule=")
+    }
+
+    static func isPatchDiff(_ array: ArrayLiteral) -> Bool {
+        guard array.elements.first?.value.map(decoded) == "diff" else { return false }
+        let flags = Set(array.elements.dropFirst().flatMap(\.literals).flatMap(spellings(of:)))
+        return flags.isDisjoint(with: diffNonPatchOutputs) || !flags.isDisjoint(with: diffPatchOutputs)
+    }
+
+    /// The findings for one array literal classified `diff`.
+    ///
+    /// Classified arrays only, like every per-subcommand rule: a `diff` vector hidden in a
+    /// fragment (`[flag, "diff", …]`) is the standing "only literals" hole, and none exists.
+    /// `["diff"] + format` is caught, because the array literal itself carries no pin.
+    static func diffFormatFindings(_ array: ArrayLiteral) -> [String] {
+        var findings: [String] = []
+        let tail = array.elements.dropFirst()
+        for flag in tail.flatMap(\.literals).flatMap(spellings(of:)) where undoesADiffPin(flag) {
+            findings.append("forbidden `git diff \(flag)`: \(diffPinReason)")
+        }
+        guard isPatchDiff(array) else { return findings }
+        let options = tail.prefix { $0.value != "--" }.compactMap { $0.value.map(decoded) }
+        for pin in diffFormatPins where !options.contains(pin) {
+            findings.append(
+                "a `git diff` vector that prints a patch lacks \(pin.debugDescription) as an element "
+                    + "of its own before `--`: \(diffPinReason)")
+        }
+        return findings
+    }
+
+    static let diffPinReason =
+        "porcelain `diff` reads the user's config, and `DiffParser` reads git's default output "
+        + "only: every patch read carries `--no-ext-diff --no-textconv --submodule=short "
+        + "--src-prefix=a/ --dst-prefix=b/` and nothing that takes one of them back"
+
+    /// How many array literals in `source` the rule read as patch-printing `diff` vectors.
+    static func patchDiffVectorCount(in source: String) -> Int {
+        guard unlexableConstruct(in: source) == nil else { return 0 }
+        let code = strippingCommentsAndStringContents(source)
+        return argumentArrays(in: source, code: code).filter(isPatchDiff).count
+    }
 }
