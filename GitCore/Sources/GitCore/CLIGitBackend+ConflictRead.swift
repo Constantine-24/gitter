@@ -123,7 +123,7 @@ extension CLIGitBackend: GitConflictBackend {
     /// The path is given plain: `check-attr` takes path names, not pathspecs, and looks
     /// `:(literal)f.txt` up as a file of that very name (measured, A2 Task 1). It globs nothing
     /// either, so `a*.txt` and `[x].txt` are asked about themselves.
-    private func conflictAttributes(of path: String, at root: URL) async throws -> (merge: String, markerSize: Int) {
+    func conflictAttributes(of path: String, at root: URL) async throws -> (merge: String, markerSize: Int) {
         let data = try await run(["check-attr", "-z", "merge", "conflict-marker-size", "--", path], cwd: root)
         // `-z`: `<path> NUL <attribute> NUL <value> NUL` per attribute.
         let fields = [UInt8](data).split(separator: 0, omittingEmptySubsequences: false)

@@ -41,10 +41,10 @@ extension CLIGitBackend {
         // a block that ends the file, a stage whose last line has none looks as if it had one.
         // The file then ends as the last side written ends in its stage.
         if case .block(let block)? = segments.last, let choice = choices.last,
-            let last = Self.lastSideWritten(block, choice), !last.bytes.isEmpty,
-            try await stageText(last.stage, of: path, at: root).last != UInt8(ascii: "\n")
+            let last = Self.lastSideWritten(block, choice), !last.bytes.isEmpty
         {
-            bytes.removeLast(last.bytes.suffix(2) == Data("\r\n".utf8) ? 2 : 1)
+            let stage = try await stageText(last.stage, of: path, at: root)
+            bytes.removeLast(Self.addedTerminator(side: last.bytes, stage: stage))
         }
         try Self.writeInPlace(bytes, to: path, executable: snapshot.file.ours?.mode == "100755", at: root)
         _ = try await run(["add", "--", literalPathspec(path)], cwd: root)
@@ -106,16 +106,23 @@ extension CLIGitBackend {
         // hand, with diff3, and under `color.ui=always`, which does not colour these lines).
         // Whitespace errors share the exit code and are not counted.
         let data = try await run(["diff", "--check", "--", literalPathspec(path)], cwd: root, allowedExitCodes: [2])
+        let worktree = Self.conflictWorktree(of: path, at: root)?.bytes ?? Data()
+        // `diff --check` is blind under `-diff` or a diff driver with `binary=true` (measured,
+        // fix round 2: no output, exit 0, the markers still there), so the worktree is also
+        // scanned for git's opening marker at the path's size, and the larger count wins. The
+        // scan also counts a content line that is exactly such a marker (M 5), which git's
+        // check skips: a refusal `allowingMarkers` overrides, never a marker staged.
+        let scanned = Self.openingMarkers(
+            in: worktree, markerSize: try await conflictAttributes(of: path, at: root).markerSize)
         // Fail closed: a report no record could be read from still means markers.
-        guard let lines = Self.leftoverMarkerLines(in: data, path: path) else { return 1 }
-        guard !lines.isEmpty else { return 0 }
+        guard let lines = Self.leftoverMarkerLines(in: data, path: path) else { return max(scanned, 1) }
+        guard !lines.isEmpty else { return scanned }
         // A block is its opening line. The numbers are of the text git checked — the worktree
         // cleaned, which has the worktree's lines; a filter that rewrites line starts leaves
         // no `<` to see, and then git's finding is still one block at least.
-        let worktree = Self.conflictWorktree(of: path, at: root)?.bytes ?? Data()
         let text = worktree.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false)
         let opening = lines.count { n in n >= 1 && n <= text.count && text[n - 1].first == UInt8(ascii: "<") }
-        return max(opening, 1)
+        return max(opening, 1, scanned)
     }
 
     public func markResolved(_ snapshot: ConflictSnapshot, allowingMarkers: Bool, at root: URL) async throws {
@@ -171,6 +178,18 @@ extension CLIGitBackend {
         }
         let mentioned = Self.occurrences(of: Array(": leftover conflict marker".utf8), in: bytes)
         return lines.count < mentioned ? nil : lines
+    }
+
+    /// Lines of `text` that open a conflict block as git writes one at `markerSize`: exactly
+    /// that many `<`, then a space, or the end of the line (`\r\n` or `\n`, or the end of text).
+    static func openingMarkers(in text: Data, markerSize: Int) -> Int {
+        let less = UInt8(ascii: "<")
+        return text.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false).count { line in
+            let run = line.prefix { $0 == less }.count
+            guard run == markerSize else { return false }
+            let rest = line.dropFirst(run)
+            return rest.isEmpty || rest.first == UInt8(ascii: " ") || rest.elementsEqual([UInt8(ascii: "\r")])
+        }
     }
 
     private static func occurrences(of needle: [UInt8], in bytes: [UInt8]) -> Int {
@@ -274,6 +293,22 @@ extension CLIGitBackend {
         case .theirsThenOurs: order = [ours, theirs]
         }
         return order.first { !$0.bytes.isEmpty }
+    }
+
+    /// How many bytes at the end of `side` — a block side that ends the file — merge-file
+    /// added, told from the stage it came from (worktree form): none when the stage ends in
+    /// `\n`; else 1 when the stage ends with `side` less its last `\n`, 2 when it ends with
+    /// `side` less a final `\r\n`. merge-file adds `\r\n` only in a file whose lines are CRLF, and
+    /// a lone `\n` otherwise — after a last line ending in `\r` too (fix round 2, measured) — so
+    /// the stage decides, never the bytes alone. Anything else: none.
+    static func addedTerminator(side: Data, stage: Data) -> Int {
+        func stageEnds(with tail: Data) -> Bool {
+            stage.count >= tail.count && stage.suffix(tail.count).elementsEqual(tail)
+        }
+        guard stage.last != UInt8(ascii: "\n"), side.last == UInt8(ascii: "\n") else { return 0 }
+        if stageEnds(with: side.dropLast(1)) { return 1 }
+        if side.dropLast().last == UInt8(ascii: "\r"), stageEnds(with: side.dropLast(2)) { return 2 }
+        return 0
     }
 
     static func compose(_ block: ConflictBlock, _ choice: BlockChoice) -> Data {

@@ -137,6 +137,66 @@ func threeWayMerge(
     }
 }
 
+extension FinalNewlineTests {
+    /// Fix round 2: what the rebuild added is decided against the stage's own ending. A file
+    /// whose lines are not CRLF gets a lone `\n` after a last line ending in `\r` — stripping
+    /// two bytes there deleted content.
+    @Test(arguments: [
+        ("LF file, last lines end in a lone CR", "a\nb\nlast\n", "a\nb\nlast O\r", "a\nb\nlast T\r", false,
+         "a\nb\nlast O\r\nlast T\r", "a\nb\nlast T\r\nlast O\r"),
+        ("CR-only file", "a\rb\rc\r", "a\rO\rc\r", "a\rT\rc\r", false,
+         "a\rO\rc\r\na\rT\rc\r", "a\rT\rc\r\na\rO\rc\r"),
+        ("autocrlf, ours ends in a lone CR", "a\nb\nlast\n", "a\nb\nlast O\r", "a\nb\nlast T\n", true, nil, nil),
+        ("CRLF file, last lines end in a lone CR", "a\r\nb\r\nlast\r\n", "a\r\nb\r\nlast O\r", "a\r\nb\r\nlast T\r", false,
+         nil, nil),
+    ] as [(String, String, String, String, Bool, String?, String?)])
+    func aLastLineEndingInACarriageReturnKeepsIt(
+        label: String, base: String, ours: String, theirs: String, autocrlf: Bool, oursThenTheirs: String?,
+        theirsThenOurs: String?
+    ) async throws {
+        for choice in [BlockChoice.ours, .theirs, .oursThenTheirs, .theirsThenOurs] {
+            let repo = try await threeWayMerge(base: base, ours: ours, theirs: theirs) { repo in
+                if autocrlf { try await repo.git(["config", "core.autocrlf", "true"]) }
+            }
+            defer { repo.cleanUp() }
+            let stages = try #require(try await ConflictFixtures.stages(repo)["f.txt"])
+            let document = try await ConflictReadTests.document(repo, "f.txt")
+            let blocks = try #require(ConflictReadTests.blocks(document), "\(label): \(document.presentation)")
+
+            _ = try await Self.backend.resolve(
+                document.snapshot, choices: Array(repeating: choice, count: blocks.count), recordIfEdited: false,
+                at: repo.root)
+
+            let what = "\(label) \(choice)"
+            // Under autocrlf git converts no text holding a lone CR (measured): its own conflict
+            // file, the rebuild and so the resolution keep LF, where a checkout of the result
+            // alone would write CRLF. The index is exact, and nothing shows as unstaged.
+            let gitsForm = try await repo.git(["cat-file", "--filters", "--path=f.txt", ":f.txt"])
+            if autocrlf {
+                let status = String(decoding: try await repo.git(["status", "--porcelain=v2", "--", "f.txt"]), as: UTF8.self)
+                #expect(status.hasPrefix("1 M. ") || status.isEmpty, "\(what): \(status)")
+            } else {
+                #expect(try repo.bytes("f.txt") == gitsForm, "\(what)")
+            }
+            switch choice {
+            case .ours, .theirs:
+                let stage = try #require(stages[choice == .ours ? 2 : 3])
+                #expect(try await repo.indexLine("f.txt") == "\(stage.mode) \(stage.blob) 0\tf.txt\n", "\(what)")
+                let stageForm = try await repo.git(["cat-file", "--filters", "--path=f.txt", stage.blob])
+                if !autocrlf { #expect(try repo.bytes("f.txt") == stageForm, "\(what)") }
+            case .oursThenTheirs:
+                if let oursThenTheirs {
+                    #expect(try await repo.indexContent(of: "f.txt") == Data(oursThenTheirs.utf8), "\(what)")
+                }
+            case .theirsThenOurs:
+                if let theirsThenOurs {
+                    #expect(try await repo.indexContent(of: "f.txt") == Data(theirsThenOurs.utf8), "\(what)")
+                }
+            }
+        }
+    }
+}
+
 // MARK: - A path whose type changed
 
 /// `restore --ours|--theirs` over a directory, or under a leading component that is now a file,
@@ -287,5 +347,73 @@ func threeWayMerge(
         defer { repo.cleanUp() }
         try repo.write("f.txt", "a\nMINE  \nc\n")
         #expect(try await Self.backend.leftoverMarkers(in: "f.txt", at: repo.root) == 0)
+    }
+}
+
+// MARK: - Leftover markers git's check cannot see
+
+/// Fix round 2 (Ruling 15), measured: under `-diff`, or a diff driver with `binary=true`,
+/// `diff --check` prints nothing and exits 0 while the merge still wrote markers. The guard
+/// cannot rest on it alone.
+@Suite struct LeftoverMarkerAttributeTests {
+    static let backend = CLIGitBackend()
+
+    enum Attributes: String, CaseIterable, Sendable {
+        case unsetDiff, binaryDiffDriver, markerSize9, unsetDiffMarkerSize9
+
+        func apply(_ repo: TestRepo) async throws {
+            switch self {
+            case .unsetDiff: try repo.write(".gitattributes", "f.txt -diff\n")
+            case .binaryDiffDriver:
+                try await repo.git(["config", "diff.bin.binary", "true"])
+                try repo.write(".gitattributes", "f.txt diff=bin\n")
+            case .markerSize9: try repo.write(".gitattributes", "f.txt conflict-marker-size=9\n")
+            case .unsetDiffMarkerSize9: try repo.write(".gitattributes", "f.txt -diff conflict-marker-size=9\n")
+            }
+        }
+    }
+
+    static func merge(_ attributes: Attributes) async throws -> TestRepo {
+        try await threeWayMerge(base: "a\nb\nc\n", ours: "a\nO\nc\n", theirs: "a\nT\nc\n", prepare: attributes.apply)
+    }
+
+    @Test(arguments: Attributes.allCases)
+    func markersLeftAreRefusedWhateverTheDiffAttributes(attributes: Attributes) async throws {
+        let repo = try await Self.merge(attributes)
+        defer { repo.cleanUp() }
+        #expect(String(decoding: try repo.bytes("f.txt"), as: UTF8.self).contains("<<<<<<<"), "git wrote no markers")
+        #expect(try await Self.backend.leftoverMarkers(in: "f.txt", at: repo.root) == 1)
+        let state = try await RepoState.capture(repo)
+        let operation = try await OperationState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+        let snapshot = try await ConflictWriteTests.snapshot(repo, "f.txt")
+
+        await #expect(throws: ConflictError.leftoverMarkers(1)) {
+            try await Self.backend.markResolved(snapshot, allowingMarkers: false, at: repo.root)
+        }
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+        try await assertOperationUnchanged(repo, since: operation)
+    }
+
+    @Test(arguments: Attributes.allCases)
+    func aCleanResolutionHasNoneWhateverTheDiffAttributes(attributes: Attributes) async throws {
+        let repo = try await Self.merge(attributes)
+        defer { repo.cleanUp() }
+        try repo.write("f.txt", "a\nMINE\nc\n")
+        #expect(try await Self.backend.leftoverMarkers(in: "f.txt", at: repo.root) == 0)
+        let snapshot = try await ConflictWriteTests.snapshot(repo, "f.txt")
+
+        try await Self.backend.markResolved(snapshot, allowingMarkers: false, at: repo.root)
+
+        #expect(try await repo.indexContent(of: "f.txt") == Data("a\nMINE\nc\n".utf8))
+    }
+
+    /// The scan counts git's own opening marker — exactly the path's size of `<`, then a space
+    /// or the end of the line — and nothing else.
+    @Test func theScanCountsOpeningMarkersAtTheGivenSize() {
+        let text = Data("a\n<<<<<<< HEAD\nO\n=======\nT\n>>>>>>> t\n<<<<<<<\r\nx\n<<<<<<<< wider\n<<<<<<<x\n=======\n".utf8)
+        #expect(CLIGitBackend.openingMarkers(in: text, markerSize: 7) == 2)
+        #expect(CLIGitBackend.openingMarkers(in: text, markerSize: 8) == 1)
+        #expect(CLIGitBackend.openingMarkers(in: Data("a\n=======\nb\n".utf8), markerSize: 7) == 0)
     }
 }
