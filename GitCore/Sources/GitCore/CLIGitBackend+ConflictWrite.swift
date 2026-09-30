@@ -37,6 +37,15 @@ extension CLIGitBackend {
             case .block(let block): bytes.append(Self.compose(block, next.next()!))
             }
         }
+        // merge-file ends every side of a block with a line terminator (Ruling 9, measured): in
+        // a block that ends the file, a stage whose last line has none looks as if it had one.
+        // The file then ends as the last side written ends in its stage.
+        if case .block(let block)? = segments.last, let choice = choices.last,
+            let last = Self.lastSideWritten(block, choice), !last.bytes.isEmpty,
+            try await stageText(last.stage, of: path, at: root).last != UInt8(ascii: "\n")
+        {
+            bytes.removeLast(last.bytes.suffix(2) == Data("\r\n".utf8) ? 2 : 1)
+        }
         try Self.writeInPlace(bytes, to: path, executable: snapshot.file.ours?.mode == "100755", at: root)
         _ = try await run(["add", "--", literalPathspec(path)], cwd: root)
         return ConflictReceipt(path: path, recorded: recorded)
@@ -97,12 +106,8 @@ extension CLIGitBackend {
         // hand, with diff3, and under `color.ui=always`, which does not colour these lines).
         // Whitespace errors share the exit code and are not counted.
         let data = try await run(["diff", "--check", "--", literalPathspec(path)], cwd: root, allowedExitCodes: [2])
-        let prefix = path + ":"
-        let suffix = ": leftover conflict marker"
-        let lines: [Int] = GitLines.split(data).compactMap { line in
-            guard line.hasPrefix(prefix), line.hasSuffix(suffix) else { return nil }
-            return Int(line.dropFirst(prefix.count).dropLast(suffix.count))
-        }
+        // Fail closed: a report no record could be read from still means markers.
+        guard let lines = Self.leftoverMarkerLines(in: data, path: path) else { return 1 }
         guard !lines.isEmpty else { return 0 }
         // A block is its opening line. The numbers are of the text git checked — the worktree
         // cleaned, which has the worktree's lines; a filter that rewrites line starts leaves
@@ -125,6 +130,7 @@ extension CLIGitBackend {
         guard Self.conflictWorktree(of: path, at: root).map({ Self.sha256($0.bytes) }) == expectingWorktreeHash else {
             throw ConflictError.changedSinceShown(path)
         }
+        try Self.refuseChangedPathType(path, at: root)
         guard try await canReopen(path, at: root) else { throw ConflictError.notAvailable(path) }
         // `restore --merge` replaces the resolution in the index and the worktree without a
         // trace (M 11): both are filed first, always.
@@ -134,13 +140,65 @@ extension CLIGitBackend {
         return ConflictReceipt(path: path, recorded: recorded)
     }
 
+    /// The line numbers of `diff --check`'s `<path>:<n>: leftover conflict marker` records,
+    /// read over the whole output: git prints the name raw (measured: not quoted, a newline in
+    /// it included), so a record is `path`, `:`, digits and the message, starting at the output's
+    /// start or after a newline. nil when the output names a leftover marker more often than
+    /// records could be read — the caller then counts markers anyway. Whitespace errors (the
+    /// same exit code) are neither.
+    static func leftoverMarkerLines(in output: Data, path: String) -> [Int]? {
+        let bytes = [UInt8](output)
+        let prefix = Array((path + ":").utf8)
+        let suffix = Array(": leftover conflict marker\n".utf8)
+        let newline = UInt8(ascii: "\n")
+        var lines: [Int] = []
+        var index = 0
+        while index < bytes.count {
+            if index == 0 || bytes[index - 1] == newline, bytes[index...].starts(with: prefix) {
+                var end = index + prefix.count
+                var number = 0
+                while end < bytes.count, (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(bytes[end]), number < 1 << 40 {
+                    number = number * 10 + Int(bytes[end] - UInt8(ascii: "0"))
+                    end += 1
+                }
+                if end > index + prefix.count, bytes[end...].starts(with: suffix) {
+                    lines.append(number)
+                    index = end + suffix.count
+                    continue
+                }
+            }
+            index += 1
+        }
+        let mentioned = Self.occurrences(of: Array(": leftover conflict marker".utf8), in: bytes)
+        return lines.count < mentioned ? nil : lines
+    }
+
+    private static func occurrences(of needle: [UInt8], in bytes: [UInt8]) -> Int {
+        guard !needle.isEmpty, bytes.count >= needle.count else { return 0 }
+        var count = 0
+        var index = 0
+        while index <= bytes.count - needle.count {
+            if bytes[index..<(index + needle.count)].elementsEqual(needle) {
+                count += 1
+                index += needle.count
+            } else {
+                index += 1
+            }
+        }
+        return count
+    }
+
     // MARK: - Steps
 
-    /// The document of `snapshot`'s path as it is now; `.changedSinceShown` when its stages or
-    /// its worktree hash are not the snapshot's (a stage-0 entry — staged, or the operation
-    /// aborted — included), `.notAvailable` for a submodule.
+    /// The document of `snapshot`'s path as it is now. `.notAvailable` for a submodule, then
+    /// `.pathTypeChanged` (see `refuseChangedPathType`), then `.changedSinceShown` when its
+    /// stages or its worktree hash are not the snapshot's (a stage-0 entry — staged, or the
+    /// operation aborted — included).
     private func currentDocument(_ snapshot: ConflictSnapshot, at root: URL) async throws -> ConflictDocument {
         let file = snapshot.file
+        // A gitlink's path is a directory by nature; no write is offered for it at all.
+        if file.isSubmodule { throw ConflictError.notAvailable(file.path) }
+        try Self.refuseChangedPathType(file.path, at: root)
         let data = try await run(["ls-files", "-s", "-z", "--", literalPathspec(file.path)], cwd: root)
         var stages: [String: ConflictStage] = [:]
         for entry in Self.indexRecords(data) where entry.path == file.path {
@@ -155,6 +213,31 @@ extension CLIGitBackend {
         }
         if case .submodule = document.presentation { throw ConflictError.notAvailable(file.path) }
         return document
+    }
+
+    /// Throws `.pathTypeChanged` unless `path` is a regular file, a symlink or nothing, under
+    /// leading components that are directories or nothing. Measured (fix round 1):
+    /// `restore --ours|--theirs` over a directory standing at the path deletes the untracked
+    /// files in it, and under a leading component that is now a file replaces that file with a
+    /// directory — both exit 0; `conflictWorktree` reads either as "no file", so nothing would
+    /// be recorded, and the record refuses a type-changed path anyway.
+    static func refuseChangedPathType(_ path: String, at root: URL) throws {
+        let components = path.split(separator: "/", omittingEmptySubsequences: true)
+        var url = root
+        for (index, component) in components.enumerated() {
+            url = url.appendingPathComponent(String(component))
+            var info = stat()
+            guard lstat(url.path, &info) == 0 else {
+                // Nothing here, and so nothing below: safe. Anything unreadable is not.
+                if errno == ENOENT { return }
+                throw ConflictError.pathTypeChanged(path)
+            }
+            let type = info.st_mode & S_IFMT
+            let isLast = index == components.count - 1
+            guard isLast ? (type == S_IFREG || type == S_IFLNK) : type == S_IFDIR else {
+                throw ConflictError.pathTypeChanged(path)
+            }
+        }
     }
 
     /// Files the worktree bytes as `Replaced by Gitter: <path>` when git did not write them —
@@ -177,6 +260,20 @@ extension CLIGitBackend {
         case .ours: _ = try await run(["restore", "--no-recurse-submodules", "--ours", "--", literalPathspec(path)], cwd: root)
         case .theirs: _ = try await run(["restore", "--no-recurse-submodules", "--theirs", "--", literalPathspec(path)], cwd: root)
         }
+    }
+
+    /// The stage (2 or 3) and bytes of the side `choice` writes last, skipping an empty one;
+    /// nil when neither side has bytes.
+    static func lastSideWritten(_ block: ConflictBlock, _ choice: BlockChoice) -> (stage: Int, bytes: Data)? {
+        let ours = (stage: 2, bytes: block.ours), theirs = (stage: 3, bytes: block.theirs)
+        let order: [(stage: Int, bytes: Data)]
+        switch choice {
+        case .ours: order = [ours]
+        case .theirs: order = [theirs]
+        case .oursThenTheirs: order = [theirs, ours]
+        case .theirsThenOurs: order = [ours, theirs]
+        }
+        return order.first { !$0.bytes.isEmpty }
     }
 
     static func compose(_ block: ConflictBlock, _ choice: BlockChoice) -> Data {

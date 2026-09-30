@@ -40,8 +40,9 @@ public protocol GitConflictBackend: Sendable {
     // MARK: - Writes (A2 Task 2)
     //
     // Every write first re-reads the path's index entries and worktree bytes and throws
-    // `ConflictError.changedSinceShown` when they are not the snapshot's: nothing is written
-    // then. Bytes git did not write (`ConflictDocument.matchesGitsConflict == false`, read
+    // `ConflictError.changedSinceShown` when they are not the snapshot's, and
+    // `.pathTypeChanged` when a directory stands at the path or a leading component is a file:
+    // nothing is written then. Bytes git did not write (`ConflictDocument.matchesGitsConflict == false`, read
     // again at the write) are filed first as a `Replaced by Gitter: <path>` stash entry — or,
     // with `recordIfEdited == false`, refused with `.wouldReplaceEdits`. A missing worktree
     // file has no bytes to file. A submodule gets `.notAvailable` from every write. None
@@ -51,7 +52,9 @@ public protocol GitConflictBackend: Sendable {
 
     /// Resolves a text conflict block by block: the parse rebuild's segments (worktree form)
     /// with each block replaced by `choices[i]` (`.oursThenTheirs` = ours' bytes then theirs'),
-    /// written over the file in place — the executable bit survives (M 9) — then `add`.
+    /// the file ending as the last side written ends in its stage (merge-file gives every side
+    /// a final line terminator, Ruling 9) — so all-ours is stage 2's blob and all-theirs stage
+    /// 3's — written over the file in place — the executable bit survives (M 9) — then `add`.
     /// `.notAvailable` unless the document is `.blocks`; `.choicesDoNotMatch` unless there is
     /// one choice per block.
     func resolve(_ snapshot: ConflictSnapshot, choices: [BlockChoice], recordIfEdited: Bool, at root: URL) async throws -> ConflictReceipt
@@ -111,6 +114,9 @@ public enum ConflictError: Error, Sendable, Hashable {
     case choicesDoNotMatch(String)
     /// `markResolved` found this many blocks still marked.
     case leftoverMarkers(Int)
+    /// The path is no longer a file, a symlink or nothing — a directory stands there, or a
+    /// leading component is a file — so git would delete what is there without a trace.
+    case pathTypeChanged(String)
 }
 
 /// What a resolving write did: the path, and the stash entry it filed first, if any.

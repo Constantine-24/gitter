@@ -289,7 +289,7 @@ extension CLIGitBackend: GitConflictBackend {
 
     /// Stage `n` of `path` in worktree form: what `safeMarkerSize` measures, in the same form
     /// as the rebuild it sizes.
-    private func stageText(_ n: Int, of path: String, at root: URL) async throws -> Data {
+    func stageText(_ n: Int, of path: String, at root: URL) async throws -> Data {
         let stage = ":\(n):\(path)"
         return try await run(["cat-file", "--filters", "--path=\(path)", stage], cwd: root)
     }
