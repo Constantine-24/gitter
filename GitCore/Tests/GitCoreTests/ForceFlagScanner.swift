@@ -1065,6 +1065,20 @@ enum ForceFlagScanner {
                 .literal("--no-recurse-submodules"),
                 .interpolated(prefix: restoreSourcePrefix, suffix: "^2"),
                 .literal("--staged"), .literal("--")),
+            // A2 Task 2's conflict writes, each of exactly one path the write has just checked:
+            // `--ours`/`--theirs` delete a file whose stage is missing and exit 0, and discard an
+            // unstaged change on a path that is not conflicted (M 27); `--merge` overwrites the
+            // resolution (M 11). Nothing may be appended.
+            Shape(.literal("--no-recurse-submodules"), .literal("--ours"), .literal("--"), .data),
+            Shape(.literal("--no-recurse-submodules"), .literal("--theirs"), .literal("--"), .data),
+            Shape(.literal("--no-recurse-submodules"), .literal("--merge"), .literal("--"), .data),
+        ],
+        // `rm` without `--cached` deletes files on disk, and `-r` whatever is under a directory:
+        // Stage and Unstage's two index-only vectors, and Delete's one path (M 28).
+        "rm": [
+            Shape(.literal("--cached"), .literal("-q"), .literal("--ignore-unmatch"), .literal("--")),
+            Shape(.literal("--cached"), .literal("-r"), .literal("-q"), .literal("--"), .literal(".")),
+            Shape(.literal("-q"), .literal("--"), .data),
         ],
         // A2 Task 1's conflict reads. `merge-file` without `--object-id` writes its result over
         // its first argument (M 2), so both rebuilds are listed whole: the compare rebuild (the
@@ -1167,6 +1181,9 @@ enum ForceFlagScanner {
             + "`--index`/`--keep-index`/`--staged`/`-p`/`--all`/a pathspec each save or restore "
             + "something the sheet did not name",
         "restore": restoreReason,
+        "rm":
+            "`rm` without `--cached` deletes files on disk, and a conflicted file's edits with no "
+            + "refusal (M 28); the only permitted vectors are the index-only two and one path",
         "merge-file":
             "without `--object-id` merge-file overwrites its first argument in the worktree (M 2), "
             + "and the conflict reader parses only the two rebuilds it was measured with",
@@ -1292,7 +1309,8 @@ enum ForceFlagScanner {
         "`restore` overwrites files on disk through `--worktree` and `--source=…`, and without "
             + "`--no-recurse-submodules` it discards work inside a submodule under "
             + "`submodule.recurse=true` (M A.5); the only permitted vectors are the unstage "
-            + "vector and the discard section's three literals"
+            + "vector, the discard section's three literals and a conflict write's `--ours`, "
+            + "`--theirs` or `--merge` of one path"
 
     /// The scanner's first per-file rule. Without `GIT_INDEX_FILE`, `read-tree HEAD` overwrites
     /// the real index and drops every staged change, and this scanner cannot see an

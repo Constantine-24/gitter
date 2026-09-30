@@ -49,8 +49,9 @@ extension CLIGitBackend: GitConflictBackend {
         //    marker size (it does not read the attribute, M 3), labels removed on both sides.
         //    `AUTO_MERGE` first: it is what git wrote, where merge-file can still differ
         //    (conflicts separated only by non-alphanumeric lines, a filter that rewrites marker
-        //    lines, a driver). Either one equal is enough; a stale or absent `AUTO_MERGE` can
-        //    only cost a false "changed", never a false "matches".
+        //    lines, a driver). Either one equal is enough; an absent `AUTO_MERGE` can only cost
+        //    a false "changed". A leftover one (see `GitConflictBackend.conflictDocument`)
+        //    matches only a worktree holding that earlier result for this very path.
         guard
             let compare = try await rebuild(
                 file.path, base: base, diff3: false, markerSize: attributes.markerSize, at: root)
@@ -305,6 +306,29 @@ extension CLIGitBackend: GitConflictBackend {
     /// least 127 at the cap.
     static func agrees(_ found: Int, with reported: Int32) -> Bool {
         reported < 127 ? found == Int(reported) : found >= 127
+    }
+
+    // MARK: - Reopening
+
+    /// See `GitConflictBackend.canReopen`. The resolve-undo record (`ls-files --resolve-undo`,
+    /// the format of `ls-files -s`, M 24) outlives commits and a finished rebase, so the
+    /// operation is asked first: a reopen after it ended recreates `u UU` with nothing to
+    /// commit it into (M 11). Measured (A2 Task 2): `restore --merge` of a path whose record
+    /// lacks stage 2 or 3 — a kept or `rm`-resolved deletion — fails with "does not have all
+    /// necessary versions"; of a symlink it writes a link whose target is the marker text; of
+    /// a binary file it writes ours, as the merge did.
+    public func canReopen(_ path: String, at root: URL) async throws -> Bool {
+        guard try await operationInProgress(at: root) != nil else { return false }
+        let undo = try await run(["ls-files", "--resolve-undo", "-z", "--", literalPathspec(path)], cwd: root)
+        var modes: [String: String] = [:]
+        for entry in Self.indexRecords(undo) where entry.path == path { modes[entry.stage] = entry.mode }
+        guard modes["2"] != nil, modes["3"] != nil,
+            modes.values.allSatisfy({ $0 == "100644" || $0 == "100755" })
+        else { return false }
+        // Resolved, and not by `rm`: a stage-0 entry and no other.
+        let index = try await run(["ls-files", "-s", "-z", "--", literalPathspec(path)], cwd: root)
+        let stages = Self.indexRecords(index).filter { $0.path == path }.map(\.stage)
+        return stages == ["0"]
     }
 
     // MARK: - The worktree

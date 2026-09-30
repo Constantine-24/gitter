@@ -1329,6 +1329,77 @@ import Testing
         #expect(!ForceFlagScanner.findings(in: changed, fileName: file).isEmpty)
     }
 
+    // MARK: - Conflict writes (A2 Task 2)
+
+    /// A **contract**: the conflict writer's vectors, spelled as
+    /// `CLIGitBackend+ConflictWrite.swift` writes them — and the two `rm` vectors Stage and
+    /// Unstage already ran, now under `rm`'s shapes.
+    @Test(arguments: [
+        #"_ = try await run(["add", "--", literalPathspec(path)], cwd: root)"#,
+        #"_ = try await run(["rm", "-q", "--", literalPathspec(path)], cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--ours", "--", literalPathspec(path)], cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--theirs", "--", literalPathspec(path)], cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--merge", "--", literalPathspec(path)], cwd: root)"#,
+        #"let data = try await run(["ls-files", "--resolve-undo", "-z", "--", literalPathspec(path)], cwd: root)"#,
+        #"let data = try await run(["ls-files", "-s", "-z", "--", literalPathspec(path)], cwd: root)"#,
+        #"let data = try await run(["diff", "--check", "--", literalPathspec(path)], cwd: root, allowedExitCodes: [2])"#,
+        #"_ = try await run(["rm", "--cached", "-q", "--ignore-unmatch", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"_ = try await run(["rm", "--cached", "-r", "-q", "--", "."], cwd: root)"#,
+    ])
+    func allowsTheConflictWritesThisMilestoneNeeds(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
+    /// `restore --ours|--theirs` deletes a file whose stage is missing and exits 0, and discards
+    /// an unstaged change on a path that is not conflicted (M 27); `rm` deletes files on disk.
+    /// Every other shape of either is a finding. Built in test strings only.
+    @Test(arguments: [
+        // Without `--no-recurse-submodules`.
+        (#"_ = try await run(["restore", "--ours", "--", literalPathspec(path)], cwd: root)"#, "restore"),
+        (#"_ = try await run(["restore", "--merge", "--", literalPathspec(path)], cwd: root)"#, "restore"),
+        // More than the one path the write checked.
+        (#"_ = try await run(["restore", "--no-recurse-submodules", "--theirs", "--", literalPathspec(path)] + more, cwd: root)"#, "restore"),
+        (#"_ = try await run(["restore", "--no-recurse-submodules", "--theirs", "--"] + paths, cwd: root)"#, "restore"),
+        (#"_ = try await run(["restore", "--no-recurse-submodules", "--ours", "--", literalPathspec(a), literalPathspec(b)], cwd: root)"#, "restore"),
+        // Another style, or another layer too.
+        (#"_ = try await run(["restore", "--no-recurse-submodules", "--merge", "--conflict=diff3", "--", literalPathspec(path)], cwd: root)"#, "restore"),
+        (#"_ = try await run(["restore", "--no-recurse-submodules", "--ours", "--worktree", "--", literalPathspec(path)], cwd: root)"#, "restore"),
+        (#"_ = try await run(["restore", "--no-recurse-submodules", "--theirs", "--staged", "--", literalPathspec(path)], cwd: root)"#, "restore"),
+        (#"_ = try await run(["restore", "--no-recurse-submodules", "--ours", "--", "-p"], cwd: root)"#, "restore"),
+        // `rm` recursive, loud, of several paths, of a flag, or of another directory.
+        (#"_ = try await run(["rm", "-q", "-r", "--", literalPathspec(path)], cwd: root)"#, "rm"),
+        (#"_ = try await run(["rm", "--", literalPathspec(path)], cwd: root)"#, "rm"),
+        (#"_ = try await run(["rm", "-q", "--", literalPathspec(path)] + more, cwd: root)"#, "rm"),
+        (#"_ = try await run(["rm", "-q", "--"] + paths, cwd: root)"#, "rm"),
+        (#"_ = try await run(["rm", "-q", "--", "-r"], cwd: root)"#, "rm"),
+        (#"_ = try await run(["rm", "--cached", "-r", "-q", "--", dir], cwd: root)"#, "rm"),
+        (#"_ = try await run(["rm", "-r", "-q", "--", "."], cwd: root)"#, "rm"),
+    ])
+    func catchesAConflictWriteOutsideItsShapes(source: String, subcommand: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(findings.contains { $0.contains("`git \(subcommand)` vector") }, "missed: \(source) → \(findings)")
+    }
+
+    /// Not vacuous: the writer's real file is clean, and each of its vectors, changed in memory
+    /// only, becomes a finding.
+    @Test(arguments: [
+        (#""restore", "--no-recurse-submodules", "--ours", "--""#, #""restore", "--ours", "--""#),
+        (#""restore", "--no-recurse-submodules", "--theirs", "--""#, #""restore", "--no-recurse-submodules", "--theirs", "--worktree", "--""#),
+        (#""restore", "--no-recurse-submodules", "--merge", "--""#, #""restore", "--no-recurse-submodules", "--merge", "--conflict=diff3", "--""#),
+        (#""rm", "-q", "--""#, #""rm", "-q", "-r", "--""#),
+    ])
+    func theConflictWritersVectorsAreChecked(original: String, mutated: String) throws {
+        let file = "CLIGitBackend+ConflictWrite.swift"
+        let source = try String(contentsOf: Self.sourcesRoot.appendingPathComponent(file), encoding: .utf8)
+        #expect(ForceFlagScanner.findings(in: source, fileName: file).isEmpty)
+        #expect(source.contains(original), "the writer no longer spells \(original)")
+        let changed = source.replacingOccurrences(of: original, with: mutated)
+        #expect(changed != source)
+
+        #expect(!ForceFlagScanner.findings(in: changed, fileName: file).isEmpty)
+    }
+
     /// Not vacuous: the real sources hold exactly the five parsed reads, and the rule read them.
     @Test func everyParsedDiffReadInTheSourcesIsChecked() throws {
         let sources = try ForceFlagScanner.gitCoreSources(root: Self.sourcesRoot)

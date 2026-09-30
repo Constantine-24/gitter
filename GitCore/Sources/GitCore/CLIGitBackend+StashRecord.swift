@@ -45,14 +45,25 @@ struct StashRecord {
         try await make(paths: paths, message: message, backend: backend, at: root).stash
     }
 
+    /// As `record`, but an unmerged path is recorded too: its I layer keeps HEAD's entry (the
+    /// temporary index starts from HEAD, and an unmerged path has no stage-0 entry to copy
+    /// over it), its W layer the worktree bytes. Other refusals unchanged. Measured (A2 Task
+    /// 2): during a merge stopped on `u UU f.txt`, W's `f.txt` is the hand-edited worktree and
+    /// I's is HEAD's; after `merge --abort`, `stash apply` of the entry puts the edit back.
+    static func record(
+        paths: [String], message: String, allowingUnmerged: Bool, backend: CLIGitBackend, at root: URL
+    ) async throws -> Stash {
+        try await make(paths: paths, message: message, allowingUnmerged: allowingUnmerged, backend: backend, at: root).stash
+    }
+
     /// `record`, keeping what it learnt about each path. `temporaryDirectory` is where the
     /// temporary index goes; only tests pass another one, to watch it being removed.
     static func make(
-        paths named: [String], message: String, backend: CLIGitBackend, at root: URL,
-        temporaryDirectory: URL = URL(fileURLWithPath: NSTemporaryDirectory())
+        paths named: [String], message: String, allowingUnmerged: Bool = false, backend: CLIGitBackend,
+        at root: URL, temporaryDirectory: URL = URL(fileURLWithPath: NSTemporaryDirectory())
     ) async throws -> StashRecord {
         // 1. Survey and refusals.
-        let survey = try await survey(paths: named, backend: backend, at: root)
+        let survey = try await survey(paths: named, allowingUnmerged: allowingUnmerged, backend: backend, at: root)
         let (paths, entries) = (survey.paths, survey.entries)
         let inHEAD = Set(survey.headModes.keys)
 
@@ -74,7 +85,9 @@ struct StashRecord {
         if !removed.isEmpty {
             _ = try await backend.runWithEnvironment(["update-index", "--force-remove", "--"] + removed, cwd: root, extra: index)
         }
-        for cacheinfo in cacheinfoArguments(paths.flatMap { entries[$0] ?? [] }) {
+        // Stage 0 only: an unmerged path's stages 1–3 have no place in a tree, and I keeps
+        // HEAD's entry for it (`allowingUnmerged`); any other path has nothing but stage 0.
+        for cacheinfo in cacheinfoArguments(paths.flatMap { entries[$0] ?? [] }.filter { $0.stage == "0" }) {
             _ = try await backend.runWithEnvironment(["update-index", "--add"] + cacheinfo, cwd: root, extra: index)
         }
         let i = try await commit(
@@ -131,7 +144,9 @@ struct StashRecord {
     /// Step 1 alone: the read-only survey, then every refusal (`StashRefusal`) the record
     /// would throw, in its order. Writes nothing. `discard` runs it before its stale check, so
     /// that a refusal is reported as one even when the file also changed.
-    static func survey(paths named: [String], backend: CLIGitBackend, at root: URL) async throws -> Survey {
+    static func survey(
+        paths named: [String], allowingUnmerged: Bool = false, backend: CLIGitBackend, at root: URL
+    ) async throws -> Survey {
         guard !named.isEmpty else { throw StashRefusal.nothingSelected }
         // `ud/` and `ud` are one path to git's index. A trailing slash would make `update-index`
         // skip a directory with only "Ignoring path ud/" and exit 0 — a record silently missing
@@ -148,7 +163,9 @@ struct StashRecord {
         var entries: [String: [(mode: String, sha: String, stage: String, path: String)]] = [:]
         for p in paths { entries[p] = entriesOf(p) }
         let headModes = try await backend.modes(of: paths, in: "HEAD", at: root)
-        try await refuse(named, entries: entries, headModes: headModes, status: status, backend: backend, at: root)
+        try await refuse(
+            named, entries: entries, headModes: headModes, status: status, allowingUnmerged: allowingUnmerged,
+            backend: backend, at: root)
         return Survey(paths: paths, entries: entries, headModes: headModes)
     }
 
@@ -159,7 +176,7 @@ struct StashRecord {
     static let cacheinfoLimit = 1_000
 
     /// `--cacheinfo <mode>,<sha>,<path>` for each entry, in order, split into calls of at most
-    /// `limit` entries. Every entry is stage 0: an unmerged path was refused in the survey.
+    /// `limit` entries. Every entry is stage 0: `make` passes no other.
     /// `--cacheinfo` because the runner's stdin is /dev/null, so `--index-info` has nothing to
     /// read; git splits the argument at the first two commas only, so a comma in a name is
     /// safe (RF4).
@@ -194,12 +211,13 @@ struct StashRecord {
 
     // MARK: - Refusals
 
-    /// Throws the first refusal that applies, in the order unmerged, intent-to-add,
-    /// submodule, nested repository, type changed. Each lists the named paths it covers, as
-    /// they were named.
+    /// Throws the first refusal that applies, in the order unmerged (unless
+    /// `allowingUnmerged`), intent-to-add, submodule, nested repository, type changed. Each
+    /// lists the named paths it covers, as they were named.
     private static func refuse(
         _ named: [String], entries: [String: [(mode: String, sha: String, stage: String, path: String)]],
-        headModes: [String: String], status: WorkingCopyStatus, backend: CLIGitBackend, at root: URL
+        headModes: [String: String], status: WorkingCopyStatus, allowingUnmerged: Bool, backend: CLIGitBackend,
+        at root: URL
     ) async throws {
         func entriesFor(_ p: String) -> [(mode: String, sha: String, stage: String, path: String)] {
             entries[withoutTrailingSlash(p)] ?? []
@@ -216,7 +234,7 @@ struct StashRecord {
         let unmerged = named.filter { p in
             entriesFor(p).contains { $0.stage != "0" } || record(p)?.staged == .unmerged
         }
-        if !unmerged.isEmpty { throw StashRefusal.unmergedPaths(unmerged) }
+        if !unmerged.isEmpty, !allowingUnmerged { throw StashRefusal.unmergedPaths(unmerged) }
 
         let intentToAdd = Set(try await backend.intentToAddPaths(in: status, at: root))
         let refusedIntentToAdd = named.filter { intentToAdd.contains(withoutTrailingSlash($0)) }
