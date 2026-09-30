@@ -317,8 +317,18 @@ extension CLIGitBackend: GitConflictBackend {
     /// lacks stage 2 or 3 — a kept or `rm`-resolved deletion — fails with "does not have all
     /// necessary versions"; of a symlink it writes a link whose target is the marker text; of
     /// a binary file it writes ours, as the merge did.
+    ///
+    /// Ruling 13 (A2 Task 3): the path must also belong to *this* operation — unmerged, or one
+    /// of `operationPaths` — because the record outlives the operation that made it: a merge
+    /// resolved and committed leaves one that a later `git am` stop still shows
+    /// (`ReopenTests.aResolutionFromAnEarlierCommittedMergeIsNotReopenedDuringAnAmStop`). With
+    /// no `AUTO_MERGE` there are no operation paths, and the answer is the safe one: no.
     public func canReopen(_ path: String, at root: URL) async throws -> Bool {
-        guard try await operationInProgress(at: root) != nil else { return false }
+        // Nil with no operation in progress, as well as with no `AUTO_MERGE`.
+        guard let paths = try await operationPaths(at: root) else { return false }
+        if !paths.contains(path) {
+            guard try await unmergedPaths(at: root).contains(path) else { return false }
+        }
         let undo = try await run(["ls-files", "--resolve-undo", "-z", "--", literalPathspec(path)], cwd: root)
         var modes: [String: String] = [:]
         for entry in Self.indexRecords(undo) where entry.path == path { modes[entry.stage] = entry.mode }

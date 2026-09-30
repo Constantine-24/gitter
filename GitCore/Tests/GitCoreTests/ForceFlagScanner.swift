@@ -167,7 +167,9 @@ import Foundation
 ///   `GitCore/Sources` pages a log today; when something does, it will spell the option
 ///   `--skip=<n>` (one token, which does not match) or else be a false positive to resolve
 ///   here — by moving `--skip` into the per-subcommand tables — rather than by deleting the
-///   rule. Same shape as the `-M` exception below.
+///   rule. Same shape as the `-M` exception below. Since A2 Task 3 the sweep stands down for
+///   it in exactly three whole vectors, `skipShapes` — Skip's `rebase|cherry-pick|revert
+///   --skip` — and nowhere else.
 /// - **`GitCore/Sources` only** — deliberately, since this file's own rule tables would
 ///   otherwise flag themselves. The app target runs no git commands of its own.
 enum ForceFlagScanner {
@@ -355,6 +357,8 @@ enum ForceFlagScanner {
                 }
                 continue
             }
+            // One of `skipShapes`: every element is a pinned literal, vouched for above.
+            if matchedShapes[arrayIndex] != nil { continue }
             if subcommand == "read-tree" {
                 for flag in literals.dropFirst().flatMap(spellings(of:)) {
                     if let reason = readTreeForbiddenFlags[flag] {
@@ -554,7 +558,9 @@ enum ForceFlagScanner {
     /// `--quit` and `--skip` are the sequencer's other two exits and neither is ever what
     /// Gitter's "Abort" means: `--quit` drops the cherry-pick/revert/rebase state while leaving
     /// its half-applied result staged (an operation the user can no longer see, let alone
-    /// abort), and `--skip` throws away the commit git stopped on.
+    /// abort), and `--skip` throws away the commit git stopped on. `--skip` is vouched for in the
+    /// three whole vectors of `skipShapes` (A2 Task 3's Skip, which files the stopped commit's
+    /// changes first) and stays a finding everywhere else; `--quit` has no exception.
     /// `-B` is here because the README and the design doc have both claimed it was scanned
     /// since the milestone began, and it was not: `git checkout -B` force-creates a branch over
     /// an existing one. (`git branch` has **no** `-B` — this comment said it did until fix
@@ -1116,6 +1122,25 @@ enum ForceFlagScanner {
         ],
     ]
 
+    /// The only three vectors that may carry `--skip` (A2 Task 3's Skip), each whole and with
+    /// nothing concatenated: `["rebase", "--skip"]`, `["cherry-pick", "--skip"]` and
+    /// `["revert", "--skip"]`.
+    ///
+    /// `--skip` stays in `alwaysForbidden`, so the sweep still reports it in every literal but an
+    /// element of an array literal matching one of these shapes (`vouched` in `findings`), and a
+    /// matched array is complete: no per-element rule has anything left to read. Unlike
+    /// `allowedShapes`, a subcommand here is **not** made shape-only — `rebase`, `cherry-pick`
+    /// and `revert` keep their deny tables and positional rules (`rebase --autostash`,
+    /// `cherry-pick --merge`, the `--abort` family) for every other vector, which is what names
+    /// the offending flag in their findings. What makes the flag safe is not the vector but what
+    /// runs before it: `skip(_:stoppedAt:at:)` refuses unless every change is the stopped
+    /// commit's and files them first (M 17, M 31, M 32).
+    static let skipShapes: [String: [Shape]] = [
+        "rebase": [Shape(.literal("--skip"))],
+        "cherry-pick": [Shape(.literal("--skip"))],
+        "revert": [Shape(.literal("--skip"))],
+    ]
+
     /// One element of an allowed shape.
     enum ShapeSlot {
         /// Exactly this string literal (escapes decoded).
@@ -1165,9 +1190,8 @@ enum ForceFlagScanner {
     /// The shape `array` matches, or nil when it matches none — or is not classified under a
     /// subcommand that has shapes at all.
     static func matchesAllowedShape(_ array: ArrayLiteral) -> Shape? {
-        guard let subcommand = array.elements.first?.value.map(decoded),
-            let shapes = allowedShapes[subcommand]
-        else { return nil }
+        guard let subcommand = array.elements.first?.value.map(decoded) else { return nil }
+        let shapes = (allowedShapes[subcommand] ?? []) + (skipShapes[subcommand] ?? [])
         return shapes.first { $0.matches(array) }
     }
 
@@ -1472,7 +1496,7 @@ enum ForceFlagScanner {
         + "\"-v\"] and nothing else — is the whole rule. Spell the vector as one array literal "
         + "beginning with its subcommand, so the shape can be read"
 
-    private static func spelling(of subcommand: String, _ shapes: [Shape]) -> String {
+    static func spelling(of subcommand: String, _ shapes: [Shape]) -> String {
         shapes.map { shape in
             let slots = shape.slots.map { slot -> String in
                 switch slot {

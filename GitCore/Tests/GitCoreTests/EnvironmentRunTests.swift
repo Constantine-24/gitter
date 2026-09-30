@@ -61,6 +61,30 @@ import Testing
         #expect(String(decoding: with.stdout, as: UTF8.self) == "false\n")
     }
 
+    /// `withConfig` (A2 Task 3) is `rerereOff` for any key: the rebase continue's
+    /// `commit.cleanup=scissors` beats the repository's `verbatim` and a user's inherited
+    /// parameter, both measured through git.
+    @Test func withConfigIsTheLastWordOnItsKey() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try await repo.git(["config", "commit.cleanup", "verbatim"])
+        let inherited = [
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "commit.cleanup", "GIT_CONFIG_VALUE_0": "whitespace",
+            "GIT_CONFIG_PARAMETERS": "'commit.cleanup'='strip'",
+        ]
+        let backend = CLIGitBackend()
+        let get = ["config", "--get", "commit.cleanup"]
+
+        let env = CLIGitBackend.withConfig("commit.cleanup", "scissors", over: inherited)
+        let read = try await backend.runWithEnvironment(get, cwd: repo.root, extra: env)
+
+        #expect(env["GIT_CONFIG_COUNT"] == "2")
+        #expect(env["GIT_CONFIG_KEY_1"] == "commit.cleanup" && env["GIT_CONFIG_VALUE_1"] == "scissors")
+        #expect(env["GIT_CONFIG_KEY_0"] == "commit.cleanup" && env["GIT_CONFIG_VALUE_0"] == "whitespace")
+        #expect(String(decoding: read.stdout, as: UTF8.self) == "scissors\n")
+        #expect(CLIGitBackend.rerereOff([:]) == CLIGitBackend.withConfig("rerere.enabled", "false", over: [:]))
+    }
+
     /// `GIT_CONFIG_PARAMETERS` — what `git -c` passes down to a child, so present whenever
     /// Gitter was started from inside a git alias or hook — is read *after* the
     /// `GIT_CONFIG_COUNT` parameters (measured: its `rerere.enabled=true` beat a count entry's

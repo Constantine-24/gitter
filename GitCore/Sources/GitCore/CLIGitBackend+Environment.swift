@@ -29,15 +29,25 @@ extension CLIGitBackend {
     /// appends `'rerere.enabled'='false'` to it as well, which then wins there too (measured).
     /// An absent one is left absent.
     static func rerereOff(_ inherited: [String: String]) -> [String: String] {
+        withConfig("rerere.enabled", "false", over: inherited)
+    }
+
+    /// `inherited` with `key=value` appended as the last config parameter, by the rule
+    /// `rerereOff` documents (it is that function, generalised in A2 Task 3 for the rebase
+    /// continue's `commit.cleanup=scissors`, M 29): at index `GIT_CONFIG_COUNT`, after the
+    /// user's own parameters, and appended to a non-empty `GIT_CONFIG_PARAMETERS` as well, so it
+    /// is the last word on `key` for this one command. `key` and `value` are Gitter's own
+    /// constants, never user input: neither is quoted for `GIT_CONFIG_PARAMETERS`.
+    static func withConfig(_ key: String, _ value: String, over inherited: [String: String]) -> [String: String] {
         let count = inherited["GIT_CONFIG_COUNT"].flatMap { Int($0) }.map { max($0, 0) } ?? 0
         var environment = inherited
-        environment["GIT_CONFIG_KEY_\(count)"] = "rerere.enabled"
-        environment["GIT_CONFIG_VALUE_\(count)"] = "false"
+        environment["GIT_CONFIG_KEY_\(count)"] = key
+        environment["GIT_CONFIG_VALUE_\(count)"] = value
         environment["GIT_CONFIG_COUNT"] = String(count + 1)
         if let parameters = inherited["GIT_CONFIG_PARAMETERS"],
             !parameters.trimmingCharacters(in: .whitespaces).isEmpty
         {
-            environment["GIT_CONFIG_PARAMETERS"] = parameters + " 'rerere.enabled'='false'"
+            environment["GIT_CONFIG_PARAMETERS"] = parameters + " '\(key)'='\(value)'"
         }
         return environment
     }

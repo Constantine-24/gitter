@@ -86,6 +86,8 @@ public protocol GitConflictBackend: Sendable {
     func markResolved(_ snapshot: ConflictSnapshot, allowingMarkers: Bool, at root: URL) async throws
 
     /// Whether `reopen` can bring the conflict back: an operation is in progress, the path is
+    /// one of its own (unmerged or among `GitOperationBackend.operationPaths` — so never with
+    /// no `AUTO_MERGE`; Ruling 13, a record outlives the operation that made it), the path is
     /// resolved (a stage-0 entry, so not by `rm`), and its resolve-undo record holds stages 2
     /// and 3 of regular files — what `restore --merge` needs (M 11, M 24). Not a symlink or a
     /// gitlink: git would write the marker text as the link's target.

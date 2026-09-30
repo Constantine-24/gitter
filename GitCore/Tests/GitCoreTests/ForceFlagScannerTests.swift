@@ -93,8 +93,10 @@ import Testing
         #"_ = try await run(["hash-object", "-w", "--", p], cwd: root)"#,
         // `--quit` leaves the sequencer's state behind instead of undoing it, and `--skip`
         // throws away the commit git stopped on. Neither is ever what Gitter's "Abort" means.
+        // `--skip` is permitted in exactly three whole vectors since A2 Task 3 (Skip, behind
+        // its own record and readiness check); anything else carrying it stays a finding.
         #"_ = try await run(["cherry-pick", "--quit"], cwd: root)"#,
-        #"_ = try await run(["rebase", "--skip"], cwd: root)"#,
+        #"_ = try await run(["rebase", "--skip", upstream], cwd: root)"#,
     ])
     func catchesAForbiddenInvocation(source: String) {
         #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
@@ -1394,6 +1396,98 @@ import Testing
         let source = try String(contentsOf: Self.sourcesRoot.appendingPathComponent(file), encoding: .utf8)
         #expect(ForceFlagScanner.findings(in: source, fileName: file).isEmpty)
         #expect(source.contains(original), "the writer no longer spells \(original)")
+        let changed = source.replacingOccurrences(of: original, with: mutated)
+        #expect(changed != source)
+
+        #expect(!ForceFlagScanner.findings(in: changed, fileName: file).isEmpty)
+    }
+
+    // MARK: - Continue and Skip (A2 Task 3)
+
+    /// A **contract**: every vector `CLIGitBackend+Continue.swift` runs, spelled as it writes
+    /// them. The three `--skip` vectors are the only ones in `GitCore/Sources` that may carry
+    /// the flag; `--continue` was never forbidden, and the two `diff` reads print no patch.
+    @Test(arguments: [
+        #"result = try await runWithEnvironment(["rebase", "--continue"], cwd: root, extra: Self.withConfig("commit.cleanup", "scissors", over: ProcessInfo.processInfo.environment), allowedExitCodes: Self.anyExitCode)"#,
+        #"result = try await runWithEnvironment(["cherry-pick", "--continue"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"result = try await runWithEnvironment(["revert", "--continue"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"arguments = ["rebase", "--skip"]"#,
+        #"arguments = ["cherry-pick", "--skip"]"#,
+        #"arguments = ["revert", "--skip"]"#,
+        #"_ = try await run(["diff", "--cached", "--quiet", "HEAD"], cwd: root)"#,
+        #"let data = try await run(["diff", "--name-only", "-z", "--no-renames", "HEAD", "AUTO_MERGE"], cwd: root)"#,
+        #"let data = try await run(["rev-parse", "--git-path", name], cwd: root)"#,
+        #"let data = try await run(["rev-parse", "-q", "--verify", name], cwd: root, allowedExitCodes: [1])"#,
+        #"let data = try await run(["config", "-z", "--get-regexp", "^core[.]comment(char|string)$"], cwd: root, allowedExitCodes: [1])"#,
+        #"let data = try await run(["log", "-1", "--no-show-signature", "--format=%H%x00%h%x00%s", "--end-of-options", rev], cwd: root, allowedExitCodes: [128])"#,
+    ])
+    func allowsTheContinueAndSkipVectorsThisMilestoneNeeds(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
+    /// `--skip` throws away the commit git stopped on — and `rebase --skip` every tracked change
+    /// with it (M 17). It is allowed in the three whole vectors above and nowhere else: not with
+    /// anything more in the vector, not after another subcommand (`am --skip` stays abort-only
+    /// territory), not appended, not bound to a name. Built in test strings only.
+    @Test(arguments: [
+        #"_ = try await run(["rebase", "--skip", upstream], cwd: root)"#,
+        #"_ = try await run(["cherry-pick", "--skip", "--no-commit"], cwd: root)"#,
+        #"_ = try await run(["revert", x, "--skip"], cwd: root)"#,
+        #"_ = try await run(["rebase", "--skip"] + extra, cwd: root)"#,
+        #"_ = try await run(["am", "--skip"], cwd: root)"#,
+        #"_ = try await run(["merge", "--skip"], cwd: root)"#,
+        #"_ = try await run(["log", "--skip", n], cwd: root)"#,
+        #"_ = try await run([repoFlag, "rebase", "--skip"], cwd: root)"#,
+        #"var a = ["rebase"]; a += ["--skip"]"#,
+        #"var a = ["cherry-pick"]; a.append("--skip")"#,
+        #"let skip = "--skip""#,
+        #"_ = try await run(["revert", done ? "--skip" : "--continue"], cwd: root)"#,
+    ])
+    func catchesASkipOutsideItsThreeShapes(source: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(findings.contains { $0.contains("--skip") }, "missed: \(source) → \(findings)")
+    }
+
+    /// Moving `--skip` did not move `--quit`: it drops the sequencer's state and leaves the
+    /// half-applied result staged, and no vector of Gitter's may carry it.
+    @Test(arguments: [
+        #"_ = try await run(["rebase", "--quit"], cwd: root)"#,
+        #"_ = try await run(["cherry-pick", "--quit"], cwd: root)"#,
+        #"_ = try await run(["revert", "--quit"], cwd: root)"#,
+        #"arguments = ["rebase", "--quit"]"#,
+    ])
+    func quitIsStillAFinding(source: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(findings.contains { $0.contains("--quit") }, "missed: \(source) → \(findings)")
+        #expect(ForceFlagScanner.alwaysForbidden.contains("--quit"))
+    }
+
+    /// The three shapes are the whole permission: each one's table entry, and nothing else
+    /// under `rebase`, `cherry-pick` or `revert` names `--skip`.
+    @Test func theSkipShapesAreExactlyTheThreeVectors() {
+        let shapes = ForceFlagScanner.skipShapes
+        #expect(Set(shapes.keys) == ["rebase", "cherry-pick", "revert"])
+        for (subcommand, list) in shapes {
+            #expect(list.count == 1, "\(subcommand)")
+            #expect(list.first.map { ForceFlagScanner.spelling(of: subcommand, [$0]) } == "[\"\(subcommand)\", \"--skip\"]")
+        }
+        #expect(ForceFlagScanner.alwaysForbidden.contains("--skip"), "vouched for by the shapes, forbidden elsewhere")
+    }
+
+    /// Not vacuous: the continue file is clean, and each of its vectors, changed in memory only,
+    /// becomes a finding.
+    @Test(arguments: [
+        (#"arguments = ["rebase", "--skip"]"#, #"arguments = ["rebase", "--skip", "--no-verify"]"#),
+        (#"arguments = ["cherry-pick", "--skip"]"#, #"arguments = ["am", "--skip"]"#),
+        (#"arguments = ["revert", "--skip"]"#, #"arguments = ["revert", "--quit"]"#),
+        (#"["rebase", "--continue"]"#, #"["rebase", "--continue", "--autostash"]"#),
+    ])
+    func theContinueFilesVectorsAreChecked(original: String, mutated: String) throws {
+        let file = "CLIGitBackend+Continue.swift"
+        let source = try String(contentsOf: Self.sourcesRoot.appendingPathComponent(file), encoding: .utf8)
+        #expect(ForceFlagScanner.findings(in: source, fileName: file).isEmpty)
+        #expect(source.contains(original), "the file no longer spells \(original)")
         let changed = source.replacingOccurrences(of: original, with: mutated)
         #expect(changed != source)
 
