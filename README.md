@@ -329,7 +329,7 @@ answers, and when the toolbar reveals a lane's activity. Under a test host the a
 automatic fetch (`TestHost`), and no test opens a repository or touches the app's defaults,
 so a run never touches the repository you last had open.
 
-`GitCoreTests` has 954 tests in 79 suites. Most of them run real `git` against a temporary
+`GitCoreTests` has 967 tests in 80 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
 for a server, with a second clone as "the colleague" who pushes in between — including one
 that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
@@ -411,7 +411,7 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
     Parsers/                    Status, Log, Ref, Diff (+Paths), BranchRefusal, Remote,
                                 PushPorcelain, RemoteFailure, StashList and StashFailure
                                 parsers, and GitLines (git's output split at the newline byte)
-  Tests/GitCoreTests/           79 suites; ForceFlagScanner(+Lexing) is the force-flag grep
+  Tests/GitCoreTests/           80 suites; ForceFlagScanner(+Lexing) is the force-flag grep
 
 Gitter/                   macOS app (SwiftUI)
   GitterApp.swift            App entry point, the one store (`AppModel`), the Repository
