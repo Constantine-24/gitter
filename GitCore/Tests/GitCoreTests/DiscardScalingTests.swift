@@ -119,7 +119,9 @@ import Testing
     /// A mixed set, each file its own shape: modified, deleted, a mode change, CRLF lines, a
     /// staged rename (its source is a path of its own, as the app passes both), bytes that are
     /// not UTF-8, a file with a staged and an unstaged layer, a staged new file and a staged
-    /// deletion — every FileDiff must be the one the per-path read gave, in the same order.
+    /// deletion — every FileDiff must be the one the per-path read gave, in the same order. And
+    /// under `plan b/`, whose headers are ambiguous and have no `---`/`+++` lines to settle them:
+    /// a binary change, a mode change, an empty file deleted and one added.
     @Test(arguments: [false, true])
     func theBatchedReadIsThePerPathRead(includingStaged: Bool) async throws {
         let repo = try await makeDiscardLab()
@@ -127,6 +129,9 @@ import Testing
         try Data("one\r\ntwo\r\nthree\r\n".utf8).write(to: repo.root.appendingPathComponent("crlf"))
         try Data([0x63, 0x61, 0x66, 0xE9, 0x0A, 0x6F, 0x6B, 0x0A]).write(to: repo.root.appendingPathComponent("latin1"))
         try repo.write("gone", "gone\n")
+        try repo.write("plan b/mode.sh", "echo\n")
+        try repo.write("plan b/empty.txt", "")
+        try Data([0x00, 0x01, 0x62]).write(to: repo.root.appendingPathComponent("plan b/blob.bin"))
         try await repo.commitAll("more")
 
         try repo.write("p", numbered(12, [5: "5 mod"]))
@@ -142,8 +147,16 @@ import Testing
         try repo.write("n", "n1\n")
         try await repo.git(["add", "n"])
         try await repo.git(["rm", "-q", "gone"])
+        try Data([0x00, 0x02, 0x62]).write(to: repo.root.appendingPathComponent("plan b/blob.bin"))
+        try repo.chmod("plan b/mode.sh", 0o755)
+        try repo.remove("plan b/empty.txt")
+        try repo.write("plan b/new empty.txt", "")
+        try await repo.git(["add", "--", "plan b/new empty.txt"])
         // `h` and `k` are unchanged here: a path with nothing to show is in the set too.
-        let paths = ["p", "d", "s.sh", "crlf", "latin1", "new", "old", "f3", "n", "gone", "h", "k"]
+        let paths = [
+            "p", "d", "s.sh", "crlf", "latin1", "new", "old", "f3", "n", "gone", "h", "k",
+            "plan b/blob.bin", "plan b/mode.sh", "plan b/empty.txt", "plan b/new empty.txt",
+        ]
 
         let batched = try await backend.discardExpectation(tracked: paths, includingStaged: includingStaged, at: repo.root)
         let perPath = try await perPathExpectation(paths, includingStaged: includingStaged, repo)
@@ -154,15 +167,19 @@ import Testing
             return
         }
         // Not vacuous: every shape is in the set.
-        #expect(diffs.count == (includingStaged ? 12 : 7), "\(diffs.map(\.displayPath))")
+        #expect(diffs.count == (includingStaged ? 16 : 10), "\(diffs.map(\.displayPath))")
         #expect(diffs.contains { $0.displayPath == "d" && $0.kind == .deleted })
         #expect(diffs.contains { $0.displayPath == "s.sh" && $0.hunks.isEmpty })
         #expect(diffs.contains { $0.displayPath == "crlf" && $0.hunks.flatMap(\.lines).contains { $0.text.hasSuffix("\r") } })
         #expect(diffs.contains { $0.displayPath == "latin1" && !$0.isValidUTF8 })
+        #expect(diffs.contains { $0.displayPath == "plan b/blob.bin" && $0.isBinary })
+        #expect(diffs.contains { $0.displayPath == "plan b/mode.sh" && $0.hunks.isEmpty && $0.kind == .modified })
+        #expect(diffs.contains { $0.displayPath == "plan b/empty.txt" && $0.kind == .deleted && $0.hunks.isEmpty })
         if includingStaged {
             #expect(diffs.contains { $0.oldPath == "old" && $0.newPath == nil }, "the rename's source, read alone")
             #expect(diffs.contains { $0.displayPath == "gone" && $0.kind == .deleted })
             #expect(diffs.filter { $0.displayPath == "f3" }.count == 2, "both layers of f3")
+            #expect(diffs.contains { $0.displayPath == "plan b/new empty.txt" && $0.kind == .added && $0.hunks.isEmpty })
         }
     }
 

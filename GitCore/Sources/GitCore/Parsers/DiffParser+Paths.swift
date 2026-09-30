@@ -13,7 +13,22 @@ extension DiffParser {
         let newPath: String
     }
 
+    /// The two names of a `diff --git a/<old> b/<new>` header, read the way git's own
+    /// `git_header_name` (apply.c) reads them.
+    ///
+    /// git quotes each side on its own, so a header is both sides quoted, neither, or — for a
+    /// rename or copy between a name it quotes and one it does not — just one of them. With
+    /// neither quoted nothing marks where the first name ends, and a name containing ` b/` has
+    /// more than one place to split: `a/plan b/blob.bin b/plan b/blob.bin`. Like git, the split
+    /// is where the two halves are the same name. Different halves are a rename or a copy, whose
+    /// `rename from`/`rename to` (`copy …`) lines name both sides again unambiguously, as do a
+    /// diff's `---`/`+++` lines; the header's own reading of those is only a placeholder.
     static func parseDiffGitHeader(_ line: String) -> DiffGitHeader? {
+        guard line.utf8.starts(with: gitHeaderLead) else { return nil }
+        let rest = Array(line.utf8.dropFirst(gitHeaderLead.count))
+        if rest.first != quote, let header = unquotedThenQuoted(rest) ?? sameNameOnBothSides(rest) {
+            return header
+        }
         if let match = line.wholeMatch(of: /^diff --git a\/(.*) b\/(.*)$/) {
             return DiffGitHeader(
                 oldPath: unquoteIfNeeded(String(match.1)),
@@ -26,6 +41,61 @@ extension DiffParser {
             if old.hasPrefix("a/") { old = String(old.dropFirst(2)) }
             if new.hasPrefix("b/") { new = String(new.dropFirst(2)) }
             return DiffGitHeader(oldPath: old, newPath: new)
+        }
+        return quotedThenUnquoted(rest)
+    }
+
+    private static let gitHeaderLead = Array("diff --git ".utf8)
+    private static let quote = UInt8(ascii: "\"")
+
+    /// `a/P b/P`: split where both halves are the same name — the middle, which is the only
+    /// place that can be. Bytes, not characters: a name's bytes are what git compared.
+    private static func sameNameOnBothSides(_ rest: [UInt8]) -> DiffGitHeader? {
+        guard rest.count >= 5, (rest.count - 5) % 2 == 0 else { return nil }
+        let length = (rest.count - 5) / 2
+        let first = rest[2..<(2 + length)]
+        let separator = rest[(2 + length)..<(5 + length)]
+        let second = rest[(5 + length)...]
+        guard rest.starts(with: Array("a/".utf8)), separator.elementsEqual(" b/".utf8), first.elementsEqual(second)
+        else { return nil }
+        let name = String(decoding: first, as: UTF8.self)
+        return DiffGitHeader(oldPath: name, newPath: name)
+    }
+
+    /// `a/<old> "b/<new>"`. An unquoted name cannot contain a `"` (`quote_c_style` would have
+    /// quoted it), so the first one is where the quoted second name begins.
+    private static func unquotedThenQuoted(_ rest: [UInt8]) -> DiffGitHeader? {
+        guard let start = rest.firstIndex(of: quote), start >= 3, rest[start - 1] == UInt8(ascii: " "),
+            quotedEnd(rest, from: start) == rest.count,
+            let new = unquoteCStyle(String(decoding: rest[start...], as: UTF8.self)), new.hasPrefix("b/")
+        else { return nil }
+        return DiffGitHeader(
+            oldPath: String(decoding: rest[2..<(start - 1)], as: UTF8.self), newPath: String(new.dropFirst(2)))
+    }
+
+    /// `"a/<old>" b/<new>`: the second name is everything after the first one's closing quote
+    /// and a space.
+    private static func quotedThenUnquoted(_ rest: [UInt8]) -> DiffGitHeader? {
+        guard rest.first == quote, let end = quotedEnd(rest, from: 0),
+            let old = unquoteCStyle(String(decoding: rest[..<end], as: UTF8.self)), old.hasPrefix("a/")
+        else { return nil }
+        let second = rest[end...]
+        guard second.starts(with: Array(" b/".utf8)), !second.contains(quote) else { return nil }
+        return DiffGitHeader(
+            oldPath: String(old.dropFirst(2)), newPath: String(decoding: second.dropFirst(3), as: UTF8.self))
+    }
+
+    /// The index just past the closing quote of the quoted string that starts at `start`, or
+    /// nil when it is not closed. A backslash escapes the byte after it.
+    private static func quotedEnd(_ bytes: [UInt8], from start: Int) -> Int? {
+        var index = start + 1
+        while index < bytes.count {
+            if bytes[index] == UInt8(ascii: "\\") {
+                index += 2
+                continue
+            }
+            if bytes[index] == quote { return index + 1 }
+            index += 1
         }
         return nil
     }

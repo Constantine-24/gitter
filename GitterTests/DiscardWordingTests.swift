@@ -73,6 +73,33 @@ import Testing
         #expect(DiscardWording.Loss(of: []) == .noLineChanges)
     }
 
+    /// A binary change under `plan b/` and one to a file named like the tail of its path, as
+    /// git writes them (no `---`/`+++` lines). The header used to be split at the wrong ` b/`,
+    /// so the row for `plan b/blob.bin` lost nothing and `blob.bin`'s row took its diff.
+    @MainActor @Test func eachRowUnderAPathWithBSlashIsCountedFromItsOwnDiff() {
+        let output = """
+            diff --git a/blob.bin b/blob.bin
+            index 3e3315e1b02129d197721a8a0b56dd88862f454d..88768efdf77ec78c9a995f94881793be6a41752b 100644
+            --- a/blob.bin
+            +++ b/blob.bin
+            @@ -1 +1 @@
+            -a
+            +b
+            diff --git a/plan b/blob.bin b/plan b/blob.bin
+            index 88768efdf77ec78c9a995f94881793be6a41752b..3e3315e1b02129d197721a8a0b56dd88862f454d 100644
+            Binary files a/plan b/blob.bin and b/plan b/blob.bin differ
+
+            """
+        let files = ["blob.bin", "plan b/blob.bin"].map {
+            FileStatus(path: $0, originalPath: nil, staged: nil, unstaged: .modified)
+        }
+
+        let rows = RepositoryStore.rows(for: files, diffs: DiffParser.parse(Data(output.utf8)))
+
+        #expect(rows.map(\.name) == ["blob.bin", "plan b/blob.bin"])
+        #expect(rows.map(\.loses) == ["+1 \u{2212}1", "binary file"])
+    }
+
     @Test func previewLinesAreMarkedAndCapped() {
         #expect(
             DiscardWording.preview(DiffLine(id: 0, kind: .added, oldNumber: nil, newNumber: 1, text: "new\r"))

@@ -381,7 +381,7 @@ extension RepositoryStore {
     }
 
     /// One row per file, counted from the diffs the sheet shows for it (both paths of a rename).
-    private static func rows(for files: [FileStatus], diffs: [FileDiff]) -> [DiscardRow] {
+    static func rows(for files: [FileStatus], diffs: [FileDiff]) -> [DiscardRow] {
         files.map { file in
             let paths = Set([file.path] + (file.originalPath.map { [$0] } ?? []))
             let own = diffs.filter { diff in

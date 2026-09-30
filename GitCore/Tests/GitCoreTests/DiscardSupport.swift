@@ -166,6 +166,13 @@ extension TestRepo {
         try FileManager.default.removeItem(at: root.appendingPathComponent(path))
     }
 
+    /// `path` under the worktree, its directory made: where to write bytes that are not text.
+    func url(_ path: String) throws -> URL {
+        let url = root.appendingPathComponent(path)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        return url
+    }
+
     func relink(_ path: String, to target: String) throws {
         try remove(path)
         try FileManager.default.createSymbolicLink(

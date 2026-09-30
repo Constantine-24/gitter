@@ -321,7 +321,7 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (144 tests in 13 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (145 tests in 13 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, the pull-request link extraction and the notices' lifetime, which files a
 discard is offered for and when its sheet reads git again, which refusals Stash and Continue
@@ -329,7 +329,7 @@ answers, and when the toolbar reveals a lane's activity. Under a test host the a
 automatic fetch (`TestHost`), and no test opens a repository or touches the app's defaults,
 so a run never touches the repository you last had open.
 
-`GitCoreTests` has 942 tests in 78 suites. Most of them run real `git` against a temporary
+`GitCoreTests` has 954 tests in 79 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
 for a server, with a second clone as "the colleague" who pushes in between — including one
 that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
@@ -411,7 +411,7 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
     Parsers/                    Status, Log, Ref, Diff (+Paths), BranchRefusal, Remote,
                                 PushPorcelain, RemoteFailure, StashList and StashFailure
                                 parsers, and GitLines (git's output split at the newline byte)
-  Tests/GitCoreTests/           78 suites; ForceFlagScanner(+Lexing) is the force-flag grep
+  Tests/GitCoreTests/           79 suites; ForceFlagScanner(+Lexing) is the force-flag grep
 
 Gitter/                   macOS app (SwiftUI)
   GitterApp.swift            App entry point, the one store (`AppModel`), the Repository

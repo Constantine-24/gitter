@@ -249,6 +249,33 @@ import Testing
         try await expectRefused(request, .changedSinceShown(["p"]), in: repo)
     }
 
+    /// A binary file under a path with ` b/` in it (`diff --git a/plan b/blob.bin b/plan
+    /// b/blob.bin`, no `---`/`+++` lines) is in what the sheet showed, so an edit to it while the
+    /// sheet is up is found. Its header was split at the wrong ` b/`, its diff dropped from the
+    /// batched read, and the discard went ahead.
+    @Test func aBinaryUnderAPathWithBSlashEditedAfterItWasShownIsRefused() async throws {
+        let repo = try await makeDiscardLab()
+        defer { repo.cleanUp() }
+        let blob = try repo.url("plan b/blob.bin")
+        try repo.write("a b.txt", "a\n")
+        try Data([0x00, 0x01, 0x62]).write(to: blob)
+        try await repo.git(["add", "--", "a b.txt", "plan b/blob.bin"])
+        try await repo.git(["commit", "-q", "-m", "b slash"])
+        try repo.write("a b.txt", "a\nmore\n")
+        try Data([0x00, 0x02, 0x62]).write(to: blob)
+        let request = try await unstaged(["a b.txt", "plan b/blob.bin"], repo)
+        guard case .unstaged(_, .diffs(let shown)) = request else {
+            Issue.record("not an unstaged request")
+            return
+        }
+        #expect(shown.map(\.displayPath) == ["a b.txt", "plan b/blob.bin"], "the sheet shows both files")
+        let edited = Data([0x00, 0x03, 0x62])
+        try edited.write(to: blob)
+
+        try await expectRefused(request, .changedSinceShown(["a b.txt", "plan b/blob.bin"]), in: repo)
+        #expect(try Data(contentsOf: blob) == edited, "the edit made while the sheet was up is gone")
+    }
+
     /// A patch that does not come from the diff shown (other blob ids) is stale by definition.
     @Test func aPatchFromAnotherDiffIsRefused() async throws {
         let repo = try await makeDiscardLab()
