@@ -31,9 +31,36 @@ extension CLIGitBackend: GitWorkingCopyBackend {
         }
     }
 
+    /// Every path with a worktree-side change or no index entry, staged by name in batches of
+    /// `stageAllBatch` — every one but an unmerged path.
+    ///
+    /// Not `add -A`: it resolves every conflicted path with its markers in (M 22). And not
+    /// `add -A -- . ':(exclude,literal)p'` either: measured on git 2.54 (A2 Task 1), `add`
+    /// resolves an unmerged path even when a pathspec excludes it (`:(exclude)`, `:!`, with or
+    /// without `-A`). The explicit list was measured byte-equal (`ls-files -s` and the
+    /// untracked and ignored sets) to `add -A` minus the unmerged paths, over an edit, a staged
+    /// then edited file, a deletion, a staged deletion, a rename, a staged rename edited again,
+    /// an untracked directory holding an ignored file, an ignored file, a nested repository and
+    /// a path with a space.
+    ///
+    /// `--untracked-files=normal` lists an untracked directory as one `dir/` entry, which `add`
+    /// takes as `add -A` does (ignored files inside stay out), whatever
+    /// `status.showUntrackedFiles` says. A staged-only change (worktree side `.`) is left out:
+    /// there is nothing to add, and a staged deletion's path matches no file.
     public func stageAll(at root: URL) async throws {
-        _ = try await run(["add", "-A"], cwd: root)
+        let status = try await stashStatus(at: root)
+        let paths = status.files
+            .filter { $0.conflict == nil && $0.staged != .unmerged && $0.unstaged != nil }
+            .map(\.path)
+        for start in stride(from: 0, to: paths.count, by: Self.stageAllBatch) {
+            let batch = paths[start..<min(start + Self.stageAllBatch, paths.count)]
+            _ = try await run(["add", "--"] + batch.map(literalPathspec), cwd: root)
+        }
     }
+
+    /// Paths per `add` in `stageAll`: A1's batch (`StashRecord.cacheinfoLimit`), well under
+    /// macOS's `ARG_MAX` for any real path length.
+    static let stageAllBatch = 1_000
 
     public func unstageAll(at root: URL) async throws {
         if try await hasCommits(at: root) {

@@ -1242,6 +1242,81 @@ import Testing
         #expect(findings.contains { $0.contains(flag) }, "missed \(flag): \(findings)")
     }
 
+    // MARK: - Conflict reads (A2 Task 1)
+
+    /// A **contract**: the conflict reader's vectors, spelled as `CLIGitBackend+ConflictRead.swift`
+    /// writes them, and Stage All's status read and batched `add`.
+    @Test(arguments: [
+        #"let data = try await run(["check-attr", "-z", "merge", "conflict-marker-size", "--", path], cwd: root)"#,
+        #"let result = try await runWithEnvironment(["merge-file", "--object-id", "--marker-size=\(size)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(path)", base, ":3:\(path)"], cwd: root, extra: [:], allowedExitCodes: codes)"#,
+        #"let result = try await runWithEnvironment(["merge-file", "--object-id", "--diff3", "--marker-size=\(size)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(path)", base, ":3:\(path)"], cwd: root, extra: [:], allowedExitCodes: codes)"#,
+        #"_ = try await run(["merge-file", "--object-id", "--marker-size=\(n)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(p)", ":1:\(p)", ":3:\(p)"], cwd: root)"#,
+        #"let data = try await run(["cat-file", "--filters", "--path=\(path)", oid], cwd: root)"#,
+        #"let data = try await run(["cat-file", "--filters", "--path=\(path)", ":\(n):\(path)"], cwd: root)"#,
+        #"let data = try await run(["cat-file", "--filters", "--path=\(path)", stage], cwd: root)"#,
+        #"try await run(["cat-file", "blob", "\(record.sha):\(path)"], cwd: root)"#,
+        #"try await run(["cat-file", "--filters", "\(record.sha):\(path)"], cwd: root)"#,
+        #"let data = try await run(["status", "--porcelain=v2", "-z", "--untracked-files=normal"], cwd: root)"#,
+        #"_ = try await run(["add", "--"] + batch.map(literalPathspec), cwd: root)"#,
+    ])
+    func allowsTheConflictReadsThisMilestoneNeeds(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
+    /// Everything else `merge-file`, `cat-file` and `check-attr` can do is a finding. Built in
+    /// test strings only.
+    @Test(arguments: [
+        // Without `--object-id` the result overwrites the first argument's file (M 2).
+        (#"_ = try await run(["merge-file", "--marker-size=7", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(p)", ":1:\(p)", ":3:\(p)"], cwd: root)"#, "merge-file"),
+        (#"_ = try await run(["merge-file", "ours.txt", "base.txt", "theirs.txt"], cwd: root)"#, "merge-file"),
+        // `-p`: output mode.
+        (#"_ = try await run(["merge-file", "-p", "--object-id", "--marker-size=\(n)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(p)", ":1:\(p)", ":3:\(p)"], cwd: root)"#, "merge-file"),
+        // Extra flags.
+        (#"_ = try await run(["merge-file", "--object-id", "--zdiff3", "--marker-size=\(n)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(p)", ":1:\(p)", ":3:\(p)"], cwd: root)"#, "merge-file"),
+        (#"_ = try await run(["merge-file", "--object-id", "--union", "--marker-size=\(n)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(p)", ":1:\(p)", ":3:\(p)"], cwd: root)"#, "merge-file"),
+        (#"_ = try await run(["merge-file", "--object-id", "--marker-size=\(n)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(p)", "--ours", ":3:\(p)"], cwd: root)"#, "merge-file"),
+        // Other labels, or the stages swapped.
+        (#"_ = try await run(["merge-file", "--object-id", "--marker-size=\(n)", "-L", "HEAD", "-L", "base", "-L", "theirs", ":2:\(p)", ":1:\(p)", ":3:\(p)"], cwd: root)"#, "merge-file"),
+        (#"_ = try await run(["merge-file", "--object-id", "--marker-size=\(n)", "-L", "ours", "-L", "base", "-L", "theirs", ":3:\(p)", ":1:\(p)", ":2:\(p)"], cwd: root)"#, "merge-file"),
+        // Anything appended.
+        (#"_ = try await run(["merge-file", "--object-id", "--marker-size=\(n)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(p)", ":1:\(p)", ":3:\(p)"] + extra, cwd: root)"#, "merge-file"),
+        // `cat-file` without `--filters`, or in another output mode.
+        (#"_ = try await run(["cat-file", "--path=\(p)", oid], cwd: root)"#, "cat-file"),
+        (#"_ = try await run(["cat-file", "-p", oid], cwd: root)"#, "cat-file"),
+        (#"_ = try await run(["cat-file", "--textconv", "--path=\(p)", oid], cwd: root)"#, "cat-file"),
+        (#"_ = try await run(["cat-file", "--filters", "--path=\(p)", "--batch"], cwd: root)"#, "cat-file"),
+        (#"_ = try await run(["cat-file", "blob", "--path=\(p)", oid], cwd: root)"#, "cat-file"),
+        // `check-attr` of anything but the two attributes, or a pathspec-looking path.
+        (#"_ = try await run(["check-attr", "-a", "--", p], cwd: root)"#, "check-attr"),
+        (#"_ = try await run(["check-attr", "-z", "merge", "conflict-marker-size", "--"] + paths, cwd: root)"#, "check-attr"),
+        (#"_ = try await run(["check-attr", "-z", "merge", "conflict-marker-size", "--", "-x"], cwd: root)"#, "check-attr"),
+    ])
+    func catchesAConflictReadOutsideItsShapes(source: String, subcommand: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(findings.contains { $0.contains("`git \(subcommand)` vector") }, "missed: \(source) → \(findings)")
+    }
+
+    /// Not vacuous: the reader's real file is clean, and each of its vectors, changed in memory
+    /// only, becomes a finding — so the shapes are what stand between that file and git.
+    @Test(arguments: [
+        (#""merge-file", "--object-id", "--diff3", "#, #""merge-file", "--diff3", "#),
+        (#""merge-file", "--object-id", "--marker-size="#, #""merge-file", "-p", "--object-id", "--marker-size="#),
+        (#""cat-file", "--filters", "--path=\(path)", oid]"#, #""cat-file", "--path=\(path)", oid]"#),
+        (#""cat-file", "--filters", "--path=\(path)", stage]"#, #""cat-file", "--textconv", "--path=\(path)", stage]"#),
+        (#""check-attr", "-z", "merge", "conflict-marker-size", "--", path]"#, #""check-attr", "-z", "merge", "conflict-marker-size", "--", literalPathspec(path), "-a"]"#),
+    ])
+    func theConflictReadersVectorsAreChecked(original: String, mutated: String) throws {
+        let file = "CLIGitBackend+ConflictRead.swift"
+        let source = try String(contentsOf: Self.sourcesRoot.appendingPathComponent(file), encoding: .utf8)
+        #expect(ForceFlagScanner.findings(in: source, fileName: file).isEmpty)
+        #expect(source.contains(original), "the reader no longer spells \(original)")
+        let changed = source.replacingOccurrences(of: original, with: mutated)
+        #expect(changed != source)
+
+        #expect(!ForceFlagScanner.findings(in: changed, fileName: file).isEmpty)
+    }
+
     /// Not vacuous: the real sources hold exactly the five parsed reads, and the rule read them.
     @Test func everyParsedDiffReadInTheSourcesIsChecked() throws {
         let sources = try ForceFlagScanner.gitCoreSources(root: Self.sourcesRoot)

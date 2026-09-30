@@ -1066,6 +1066,38 @@ enum ForceFlagScanner {
                 .interpolated(prefix: restoreSourcePrefix, suffix: "^2"),
                 .literal("--staged"), .literal("--")),
         ],
+        // A2 Task 1's conflict reads. `merge-file` without `--object-id` writes its result over
+        // its first argument (M 2), so both rebuilds are listed whole: the compare rebuild (the
+        // user's style, git's marker size) and the parse rebuild (`--diff3`, the safe size).
+        // Stages 2 and 3 are `:n:<path>` object names; the base is `:1:<path>` or, for an
+        // add/add with no stage 1, the empty blob — a data slot.
+        "merge-file": [
+            Shape(
+                .literal("--object-id"), .interpolated(prefix: "--marker-size=", suffix: ""),
+                .literal("-L"), .literal("ours"), .literal("-L"), .literal("base"), .literal("-L"),
+                .literal("theirs"), .interpolated(prefix: ":2:", suffix: ""), .data,
+                .interpolated(prefix: ":3:", suffix: "")),
+            Shape(
+                .literal("--object-id"), .literal("--diff3"),
+                .interpolated(prefix: "--marker-size=", suffix: ""),
+                .literal("-L"), .literal("ours"), .literal("-L"), .literal("base"), .literal("-L"),
+                .literal("theirs"), .interpolated(prefix: ":2:", suffix: ""), .data,
+                .interpolated(prefix: ":3:", suffix: "")),
+        ],
+        // The rebuilt blob or a stage in worktree form (`--filters --path=`), and the discard
+        // section's two reads of a record's blob.
+        "cat-file": [
+            Shape(.literal("--filters"), .interpolated(prefix: "--path=", suffix: ""), .data),
+            Shape(.literal("--filters"), .data),
+            Shape(.literal("blob"), .data),
+        ],
+        // `check-attr` takes path names, not pathspecs: `:(literal)f.txt` is looked up as a file
+        // of that name (measured, A2 Task 1), so the path after `--` is plain.
+        "check-attr": [
+            Shape(
+                .literal("-z"), .literal("merge"), .literal("conflict-marker-size"), .literal("--"),
+                .data),
+        ],
     ]
 
     /// One element of an allowed shape.
@@ -1133,6 +1165,13 @@ enum ForceFlagScanner {
             + "`--index`/`--keep-index`/`--staged`/`-p`/`--all`/a pathspec each save or restore "
             + "something the sheet did not name",
         "restore": restoreReason,
+        "merge-file":
+            "without `--object-id` merge-file overwrites its first argument in the worktree (M 2), "
+            + "and the conflict reader parses only the two rebuilds it was measured with",
+        "cat-file":
+            "the conflict reader and the discard section parse exactly these reads; `-p`, "
+            + "`--textconv` or a read without `--filters` gives them bytes in another form",
+        "check-attr": "the conflict reader asks for exactly these two attributes, of one plain path",
     ]
 
     static let shapeConcatenationNote =

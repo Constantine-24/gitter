@@ -14,7 +14,9 @@ public protocol GitWorkingCopyBackend: Sendable {
     /// the paths untracked and unchanged on disk. A no-op when `paths` is empty.
     func unstage(paths: [String], at root: URL) async throws
 
-    /// `git add -A`. Stages every modified, deleted, and untracked path in the worktree.
+    /// What `git add -A` stages — every modified, deleted and untracked path — except an
+    /// unmerged path, which stays unmerged: `add -A` would resolve it with its markers in
+    /// (M 22). Runs `add -- <paths>` over the status's list; a no-op when nothing is left.
     func stageAll(at root: URL) async throws
 
     /// `git reset -q`. In a repository with no commits yet, falls back to

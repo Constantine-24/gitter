@@ -50,6 +50,9 @@ public struct FileStatus: Sendable, Hashable, Identifiable {
     /// whose files git will not look inside (M 4, 16). Set by the backend, which stats the
     /// directory: porcelain v2 does not say.
     public let isNestedRepository: Bool
+    /// The `u` record's kind and stages; nil for every path that is not unmerged. `staged` and
+    /// `unstaged` stay `.unmerged` for such a path, so every existing check keeps working.
+    public let conflict: ConflictedFile?
 
     public var id: String { path }
     public var isUntracked: Bool { unstaged == .untracked }
@@ -59,12 +62,13 @@ public struct FileStatus: Sendable, Hashable, Identifiable {
         FileStatus(
             path: path, originalPath: originalPath, staged: staged, unstaged: unstaged,
             isSubmodule: isSubmodule, isIntentToAdd: isIntentToAdd,
-            isNestedRepository: isNestedRepository)
+            isNestedRepository: isNestedRepository, conflict: conflict)
     }
 
     public init(
         path: String, originalPath: String?, staged: ChangeKind?, unstaged: ChangeKind?,
-        isSubmodule: Bool = false, isIntentToAdd: Bool = false, isNestedRepository: Bool = false
+        isSubmodule: Bool = false, isIntentToAdd: Bool = false, isNestedRepository: Bool = false,
+        conflict: ConflictedFile? = nil
     ) {
         self.path = path
         self.originalPath = originalPath
@@ -73,6 +77,7 @@ public struct FileStatus: Sendable, Hashable, Identifiable {
         self.isSubmodule = isSubmodule
         self.isIntentToAdd = isIntentToAdd
         self.isNestedRepository = isNestedRepository
+        self.conflict = conflict
     }
 }
 

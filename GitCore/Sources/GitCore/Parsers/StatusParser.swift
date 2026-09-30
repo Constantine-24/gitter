@@ -114,10 +114,22 @@ public enum StatusParser {
     }
 
     /// `u XY sub m1 m2 m3 mW h1 h2 h3 path`
+    ///
+    /// The kind and the three stages are kept in `conflict` (M 1): a stage git does not have is
+    /// mode `000000` with an all-zero id. `staged`/`unstaged` stay `.unmerged`.
     private static func parseUnmerged(_ record: String) -> FileStatus? {
         let fields = record.split(separator: " ", maxSplits: 10, omittingEmptySubsequences: true)
         guard fields.count == 11 else { return nil }
         let path = String(fields[10])
-        return FileStatus(path: path, originalPath: nil, staged: .unmerged, unstaged: .unmerged)
+        func stage(_ mode: Substring, _ blob: Substring) -> ConflictStage? {
+            mode == "000000" ? nil : ConflictStage(mode: String(mode), blob: String(blob))
+        }
+        let conflict = ConflictKind.from(xy: fields[1]).map { kind in
+            ConflictedFile(
+                path: path, kind: kind, base: stage(fields[3], fields[7]),
+                ours: stage(fields[4], fields[8]), theirs: stage(fields[5], fields[9]))
+        }
+        return FileStatus(
+            path: path, originalPath: nil, staged: .unmerged, unstaged: .unmerged, conflict: conflict)
     }
 }
