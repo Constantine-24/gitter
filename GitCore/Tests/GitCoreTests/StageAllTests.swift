@@ -152,6 +152,38 @@ import Testing
         #expect(staged.contains { $0.hasPrefix("160000 ") && $0.hasSuffix("\tnested") })
     }
 
+    /// Fix round 2: a conflicted file moved to a new name that is then marked intent-to-add
+    /// reads `2 .R … e` then the *unmerged* path as the pair's original, beside that path's own
+    /// `u` record. The original must not be added: that would resolve the conflict as a
+    /// deletion. A UD (the worktree holds ours) and a UU whose worktree was set to stage 2.
+    @Test(arguments: [(ConflictFixtureKind.deletedByThem, "ud.txt"), (.bothModified, "f.txt")])
+    func aConflictedPathPairedWithAnIntentToAddRenameStaysUnmerged(kind: ConflictFixtureKind, path: String) async throws {
+        let repo = try await ConflictFixtures.merge(kind: kind)
+        defer { repo.cleanUp() }
+        let url = repo.root.appendingPathComponent(path)
+        try await repo.git(["show", ":2:\(path)"]).write(to: url)
+        try FileManager.default.moveItem(at: url, to: repo.root.appendingPathComponent("e"))
+        try await repo.git(["add", "-N", "e"])
+        try repo.write("keep.txt", "keep EDITED\n")
+        let porcelain = String(decoding: try await repo.git(["status", "--porcelain=v2", "-z"]), as: UTF8.self)
+        // Not vacuous: git really does pair the new name with the conflicted path.
+        #expect(porcelain.contains(" e\0\(path)\0"), "\(porcelain.debugDescription)")
+        let unmerged = String(decoding: try await repo.git(["ls-files", "-u", "-s"]), as: UTF8.self)
+        #expect(!unmerged.isEmpty)
+        let reference = try Self.copy(repo)
+        defer { reference.cleanUp() }
+        try await reference.git(["add", "-A"])
+
+        try await CLIGitBackend().stageAll(at: repo.root)
+
+        #expect(String(decoding: try await repo.git(["ls-files", "-u", "-s"]), as: UTF8.self) == unmerged)
+        let status = try await CLIGitBackend().snapshot(at: repo.root).status
+        #expect(status.files.first { $0.path == path }?.conflict?.kind == (kind == .bothModified ? .bothModified : .deletedByThem))
+        let expected = try await Self.staging(reference).filter { !$0.hasSuffix("\t\(path)") }
+            + unmerged.split(separator: "\n").map(String.init)
+        #expect(try await Self.staging(repo).sorted() == expected.sorted())
+    }
+
     @Test func withNothingToStageItDoesNothing() async throws {
         let repo = try await ConflictFixtures.merge(kind: .bothModified)
         defer { repo.cleanUp() }

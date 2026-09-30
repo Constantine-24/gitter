@@ -50,6 +50,12 @@ extension CLIGitBackend: GitWorkingCopyBackend {
     /// there is nothing to add, and a staged deletion's path matches no file.
     public func stageAll(at root: URL) async throws {
         let status = try await stashStatus(at: root)
+        // Every path with a conflict stage, checked last against every path the list builds:
+        // a conflicted file moved to a name marked intent-to-add reads `2 .R … e` then the
+        // unmerged path as the pair's original (fix round 2), and adding that original would
+        // resolve the conflict as a deletion.
+        let unmerged = Set(status.files.filter { $0.conflict != nil || $0.staged == .unmerged }.map(\.path))
+        var seen = Set<String>()
         let paths = status.files
             .filter { $0.conflict == nil && $0.staged != .unmerged && $0.unstaged != nil }
             .flatMap { file -> [String] in
@@ -60,6 +66,7 @@ extension CLIGitBackend: GitWorkingCopyBackend {
                 else { return [file.path] }
                 return [file.path, original]
             }
+            .filter { !unmerged.contains($0) && seen.insert($0).inserted }
         for start in stride(from: 0, to: paths.count, by: Self.stageAllBatch) {
             let batch = paths[start..<min(start + Self.stageAllBatch, paths.count)]
             _ = try await run(["add", "--"] + batch.map(literalPathspec), cwd: root)
