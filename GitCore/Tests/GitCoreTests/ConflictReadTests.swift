@@ -38,10 +38,18 @@ import Testing
     static func mergeFileBlockCount(_ repo: TestRepo, _ path: String) async throws -> Int32 {
         let result = try await CLIGitBackend().runWithEnvironment(
             [
-                "merge-file", "--object-id", "--diff3", "--marker-size=7", "-L", "ours", "-L", "base",
+                "merge-file", "--object-id", "--diff-algorithm=histogram", "--diff3", "--marker-size=7", "-L", "ours", "-L", "base",
                 "-L", "theirs", ":2:\(path)", ":1:\(path)", ":3:\(path)",
             ], cwd: repo.root, extra: [:], allowedExitCodes: Set(1...127))
         return result.exitCode
+    }
+
+    /// Removes `AUTO_MERGE`, as a stop that never wrote one (or a stale one git removed) would
+    /// leave it: the comparison then rests on the merge-file rebuild or the stage alone.
+    static func dropAutoMerge(_ repo: TestRepo) async throws {
+        let url = try await ConflictFixtures.gitPath(repo, "AUTO_MERGE")
+        #expect(FileManager.default.fileExists(atPath: url.path), "the stop wrote no AUTO_MERGE to drop")
+        try FileManager.default.removeItem(at: url)
     }
 
     static func worktree(_ repo: TestRepo, _ path: String) throws -> Data {
@@ -78,10 +86,13 @@ import Testing
         }
     }
 
-    @Test(arguments: Setting.allCases)
-    func aTextConflictIsTwoBlocksThatMatchWhatGitWrote(setting: Setting) async throws {
+    /// With `AUTO_MERGE` (what the merge machinery wrote) and without it, where only the
+    /// merge-file rebuild can say "matches".
+    @Test(arguments: Setting.allCases, [true, false])
+    func aTextConflictIsTwoBlocksThatMatchWhatGitWrote(setting: Setting, autoMerge: Bool) async throws {
         let repo = try await ConflictFixtures.merge(kind: .bothModified, prepare: setting.apply)
         defer { repo.cleanUp() }
+        if !autoMerge { try await Self.dropAutoMerge(repo) }
         let written = try Self.worktree(repo, "f.txt")
 
         let document = try await Self.document(repo, "f.txt")
@@ -108,10 +119,11 @@ import Testing
         #expect(document.snapshot.file == (try await Self.conflict(repo, "f.txt")))
     }
 
-    @Test(arguments: Setting.allCases)
-    func anAppendedLineIsNotWhatGitWrote(setting: Setting) async throws {
+    @Test(arguments: Setting.allCases, [true, false])
+    func anAppendedLineIsNotWhatGitWrote(setting: Setting, autoMerge: Bool) async throws {
         let repo = try await ConflictFixtures.merge(kind: .bothModified, prepare: setting.apply)
         defer { repo.cleanUp() }
+        if !autoMerge { try await Self.dropAutoMerge(repo) }
         var edited = try Self.worktree(repo, "f.txt")
         edited.append(Data("appended\(setting.crlf ? "\r\n" : "\n")".utf8))
         try edited.write(to: repo.root.appendingPathComponent("f.txt"))
@@ -122,6 +134,22 @@ import Testing
         #expect(Self.blocks(document)?.count == 2)
         #expect(document.worktree == edited)
         #expect(document.snapshot.worktreeHash == Self.sha256(edited))
+    }
+
+    /// The non-vacuous pair, with and without `AUTO_MERGE`: untouched → true; one content line
+    /// edited → false.
+    @Test(arguments: [true, false])
+    func anEditedContentLineIsNotWhatGitWrote(autoMerge: Bool) async throws {
+        let repo = try await ConflictFixtures.merge(kind: .bothModified)
+        defer { repo.cleanUp() }
+        if !autoMerge { try await Self.dropAutoMerge(repo) }
+        #expect(try await Self.document(repo, "f.txt").matchesGitsConflict)
+        let written = String(decoding: try Self.worktree(repo, "f.txt"), as: UTF8.self)
+        let edited = written.replacingOccurrences(of: "four\n", with: "four EDITED\n")
+        #expect(edited != written)
+        try Data(edited.utf8).write(to: repo.root.appendingPathComponent("f.txt"))
+
+        #expect(!(try await Self.document(repo, "f.txt").matchesGitsConflict))
     }
 
     @Test func onlyRelabellingAMarkerLineStillMatches() async throws {
@@ -161,8 +189,11 @@ import Testing
     }
 
     /// A smudge filter that prefixes every line (M 26's `S:`) rewrites the markers too: nothing
-    /// can be split, and "matches" is the safe answer, false.
-    @Test func aFilterThatRewritesMarkerLinesIsNotParsed() async throws {
+    /// can be split. Whether the file is what git wrote is still known — `AUTO_MERGE` holds
+    /// exactly that, and the untouched file equals it. Without `AUTO_MERGE` the merge-file
+    /// rebuild cannot tell (its `S:<<<<<<< ours` keeps a label no rule strips), and says false.
+    @Test(arguments: [true, false])
+    func aFilterThatRewritesMarkerLinesIsNotParsed(autoMerge: Bool) async throws {
         let repo = try await ConflictFixtures.merge(kind: .bothModified) { repo in
             try await repo.git(["config", "filter.pfx.smudge", "sed s/^/S:/"])
             try await repo.git(["config", "filter.pfx.clean", "sed s/^S://"])
@@ -170,21 +201,22 @@ import Testing
         }
         defer { repo.cleanUp() }
         #expect(String(decoding: try Self.worktree(repo, "f.txt"), as: UTF8.self).contains("S:<<<<<<< HEAD"))
+        if !autoMerge { try await Self.dropAutoMerge(repo) }
 
         let document = try await Self.document(repo, "f.txt")
 
         #expect(document.presentation == .wholeFile(reason: .unparsable))
-        #expect(!document.matchesGitsConflict)
+        #expect(document.matchesGitsConflict == autoMerge)
     }
 
-    /// A known limit, pinned on its safe side. merge-file joins two conflicts separated only by
-    /// lines with no letter or digit (closing braces) into one block; git's merge keeps them
-    /// apart (measured, A2 Task 1: merge-file runs xdiff at `ZEALOUS_ALNUM`, a merge at
-    /// `ZEALOUS`). In the default style the compare rebuild then differs from an untouched file
-    /// — "changed since the conflict". diff3 does neither, so it matches there, and the parse
-    /// rebuild (always diff3) still has both blocks.
-    @Test(arguments: [false, true])
-    func conflictsSeparatedOnlyByPunctuation(diff3: Bool) async throws {
+    /// merge-file joins two conflicts separated only by lines with no letter or digit (closing
+    /// braces) into one block; git's merge keeps them apart (merge-file runs xdiff at
+    /// `ZEALOUS_ALNUM`, a merge at `ZEALOUS`; histogram does not change it, measured). So in
+    /// the default style only `AUTO_MERGE` can say the untouched file matches; without it the
+    /// answer is the safe "changed". diff3 coalesces neither way, and the parse rebuild (always
+    /// diff3) has both blocks.
+    @Test(arguments: [false, true], [true, false])
+    func conflictsSeparatedOnlyByPunctuation(diff3: Bool, autoMerge: Bool) async throws {
         let repo = try await TestRepo.makeEmpty()
         defer { repo.cleanUp() }
         if diff3 { try await repo.git(["config", "merge.conflictStyle", "diff3"]) }
@@ -199,10 +231,11 @@ import Testing
         try await repo.git(["merge", "--no-edit", "theirs"], allowedExitCodes: [1])
         try await ConflictFixtures.requireStopped(repo, marker: "MERGE_HEAD")
         #expect(Self.openingMarkers(in: try Self.worktree(repo, "f.txt"), size: 7) == 2)
+        if !autoMerge { try await Self.dropAutoMerge(repo) }
 
         let document = try await Self.document(repo, "f.txt")
 
-        #expect(document.matchesGitsConflict == diff3)
+        #expect(document.matchesGitsConflict == (autoMerge || diff3))
         #expect(Self.blocks(document)?.count == 2)
     }
 
@@ -267,8 +300,8 @@ import Testing
 
     // MARK: - Whole file (M 1, M 33)
 
-    @Test(arguments: [
-        (ConflictFixtureKind.binary, "bin.dat", WholeFileReason.binary),
+    static let wholeFileCases: [(ConflictFixtureKind, String, WholeFileReason)] = [
+        (.binary, "bin.dat", .binary),
         (.symlink, "link", .symlink),
         (.modeOnly, "mode.sh", .modeOnly),
         (.deletedByUs, "du.txt", .deletion),
@@ -278,36 +311,222 @@ import Testing
         (.renameRename, "rr-ours.txt", .oneSided),
         (.renameRename, "rr-theirs.txt", .oneSided),
         (.mergeBinary, "mb.txt", .mergeAttribute("binary")),
-    ])
-    func aPathGitDidNotDrawBlocksInIsWholeFile(kind: ConflictFixtureKind, path: String, reason: WholeFileReason) async throws {
+    ]
+
+    /// Each whole-file kind matches what git left — `AUTO_MERGE`'s entry, or without it the
+    /// stage git kept (ours for binary, symlink, mode, `merge=binary`, UD, AU; theirs for DU
+    /// and UA; no file for DD) — and stops matching once the path is touched.
+    @Test(arguments: wholeFileCases.flatMap { c in [true, false].map { (c.0, c.1, c.2, $0) } })
+    func aPathGitDidNotDrawBlocksInIsWholeFile(
+        kind: ConflictFixtureKind, path: String, reason: WholeFileReason, autoMerge: Bool
+    ) async throws {
         let repo = try await ConflictFixtures.merge(kind: kind)
         defer { repo.cleanUp() }
+        if !autoMerge { try await Self.dropAutoMerge(repo) }
 
         let document = try await Self.document(repo, path)
 
         #expect(document.presentation == .wholeFile(reason: reason))
-        #expect(!document.matchesGitsConflict)
+        #expect(document.matchesGitsConflict)
+
+        let url = repo.root.appendingPathComponent(path)
+        if kind == .symlink {
+            try FileManager.default.removeItem(at: url)
+            try FileManager.default.createSymbolicLink(atPath: url.path, withDestinationPath: "elsewhere")
+        } else {
+            try? FileManager.default.removeItem(at: url)
+            try Data("touched\n".utf8).write(to: url)
+        }
+        #expect(!(try await Self.document(repo, path).matchesGitsConflict), "\(path) after a touch")
     }
 
-    @Test func mergeUnsetIsWholeFile() async throws {
+    /// `-merge` keeps ours like `merge=binary` (M 33).
+    @Test(arguments: [true, false])
+    func mergeUnsetIsWholeFile(autoMerge: Bool) async throws {
         let repo = try await ConflictFixtures.merge(kind: .bothModified) { repo in
             try repo.write(".gitattributes", "f.txt -merge\n")
         }
         defer { repo.cleanUp() }
+        if !autoMerge { try await Self.dropAutoMerge(repo) }
 
-        #expect(try await Self.document(repo, "f.txt").presentation == .wholeFile(reason: .mergeAttribute("unset")))
+        let document = try await Self.document(repo, "f.txt")
+
+        #expect(document.presentation == .wholeFile(reason: .mergeAttribute("unset")))
+        #expect(document.matchesGitsConflict)
     }
 
-    /// A driver of the user's wrote its own bytes (M 3): nothing to rebuild or split.
-    @Test func aCustomMergeDriverIsWholeFile() async throws {
+    /// A driver of the user's wrote its own bytes (M 3): nothing to rebuild or split, and only
+    /// `AUTO_MERGE` knows what those bytes were.
+    @Test(arguments: [true, false])
+    func aCustomMergeDriverIsWholeFile(autoMerge: Bool) async throws {
         let repo = try await ConflictFixtures.merge(kind: .bothModified) { repo in
             try await repo.git(["config", "merge.drv.driver", "printf 'DRIVER OUTPUT\\n' > %A; exit 1"])
             try repo.write(".gitattributes", "f.txt merge=drv\n")
         }
         defer { repo.cleanUp() }
         #expect(try Self.worktree(repo, "f.txt") == Data("DRIVER OUTPUT\n".utf8))
+        if !autoMerge { try await Self.dropAutoMerge(repo) }
+
+        let document = try await Self.document(repo, "f.txt")
+
+        #expect(document.presentation == .wholeFile(reason: .mergeAttribute("drv")))
+        #expect(document.matchesGitsConflict == autoMerge)
+    }
+
+    /// A driver the attributes name but the configuration does not define: git merges text and
+    /// writes markers (measured) — `merge=lfs` after `git lfs track` in a clone without LFS's
+    /// config is the everyday case (Ruling 8: plain text).
+    @Test(arguments: ["nodriver", "lfs"])
+    func anUndefinedMergeDriverIsText(driver: String) async throws {
+        let repo = try await ConflictFixtures.merge(kind: .bothModified) { repo in
+            try repo.write(".gitattributes", "f.txt merge=\(driver)\n")
+        }
+        defer { repo.cleanUp() }
+        #expect(Self.openingMarkers(in: try Self.worktree(repo, "f.txt"), size: 7) == 2)
+
+        let document = try await Self.document(repo, "f.txt")
+
+        #expect(Self.blocks(document)?.count == 2)
+        #expect(document.matchesGitsConflict)
+    }
+
+    /// `merge.default` names the driver for a path whose `merge` attribute is unspecified.
+    @Test func mergeDefaultBinaryIsWholeFile() async throws {
+        let repo = try await ConflictFixtures.merge(kind: .bothModified) { repo in
+            try await repo.git(["config", "merge.default", "binary"])
+        }
+        defer { repo.cleanUp() }
+        #expect(Self.openingMarkers(in: try Self.worktree(repo, "f.txt"), size: 7) == 0)
+
+        let document = try await Self.document(repo, "f.txt")
+
+        #expect(document.presentation == .wholeFile(reason: .mergeAttribute("binary")))
+        #expect(document.matchesGitsConflict)
+    }
+
+    @Test func mergeDefaultNamingAnUndefinedDriverIsText() async throws {
+        let repo = try await ConflictFixtures.merge(kind: .bothModified) { repo in
+            try await repo.git(["config", "merge.default", "nodriver"])
+        }
+        defer { repo.cleanUp() }
+
+        #expect(Self.blocks(try await Self.document(repo, "f.txt"))?.count == 2)
+    }
+
+    @Test func mergeDefaultNamingADefinedDriverIsThatDriver() async throws {
+        let repo = try await ConflictFixtures.merge(kind: .bothModified) { repo in
+            try await repo.git(["config", "merge.default", "drv"])
+            try await repo.git(["config", "merge.drv.driver", "printf 'DRIVER OUTPUT\\n' > %A; exit 1"])
+        }
+        defer { repo.cleanUp() }
 
         #expect(try await Self.document(repo, "f.txt").presentation == .wholeFile(reason: .mergeAttribute("drv")))
+    }
+
+    /// `AUTO_MERGE` is read only while an operation is in progress: a `stash apply` writes one
+    /// too (measured) and nothing clears it, so outside an operation it may be stale. Here it
+    /// is fresh and equal to the driver's output — and still not consulted.
+    @Test func aStashApplysAutoMergeIsNotConsulted() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try await repo.git(["config", "merge.drv.driver", "printf 'DRIVER OUTPUT\\n' > %A; exit 1"])
+        try repo.write(".gitattributes", "f.txt merge=drv\n")
+        try repo.write("f.txt", ConflictFixtures.baseText)
+        try await repo.commitAll("base")
+        try repo.write("f.txt", ConflictFixtures.theirsText)
+        try await repo.git(["stash", "push", "-q"])
+        try repo.write("f.txt", ConflictFixtures.oursText)
+        try await repo.commitAll("ours")
+        try await repo.git(["stash", "apply", "-q"], allowedExitCodes: [1])
+        try await ConflictFixtures.requireUnmerged(repo)
+        try await ConflictFixtures.requireGitPath(repo, "AUTO_MERGE")
+        #expect(try Self.worktree(repo, "f.txt") == Data("DRIVER OUTPUT\n".utf8))
+        let autoMerge = try await repo.git(["cat-file", "blob", "AUTO_MERGE:f.txt"])
+        #expect(autoMerge == Data("DRIVER OUTPUT\n".utf8))
+
+        let document = try await Self.document(repo, "f.txt")
+
+        #expect(document.presentation == .wholeFile(reason: .mergeAttribute("drv")))
+        #expect(!document.matchesGitsConflict)
+    }
+
+    // MARK: - The diff algorithm (fix round 1)
+
+    /// A merge diffs with histogram (ort's default); merge-file's default is myers. On this
+    /// input (the reviewer's fuzz, seed 7, repo 13) the myers rebuild of an untouched file
+    /// differs from what git wrote, the histogram one does not. Without `AUTO_MERGE`, so the
+    /// rebuild alone answers.
+    @Test func theRebuildDiffsAsTheMergeDid() async throws {
+        let repo = try await Self.conflicted(
+            base: "b\n}\n}\nb\n}\n}\na\n", ours: "b\n}\n}\nb\n}\na\n",
+            theirs: "c6\n}\n{3\nb\n}\n}\n}\na\n}\n")
+        defer { repo.cleanUp() }
+        try await Self.dropAutoMerge(repo)
+        // Not vacuous: myers really does rebuild something else here.
+        let myers = try await CLIGitBackend().runWithEnvironment(
+            ["merge-file", "--object-id", "--diff-algorithm=myers", "-L", "ours", "-L", "base", "-L", "theirs", ":2:f.txt", ":1:f.txt", ":3:f.txt"],
+            cwd: repo.root, extra: [:], allowedExitCodes: Set(1...127))
+        let myersText = try await repo.git(["cat-file", "blob", String(decoding: myers.stdout, as: UTF8.self).trimmingCharacters(in: .newlines)])
+        let written = try Self.worktree(repo, "f.txt")
+        #expect(ConflictParser.withoutLabels(myersText, markerSize: 7) != ConflictParser.withoutLabels(written, markerSize: 7))
+
+        let document = try await Self.document(repo, "f.txt")
+
+        #expect(document.matchesGitsConflict)
+        #expect(Self.blocks(document)?.isEmpty == false)
+    }
+
+    /// A conflicted path merge-file merges cleanly (git ran with `-X diff-algorithm=myers`; the
+    /// histogram rebuild has no conflict): a blocks view with no block would offer nothing to
+    /// choose. Whole file instead.
+    @Test func aRebuildWithNoBlockIsNotBlocks() async throws {
+        let repo = try await Self.conflicted(
+            base: "if (y) {\nc\nc\nb\nb\n", ours: "if (y) {\nif (y) {2\nc\nb\n",
+            theirs: "if (y) {\nc\nc\nc\nb\nb\n", options: ["-X", "diff-algorithm=myers"])
+        defer { repo.cleanUp() }
+
+        let document = try await Self.document(repo, "f.txt")
+
+        #expect(document.presentation == .wholeFile(reason: .unparsable))
+        #expect(document.matchesGitsConflict)
+    }
+
+    /// The same with stages git could leave behind but merge-file merges under any algorithm:
+    /// ours and theirs made the same change (index built by hand).
+    @Test func identicalSidesAreNotBlocks() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("f.txt", "a\n")
+        try await repo.commitAll("base")
+        let base = try await repo.revParse(":f.txt")
+        try repo.write("f.txt", "b\n")
+        try await repo.git(["add", "f.txt"])
+        let side = try await repo.revParse(":f.txt")
+        try await repo.git(["update-index", "--force-remove", "f.txt"])
+        // `--index-info` reads stdin, which the runner closes; a shell gives it a file.
+        let info = repo.root.appendingPathComponent(".git/index-info")
+        try Data("100644 \(base) 1\tf.txt\n100644 \(side) 2\tf.txt\n100644 \(side) 3\tf.txt\n".utf8).write(to: info)
+        _ = try await isolatedRunner().run(
+            "/bin/sh", ["-c", "/usr/bin/git update-index --index-info < .git/index-info"], cwd: repo.root)
+        #expect(try await Self.conflict(repo, "f.txt").kind == .bothModified)
+
+        #expect(try await Self.document(repo, "f.txt").presentation == .wholeFile(reason: .unparsable))
+    }
+
+    /// A merge of one file from the three texts given, stopped with its conflict.
+    static func conflicted(base: String, ours: String, theirs: String, options: [String] = []) async throws -> TestRepo {
+        let repo = try await TestRepo.makeEmpty()
+        try repo.write("f.txt", base)
+        try await repo.commitAll("base")
+        try await repo.git(["switch", "-q", "-c", "theirs"])
+        try repo.write("f.txt", theirs)
+        try await repo.commitAll("theirs")
+        try await repo.git(["switch", "-q", "main"])
+        try repo.write("f.txt", ours)
+        try await repo.commitAll("ours")
+        try await repo.git(["merge", "--no-edit"] + options + ["theirs"], allowedExitCodes: [1])
+        try await ConflictFixtures.requireStopped(repo, marker: "MERGE_HEAD")
+        return repo
     }
 
     @Test func aSubmoduleIsItsOwnPresentation() async throws {

@@ -147,8 +147,10 @@ public enum WholeFileReason: Sendable, Hashable {
 public struct ConflictDocument: Sendable, Hashable {
     public let snapshot: ConflictSnapshot
     public let presentation: ConflictPresentation
-    /// false = the worktree is not what git wrote ("changed since the conflict"): the compare
-    /// rebuild, label text removed from marker lines, differs (M 26), or no rebuild exists.
+    /// false = the worktree is not what git wrote ("changed since the conflict"): it equals
+    /// neither `AUTO_MERGE`'s entry (during an operation) nor the compare rebuild (text) nor
+    /// the stage git leaves (whole file), label text removed from marker lines (M 26). See
+    /// `GitConflictBackend.conflictDocument`.
     public let matchesGitsConflict: Bool
     /// The current worktree bytes (for the "changed since" view and previews).
     public let worktree: Data?

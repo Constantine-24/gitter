@@ -41,7 +41,8 @@ extension CLIGitBackend: GitWorkingCopyBackend {
     /// untracked and ignored sets) to `add -A` minus the unmerged paths, over an edit, a staged
     /// then edited file, a deletion, a staged deletion, a rename, a staged rename edited again,
     /// an untracked directory holding an ignored file, an ignored file, a nested repository and
-    /// a path with a space.
+    /// a path with a space — and, fix round 1, an intent-to-add rename, whose deleted original
+    /// is added by name too.
     ///
     /// `--untracked-files=normal` lists an untracked directory as one `dir/` entry, which `add`
     /// takes as `add -A` does (ignored files inside stay out), whatever
@@ -51,7 +52,14 @@ extension CLIGitBackend: GitWorkingCopyBackend {
         let status = try await stashStatus(at: root)
         let paths = status.files
             .filter { $0.conflict == nil && $0.staged != .unmerged && $0.unstaged != nil }
-            .map(\.path)
+            .flatMap { file -> [String] in
+                // A worktree rename or copy (`2 .R … e` then `q`) is git pairing an
+                // intent-to-add entry with a deleted path (see `intentToAddPaths`): the
+                // deleted original has no record of its own, and `add -A` removes it.
+                guard file.unstaged == .renamed || file.unstaged == .copied, let original = file.originalPath
+                else { return [file.path] }
+                return [file.path, original]
+            }
         for start in stride(from: 0, to: paths.count, by: Self.stageAllBatch) {
             let batch = paths[start..<min(start + Self.stageAllBatch, paths.count)]
             _ = try await run(["add", "--"] + batch.map(literalPathspec), cwd: root)

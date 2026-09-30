@@ -1068,17 +1068,19 @@ enum ForceFlagScanner {
         ],
         // A2 Task 1's conflict reads. `merge-file` without `--object-id` writes its result over
         // its first argument (M 2), so both rebuilds are listed whole: the compare rebuild (the
-        // user's style, git's marker size) and the parse rebuild (`--diff3`, the safe size).
+        // user's style, git's marker size) and the parse rebuild (`--diff3`, the safe size),
+        // both diffing with histogram as a merge does (fix round 1: myers rebuilt other blocks).
         // Stages 2 and 3 are `:n:<path>` object names; the base is `:1:<path>` or, for an
         // add/add with no stage 1, the empty blob — a data slot.
         "merge-file": [
             Shape(
-                .literal("--object-id"), .interpolated(prefix: "--marker-size=", suffix: ""),
+                .literal("--object-id"), .literal("--diff-algorithm=histogram"),
+                .interpolated(prefix: "--marker-size=", suffix: ""),
                 .literal("-L"), .literal("ours"), .literal("-L"), .literal("base"), .literal("-L"),
                 .literal("theirs"), .interpolated(prefix: ":2:", suffix: ""), .data,
                 .interpolated(prefix: ":3:", suffix: "")),
             Shape(
-                .literal("--object-id"), .literal("--diff3"),
+                .literal("--object-id"), .literal("--diff-algorithm=histogram"), .literal("--diff3"),
                 .interpolated(prefix: "--marker-size=", suffix: ""),
                 .literal("-L"), .literal("ours"), .literal("-L"), .literal("base"), .literal("-L"),
                 .literal("theirs"), .interpolated(prefix: ":2:", suffix: ""), .data,

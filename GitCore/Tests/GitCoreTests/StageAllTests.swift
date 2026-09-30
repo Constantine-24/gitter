@@ -109,6 +109,49 @@ import Testing
         #expect(staged.contains("ignored ignored.log"))
     }
 
+    /// The three V4 measured by hand, pinned: an intent-to-add entry, a nested repository, and
+    /// an intent-to-add *rename* — `mv q e; git add -N e` reads `2 .R … e` then `q`, and the
+    /// deleted `q` has no record of its own, so it is staged through the pair's original path
+    /// (fix round 1). With and without a conflict beside them.
+    @Test(arguments: [false, true])
+    func intentToAddAndNestedRepositoriesAreStagedAsAddAllStagesThem(conflict: Bool) async throws {
+        let repo = conflict
+            ? try await ConflictFixtures.merge(kind: .bothModified) { try $0.write("q", "q\n") }
+            : try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        if !conflict {
+            try repo.write("keep.txt", "keep\n")
+            try repo.write("q", "q\n")
+            try await repo.commitAll("base")
+        }
+        try FileManager.default.moveItem(
+            at: repo.root.appendingPathComponent("q"), to: repo.root.appendingPathComponent("e"))
+        try await repo.git(["add", "-N", "e"])
+        try repo.write("ita.txt", "intent to add\n")
+        try await repo.git(["add", "-N", "ita.txt"])
+        let nested = TestRepo(root: repo.root.appendingPathComponent("nested"))
+        try FileManager.default.createDirectory(at: nested.root, withIntermediateDirectories: true)
+        try await nested.git(["init", "-q", "-b", "main"])
+        try nested.write("n", "n\n")
+        try await nested.git(["add", "n"])
+        try await nested.git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "n"])
+        let porcelain = String(decoding: try await repo.git(["status", "--porcelain=v2", "-z"]), as: UTF8.self)
+        #expect(porcelain.contains(" e\0q\0"), "\(porcelain.debugDescription)")
+        let unmerged = String(decoding: try await repo.git(["ls-files", "-u", "-s"]), as: UTF8.self)
+        let reference = try Self.copy(repo)
+        defer { reference.cleanUp() }
+        try await reference.git(["add", "-A"])
+
+        try await CLIGitBackend().stageAll(at: repo.root)
+
+        let expected = try await Self.staging(reference).filter { !$0.hasSuffix("\tf.txt") }
+            + unmerged.split(separator: "\n").map(String.init)
+        let staged = try await Self.staging(repo)
+        #expect(staged.sorted() == expected.sorted())
+        #expect(!staged.contains { $0.hasSuffix("\tq") }, "q stayed in the index")
+        #expect(staged.contains { $0.hasPrefix("160000 ") && $0.hasSuffix("\tnested") })
+    }
+
     @Test func withNothingToStageItDoesNothing() async throws {
         let repo = try await ConflictFixtures.merge(kind: .bothModified)
         defer { repo.cleanUp() }

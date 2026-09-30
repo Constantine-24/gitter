@@ -16,14 +16,19 @@ public protocol GitConflictBackend: Sendable {
     /// operation's own files are untouched.
     ///
     /// - The **presentation**: `.submodule` for a gitlink; `.wholeFile` for a deletion
-    ///   (`DU`/`UD`/`DD`), a one-sided add (`AU`/`UA`), a symlink, a mode-only add/add, a `merge`
-    ///   attribute other than the text driver, a binary stage (`merge-file` exit 255) or a parse
-    ///   rebuild that does not split; `.blocks` otherwise, from the **parse rebuild** —
-    ///   `merge-file --diff3` at `ConflictParser.safeMarkerSize` of the stages, in worktree form.
-    /// - `matchesGitsConflict`: the **compare rebuild** — the user's `merge.conflictStyle`, the
-    ///   path's `conflict-marker-size` — in worktree form equals the worktree bytes once both
-    ///   lose their marker labels (M 26). false when the file is missing, and for a submodule
-    ///   and every whole-file reason but `.unparsable` (there is no rebuild to compare).
+    ///   (`DU`/`UD`/`DD`), a one-sided add (`AU`/`UA`), a symlink, a mode-only add/add, a merge
+    ///   driver other than git's text merge (an undefined driver name is text, as in git), a
+    ///   binary stage (`merge-file` exit 255) or a parse rebuild that does not split into at
+    ///   least one block; `.blocks` otherwise, from the **parse rebuild** — `merge-file
+    ///   --diff3` at `ConflictParser.safeMarkerSize` of the stages, in worktree form.
+    /// - `matchesGitsConflict`: the worktree is what git wrote. True when it equals
+    ///   `AUTO_MERGE`'s entry for the path in worktree form (read only while an operation is
+    ///   in progress; no entry = no file), or, for a text path, the **compare rebuild** — the
+    ///   user's `merge.conflictStyle`, the path's `conflict-marker-size` — both label-normalised
+    ///   (M 26); or, for a whole-file path, the stage git leaves there (ours for binary, symlink,
+    ///   mode-only, `merge=binary`, UD, AU; theirs for DU, UA; no file for DD). A driver's
+    ///   output matches only through `AUTO_MERGE`; a submodule never matches. A stale or absent
+    ///   `AUTO_MERGE` can only turn a true into a false.
     /// - The snapshot carries `file` as given and the SHA-256 of the worktree bytes: a symlink's
     ///   target path, a regular file's content, nil for anything else.
     func conflictDocument(for file: ConflictedFile, at root: URL) async throws -> ConflictDocument

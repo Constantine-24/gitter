@@ -1248,9 +1248,15 @@ import Testing
     /// writes them, and Stage All's status read and batched `add`.
     @Test(arguments: [
         #"let data = try await run(["check-attr", "-z", "merge", "conflict-marker-size", "--", path], cwd: root)"#,
-        #"let result = try await runWithEnvironment(["merge-file", "--object-id", "--marker-size=\(size)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(path)", base, ":3:\(path)"], cwd: root, extra: [:], allowedExitCodes: codes)"#,
-        #"let result = try await runWithEnvironment(["merge-file", "--object-id", "--diff3", "--marker-size=\(size)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(path)", base, ":3:\(path)"], cwd: root, extra: [:], allowedExitCodes: codes)"#,
-        #"_ = try await run(["merge-file", "--object-id", "--marker-size=\(n)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(p)", ":1:\(p)", ":3:\(p)"], cwd: root)"#,
+        #"let result = try await runWithEnvironment(["merge-file", "--object-id", "--diff-algorithm=histogram", "--marker-size=\(size)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(path)", base, ":3:\(path)"], cwd: root, extra: [:], allowedExitCodes: codes)"#,
+        #"let result = try await runWithEnvironment(["merge-file", "--object-id", "--diff-algorithm=histogram", "--diff3", "--marker-size=\(size)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(path)", base, ":3:\(path)"], cwd: root, extra: [:], allowedExitCodes: codes)"#,
+        #"_ = try await run(["merge-file", "--object-id", "--diff-algorithm=histogram", "--marker-size=\(n)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(p)", ":1:\(p)", ":3:\(p)"], cwd: root)"#,
+        // Fix round 1: `AUTO_MERGE` (its tree, the path's entry, the entry's bytes) and a merge
+        // driver's definition.
+        #"let data = try await run(["rev-parse", "-q", "--verify", "AUTO_MERGE^{tree}"], cwd: root, allowedExitCodes: [1])"#,
+        #"let data = try await run(["ls-tree", "-z", "--full-tree", tree, "--", literalPathspec(path)], cwd: root)"#,
+        #"let data = try await run(["cat-file", "blob", oid], cwd: root)"#,
+        #"let data = try await run(["config", "--get", key], cwd: root, allowedExitCodes: [1])"#,
         #"let data = try await run(["cat-file", "--filters", "--path=\(path)", oid], cwd: root)"#,
         #"let data = try await run(["cat-file", "--filters", "--path=\(path)", ":\(n):\(path)"], cwd: root)"#,
         #"let data = try await run(["cat-file", "--filters", "--path=\(path)", stage], cwd: root)"#,
@@ -1272,6 +1278,11 @@ import Testing
         (#"_ = try await run(["merge-file", "ours.txt", "base.txt", "theirs.txt"], cwd: root)"#, "merge-file"),
         // `-p`: output mode.
         (#"_ = try await run(["merge-file", "-p", "--object-id", "--marker-size=\(n)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(p)", ":1:\(p)", ":3:\(p)"], cwd: root)"#, "merge-file"),
+        // Without histogram, the algorithm a merge diffs with (fix round 1), or with another.
+        (#"_ = try await run(["merge-file", "--object-id", "--marker-size=\(n)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(p)", ":1:\(p)", ":3:\(p)"], cwd: root)"#, "merge-file"),
+        (#"_ = try await run(["merge-file", "--object-id", "--diff3", "--marker-size=\(n)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(p)", ":1:\(p)", ":3:\(p)"], cwd: root)"#, "merge-file"),
+        (#"_ = try await run(["merge-file", "--object-id", "--diff-algorithm=myers", "--marker-size=\(n)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(p)", ":1:\(p)", ":3:\(p)"], cwd: root)"#, "merge-file"),
+        (#"_ = try await run(["merge-file", "--object-id", "--diff-algorithm=histogram", "--diff3", "--diff-algorithm=myers", "--marker-size=\(n)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(p)", ":1:\(p)", ":3:\(p)"], cwd: root)"#, "merge-file"),
         // Extra flags.
         (#"_ = try await run(["merge-file", "--object-id", "--zdiff3", "--marker-size=\(n)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(p)", ":1:\(p)", ":3:\(p)"], cwd: root)"#, "merge-file"),
         (#"_ = try await run(["merge-file", "--object-id", "--union", "--marker-size=\(n)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(p)", ":1:\(p)", ":3:\(p)"], cwd: root)"#, "merge-file"),
@@ -1300,8 +1311,9 @@ import Testing
     /// Not vacuous: the reader's real file is clean, and each of its vectors, changed in memory
     /// only, becomes a finding — so the shapes are what stand between that file and git.
     @Test(arguments: [
-        (#""merge-file", "--object-id", "--diff3", "#, #""merge-file", "--diff3", "#),
-        (#""merge-file", "--object-id", "--marker-size="#, #""merge-file", "-p", "--object-id", "--marker-size="#),
+        (#""merge-file", "--object-id", "--diff-algorithm=histogram", "--diff3", "#, #""merge-file", "--diff-algorithm=histogram", "--diff3", "#),
+        (#""merge-file", "--object-id", "--diff-algorithm=histogram", "--marker-size="#, #""merge-file", "-p", "--object-id", "--diff-algorithm=histogram", "--marker-size="#),
+        (#""merge-file", "--object-id", "--diff-algorithm=histogram", "--marker-size="#, #""merge-file", "--object-id", "--marker-size="#),
         (#""cat-file", "--filters", "--path=\(path)", oid]"#, #""cat-file", "--path=\(path)", oid]"#),
         (#""cat-file", "--filters", "--path=\(path)", stage]"#, #""cat-file", "--textconv", "--path=\(path)", stage]"#),
         (#""check-attr", "-z", "merge", "conflict-marker-size", "--", path]"#, #""check-attr", "-z", "merge", "conflict-marker-size", "--", literalPathspec(path), "-a"]"#),

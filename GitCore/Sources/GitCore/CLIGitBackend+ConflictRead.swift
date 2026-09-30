@@ -4,28 +4,42 @@ import Foundation
 /// Reading a conflict: classification, the two rebuilds and the comparison. See
 /// `GitConflictBackend` for the contract; this file is about how git is asked.
 ///
-/// Both rebuilds are `merge-file --object-id` over the index stages (`:2:p`, `:1:p`, `:3:p`),
-/// which writes the merged text as a blob and prints its id, then `cat-file --filters
-/// --path=p <id>`, which turns that blob into the bytes a checkout of `p` would write — end of
-/// line conversion, smudge filter and all (M 3). Fixed labels (`ours`, `base`, `theirs`): the
-/// labels git wrote are not recoverable (M 26), and the comparison ignores them.
+/// Both rebuilds are `merge-file --object-id --diff-algorithm=histogram` over the index stages
+/// (`:2:p`, `:1:p`, `:3:p`), which writes the merged text as a blob and prints its id, then
+/// `cat-file --filters --path=p <id>`, which turns that blob into the bytes a checkout of `p`
+/// would write — end of line conversion, smudge filter and all (M 3). Histogram because a
+/// merge (ort) diffs with it and merge-file's default, myers, draws other blocks for about one
+/// conflict in twenty (fix round 1). Fixed labels (`ours`, `base`, `theirs`): the labels git
+/// wrote are not recoverable (M 26), and the comparison ignores them.
 extension CLIGitBackend: GitConflictBackend {
     public func conflictDocument(for file: ConflictedFile, at root: URL) async throws -> ConflictDocument {
-        let worktree = Self.conflictWorktreeBytes(of: file.path, at: root)
-        let snapshot = ConflictSnapshot(file: file, worktreeHash: worktree.map(Self.sha256))
-        func document(_ presentation: ConflictPresentation, matches: Bool = false) -> ConflictDocument {
+        let worktree = Self.conflictWorktree(of: file.path, at: root)
+        let snapshot = ConflictSnapshot(file: file, worktreeHash: worktree.map { Self.sha256($0.bytes) })
+        func document(_ presentation: ConflictPresentation, matches: Bool) -> ConflictDocument {
             ConflictDocument(
                 snapshot: snapshot, presentation: presentation, matchesGitsConflict: matches,
-                worktree: worktree)
+                worktree: worktree?.bytes)
         }
 
-        if file.isSubmodule { return document(.submodule) }
-        if let reason = Self.wholeFileReason(of: file) { return document(.wholeFile(reason: reason)) }
-        guard let ours = file.ours else { return document(.wholeFile(reason: .oneSided)) }
+        if file.isSubmodule { return document(.submodule, matches: false) }
+        // What the merge machinery wrote (M 21) — read only while an operation is in progress:
+        // a `stash apply` writes one too and nothing removes it (measured, fix round 1).
+        let written: AutoMergeEntry =
+            try await operationInProgress(at: root) != nil ? try await autoMergeEntry(file.path, at: root) : .unknown
+        func wholeFile(_ reason: WholeFileReason, left: LeftInWorktree) async throws -> ConflictDocument {
+            var matches = try await isWritten(written, worktree, markerSize: nil, path: file.path, at: root)
+            if !matches { matches = try await isLeft(left, worktree, path: file.path, at: root) }
+            return document(.wholeFile(reason: reason), matches: matches)
+        }
+
+        if let reason = Self.wholeFileReason(of: file) {
+            return try await wholeFile(reason, left: Self.leftInWorktree(by: file))
+        }
+        guard let ours = file.ours else { return try await wholeFile(.oneSided, left: .nothingKnown) }
 
         let attributes = try await conflictAttributes(of: file.path, at: root)
-        if !Self.textMergeDrivers.contains(attributes.merge) {
-            return document(.wholeFile(reason: .mergeAttribute(attributes.merge)))
+        if let driver = try await mergeDriver(attributes.merge, at: root) {
+            return try await wholeFile(.mergeAttribute(driver.name), left: driver.keepsOurs ? .stage(2) : .nothingKnown)
         }
         // An add/add has no stage 1: git merged against nothing, which is the empty blob. It
         // need not exist in the object store — merge-file knows it (measured, A2 Task 1).
@@ -33,28 +47,43 @@ extension CLIGitBackend: GitConflictBackend {
 
         // 1. Compare: the user's style (merge-file reads `merge.conflictStyle`, M 2) at git's
         //    marker size (it does not read the attribute, M 3), labels removed on both sides.
+        //    `AUTO_MERGE` first: it is what git wrote, where merge-file can still differ
+        //    (conflicts separated only by non-alphanumeric lines, a filter that rewrites marker
+        //    lines, a driver). Either one equal is enough; a stale or absent `AUTO_MERGE` can
+        //    only cost a false "changed", never a false "matches".
         guard
             let compare = try await rebuild(
                 file.path, base: base, diff3: false, markerSize: attributes.markerSize, at: root)
-        else { return document(.wholeFile(reason: .binary)) }
-        let matches = worktree.map {
-            ConflictParser.withoutLabels($0, markerSize: attributes.markerSize)
-                == ConflictParser.withoutLabels(compare.text, markerSize: attributes.markerSize)
-        } ?? false
+        else { return try await wholeFile(.binary, left: .stage(2)) }
+        let size = attributes.markerSize
+        let isWrittenByGit = try await isWritten(written, worktree, markerSize: size, path: file.path, at: root)
+        let matches =
+            isWrittenByGit
+            || worktree.map {
+                !$0.isSymlink
+                    && ConflictParser.withoutLabels($0.bytes, markerSize: size)
+                        == ConflictParser.withoutLabels(compare.text, markerSize: size)
+            } ?? false
 
         // 2. Parse: diff3, sized past every marker-like run in the stages (M 5).
         var stages: [Data] = []
         for (n, stage) in [(1, file.base), (2, file.ours), (3, file.theirs)] where stage != nil {
             stages.append(try await stageText(n, of: file.path, at: root))
         }
-        let size = ConflictParser.safeMarkerSize(stages)
-        guard let parse = try await rebuild(file.path, base: base, diff3: true, markerSize: size, at: root)
-        else { return document(.wholeFile(reason: .binary)) }
+        let safe = ConflictParser.safeMarkerSize(stages)
+        guard let parse = try await rebuild(file.path, base: base, diff3: true, markerSize: safe, at: root)
+        else { return try await wholeFile(.binary, left: .stage(2)) }
         // merge-file's exit code counts the blocks it wrote, up to 127 (measured): a parse that
-        // found another number read the text wrongly (a filter rewrote the markers).
-        guard let segments = ConflictParser.parse(parse.text, markerSize: size),
-            Self.agrees(segments.count { if case .block = $0 { true } else { false } }, with: parse.blocks)
-        else { return document(.wholeFile(reason: .unparsable), matches: matches) }
+        // found another number read the text wrongly (a filter rewrote the markers). And a
+        // conflicted path whose rebuild has no block at all (git merged with other options,
+        // `-X diff-algorithm=myers`) offers nothing to choose.
+        guard let segments = ConflictParser.parse(parse.text, markerSize: safe) else {
+            return document(.wholeFile(reason: .unparsable), matches: matches)
+        }
+        let blocks = segments.count { if case .block = $0 { true } else { false } }
+        guard blocks > 0, Self.agrees(blocks, with: parse.blocks) else {
+            return document(.wholeFile(reason: .unparsable), matches: matches)
+        }
         return document(.blocks(segments), matches: matches)
     }
 
@@ -72,10 +101,20 @@ extension CLIGitBackend: GitConflictBackend {
         return nil
     }
 
-    /// `check-attr merge` values under which git merges text itself and `merge-file` draws the
-    /// same blocks. `binary`, `unset` (`-merge`, the `binary` macro), `union` and a driver of
-    /// the user's do not (M 33, M 3).
-    static let textMergeDrivers: Set<String> = ["unspecified", "set", "text"]
+    /// What git leaves in the worktree for a whole-file path when it wrote no markers (M 1,
+    /// measured at merge, rebase, cherry-pick, squash and `rebase --apply` stops in fix round
+    /// 1): the path's own stage, no file, or — for a driver's output — nothing a stage can say.
+    enum LeftInWorktree { case stage(Int), noFile, nothingKnown }
+
+    /// Ours for a symlink or mode-only add/add, UD (rename/delete included) and AU; theirs for
+    /// DU and UA; no file for DD.
+    static func leftInWorktree(by file: ConflictedFile) -> LeftInWorktree {
+        switch file.kind {
+        case .deletedByUs, .addedByThem: return .stage(3)
+        case .deletedByThem, .addedByUs, .bothModified, .bothAdded: return .stage(2)
+        case .bothDeleted: return .noFile
+        }
+    }
 
     /// The `merge` attribute's value and the path's conflict marker size (7 unless the
     /// `conflict-marker-size` attribute is a positive number).
@@ -98,6 +137,127 @@ extension CLIGitBackend: GitConflictBackend {
         return (values["merge"] ?? "unspecified", size)
     }
 
+    /// The driver git merged the path with, when it is not the text merge `merge-file` repeats;
+    /// nil for text. `keepsOurs`: git's binary driver, which leaves ours' bytes (M 33).
+    ///
+    /// As git chooses (fix round 1, measured): `-merge` (`unset`) is the binary driver;
+    /// `merge` set, or `text`, is text; unspecified means `merge.default`, or text when that is
+    /// unset; any other name is a driver the user defines with `merge.<name>.driver` — and
+    /// when nobody did (`merge=lfs` in a clone without LFS's config), git merges text and
+    /// writes markers, and so is it here (Ruling 8). `binary` and `union` are git's own.
+    private func mergeDriver(_ attribute: String, at root: URL) async throws -> (name: String, keepsOurs: Bool)? {
+        switch attribute {
+        case "set": return nil
+        case "unset": return (attribute, true)
+        case "unspecified":
+            let fallback = try await conflictConfigValue("merge.default", at: root)
+            return fallback.isEmpty ? nil : try await namedDriver(fallback, at: root)
+        default: return try await namedDriver(attribute, at: root)
+        }
+    }
+
+    /// A driver by name: one the user defined wins over git's own, as in git.
+    private func namedDriver(_ name: String, at root: URL) async throws -> (name: String, keepsOurs: Bool)? {
+        if !(try await conflictConfigValue("merge.\(name).driver", at: root)).isEmpty { return (name, false) }
+        switch name {
+        case "binary": return (name, true)
+        case "union": return (name, false)
+        default: return nil
+        }
+    }
+
+    /// One configuration value, or `""` when the key is not set (`--get` exits 1, as it does
+    /// for a name no key can have).
+    private func conflictConfigValue(_ key: String, at root: URL) async throws -> String {
+        let data = try await run(["config", "--get", key], cwd: root, allowedExitCodes: [1])
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - What git wrote
+
+    /// The path's entry in `AUTO_MERGE`'s tree. `unknown` when there is no operation or no
+    /// `AUTO_MERGE`; `absent` when the tree has no such path — git wrote no file there (DD).
+    enum AutoMergeEntry { case unknown, absent, entry(mode: String, oid: String) }
+
+    private func autoMergeEntry(_ path: String, at root: URL) async throws -> AutoMergeEntry {
+        let resolved = try await run(["rev-parse", "-q", "--verify", "AUTO_MERGE^{tree}"], cwd: root, allowedExitCodes: [1])
+        let tree = String(decoding: resolved, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tree.isEmpty else { return .unknown }
+        // `ls-tree -z`: `<mode> SP <type> SP <oid> TAB <path> NUL`.
+        let data = try await run(["ls-tree", "-z", "--full-tree", tree, "--", literalPathspec(path)], cwd: root)
+        for record in [UInt8](data).split(separator: 0) {
+            guard let tab = record.firstIndex(of: UInt8(ascii: "\t")),
+                Array(record[record.index(after: tab)...]) == Array(path.utf8)
+            else { continue }
+            let fields = record[..<tab].split(separator: UInt8(ascii: " ")).map { String(decoding: $0, as: UTF8.self) }
+            guard fields.count == 3 else { continue }
+            return .entry(mode: fields[0], oid: fields[2])
+        }
+        return .absent
+    }
+
+    /// Whether the worktree is `AUTO_MERGE`'s entry: the same symlink target, or the entry's
+    /// bytes in worktree form (label-normalised at `markerSize` when given), or no file where
+    /// the tree has none.
+    private func isWritten(
+        _ written: AutoMergeEntry, _ worktree: (bytes: Data, isSymlink: Bool)?, markerSize: Int?,
+        path: String, at root: URL
+    ) async throws -> Bool {
+        switch written {
+        case .unknown: return false
+        case .absent: return worktree == nil
+        case .entry(let mode, let oid):
+            guard let worktree else { return false }
+            return try await equals(worktree, object: oid, mode: mode, markerSize: markerSize, path: path, at: root)
+        }
+    }
+
+    /// Whether the worktree is what git leaves for a whole-file path (`leftInWorktree`).
+    private func isLeft(
+        _ left: LeftInWorktree, _ worktree: (bytes: Data, isSymlink: Bool)?, path: String, at root: URL
+    ) async throws -> Bool {
+        switch left {
+        case .nothingKnown: return false
+        case .noFile: return worktree == nil
+        case .stage(let n):
+            guard let worktree else { return false }
+            let modes = try await stageModes(of: path, at: root)
+            guard let mode = modes[n] else { return false }
+            return try await equals(worktree, object: ":\(n):\(path)", mode: mode, markerSize: nil, path: path, at: root)
+        }
+    }
+
+    /// A symlink against a 120000 object's raw bytes; a file against a regular object's bytes in
+    /// worktree form. Anything else (a gitlink, a type change) is not equal.
+    private func equals(
+        _ worktree: (bytes: Data, isSymlink: Bool), object: String, mode: String, markerSize: Int?,
+        path: String, at root: URL
+    ) async throws -> Bool {
+        if worktree.isSymlink {
+            guard mode == "120000" else { return false }
+            return try await run(["cat-file", "blob", object], cwd: root) == worktree.bytes
+        }
+        guard mode == "100644" || mode == "100755" else { return false }
+        let text = try await run(["cat-file", "--filters", "--path=\(path)", object], cwd: root)
+        guard let markerSize else { return text == worktree.bytes }
+        return ConflictParser.withoutLabels(text, markerSize: markerSize)
+            == ConflictParser.withoutLabels(worktree.bytes, markerSize: markerSize)
+    }
+
+    /// Stage → mode for `path`'s index entries (`ls-files -s`).
+    private func stageModes(of path: String, at root: URL) async throws -> [Int: String] {
+        let data = try await run(["ls-files", "-s", "-z", "--", literalPathspec(path)], cwd: root)
+        var modes: [Int: String] = [:]
+        for record in [UInt8](data).split(separator: 0) {
+            guard let tab = record.firstIndex(of: UInt8(ascii: "\t")),
+                Array(record[record.index(after: tab)...]) == Array(path.utf8)
+            else { continue }
+            let fields = record[..<tab].split(separator: UInt8(ascii: " ")).map { String(decoding: $0, as: UTF8.self) }
+            if fields.count == 3, let stage = Int(fields[2]) { modes[stage] = fields[0] }
+        }
+        return modes
+    }
+
     // MARK: - Rebuilds
 
     /// One rebuild in worktree form, with the number of blocks merge-file reported (its exit
@@ -109,10 +269,10 @@ extension CLIGitBackend: GitConflictBackend {
         let result =
             diff3
             ? try await runWithEnvironment(
-                ["merge-file", "--object-id", "--diff3", "--marker-size=\(markerSize)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(path)", base, ":3:\(path)"],
+                ["merge-file", "--object-id", "--diff-algorithm=histogram", "--diff3", "--marker-size=\(markerSize)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(path)", base, ":3:\(path)"],
                 cwd: root, extra: [:], allowedExitCodes: codes)
             : try await runWithEnvironment(
-                ["merge-file", "--object-id", "--marker-size=\(markerSize)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(path)", base, ":3:\(path)"],
+                ["merge-file", "--object-id", "--diff-algorithm=histogram", "--marker-size=\(markerSize)", "-L", "ours", "-L", "base", "-L", "theirs", ":2:\(path)", base, ":3:\(path)"],
                 cwd: root, extra: [:], allowedExitCodes: codes)
         if result.exitCode == 255 {
             guard result.stderr.contains("Cannot merge binary files") else {
@@ -151,7 +311,7 @@ extension CLIGitBackend: GitConflictBackend {
 
     /// The bytes at `path` as git would hash them: a symlink's target path (never followed), a
     /// regular file's content; nil for a missing path, a directory or anything unreadable.
-    static func conflictWorktreeBytes(of path: String, at root: URL) -> Data? {
+    static func conflictWorktree(of path: String, at root: URL) -> (bytes: Data, isSymlink: Bool)? {
         let url = root.appendingPathComponent(path)
         guard let type = try? FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType
         else { return nil }
@@ -160,9 +320,9 @@ extension CLIGitBackend: GitConflictBackend {
             var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
             let count = readlink(url.path, &buffer, buffer.count)
             guard count >= 0 else { return nil }
-            return buffer.withUnsafeBytes { Data($0.prefix(count)) }
+            return (buffer.withUnsafeBytes { Data($0.prefix(count)) }, true)
         case .typeRegular:
-            return try? Data(contentsOf: url)
+            return (try? Data(contentsOf: url)).map { ($0, false) }
         default:
             return nil
         }
