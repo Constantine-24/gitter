@@ -362,7 +362,7 @@ import Testing
 /// treats that first one as done and applies the rest. Told apart from a git-made halt by
 /// `sequencer/abort-safety`: a halt leaves it at HEAD, a commit made since leaves it at HEAD's
 /// parent — and from the stale way-out's commit (also on top of `abort-safety`) by HEAD being
-/// that first commit's pick (its author, email and date) or revert ("This reverts commit <sha>").
+/// that first commit's pick (its author, email, date and subject) or revert ("This reverts commit <sha>").
 @Suite struct CommittedStopTests {
     static let backend = CLIGitBackend()
 
@@ -461,6 +461,93 @@ import Testing
         let halted = try #require(try await Self.backend.haltedSequence(at: repo.root))
         #expect(halted.committed == nil)
         #expect(halted.notApplied.map(\.subject) == ["c2 adds n", "c3 adds o"])
+    }
+
+    /// Final review I1 (reproduced end to end): the stale way-out's commit with the old list's
+    /// first commit's exact author, email and second, touching a SUBSET of that commit's paths
+    /// (c2 edits f.txt and adds n.txt; `side` edits f.txt only) — identity and paths both agree,
+    /// and git's `--continue` would then drop c2. HEAD's subject is `side`'s, not c2's: a halt.
+    @Test func anIdenticalAuthorshipOnASubsetOfItsPathsIsStillAHalt() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        let same = ["--author=Same <s@s>", "--date=2001-01-01T00:00:00Z"]
+        let lines = "a\nb\nc\nd\ne\nf\ng\nh\ni\n"
+        try repo.write("f.txt", lines)
+        try await repo.commitAll("base")
+        try await repo.git(["tag", "base"])
+        try await repo.git(["switch", "-q", "-c", "side"])
+        try repo.write("f.txt", lines.replacingOccurrences(of: "i\n", with: "i SIDE\n"))
+        try await repo.git(["commit", "-q", "-am", "side change"] + same)
+        try await repo.git(["switch", "-q", "-c", "feature", "base"])
+        try repo.write("f.txt", "a\nb F1\nc\nd\ne\nf\ng\nh\ni\n")
+        try await repo.commitAll("c1 f")
+        try repo.write("f.txt", "a\nb F1\nc\nd\ne F2\nf\ng\nh\ni\n")
+        try repo.write("n.txt", "n C2\n")
+        try await repo.git(["add", "."])
+        try await repo.git(["commit", "-q", "-m", "c2 edits f adds n"] + same)
+        try repo.write("o.txt", "o C3\n")
+        try await repo.commitAll("c3 adds o")
+        try await repo.git(["switch", "-q", "main"])
+        try repo.write("f.txt", "a\nb M\nc\nd\ne\nf\ng\nh\ni M\n")
+        try await repo.commitAll("m")
+        try await repo.git(["cherry-pick", "base..feature"], allowedExitCodes: [1])
+        try repo.write("f.txt", "a\nb RES\nc\nd\ne\nf\ng\nh\ni M\n")
+        try await repo.git(["add", "f.txt"])
+        try repo.write("n.txt", "n USER\n")
+        try await repo.git(["cherry-pick", "--continue"], allowedExitCodes: [128])
+        try FileManager.default.removeItem(at: repo.root.appendingPathComponent("n.txt"))
+        try await repo.git(["cherry-pick", "side"], allowedExitCodes: [1])
+        try repo.write("f.txt", "a\nb RES\nc\nd\ne\nf\ng\nh\ni RES\n")
+        try await repo.git(["add", "f.txt"])
+        try await repo.git(["commit", "-q", "--no-edit"])
+        // The baselines that can fail: c2's authorship, a subset of its paths, on abort-safety.
+        let format = ["log", "-1", "--format=%an%ae%at"]
+        #expect(try await repo.git(format + ["HEAD"]) == (try await repo.git(format + ["feature~1"])))
+        #expect(try await repo.git(["diff", "--name-only", "HEAD^", "HEAD"]) == Data("f.txt\n".utf8))
+        let safety = try await ConflictFixtures.gitPath(repo, "sequencer/abort-safety")
+        #expect(try String(contentsOf: safety, encoding: .utf8).trimmingCharacters(in: .newlines)
+            == (try await repo.revParse("HEAD^")))
+
+        let halted = try #require(try await Self.backend.haltedSequence(at: repo.root))
+        #expect(halted.committed == nil)
+        #expect(halted.notApplied.map(\.subject) == ["c2 edits f adds n", "c3 adds o"])
+    }
+
+    /// How the stop was committed. A pick keeps the stopped commit's subject in every one of
+    /// them but `editedSubject`, which the subject rule reads conservatively as a halt (final
+    /// review I1): the bar then lists the commit as not applied — wrong advice, never a loss.
+    enum Conclusion: String, CaseIterable, Sendable {
+        case plain, amend, withX, editedBody, editedSubject
+    }
+
+    @Test(arguments: Conclusion.allCases)
+    func aCommittedPickStopIsToldByItsSubject(_ conclusion: Conclusion) async throws {
+        let repo = try await HaltedSequenceTests.threeCommits()
+        defer { repo.cleanUp() }
+        let pick = conclusion == .withX ? ["cherry-pick", "-x", "base..feature"] : ["cherry-pick", "base..feature"]
+        try await repo.git(pick, allowedExitCodes: [1])
+        try await SequenceFixtures.resolve(repo)
+        switch conclusion {
+        case .plain, .withX:
+            try await repo.git(["commit", "-q", "--no-edit"])
+        case .amend:
+            try await repo.git(["commit", "-q", "--no-edit"])
+            try await repo.git(["commit", "-q", "--amend", "--no-edit"])
+        case .editedBody:
+            try await repo.git(["commit", "-q", "-m", "c1 f", "-m", "A body the user wrote."])
+        case .editedSubject:
+            try await repo.git(["commit", "-q", "-m", "c1 f, resolved"])
+        }
+        let c1 = try await repo.revParse("feature~2")
+
+        let halted = try #require(try await Self.backend.haltedSequence(at: repo.root))
+        if conclusion == .editedSubject {
+            #expect(halted.committed == nil)
+            #expect(halted.notApplied.map(\.subject) == ["c1 f", "c2 adds n", "c3 adds o"])
+        } else {
+            #expect(halted.committed?.sha == c1)
+            #expect(halted.notApplied.map(\.subject) == ["c2 adds n", "c3 adds o"])
+        }
     }
 
     /// A git-made halt leaves `abort-safety` at HEAD: never "committed".

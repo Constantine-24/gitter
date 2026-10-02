@@ -86,7 +86,10 @@ public struct HaltedSequence: Sendable, Hashable {
     public let total: Int
     /// Not a halt but a range stop the user concluded with `git commit` (Ruling 30, measured):
     /// the todo's first commit, made since — `notApplied` is then the rest, waiting, and
-    /// `--continue` is the right way on (it treats the first as done).
+    /// `--continue` is the right way on (it treats the first as done). Told by HEAD's parent
+    /// being `sequencer/abort-safety` and HEAD carrying that commit's author, email, date and
+    /// subject (a pick) or its "This reverts commit <sha>." line; an edited subject reads as a
+    /// halt (nil here — the conservative side).
     public let committed: CommitRef?
 
     public init(operation: RepositoryOperation, notApplied: [CommitRef], total: Int, committed: CommitRef? = nil) {

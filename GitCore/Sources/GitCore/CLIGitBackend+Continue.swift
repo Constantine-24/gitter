@@ -730,8 +730,12 @@ extension CLIGitBackend: GitOperationBackend {
     /// The todo's first commit, when HEAD is it, committed since git stopped (measured, Ruling
     /// 30): HEAD's parent is `sequencer/abort-safety` — a git-made halt leaves that file at HEAD
     /// itself — and HEAD is that commit's pick (the same author, email and date: a pick keeps
-    /// them) or its revert (git's "This reverts commit <sha>." line). The stale way-out's commit
-    /// also sits on `abort-safety` but is another commit's pick, so it is not this.
+    /// them; and the same subject, final review I1) or its revert (git's "This reverts commit
+    /// <sha>." line). The stale way-out's commit also sits on `abort-safety` but is another
+    /// commit's pick, so it is not this — even with that commit's exact author, email and second
+    /// and a subset of its paths (reproduced): its subject is the other commit's. A genuine stop
+    /// committed with an edited subject reads as a halt: the conservative side (the bar lists the
+    /// commit as not applied and never advises the `--continue` that would drop one).
     private func committedFirst(_ first: (revert: Bool, name: String, subject: String), at root: URL) async throws
         -> CommitRef?
     {
@@ -744,7 +748,9 @@ extension CLIGitBackend: GitOperationBackend {
         if first.revert {
             return made.message.contains("This reverts commit \(listed.sha).") ? listed : nil
         }
-        guard let original = try await authorship(listed.sha, at: root), made.ident == original.ident else { return nil }
+        guard head.subject == listed.subject, let original = try await authorship(listed.sha, at: root),
+            made.ident == original.ident
+        else { return nil }
         // Identity alone can coincide (one author, the same second, in a scripted history): HEAD
         // also changes nothing but paths that commit changes (its own resolution of them). A
         // root or merge commit is not judged: nil, a halt — the conservative reading.
