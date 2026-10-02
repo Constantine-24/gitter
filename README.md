@@ -132,7 +132,7 @@ confirmation that says what goes and what stays:
 
 | action | how it is confirmed |
 |---|---|
-| Abort a merge, cherry-pick, revert, rebase or `git am` | a sheet with that operation's own kept/lost wording — a rebase abort also takes unstaged edits, `am --abort` rewinds the branch past the patches it committed — and **the exact list of files** it is about to put back, read live |
+| Abort a merge, cherry-pick, revert, rebase or `git am` | a sheet with that operation's own kept/lost wording — a rebase abort also takes unstaged edits, `am --abort` rewinds the branch past the patches it committed, a cherry-pick or revert range's abort past the commits it already made (named) — and **the exact list of files** it is about to put back, read live |
 | Undo a pending squash | the same sheet: everything staged goes, including work staged before the squash if the squash was started outside Gitter, which is why the file list is not optional |
 | Force-delete an unmerged branch | `git branch -d` runs first and either deletes or refuses *without changing anything*; only its refusal opens a warning naming the unique-commit count and the tip sha, and "Delete Anyway" is refused unless the branch still points at exactly that tip |
 | Leave a detached HEAD holding commits on no branch, tag or remote | a warning naming the count and the full sha, with "Create Branch Here…" as the safe answer; leaving anyway prints the command that brings the commits back |
@@ -359,7 +359,10 @@ out). A cherry-pick or revert of several commits stays blocked while a tracked f
 unstaged changes, because git would make this commit and then stop the range half-way.
 **Skip This Commit…** is offered only when every change belongs to the stopped commit, and
 files those changes first. A merge or squash ends with **Commit**, prefilled with git's message.
-**Abort…** works as before.
+**Abort…** asks as before, and when a cherry-pick or revert of several commits has already
+made some of them (you continued past a stop, then it stopped again), the sheet names those
+commits: git's `--abort` takes the branch back to where the range began, so they leave the
+branch and stay only in git's reflog for a while.
 
 **Where the copies go.** Each is an ordinary entry in the Stashes list:
 

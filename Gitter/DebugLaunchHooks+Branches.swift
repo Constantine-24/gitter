@@ -602,6 +602,16 @@
             }
         }
 
+        /// The commits in full: the shell compares them with `git rev-list sequencer/head..HEAD`.
+        private static func describe(_ rewind: AbortRewind) -> String {
+            switch rewind {
+            case .none: "none"
+            case .patches: "patches"
+            case .unknown: "unknown"
+            case .commits(let made): "commits(\(made.map { "\($0.sha) \($0.subject)" }))"
+            }
+        }
+
         private static func mergeMode(_ name: String?) -> MergeMode? {
             switch name {
             case "ff": .fastForwardIfPossible
@@ -629,7 +639,8 @@
             case .abort(let operation):
                 "abort(\(operation), reverts: \(store.filesRevertedByAbort.map(\.path)), "
                     + "unstagedToo: \(store.abortAlsoDiscardsUnstagedEdits), "
-                    + "rewinds: \(store.abortRewindsCommits))"
+                    + "rewinds: \(describe(store.abortRewind)), "
+                    + "history: \(operation.abortHistory(store.abortRewind)))"
             case .leaveDetached(let count, let sha, let action):
                 "leaveDetached(unreferencedCommits: \(count), head: \(sha.prefix(7)), "
                     + "then: \(action))"

@@ -100,6 +100,17 @@ public protocol GitOperationBackend: Sendable {
     /// cherry-pick or revert in progress. Continue, Skip and Abort refuse while it is non-nil
     /// (`OperationError.staleSequence`).
     func staleSequence(at root: URL) async throws -> HaltedSequence?
+
+    /// The commits a cherry-pick or revert range has already made in this run, oldest first,
+    /// which its `--abort` takes off the branch (final review I2, measured on git 2.54): the range
+    /// wrote `sequencer/head` (HEAD when it began) and keeps `sequencer/abort-safety` at the last
+    /// commit it made, and `--abort` resets to `sequencer/head` only while HEAD is
+    /// `abort-safety` — HEAD moved since, it warns "You seem to have moved HEAD. Not rewinding"
+    /// and keeps every commit. So: `sequencer/head..HEAD` when HEAD is `abort-safety` and not
+    /// `sequencer/head`; empty at the range's first stop, for a single pick or revert (git writes
+    /// no `sequencer/` for one), with HEAD moved, and for any other operation. The commits stay
+    /// in git's reflog. Reads only.
+    func commitsAbortRemoves(at root: URL) async throws -> [CommitRef]
 }
 
 extension GitOperationBackend {

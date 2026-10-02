@@ -1484,6 +1484,8 @@ import Testing
         #"let data = try await run(["log", "-1", "--no-show-signature", "--format=%H%x00%h%x00%s", "--end-of-options", rev], cwd: root, allowedExitCodes: [128])"#,
         // Ruling 30: a range stop concluded by `git commit` — HEAD's authorship and message.
         #"let data = try await run(["log", "-1", "--no-show-signature", "--format=%an%x00%ae%x00%at%x00%B", "--end-of-options", rev], cwd: root, allowedExitCodes: [128])"#,
+        // Final review I2: the commits a range's `--abort` takes off the branch.
+        #"let data = try await run(["log", "--reverse", "--no-show-signature", "--format=%H%x00%s", "--end-of-options", "\(start)..\(head)"], cwd: root)"#,
     ])
     func allowsTheContinueAndSkipVectorsThisMilestoneNeeds(source: String) {
         #expect(ForceFlagScanner.findings(in: source).isEmpty,

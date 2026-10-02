@@ -165,14 +165,19 @@ extension RepositoryStore {
         operationInProgress == .rebase
     }
 
-    /// Whether the abort now offered also rewinds commits that are already made.
+    /// What the abort now offered does to commits that are already made.
     ///
-    /// True for `git am` alone: it is the one operation that has already committed something
-    /// when it stops, and `am --abort` rewinds the branch past those commits. Nothing else here
-    /// moves a branch backwards — every other abort puts HEAD and the refs back exactly where
-    /// they were *when the operation started*, which for those five is where they still are.
-    var abortRewindsCommits: Bool {
-        operationInProgress == .applyingPatches
+    /// Every abort puts HEAD back where it was *when the operation started*. For a merge, a
+    /// squash, a single cherry-pick or revert, and a range's first stop that is where HEAD still
+    /// is. Not so for two (final review I2, measured on git 2.54): `git am`, whose `--abort`
+    /// rewinds the branch past the patches it already committed, and a cherry-pick or revert
+    /// range that made commits before stopping again (a Continue, in the app or a terminal) —
+    /// its `--abort` resets to `sequencer/head` and those commits leave the branch, reachable
+    /// only from the reflog. The range's commits are read with the stop
+    /// (`GitOperationBackend.commitsAbortRemoves`), so the sheet can name them; a rebase has its
+    /// own sentence. `OperationBarState.abortRewind` decides.
+    var abortRewind: AbortRewind {
+        OperationBarState.abortRewind(operationInProgress, operationStop)
     }
 
     // MARK: - Remembered merge mode

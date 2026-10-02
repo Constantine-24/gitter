@@ -789,6 +789,21 @@ extension CLIGitBackend: GitOperationBackend {
         return try await sequence(entries, at: root)
     }
 
+    public func commitsAbortRemoves(at root: URL) async throws -> [CommitRef] {
+        guard let operation = try await operationInProgress(at: root), operation == .cherryPick || operation == .revert,
+            let start = Self.contents(of: try await gitPath("sequencer/head", at: root)), Self.isObjectName(start),
+            let safety = Self.contents(of: try await gitPath("sequencer/abort-safety", at: root)),
+            let head = try await commit("HEAD", at: root)?.ref.sha, head == safety, head != start
+        else { return [] }
+        // The range git's `--abort` resets past, both ends full object names read above.
+        let data = try await run(["log", "--reverse", "--no-show-signature", "--format=%H%x00%s", "--end-of-options", "\(start)..\(head)"], cwd: root)
+        return String(decoding: data, as: UTF8.self).split(separator: "\n").compactMap { line in
+            let fields = line.split(separator: "\0", maxSplits: 1, omittingEmptySubsequences: false)
+            guard fields.count == 2, !fields[0].isEmpty else { return nil }
+            return CommitRef(sha: String(fields[0]), subject: String(fields[1]))
+        }
+    }
+
     /// The todo's commits as a `HaltedSequence`: the first `listed` named, every one counted.
     private func sequence(_ entries: [(revert: Bool, name: String, subject: String)], at root: URL) async throws
         -> HaltedSequence

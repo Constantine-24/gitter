@@ -234,13 +234,37 @@ extension RepositoryOperation {
 
     /// What happens to commits, which is the half of the table a file list cannot show.
     ///
-    /// `rewindsCommits` is the store's `abortRewindsCommits` — read live, because it is a fact
-    /// about the repository (an `am` that has already committed something) rather than about the
-    /// operation's name.
-    func abortHistory(rewindsCommits: Bool) -> String {
-        if rewindsCommits {
+    /// `rewind` is the store's `abortRewind` — read live, because it is a fact about the
+    /// repository (an `am` that has already committed something, a pick or revert range that
+    /// already made commits) rather than about the operation's name.
+    func abortHistory(_ rewind: AbortRewind) -> String {
+        let began = "Your branch goes back to where it was before the \(noun.lowercased()) began"
+        switch rewind {
+        case .patches:
             return "The patches already applied leave the branch: nothing but the reflog will "
                 + "reach those commits afterwards."
+        case .commits(let made) where !made.isEmpty:
+            // Measured (final review I2): `--abort` resets to `sequencer/head`, so every commit the
+            // range made since it began leaves with the resolutions in them.
+            let named = made.prefix(3).map { "\($0.sha.prefix(7)) \"\($0.subject)\"" }
+            let more = made.count - named.count
+            let list: String
+            if more > 0 {
+                list = named.joined(separator: ", ") + " and \(more) more"
+            } else if named.count > 1 {
+                list = named.dropLast().joined(separator: ", ") + " and " + named[named.count - 1]
+            } else {
+                list = named[0]
+            }
+            let one = made.count == 1
+            return "\(began). The \(made.count) \(one ? "commit" : "commits") this \(noun.lowercased()) "
+                + "already made, \(list), \(one ? "leaves" : "leave") the branch; \(one ? "it stays" : "they stay") "
+                + "in git's reflog for a while."
+        case .unknown:
+            return "\(began): any commit this \(noun.lowercased()) already made leaves the branch, and stays "
+                + "in git's reflog for a while."
+        case .none, .commits:
+            break
         }
         switch self {
         case .squash: return "No commit is created or removed."
@@ -250,6 +274,8 @@ extension RepositoryOperation {
             // `# branch.head (detached)`), so there is no branch name on screen to quote.
             return "Your branch goes back to the commit it was on before the rebase."
         case .merge, .cherryPick, .revert, .applyingPatches:
+            // A cherry-pick or revert that has made nothing yet (its first stop, a single pick):
+            // `--abort` resets to the HEAD it began on, which is still HEAD.
             return "Your branch and history go back to exactly where they were."
         }
     }
@@ -265,4 +291,19 @@ extension RepositoryOperation {
             "No tracked file is staged or conflicted, so no file in your working copy changes."
         }
     }
+}
+
+/// What an abort does to commits that are already made (final review I2).
+enum AbortRewind: Hashable {
+    /// Nothing made is removed: HEAD goes back to where it is (or, for a rebase, to the commit
+    /// the branch was on — its own sentence).
+    case none
+    /// `git am --abort` rewinds past the patches it already committed.
+    case patches
+    /// A cherry-pick or revert range that already made these commits (oldest first), which its
+    /// `--abort` takes off the branch (`GitOperationBackend.commitsAbortRemoves`).
+    case commits([CommitRef])
+    /// A cherry-pick or revert whose stop has not been read, or could not be: it may have made
+    /// commits, so the sheet says so.
+    case unknown
 }

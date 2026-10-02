@@ -454,4 +454,28 @@ import Testing
         #expect(draft.foreign == nil)
         #expect(draft.subject == "Feature one, edited")
     }
+
+    // MARK: - Abort (final review I2)
+
+    /// The store's decision: `git am` rewinds its patches; a pick or revert range the commits
+    /// GitCore read with the stop; unknown until that read is there (never "exactly where they
+    /// were" by default).
+    @Test func abortRewindFollowsTheCommitsReadWithTheStop() {
+        var pick = Self.stop(.cherryPick)
+        #expect(OperationBarState.abortRewind(.cherryPick, pick) == .unknown, "not read yet")
+        pick.abortRemoves = []
+        #expect(OperationBarState.abortRewind(.cherryPick, pick) == .none)
+        pick.abortRemoves = [Self.commit]
+        #expect(OperationBarState.abortRewind(.cherryPick, pick) == .commits([Self.commit]))
+        var revert = Self.stop(.revert)
+        revert.abortRemoves = [Self.commit]
+        #expect(OperationBarState.abortRewind(.revert, revert) == .commits([Self.commit]))
+        // A stop read for another operation is not this one's.
+        #expect(OperationBarState.abortRewind(.revert, pick) == .unknown)
+        #expect(OperationBarState.abortRewind(.cherryPick, nil) == .unknown)
+        #expect(OperationBarState.abortRewind(.applyingPatches, Self.stop(.applyingPatches)) == .patches)
+        #expect(OperationBarState.abortRewind(.merge, Self.stop(.merge)) == .none)
+        #expect(OperationBarState.abortRewind(.rebase, Self.stop(.rebase)) == .none)
+        #expect(OperationBarState.abortRewind(nil, nil) == .none)
+    }
 }

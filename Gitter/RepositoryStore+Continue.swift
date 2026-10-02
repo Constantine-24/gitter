@@ -33,6 +33,10 @@ struct OperationStop: Hashable {
     var unstagedAtEmpty: [String] = []
     /// Why a read failed; the bar's buttons stay off and say it.
     var readFailure: String?
+    /// Cherry-pick and revert only: the commits the range already made that its abort takes off
+    /// the branch (`GitOperationBackend.commitsAbortRemoves`); nil until read, or when the read
+    /// failed.
+    var abortRemoves: [CommitRef]?
 }
 
 /// What Continue does when it is on.
@@ -128,6 +132,23 @@ enum OperationBarState {
             return .confirmOthers(paths)
         default:
             return .run
+        }
+    }
+
+    // MARK: - Abort
+
+    /// What the abort now offered does to commits already made (final review I2): `git am`
+    /// rewinds its patches; a cherry-pick or revert range rewinds the commits it made, as read
+    /// with the stop — unknown while that read is missing or failed.
+    static func abortRewind(_ operation: RepositoryOperation?, _ stop: OperationStop?) -> AbortRewind {
+        switch operation {
+        case .applyingPatches?:
+            return .patches
+        case .cherryPick?, .revert?:
+            guard let stop, stop.operation == operation, let made = stop.abortRemoves else { return .unknown }
+            return made.isEmpty ? .none : .commits(made)
+        case .merge?, .squash?, .rebase?, nil:
+            return .none
         }
     }
 
@@ -315,6 +336,9 @@ extension RepositoryStore {
         do {
             stop.progress = try await backend.operationProgress(at: root)
             if operation != .applyingPatches { stop.pendingMessage = try await backend.pendingMessage(at: root) }
+            if operation == .cherryPick || operation == .revert {
+                stop.abortRemoves = try await backend.commitsAbortRemoves(at: root)
+            }
             guard OperationBarState.isContinuable(operation) else { return stop }
             let readiness = try await backend.continueReadiness(at: root)
             stop.continueReadiness = readiness

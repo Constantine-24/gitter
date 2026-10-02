@@ -10,7 +10,8 @@ import SwiftUI
 /// six operations, which is why the prose is chosen per operation rather than written once:
 ///
 /// - `rebase --abort` resets **hard**, so it takes unstaged edits too (`abortAlsoDiscardsUnstagedEdits`).
-/// - `am --abort` rewinds the branch past the patches it already committed (`abortRewindsCommits`).
+/// - `am --abort` rewinds the branch past the patches it already committed, and a cherry-pick or
+///   revert range's `--abort` past the commits it already made, named (`abortRewind`).
 /// - undoing a squash resets the whole index, including anything staged *before* the squash if
 ///   the squash was started outside Gitter — the one cell where work a user never associated
 ///   with this operation is destroyed.
@@ -61,7 +62,7 @@ struct AbortSheet: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text(operation.abortHistory(rewindsCommits: store.abortRewindsCommits))
+            Text(operation.abortHistory(store.abortRewind))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
