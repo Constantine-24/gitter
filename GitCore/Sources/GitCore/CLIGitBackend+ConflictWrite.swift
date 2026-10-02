@@ -104,11 +104,14 @@ extension CLIGitBackend {
         let worktree = Self.conflictWorktree(of: path, at: root)?.bytes ?? Data()
         // `diff --check` is blind under `-diff` or a diff driver with `binary=true` (measured,
         // fix round 2: no output, exit 0, the markers still there), so the worktree is also
-        // scanned for git's opening marker at the path's size, and the larger count wins. The
-        // scan also counts a content line that is exactly such a marker (M 5), which git's
-        // check skips: a refusal `allowingMarkers` overrides, never a marker staged.
-        let scanned = Self.openingMarkers(
-            in: worktree, markerSize: try await conflictAttributes(of: path, at: root).markerSize)
+        // scanned for git's opening and closing markers at the path's size — a block is the
+        // larger of the two counts, since a hand resolution can keep either alone (final review
+        // M4) — and the larger count wins. The scan also counts a content line that is exactly
+        // such a marker (M 5), which git's check skips: a refusal `allowingMarkers` overrides,
+        // never a marker staged.
+        let size = try await conflictAttributes(of: path, at: root).markerSize
+        let scanned = max(
+            Self.openingMarkers(in: worktree, markerSize: size), Self.closingMarkers(in: worktree, markerSize: size))
         // Fail closed: a report no record could be read from still means markers.
         guard let lines = Self.leftoverMarkerLines(in: data, path: path) else { return max(scanned, 1) }
         guard !lines.isEmpty else { return scanned }
@@ -178,9 +181,22 @@ extension CLIGitBackend {
     /// Lines of `text` that open a conflict block as git writes one at `markerSize`: exactly
     /// that many `<`, then a space, or the end of the line (`\r\n` or `\n`, or the end of text).
     static func openingMarkers(in text: Data, markerSize: Int) -> Int {
-        let less = UInt8(ascii: "<")
-        return text.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false).count { line in
-            let run = line.prefix { $0 == less }.count
+        markerLines(of: UInt8(ascii: "<"), in: text, markerSize: markerSize)
+    }
+
+    /// Lines of `text` that close a conflict block as git writes one at `markerSize`: exactly
+    /// that many `>`, then a space or the end of the line (final review M4 — a hand resolution
+    /// can keep a closing marker and drop its opening one). Separators (`=`) are not counted: a
+    /// Markdown heading's underline is exactly `=======`.
+    static func closingMarkers(in text: Data, markerSize: Int) -> Int {
+        markerLines(of: UInt8(ascii: ">"), in: text, markerSize: markerSize)
+    }
+
+    /// Lines that are exactly `markerSize` of `byte`, then a space, or the end of the line
+    /// (`\r\n` or `\n`, or the end of text).
+    private static func markerLines(of byte: UInt8, in text: Data, markerSize: Int) -> Int {
+        text.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false).count { line in
+            let run = line.prefix { $0 == byte }.count
             guard run == markerSize else { return false }
             let rest = line.dropFirst(run)
             return rest.isEmpty || rest.first == UInt8(ascii: " ") || rest.elementsEqual([UInt8(ascii: "\r")])

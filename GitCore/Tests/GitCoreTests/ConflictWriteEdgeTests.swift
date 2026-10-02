@@ -408,6 +408,32 @@ extension FinalNewlineTests {
         #expect(try await repo.indexContent(of: "f.txt") == Data("a\nMINE\nc\n".utf8))
     }
 
+    /// Final review M4: a hand resolution that kept only a block's closing marker (or its
+    /// separator too) — under `-diff` git's check is blind, and the opening-marker scan found
+    /// nothing. A closing marker at the path's size counts; a separator alone does not (a
+    /// Markdown heading underline is exactly `=======`).
+    @Test(arguments: [Attributes.unsetDiff, .unsetDiffMarkerSize9])
+    func aLeftoverClosingMarkerIsCountedUnderUnsetDiff(attributes: Attributes) async throws {
+        let repo = try await Self.merge(attributes)
+        defer { repo.cleanUp() }
+        let size = attributes == .unsetDiffMarkerSize9 ? 9 : 7
+        let closing = String(repeating: ">", count: size)
+        let separator = String(repeating: "=", count: size)
+        try repo.write("f.txt", "a\nMINE\n\(closing) feature\nc\n")
+        #expect(try await Self.backend.leftoverMarkers(in: "f.txt", at: repo.root) == 1)
+        try repo.write("f.txt", "a\nMINE\n\(separator)\nT\n\(closing)\nc\n")
+        #expect(try await Self.backend.leftoverMarkers(in: "f.txt", at: repo.root) == 1)
+        try repo.write("f.txt", "Title\n\(separator)\nMINE\n")
+        #expect(try await Self.backend.leftoverMarkers(in: "f.txt", at: repo.root) == 0)
+    }
+
+    @Test func theScanCountsClosingMarkersAtTheGivenSize() {
+        let text = Data("a\n>>>>>>> t\n>>>>>>>\r\n>>>>>>>> wider\n>>>>>>>x\n=======\n".utf8)
+        #expect(CLIGitBackend.closingMarkers(in: text, markerSize: 7) == 2)
+        #expect(CLIGitBackend.closingMarkers(in: text, markerSize: 8) == 1)
+        #expect(CLIGitBackend.closingMarkers(in: Data("a\n=======\nb\n".utf8), markerSize: 7) == 0)
+    }
+
     /// The scan counts git's own opening marker — exactly the path's size of `<`, then a space
     /// or the end of the line — and nothing else.
     @Test func theScanCountsOpeningMarkersAtTheGivenSize() {

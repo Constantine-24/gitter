@@ -261,8 +261,8 @@ enum ConflictWording {
 
     // MARK: - Mark Resolved with markers left
 
-    /// No count: `leftoverMarkers` can over-count a content line that is exactly an opening
-    /// marker, so the sheet promises only that markers are there.
+    /// No count: `leftoverMarkers` can over-count a content line that is exactly an opening or
+    /// closing marker, so the sheet promises only that markers are there.
     static func markResolvedTitle(_ path: String) -> String {
         "Mark \(name(path)) resolved with conflict markers in it?"
     }
