@@ -266,13 +266,15 @@ extension CLIGitBackend: GitOperationBackend {
     ///    follows no rename.
     /// 3. The unmerged paths.
     ///
-    /// Nil when the source cannot be read: a squash whose `SQUASH_MSG` lists no commit, unless
-    /// a text conflict shows its `AUTO_MERGE` fresh, a rebase stop with no commit pending
-    /// (`exec`, `break`, `edit`), or a read that fails. A superset only over-refuses a
-    /// staged-side discard. Accepted costs: Skip may count a user's change to a path the commit
-    /// also changes as the commit's (Skip records first), and Continue's other-staged check
-    /// misses such a path — and, where a stale `AUTO_MERGE` cannot be proved stale (a non-ort
-    /// stop with no text conflict), a user's path it lists.
+    /// When the source is unknown — a squash whose `SQUASH_MSG` lists no commit, a rebase stop
+    /// with no commit pending (`exec`, `break`, `edit`), an `am` patch that does not parse, or
+    /// any source read that fails (a missing commit, a hand-edited `MERGE_HEAD`) — the paths
+    /// are (1) ∪ (3) when a text conflict proves `AUTO_MERGE` fresh, else nil (every staged
+    /// path counts as the operation's). A source read never makes this throw. A superset only
+    /// over-refuses a staged-side discard. Accepted costs: Skip may count a user's change to a
+    /// path the commit also changes as the commit's (Skip records first), and Continue's
+    /// other-staged check misses such a path — and, where a stale `AUTO_MERGE` cannot be
+    /// proved stale (a non-ort stop with no text conflict), a user's path it lists.
     public func operationPaths(at root: URL) async throws -> [String]? {
         guard let operation = try await operationInProgress(at: root) else { return nil }
         let unmergedRecords = Self.indexRecords(try await run(["ls-files", "-u", "-z"], cwd: root))
@@ -284,14 +286,23 @@ extension CLIGitBackend: GitOperationBackend {
             autoMerge = nil
         }
 
+        // A source read that fails (a hand-edited `SQUASH_MSG` or `MERGE_HEAD`, commits pruned
+        // while the operation waits) leaves the source unknown, exactly like one with nothing
+        // to read: it never makes this throw (fix round 4).
+        let source: [String]?
+        do {
+            source = try await sourcePaths(of: operation, autoMerge: autoMerge, at: root)
+        } catch {
+            source = nil
+        }
         let parts: [[String]]
-        if let source = try await sourcePaths(of: operation, autoMerge: autoMerge, at: root) {
+        if let source {
             parts = [autoMerge ?? [], source, unmerged]
-        } else if operation == .squash, let paths = autoMerge,
+        } else if let paths = autoMerge,
             try await autoMergeIsProvedFresh(paths, unmerged: unmergedRecords, at: root)
         {
-            // No commit in `SQUASH_MSG`: a text conflict it differs at shows `AUTO_MERGE` fresh,
-            // ort's own result, renames included.
+            // The source unknown: a text conflict it differs at shows `AUTO_MERGE` fresh, ort's
+            // own result for this stop, renames included.
             parts = [paths, unmerged]
         } else {
             return nil
@@ -309,7 +320,8 @@ extension CLIGitBackend: GitOperationBackend {
     ///   all agree on).
     /// - squash (Ruling 25): the same for its tips — `merge-base --independent` of the
     ///   commits `SQUASH_MSG` lists (`commit <sha>` lines; every commit of `HEAD..tip`, merges
-    ///   included, measured). Nil when it lists none (the message was edited).
+    ///   included, measured), in batches (`independentTips`). Nil when it lists none (the
+    ///   message was edited).
     /// - cherry-pick, revert, rebase: `CHERRY_PICK_HEAD` / `REVERT_HEAD` / `REBASE_HEAD`
     ///   against its parent (`commitPaths`; a root commit against nothing).
     /// - `git am`: the current patch, `rebase-apply/patch`, read by `DiffParser` — only with no
@@ -331,8 +343,7 @@ extension CLIGitBackend: GitOperationBackend {
                 let name = String(line.dropFirst("commit ".count))
                 return Self.isObjectName(name) ? name : nil
             }
-            guard !listed.isEmpty else { return nil }
-            let tips = GitLines.split(try await run(["merge-base", "--independent"] + listed, cwd: root))
+            guard !listed.isEmpty, let tips = try await independentTips(of: listed, at: root) else { return nil }
             return try await changesSinceMergeBases(of: tips, at: root)
         case .cherryPick:
             return try await commitPaths("CHERRY_PICK_HEAD", mainline: try await sequencerMainline(at: root), autoMerge: autoMerge, at: root)
@@ -344,6 +355,28 @@ extension CLIGitBackend: GitOperationBackend {
         case .applyingPatches: return try await currentPatchPaths(at: root)
         }
     }
+
+    /// `merge-base --independent` of `commits`, folded over batches of `independentBatch`: the
+    /// tips of a batch plus the tips so far have the same tips as both together, so the
+    /// argument list never grows with the squash. A squash's message lists every commit (one
+    /// per ≈41 bytes), and `Process` refuses more than 4096 arguments by raising an Objective-C
+    /// exception, not an error — a crash (measured, `NSInvalidArgumentException` "too many
+    /// arguments (30002) -- limit is 4096"); past that, macOS's 1 MiB `ARG_MAX` (E2BIG between
+    /// 20 000 and 24 000 names, measured). Nil when the tips themselves reach a batch (no real
+    /// squash has that many; the caller then falls back to the conservative rule).
+    private func independentTips(of commits: [String], at root: URL) async throws -> [String]? {
+        var tips: [String] = []
+        for start in stride(from: 0, to: commits.count, by: Self.independentBatch) {
+            let batch = commits[start..<min(start + Self.independentBatch, commits.count)]
+            tips = GitLines.split(try await run(["merge-base", "--independent"] + tips + batch, cwd: root))
+            guard tips.count < Self.independentBatch else { return nil }
+        }
+        return tips
+    }
+
+    /// Commits per `merge-base --independent`: `stageAllBatch`'s 1000, so a call carries at
+    /// most 2001 arguments (≈82 KB), under both limits above.
+    static let independentBatch = 1_000
 
     /// Each head's changes since each of its merge bases with HEAD; nil for a head that is not
     /// a full object name or that shares no base with HEAD.

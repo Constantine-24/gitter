@@ -31,9 +31,11 @@ public protocol GitOperationBackend: Sendable {
     /// against its mainline — `git am`'s current patch), and the unmerged paths.
     /// `AUTO_MERGE` is read only while an operation is in progress, and alone it is not
     /// enough: only ort writes it, so a `-s resolve` or octopus stop sits over a stale one.
-    /// Nil with no operation, and when the source cannot be read: a squash whose `SQUASH_MSG`
-    /// lists no commit and whose `AUTO_MERGE` no text conflict shows fresh, a rebase's `exec` /
-    /// `break` / `edit` stop, a failed read.
+    /// When the source cannot be read — a squash whose `SQUASH_MSG` lists no commit, a rebase's
+    /// `exec` / `break` / `edit` stop, any source read that fails (a missing commit named in
+    /// `SQUASH_MSG` or `MERGE_HEAD`) — the `AUTO_MERGE` diff and the unmerged paths when a text
+    /// conflict shows `AUTO_MERGE` fresh, else nil. Nil with no operation. A failed source read
+    /// never throws.
     func operationPaths(at root: URL) async throws -> [String]?
 
     /// Whether `continueOperation` would run; see `ContinueReadiness`.
