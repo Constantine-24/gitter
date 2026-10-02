@@ -44,6 +44,16 @@ final class RepositoryStore {
     /// The selected file, when it is a resolved conflict that Reopen Conflict… can bring back
     /// (`GitConflictBackend.canReopen`, read when it is selected).
     private(set) var reopenablePath: String?
+
+    /// Where the rebase, cherry-pick, revert, merge, squash or `git am` in progress stopped, and
+    /// whether Continue and Skip would run (`RepositoryStore+Continue`): read with every snapshot
+    /// that shows an operation, and written with it, so the bar never describes another state
+    /// than the file list. Nil with no operation.
+    private(set) var operationStop: OperationStop?
+    /// The stop the composer was last prefilled for (`ComposerPrefill`): a stop prefills an
+    /// empty draft once, so a draft the user cleared stays clear.
+    private(set) var prefilledStopKey: String?
+
     var stagedView = false {
         didSet {
             guard stagedView != oldValue else { return }
@@ -289,6 +299,8 @@ final class RepositoryStore {
         setDiff([], staged: stagedView)
         setConflict(nil, progress: nil)
         reopenablePath = nil
+        operationStop = nil
+        prefilledStopKey = nil
         selection = .workingCopy
         selectedPath = nil
         lastError = nil
@@ -695,6 +707,21 @@ final class RepositoryStore {
     /// internal (not private(set) write): used by +Conflicts.swift's `loadConflict()`
     func setReopenablePath(_ path: String?) {
         reopenablePath = path
+    }
+
+    /// internal (not private(set) write): used by +Refresh.swift's `loadSnapshot()`, right after
+    /// `setSnapshot`, with the stop read for that snapshot.
+    func setOperationStop(_ stop: OperationStop?) {
+        operationStop = stop
+    }
+
+    /// Prefills the composer for the stop on screen (`ComposerPrefill.apply`). `restart` forgets
+    /// which stop it last filled for: after a Continue the draft was used and reset, and the stop
+    /// it stopped at again must fill it, although the reload before saw that stop already.
+    /// internal (not private(set) write): used by +Refresh.swift and +Continue.swift
+    func syncDraftWithOperation(restart: Bool = false) {
+        if restart { prefilledStopKey = nil }
+        prefilledStopKey = ComposerPrefill.apply(operationStop, lastKey: prefilledStopKey, to: draft)
     }
 
     /// The one place `diff` is written, so `diffIsStaged` can never drift from it.

@@ -9,6 +9,15 @@ extension RepositoryStore {
         let message = draft.message
         let amend = draft.amend
 
+        // A rebase, cherry-pick or revert stop is concluded by Continue, never by `commit -F`:
+        // during a rebase it loses the original author, and after a single pick it breaks the
+        // following `--continue` (M 15). The composer's button is Continue there; this refuses
+        // what reaches it anyway (a debug hook, a stop that began a moment ago) before git runs.
+        if let operation = operationInProgress, OperationBarState.isContinuable(operation) {
+            mutate { _, _ in throw BranchActionBlocked(reason: ContinueWording.commitRefused(operation)) }
+            return
+        }
+
         // Amending part-way through an operation rewrites the commit that operation is standing
         // on, and in four of the six git goes through with it: the previous tip ends up on no
         // ref, and the merge/revert/squash it belonged to either vanishes or is left pointing at
@@ -53,6 +62,7 @@ extension RepositoryStore {
             // commit — throws, leaving the draft as typed), and only while this is still the
             // repository it was committed to; see `mutate`.
             draft.reset()
+            syncDraftWithOperation(restart: true)
             select(.workingCopy)
         }
     }

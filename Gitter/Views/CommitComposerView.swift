@@ -1,7 +1,10 @@
 import SwiftUI
 
 /// The commit box under the working-copy file list: subject, body, the amend toggle and the
-/// commit button.
+/// commit button — which is **Continue** during a rebase, cherry-pick or revert stop (spec,
+/// "Commit": `commit -F` is not offered there, M 15). An empty draft is prefilled with git's
+/// prepared message when an operation stops (`ComposerPrefill`); for a cherry-pick or revert a
+/// note says which lines git will remove.
 struct CommitComposerView: View {
     @Environment(RepositoryStore.self) private var store
     @FocusState private var focus: Field?
@@ -34,6 +37,12 @@ struct CommitComposerView: View {
 
             bodyEditor(draft: $draft.body)
 
+            if let note = store.composerCommentNote {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             if store.amendRewritesPublishedHistory {
                 Label(
                     "Amending rewrites history that has already been pushed.",
@@ -64,10 +73,19 @@ struct CommitComposerView: View {
                     ProgressView().controlSize(.small)
                 }
                 Spacer()
-                Button(store.commitButtonTitle) { store.commit() }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(!draft.canCommit || store.isMutating)
+                if let operation = store.operationInProgress, store.composerContinues {
+                    // The bar's Continue, with this draft as the message where git has one.
+                    let state = store.continueState
+                    Button(store.continueTitle) { store.continueOperation() }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .disabled(state != .enabled, help: state.reason ?? ContinueWording.continueHelp(operation))
+                } else {
+                    Button(store.commitButtonTitle) { store.commit() }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .disabled(!draft.canCommit || store.isMutating)
+                }
             }
         }
         .padding(8)

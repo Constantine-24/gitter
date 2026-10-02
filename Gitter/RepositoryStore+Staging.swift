@@ -39,13 +39,21 @@ extension RepositoryStore {
     }
 
     /// Stages everything but an unmerged path (GitCore, M 22), and says how many conflicted
-    /// files it left out.
+    /// files it left out. Not confirmed: the button goes through `requestStageAll`, which asks
+    /// first during an operation (`RepositoryStore+Continue`).
     func stageAll() {
-        let conflicted = Set(snapshot?.status.files.filter(isUnmerged).map(\.path) ?? [])
+        let conflicted = Set(unmergedPaths)
         mutate({ backend, root in try await backend.stageAll(at: root) }, onSuccess: { [self] in
-            let left = snapshot?.status.files.filter { conflicted.contains($0.path) && isUnmerged($0) } ?? []
-            if !left.isEmpty { showNotice(ConflictWording.stageAllSkipped(left.count)) }
+            announceStageAllSkipped(conflicted)
         })
+    }
+
+    /// The notice after a Stage All: how many of the files that were conflicted before it are
+    /// still unmerged (left out).
+    // internal (not private): used by +Continue.swift's `confirmStageAll()`
+    func announceStageAllSkipped(_ conflicted: Set<String>) {
+        let left = snapshot?.status.files.filter { conflicted.contains($0.path) && isUnmerged($0) } ?? []
+        if !left.isEmpty { showNotice(ConflictWording.stageAllSkipped(left.count)) }
     }
 
     func unstageAll() {

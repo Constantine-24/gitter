@@ -48,6 +48,9 @@ extension RepositoryStore {
         if let refusal = error as? ConflictError {
             return ConflictWording.error(refusal)
         }
+        if let refusal = error as? OperationError {
+            return ContinueWording.error(refusal)
+        }
         if let refusal = error as? BranchOperationError {
             return refusal.sentence(refusing: "do that")
         }

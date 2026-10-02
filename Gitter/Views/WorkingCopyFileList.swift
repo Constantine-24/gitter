@@ -39,7 +39,8 @@ struct WorkingCopyFileList: View {
                 files: store.unstagedFiles,
                 actionTitle: "Stage All",
                 placeholder: "No local changes",
-                action: { store.stageAll() }
+                // During an operation it asks first, naming what would ride into its commit.
+                action: { store.requestStageAll() }
             )
         }
         .listStyle(.inset)

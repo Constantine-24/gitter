@@ -367,6 +367,17 @@ enum StashWording {
             + "abort it first."
     }
 
+    /// Why the stash actions are off while any path is unmerged — with or without an operation
+    /// (a stash apply or an Undo Discard leaves `u` records and no MERGE_HEAD): git refuses to
+    /// stash or apply over them, and GitCore says so after the click; this says it before. Drop
+    /// goes with Apply and Pop, as it does during an operation. Nil when nothing is unmerged.
+    static func blockedByConflicts(_ paths: [String], actions: Bool) -> String? {
+        guard !paths.isEmpty else { return nil }
+        guard actions else { return refusal(.unmergedPaths(paths), verb: .stash, stash: nil) }
+        return "Stashes can't be applied, popped or dropped while \(names(paths)) "
+            + "\(number(paths.count, "has", "have")) unresolved conflicts. Resolve them first."
+    }
+
     // MARK: - Rows
 
     /// The tooltip of a record Gitter filed before a discard.

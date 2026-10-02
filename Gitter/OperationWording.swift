@@ -6,12 +6,12 @@ import GitCore
 /// it, which would otherwise have to agree on six strings each by hand.
 ///
 /// Every message names a way *forward* and a way out. The way forward differs per operation: a
-/// merge, cherry-pick and revert are finished by committing; a rebase is only advanced by it —
-/// the commit lands and `git rebase --continue` then moves on to the next one, which still needs
-/// a terminal; `git am` is not advanced by a commit at all (`git am --continue` does the commit
-/// itself); a pending squash is finished by committing too. The way *out* is the same for all
-/// six and no longer a terminal: the button in the operation note, which opens `AbortSheet` and
-/// runs `GitBranchBackend.abort` (see the design doc's evidence table for what each one keeps).
+/// merge and a pending squash are finished by committing; a rebase, cherry-pick and revert by
+/// Continue (A2: the operation bar and the composer, `ContinueWording`), which makes the commit
+/// and goes on; `git am` stays abort-only in Gitter, so `git am --continue` in a terminal is
+/// still its way forward. The way *out* is the same for all six: the bar's abort button, which
+/// opens `AbortSheet` and runs `GitBranchBackend.abort` (see the design doc's evidence table for
+/// what each one keeps).
 extension RepositoryOperation {
 
     /// Sentence-initial: every use of it starts a line.
@@ -26,48 +26,46 @@ extension RepositoryOperation {
         }
     }
 
-    /// The commit button's title while this is in progress.
+    /// The composer's button title while this is in progress.
     ///
     /// It replaces the file count, which mid-operation says the wrong thing: with everything
     /// resolved and staged, "Commit 1 File" describes a one-file commit and hides that this is
-    /// the merge concluding. Where the commit does not conclude the operation, the title stays
-    /// the plain verb rather than claiming otherwise.
+    /// the merge concluding. A rebase, cherry-pick or revert stop is concluded by Continue (spec,
+    /// "Commit": `commit -F` is not offered there, M 15), so the button says so. `git am` keeps
+    /// the plain verb rather than claiming a commit concludes it.
     var commitButtonTitle: String {
         switch self {
         case .merge: "Commit Merge"
-        case .cherryPick: "Commit Cherry-Pick"
-        case .revert: "Commit Revert"
-        case .rebase, .applyingPatches: "Commit"
+        case .cherryPick: "Continue Cherry-Pick"
+        case .revert: "Continue Revert"
+        case .rebase: "Continue Rebase"
+        case .applyingPatches: "Commit"
         case .squash: "Commit Squash"
         }
     }
 
-    /// The note above the working-copy file list, explaining why half its buttons are off.
+    /// The operation bar's sentence when there is no progress to tell (`ContinueWording.bar`).
     ///
     /// The two halves are the two states the gate covers: conflicts still to resolve, and
     /// everything resolved but the operation still open — the case where nothing is unmerged
     /// and the old gate let go. A conflicting `--squash` behaves exactly like a conflicting
     /// merge here (verified: no `MERGE_HEAD`, but an unmerged entry in the status same as any
     /// other conflict), so it takes the same conflicts wording rather than its own "pending"
-    /// phrasing, which only fits the no-conflicts case.
+    /// phrasing, which only fits the no-conflicts case. Conflicts are resolved in Gitter (A2), and
+    /// only `git am` still needs a terminal to go on.
     func note(hasConflicts: Bool) -> String {
         let lead = "\(noun) in progress"
-        let finish =
-            switch self {
-            case .merge, .cherryPick, .revert, .squash: "commit."
-            case .rebase: "commit, then run `git rebase --continue` in a terminal."
-            case .applyingPatches: "run `git am --continue` in a terminal."
-            }
-        if hasConflicts {
-            return "\(lead) — resolve conflicts in your editor, stage the files, then \(finish)"
-        }
         switch self {
-        case .merge, .cherryPick, .revert:
-            return "\(lead) — commit to complete it."
-        case .rebase, .applyingPatches:
-            return "\(lead) — \(finish)"
+        case .merge:
+            return hasConflicts ? "\(lead) — resolve the conflicts, then commit." : "\(lead) — commit to complete it."
         case .squash:
-            return "Squash pending — commit to finish."
+            return hasConflicts ? "\(lead) — resolve the conflicts, then commit." : "Squash pending — commit to finish."
+        case .rebase, .cherryPick, .revert:
+            return hasConflicts ? "\(lead) — resolve the conflicts, then continue." : "\(lead) — continue when ready."
+        case .applyingPatches:
+            return hasConflicts
+                ? "\(lead) — resolve the conflicts, then run `git am --continue` in a terminal."
+                : "\(lead) — run `git am --continue` in a terminal."
         }
     }
 
@@ -80,7 +78,9 @@ extension RepositoryOperation {
     var movingHeadBlocked: String {
         switch self {
         case .squash: "A squash is pending. Commit it or undo it first."
-        case .merge, .cherryPick, .revert, .rebase, .applyingPatches:
+        case .cherryPick, .revert, .rebase:
+            "A \(noun.lowercased()) is in progress. Continue or abort it first."
+        case .merge, .applyingPatches:
             "A \(noun.lowercased()) is in progress. Commit or abort it first."
         }
     }
@@ -119,8 +119,9 @@ extension RepositoryOperation {
 
     private var wayOut: String {
         switch self {
-        case .merge, .cherryPick, .revert: "Commit to complete it, or use \(abortActionName)."
-        case .rebase: "Commit the resolution, or use \(abortActionName)."
+        case .merge: "Commit to complete it, or use \(abortActionName)."
+        case .cherryPick, .revert: "Continue to complete it, or use \(abortActionName)."
+        case .rebase: "Continue the rebase, or use \(abortActionName)."
         case .applyingPatches:
             "Run `git am --continue` in a terminal to carry on, or use \(abortActionName)."
         case .squash: "Commit to finish it, or use \(abortActionName)."
@@ -146,7 +147,7 @@ extension RepositoryOperation {
         }
     }
 
-    /// The trailing button in the operation note. The ellipsis is the promise that it asks first,
+    /// The trailing button in the operation bar. The ellipsis is the promise that it asks first,
     /// and every one of these does: it opens `AbortSheet` and runs nothing.
     var abortButtonTitle: String {
         abortActionName + "…"
@@ -203,10 +204,10 @@ extension RepositoryOperation {
         case .squash:
             // The last sentence is literally true — `git reset --merge` removes `SQUASH_MSG`
             // (verified on git 2.54) — and it is kept because the message is git's, not
-            // Gitter's: the app never shows it (every commit goes through `-F <the draft>`),
-            // but a plain `git commit` in a terminal opens pre-filled with it, and a user who
-            // was about to do that is losing something real. It does not promise a prefill
-            // Gitter has; "git's" is what says whose it is.
+            // Gitter's: the composer only shows a copy of it, prefilled into an empty draft (A2,
+            // `ComposerPrefill`) and taken back with the squash when left untouched, while a
+            // plain `git commit` in a terminal opens pre-filled with the file itself, so a user
+            // who was about to do that is losing something real. "Git's" is what says whose it is.
             return "Undoing discards everything currently staged — the squashed changes, any "
                 + "conflict resolutions, and anything else in the index, including work you "
                 + "staged before the squash if the squash was started outside Gitter. Git's "

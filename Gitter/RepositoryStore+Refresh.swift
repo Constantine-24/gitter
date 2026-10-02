@@ -121,10 +121,15 @@ extension RepositoryStore {
 
         do {
             let newSnapshot = try await backend.snapshot(at: root)
+            // The stop of the operation it shows, if any, read before either is written: the bar
+            // and the file list must describe the same moment.
+            let stop = await Self.readOperationStop(newSnapshot.status, backend: backend, root: root)
             // The repository may have been switched (via `open`) while this snapshot was in
             // flight; a snapshot from before that must never overwrite the new state.
             guard generation == capturedGeneration else { return }
             setSnapshot(newSnapshot)
+            setOperationStop(stop)
+            syncDraftWithOperation()
             // A mutation's own failure outranks the reload it provokes. git writes inside
             // `.git` before it fails — a rejected commit has already written COMMIT_EDITMSG —
             // so the watcher fires and this successful snapshot would otherwise erase the

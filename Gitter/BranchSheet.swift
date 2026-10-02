@@ -60,6 +60,21 @@ enum BranchSheet: Identifiable, Hashable {
     /// `comesBack` is what `restore --merge` will write (`GitConflictBackend.reopenedFile`) and
     /// `sides` the operation's side names, both read as the sheet opened.
     case reopen(path: String, hash: String?, comesBack: ReopenedFile, sides: SideLabels)
+    /// Continue at a rebase stop whose resolution equals HEAD (M 30): the commit would be left
+    /// out — unless other files are staged (Ruling 20), which it then keeps under its own title
+    /// and author. `otherStaged` is exactly what `confirmContinueEmpty` acknowledges to GitCore.
+    case continueEmpty(CommitRef, otherStaged: [String])
+    /// Continue with staged files that are not the stopped commit's (Ruling 16): they would be
+    /// committed with it. `paths` is exactly what `confirmContinueOthers` acknowledges.
+    case continueOthers(RepositoryOperation, CommitRef?, paths: [String])
+    /// Skip This Commit…: the stopped commit (its sha is what `confirmSkip` hands to GitCore,
+    /// which refuses if the operation moved on) and the paths that go back to HEAD, read when
+    /// the sheet opened.
+    case skip(RepositoryOperation, CommitRef, paths: [String])
+    /// Stage All during an operation (M 22): the files it would add that are not the
+    /// operation's own — every file it would add when `known` is false (the operation's paths
+    /// could not be read).
+    case stageAll(RepositoryOperation, sweep: [String], known: Bool)
 
     var id: Self { self }
 

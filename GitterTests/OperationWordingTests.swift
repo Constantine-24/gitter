@@ -21,49 +21,39 @@ import Testing
         Wording(
             operation: .merge,
             note: "Merge in progress — commit to complete it.",
-            conflictsNote:
-                "Merge in progress — resolve conflicts in your editor, stage the files, then "
-                + "commit.",
+            conflictsNote: "Merge in progress — resolve the conflicts, then commit.",
             abortButtonTitle: "Abort Merge…",
             abortedNotice: "Merge aborted."),
         Wording(
             operation: .cherryPick,
-            note: "Cherry-pick in progress — commit to complete it.",
-            conflictsNote:
-                "Cherry-pick in progress — resolve conflicts in your editor, stage the files, "
-                + "then commit.",
+            note: "Cherry-pick in progress — continue when ready.",
+            conflictsNote: "Cherry-pick in progress — resolve the conflicts, then continue.",
             abortButtonTitle: "Abort Cherry-Pick…",
             abortedNotice: "Cherry-pick aborted."),
         Wording(
             operation: .revert,
-            note: "Revert in progress — commit to complete it.",
-            conflictsNote:
-                "Revert in progress — resolve conflicts in your editor, stage the files, then "
-                + "commit.",
+            note: "Revert in progress — continue when ready.",
+            conflictsNote: "Revert in progress — resolve the conflicts, then continue.",
             abortButtonTitle: "Abort Revert…",
             abortedNotice: "Revert aborted."),
         Wording(
             operation: .rebase,
-            note: "Rebase in progress — commit, then run `git rebase --continue` in a terminal.",
-            conflictsNote:
-                "Rebase in progress — resolve conflicts in your editor, stage the files, then "
-                + "commit, then run `git rebase --continue` in a terminal.",
+            note: "Rebase in progress — continue when ready.",
+            conflictsNote: "Rebase in progress — resolve the conflicts, then continue.",
             abortButtonTitle: "Abort Rebase…",
             abortedNotice: "Rebase aborted."),
         Wording(
             operation: .applyingPatches,
             note: "Patch application in progress — run `git am --continue` in a terminal.",
             conflictsNote:
-                "Patch application in progress — resolve conflicts in your editor, stage the "
-                + "files, then run `git am --continue` in a terminal.",
+                "Patch application in progress — resolve the conflicts, then run "
+                + "`git am --continue` in a terminal.",
             abortButtonTitle: "Stop Applying Patches…",
             abortedNotice: "Stopped applying patches."),
         Wording(
             operation: .squash,
             note: "Squash pending — commit to finish.",
-            conflictsNote:
-                "Squash in progress — resolve conflicts in your editor, stage the files, then "
-                + "commit.",
+            conflictsNote: "Squash in progress — resolve the conflicts, then commit.",
             abortButtonTitle: "Undo Squash…",
             abortedNotice: "Squash undone."),
     ]

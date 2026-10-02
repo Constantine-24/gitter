@@ -56,6 +56,14 @@
     ///     reopen:<path>                confirmreopen                resolver
     ///     noticeshow                   cancelsheet
     ///
+    ///   The operation bar and the composer (`RepositoryStore+Continue`,
+    ///   `DebugLaunchHooks+Continue`):
+    ///
+    ///     bar                          message:<text>               continue
+    ///     confirmempty                 confirmothers                skip
+    ///     confirmskip                  stageall                     confirmstageall
+    ///     commitdraft
+    ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
     /// `start:<step>` runs a step **without** waiting for its lane, which is how the steps after
@@ -342,6 +350,8 @@
                 await discardStep(command, step: step, store: store)
             case let conflict where conflictCommands.contains(conflict):
                 await conflictStep(command, step: step, store: store)
+            case let bar where continueCommands.contains(bar):
+                await continueStep(command, step: step, store: store)
             case "stashcontinue":
                 guard store.offeredStashAndContinue != nil else {
                     log("stashcontinue: not offered")
@@ -355,7 +365,6 @@
                     // Does nothing without its sheet on screen.
                     store.confirmPull(mode)
                 }
-            case "stageall": store.stageAll()
             case "commit":
                 // The composer's own path: the subject goes into the draft, then `commit()`.
                 store.draft.subject = first ?? "commit"
@@ -648,6 +657,8 @@
                     + "destination: \(model.destination), button: \(model.confirmTitle))"
             case .replaceHandEdited, .markResolved, .reopen:
                 describeConflictSheet(sheet) ?? "?"
+            case .continueEmpty, .continueOthers, .skip, .stageAll:
+                describeContinueSheet(sheet) ?? "?"
             }
         }
 

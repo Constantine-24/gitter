@@ -31,6 +31,7 @@ extension RepositoryStore {
             return StashWording.refusal(.operationInProgress(operation), verb: .stash, stash: nil)
         }
         if isMutating { return StashWording.busy }
+        if let reason = StashWording.blockedByConflicts(unmergedPaths, actions: false) { return reason }
         let intentToAdd = status.files.filter(\.isIntentToAdd).map(\.path)
         if !intentToAdd.isEmpty {
             return StashWording.refusal(.intentToAdd(intentToAdd), verb: .stash, stash: nil)
@@ -40,12 +41,18 @@ extension RepositoryStore {
     }
 
     /// Why Apply, Pop and Drop Stash… are off right now, or nil: a sheet is up, an operation is
-    /// in progress, or another change is running.
+    /// in progress, another change is running, or a conflict is unresolved (with no operation:
+    /// a stash apply's or an Undo Discard's).
     var stashActionBlockedReason: String? {
         if activeSheet != nil { return StashWording.blockedBySheet }
         if let operation = operationInProgress { return StashWording.actionsBlocked(by: operation) }
         if isMutating { return StashWording.busy }
-        return nil
+        return StashWording.blockedByConflicts(unmergedPaths, actions: true)
+    }
+
+    /// Every path with a `u` record, in the snapshot's order.
+    var unmergedPaths: [String] {
+        snapshot?.status.files.filter(isUnmerged).map(\.path) ?? []
     }
 
     /// What the sheet's "Selected files" stashes: the working copy's selected file, with a
