@@ -65,6 +65,33 @@ public struct OperationProgress: Sendable, Hashable {
     }
 }
 
+/// A cherry-pick or revert range git stopped part-way **without** an operation (A2 Task 6 fix
+/// round 1, measured on git 2.54): a `--continue` that made its commit, or a `--skip`, then
+/// refused the next commit (an untracked file it would overwrite, exit 128). `sequencer/` stays
+/// with no `CHERRY_PICK_HEAD` / `REVERT_HEAD`, so `operationInProgress` is nil while `git status`
+/// says "Cherry-pick currently in progress". `sequencer/todo` lists exactly the commits not
+/// applied, the refused one first. A later `--continue` leaves that first one out silently;
+/// `--quit` keeps HEAD, the index and the worktree and removes `sequencer/`, after which picking
+/// (reverting) the listed commits again applies them.
+public struct HaltedSequence: Sendable, Hashable {
+    /// How many of the commits are read for `notApplied`; `total` counts them all.
+    public static let listed = 20
+
+    /// `.cherryPick` or `.revert`, from the todo's first command.
+    public let operation: RepositoryOperation
+    /// The commits not applied, in order, the first `listed` of them. A todo line naming a
+    /// commit that no longer resolves keeps the todo's own words (its abbreviated name).
+    public let notApplied: [CommitRef]
+    /// Every commit the todo lists.
+    public let total: Int
+
+    public init(operation: RepositoryOperation, notApplied: [CommitRef], total: Int) {
+        self.operation = operation
+        self.notApplied = notApplied
+        self.total = total
+    }
+}
+
 /// The message git has prepared for the commit an operation will make, as the composer should
 /// show it: comment lines removed, trailing blank lines trimmed.
 public struct PendingMessage: Sendable, Hashable {

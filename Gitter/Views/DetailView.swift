@@ -28,7 +28,11 @@ struct DetailView: View {
             VStack(alignment: .leading, spacing: 0) {
                 // Sits above the list rather than inside it so the list itself stays a plain
                 // `List` of sections.
-                if let operation = store.operationInProgress { OperationBar(operation: operation) }
+                if let operation = store.operationInProgress {
+                    OperationBar(operation: operation)
+                } else if let halted = store.haltedSequence {
+                    HaltedSequenceBar(halted: halted)
+                }
                 // The composer is sized by its content; every remaining point of the top half
                 // goes to the file list.
                 WorkingCopyFileList()

@@ -308,14 +308,87 @@ import Testing
 
     /// A range that made its commit and then stranded the rest (Task 3, `.sequenceHalted`): the
     /// commit is there, no operation is detected, and git's leftover list is named.
-    @Test func aHaltedSequenceSaysWhatWasCommittedAndWhatGitLeft() {
-        let text = ContinueWording.sequenceHalted(.cherryPick, "error: your local changes would be overwritten")
+    /// A Continue that halted the range (fix round 1, measured): the current commit was made,
+    /// git refused the next; the bar, not this sentence, lists what was not applied.
+    @Test func aContinueThatHaltedSaysTheCommitWasMadeAndPointsAtTheBar() {
+        let text = ContinueWording.sequenceHalted(.cherryPick, "error: The following untracked working tree files would be overwritten by merge:\n\tg.txt")
         #expect(
             text
-                == "Git made the commit, then stopped the cherry-pick before the next one: error: your local changes "
-                + "would be overwritten. No cherry-pick is in progress now, and the commits after it were not "
-                + "applied. Git left the rest of the list in .git/sequencer; a later \"git cherry-pick --continue\" "
-                + "would end it without applying them.")
+                == "Git made the commit, then stopped the cherry-pick before the next one: error: The following "
+                + "untracked working tree files would be overwritten by merge: g.txt. No cherry-pick is in progress "
+                + "now. The bar above lists the commits it did not apply and how to apply them.")
+        #expect(!text.contains("--continue"))
+    }
+
+    /// A Skip that halted the range made **no** commit (measured: HEAD unchanged).
+    @Test func aSkipThatHaltedClaimsNoCommit() {
+        let text = ContinueWording.skipHalted(.revert, Self.picked, recorded: true, "error: would be overwritten")
+        #expect(
+            text
+                == "Skipped 9f8e7d6 \u{2014} its changes are in the Stashes list. Git then stopped the revert before the "
+                + "next commit: error: would be overwritten. No revert is in progress now. The bar above lists the "
+                + "commits it did not apply and how to apply them.")
+        #expect(!text.contains("made the commit"))
+        #expect(
+            ContinueWording.skipHalted(.cherryPick, Self.picked, recorded: false, "")
+                == "Skipped 9f8e7d6. Git then stopped the cherry-pick before the next commit. No cherry-pick is in "
+                + "progress now. The bar above lists the commits it did not apply and how to apply them.")
+    }
+
+    static let two = CommitRef(sha: "1600000000000000000000000000000000000000", subject: "Pick two")
+    static let three = CommitRef(sha: "3800000000000000000000000000000000000000", subject: "Pick three")
+
+    /// The persistent bar while `sequencer/` stays with no operation: the commits not applied,
+    /// the safe way forward (measured: `--quit` keeps HEAD, index and worktree), and what
+    /// `--continue` would do (measured: it leaves the first out).
+    @Test func theHaltedBarNamesTheCommitsAndTheSafeWayForward() {
+        let pick = HaltedSequence(operation: .cherryPick, notApplied: [Self.two, Self.three], total: 2)
+        #expect(
+            ContinueWording.halted(pick)
+                == "The cherry-pick stopped part-way and is not in progress: git did not apply 2 commits, 1600000 Pick "
+                + "two and 3800000 Pick three.")
+        #expect(
+            ContinueWording.haltedWayForward(pick)
+                == "To apply them, move away what git refused over, run `git cherry-pick --quit` in a terminal (it "
+                + "changes no file and no commit), then cherry-pick them again: `git cherry-pick 1600000 3800000`. "
+                + "Don't run `git cherry-pick --continue`: it would leave out 1600000.")
+        let revert = HaltedSequence(operation: .revert, notApplied: [Self.two], total: 1)
+        #expect(
+            ContinueWording.halted(revert)
+                == "The revert stopped part-way and is not in progress: git did not apply 1 commit, 1600000 Pick two.")
+        #expect(
+            ContinueWording.haltedWayForward(revert)
+                == "To apply it, move away what git refused over, run `git revert --quit` in a terminal (it changes "
+                + "no file and no commit), then revert it again: `git revert 1600000`. Don't run `git revert "
+                + "--continue`: it would leave out 1600000.")
+        let long = HaltedSequence(operation: .cherryPick, notApplied: [Self.two, Self.three], total: 25)
+        #expect(ContinueWording.halted(long).hasSuffix("1600000 Pick two, 3800000 Pick three and 23 more."))
+        #expect(
+            ContinueWording.haltedWayForward(long).contains(
+                "then cherry-pick them again in the order .git/sequencer/todo lists them (copy that list first: --quit "
+                + "removes it)."))
+    }
+
+    // MARK: - A draft written for another commit (fix round 1, I1)
+
+    @Test func aDraftWrittenElsewhereIsNamedAndBlocksTheButton() {
+        let one = CommitRef(sha: "70de437000000000000000000000000000000000", subject: "Feature one")
+        #expect(
+            ContinueWording.foreignNote(writtenFor: one, operation: .rebase, current: Self.picked)
+                == "This message was written for 70de437, not 9f8e7d6.")
+        #expect(
+            ContinueWording.foreignNote(writtenFor: nil, operation: .rebase, current: Self.picked)
+                == "This message was written before the rebase stopped at 9f8e7d6.")
+        #expect(
+            ContinueWording.foreignNote(writtenFor: nil, operation: .merge, current: nil)
+                == "This message was written before the merge began.")
+        #expect(ContinueWording.useMessage(.rebase, current: Self.picked) == "Use 9f8e7d6\u{2019}s Message")
+        #expect(ContinueWording.useMessage(.merge, current: nil) == "Use the Merge\u{2019}s Message")
+        #expect(ContinueWording.keepMessage == "Keep This Message")
+        #expect(
+            ContinueWording.foreignReason(writtenFor: one, operation: .rebase, current: Self.picked)
+                == "This message was written for 70de437, not 9f8e7d6. Use 9f8e7d6\u{2019}s message or keep this one "
+                + "first.")
     }
 
     @Test func theSkipNoticeIsTheBriefsSentenceWithItsTail() {

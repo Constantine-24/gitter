@@ -351,18 +351,110 @@ enum ContinueWording {
         return "\(the(operation).capitalizedFirst) did not continue. Git said: \(words)"
     }
 
-    /// A range made its commit, then refused the next one (A2 Task 3, `.sequenceHalted`):
-    /// `sequencer/` is left with no pseudo-ref, so no operation is detected, and a later
-    /// `--continue` would end the sequence without the rest (M 17).
+    /// A Continue that made its commit and then had the next one refused (A2 Task 3,
+    /// `.sequenceHalted`). The bar (`halted`) names what was not applied and the way on.
     static func sequenceHalted(_ operation: RepositoryOperation, _ gitsWords: String) -> String {
-        let noun = operation.noun.lowercased()
-        let command = operation == .revert ? "git revert --continue" : "git cherry-pick --continue"
-        var said = flat(gitsWords)
-        if let last = said.last, !".!?".contains(last) { said += "." }
-        let words = said.isEmpty ? "" : ": \(said)"
-        return "Git made the commit, then stopped the \(noun) before the next one\(words) No \(noun) is in progress "
-            + "now, and the commits after it were not applied. Git left the rest of the list in .git/sequencer; "
-            + "a later \"\(command)\" would end it without applying them."
+        "Git made the commit, then stopped \(the(operation)) before the next one\(said(gitsWords)) "
+            + haltedTail(operation)
+    }
+
+    /// A Skip whose next commit was refused: the skip happened, and **no** commit was made (fix
+    /// round 1, measured: HEAD unchanged).
+    static func skipHalted(_ operation: RepositoryOperation, _ current: CommitRef, recorded: Bool, _ gitsWords: String)
+        -> String
+    {
+        let lead =
+            recorded
+            ? "Skipped \(short(current.sha)) \u{2014} its changes are in the Stashes list."
+            : "Skipped \(short(current.sha))."
+        return "\(lead) Git then stopped \(the(operation)) before the next commit\(said(gitsWords)) "
+            + haltedTail(operation)
+    }
+
+    /// ": <git's words>." or ".".
+    private static func said(_ gitsWords: String) -> String {
+        var words = flat(gitsWords)
+        guard !words.isEmpty else { return "." }
+        if let last = words.last, !".!?".contains(last) { words += "." }
+        return ": " + words
+    }
+
+    private static func haltedTail(_ operation: RepositoryOperation) -> String {
+        "No \(operation.noun.lowercased()) is in progress now. The bar above lists the commits it did not apply and "
+            + "how to apply them."
+    }
+
+    // MARK: - A halted sequence (the bar's place, fix round 1)
+
+    /// "1600000 Pick two".
+    private static func listed(_ halted: HaltedSequence) -> String {
+        let shown = halted.notApplied.prefix(5).map(commit)
+        let more = halted.total - shown.count
+        guard more > 0 else {
+            switch shown.count {
+            case 0: return ""
+            case 1: return shown[0]
+            default: return shown.dropLast().joined(separator: ", ") + " and " + shown.last!
+            }
+        }
+        return shown.joined(separator: ", ") + " and \(more) more"
+    }
+
+    static func halted(_ halted: HaltedSequence) -> String {
+        let count = halted.total == 1 ? "1 commit" : "\(halted.total) commits"
+        return "\(the(halted.operation).capitalizedFirst) stopped part-way and is not in progress: git did not apply "
+            + "\(count), \(listed(halted))."
+    }
+
+    /// Measured (fix round 1): `--quit` keeps HEAD, the index and the worktree and removes
+    /// `sequencer/`; picking (reverting) the listed commits again then applies them; a later
+    /// `--continue` leaves the first of them out.
+    static func haltedWayForward(_ halted: HaltedSequence) -> String {
+        let command = halted.operation == .revert ? "git revert" : "git cherry-pick"
+        let verb = halted.operation == .revert ? "revert" : "cherry-pick"
+        let them = halted.total == 1 ? "it" : "them"
+        let again: String
+        if halted.total > halted.notApplied.count {
+            again = "then \(verb) \(them) again in the order .git/sequencer/todo lists them (copy that list first: "
+                + "--quit removes it)."
+        } else {
+            again = "then \(verb) \(them) again: `\(command) \(halted.notApplied.map { short($0.sha) }.joined(separator: " "))`."
+        }
+        let first = halted.notApplied.first.map { short($0.sha) } ?? "the first of them"
+        return "To apply \(them), move away what git refused over, run `\(command) --quit` in a terminal (it changes "
+            + "no file and no commit), \(again) Don't run `\(command) --continue`: it would leave out \(first)."
+    }
+
+    // MARK: - A draft written for another commit (fix round 1)
+
+    /// "the Merge", "the Cherry-Pick": a button's title case.
+    private static func titleNoun(_ operation: RepositoryOperation) -> String {
+        switch operation {
+        case .cherryPick: "Cherry-Pick"
+        case .applyingPatches: "Patch"
+        default: operation.noun
+        }
+    }
+
+    static func foreignNote(writtenFor: CommitRef?, operation: RepositoryOperation, current: CommitRef?) -> String {
+        switch (writtenFor, current) {
+        case (let written?, let current?): "This message was written for \(short(written.sha)), not \(short(current.sha))."
+        case (let written?, nil): "This message was written for \(short(written.sha))."
+        case (nil, let current?): "This message was written before \(the(operation)) stopped at \(short(current.sha))."
+        case (nil, nil): "This message was written before \(the(operation)) began."
+        }
+    }
+
+    static func useMessage(_ operation: RepositoryOperation, current: CommitRef?) -> String {
+        current.map { "Use \(short($0.sha))\u{2019}s Message" } ?? "Use the \(titleNoun(operation))\u{2019}s Message"
+    }
+
+    static let keepMessage = "Keep This Message"
+
+    static func foreignReason(writtenFor: CommitRef?, operation: RepositoryOperation, current: CommitRef?) -> String {
+        let whose = current.map { "\(short($0.sha))\u{2019}s" } ?? "\(the(operation))\u{2019}s"
+        return foreignNote(writtenFor: writtenFor, operation: operation, current: current)
+            + " Use \(whose) message or keep this one first."
     }
 
     /// The skip's notice, with what the operation did next (`then`), if anything.

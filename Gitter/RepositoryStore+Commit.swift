@@ -17,6 +17,12 @@ extension RepositoryStore {
             mutate { _, _ in throw BranchActionBlocked(reason: ContinueWording.commitRefused(operation)) }
             return
         }
+        // A merge's or squash's commit takes the draft as its message: one written for something
+        // else is not sent before the user chooses (the composer's note, fix round 1).
+        if let reason = composerCommitBlockedReason {
+            mutate { _, _ in throw BranchActionBlocked(reason: reason) }
+            return
+        }
 
         // Amending part-way through an operation rewrites the commit that operation is standing
         // on, and in four of the six git goes through with it: the previous tip ends up on no
@@ -65,6 +71,14 @@ extension RepositoryStore {
             syncDraftWithOperation(restart: true)
             select(.workingCopy)
         }
+    }
+
+    /// Why the composer's Commit is off beyond an empty subject or a running change: during a
+    /// merge or squash, a draft written before it began (`composerForeignDraft`).
+    var composerCommitBlockedReason: String? {
+        guard let operation = operationInProgress, let foreign = composerForeignDraft else { return nil }
+        return ContinueWording.foreignReason(
+            writtenFor: foreign.writtenFor, operation: operation, current: operationStop?.progress?.current)
     }
 
     /// Turns amending on or off, prefilling an untouched draft with HEAD's message.

@@ -62,7 +62,7 @@
     ///     bar                          message:<text>               continue
     ///     confirmempty                 confirmothers                skip
     ///     confirmskip                  stageall                     confirmstageall
-    ///     commitdraft
+    ///     commitdraft                  usemessage                   keepmessage
     ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.

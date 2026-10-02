@@ -5,6 +5,10 @@ import SwiftUI
 struct MainWindow: View {
     @Environment(RepositoryStore.self) private var store
 
+    /// The height of the banners on screen (0 with none), handed to the detail column as
+    /// `bannerInset`. View state, not the store's: it is layout, measured here.
+    @State private var bannerHeight: CGFloat = 0
+
     var body: some View {
         @Bindable var store = store
         Group {
@@ -16,9 +20,17 @@ struct MainWindow: View {
                         .navigationSplitViewColumnWidth(min: 200, ideal: 240)
                 } content: {
                     CommitListView()
+                        // Under the banners too, so the Working Copy row is never covered.
+                        .padding(.top, bannerHeight)
+                        .animation(.default, value: bannerHeight)
                         .navigationSplitViewColumnWidth(min: 360, ideal: 520)
                 } detail: {
                     DetailView()
+                        // The banners overlay the window's top; the detail column moves down under
+                        // them, so the operation bar's sentence and its Skip, Continue and Abort
+                        // are never covered while a notice or an error is up (fix round 1, I5).
+                        .padding(.top, bannerHeight)
+                        .animation(.default, value: bannerHeight)
                         .navigationSplitViewColumnWidth(min: 320, ideal: 440)
                 }
                 .toolbar {
@@ -82,6 +94,9 @@ struct MainWindow: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
+            // Measured, so the detail column can move down under it (`bannerInset`): an inset on
+            // the split view itself does not reach its columns (fix round 1, tried).
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { bannerHeight = $0 }
         }
         .animation(.default, value: store.lastError)
         .animation(.default, value: store.notice)

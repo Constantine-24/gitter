@@ -37,6 +37,26 @@ struct CommitComposerView: View {
 
             bodyEditor(draft: $draft.body)
 
+            if let foreign = store.composerForeignDraft, let operation = store.operationInProgress {
+                // Written for another commit, or before this stop: not sent until the user chooses.
+                let current = store.operationProgress?.current
+                HStack(spacing: 8) {
+                    Label(
+                        ContinueWording.foreignNote(
+                            writtenFor: foreign.writtenFor, operation: operation, current: current),
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    Button(ContinueWording.useMessage(operation, current: current)) { store.useOperationMessage() }
+                        .font(.caption)
+                    Button(ContinueWording.keepMessage) { store.keepDraftMessage() }
+                        .font(.caption)
+                }
+            }
+
             if let note = store.composerCommentNote {
                 Text(note)
                     .font(.caption)
@@ -81,10 +101,11 @@ struct CommitComposerView: View {
                         .keyboardShortcut(.return, modifiers: .command)
                         .disabled(state != .enabled, help: state.reason ?? ContinueWording.continueHelp(operation))
                 } else {
+                    let blocked = store.composerCommitBlockedReason
                     Button(store.commitButtonTitle) { store.commit() }
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(!draft.canCommit || store.isMutating)
+                        .disabled(!draft.canCommit || store.isMutating || blocked != nil, help: blocked)
                 }
             }
         }

@@ -61,25 +61,30 @@ enum OperationBarState {
     // MARK: - Continue
 
     /// `hasMessage`: the draft has a subject. Needed only where git has a message to replace.
+    /// `foreign`: the draft was written for another commit (or before this stop), and git has a
+    /// message it would replace — Continue does not send it silently.
     static func continueState(
-        _ operation: RepositoryOperation, _ stop: OperationStop?, isMutating: Bool, sheetUp: Bool, hasMessage: Bool
+        _ operation: RepositoryOperation, _ stop: OperationStop?, isMutating: Bool, sheetUp: Bool, hasMessage: Bool,
+        foreign: ForeignDraft? = nil
     ) -> BarActionState {
         guard isContinuable(operation) else { return .disabled(ContinueWording.notContinuable(operation)) }
         if sheetUp { return .disabled(ContinueWording.blockedBySheet) }
         if isMutating { return .disabled(ContinueWording.busy) }
-        return readinessState(operation, stop, hasMessage: hasMessage)
+        return readinessState(operation, stop, hasMessage: hasMessage, foreign: foreign)
     }
 
     /// The line under the bar: Continue's reason when it is about the repository — never a
     /// sheet or a running change, which pass.
-    static func reasonLine(_ operation: RepositoryOperation, _ stop: OperationStop?, hasMessage: Bool) -> String? {
+    static func reasonLine(
+        _ operation: RepositoryOperation, _ stop: OperationStop?, hasMessage: Bool, foreign: ForeignDraft? = nil
+    ) -> String? {
         guard isContinuable(operation) else { return nil }
-        return readinessState(operation, stop, hasMessage: hasMessage).reason
+        return readinessState(operation, stop, hasMessage: hasMessage, foreign: foreign).reason
     }
 
-    private static func readinessState(_ operation: RepositoryOperation, _ stop: OperationStop?, hasMessage: Bool)
-        -> BarActionState
-    {
+    private static func readinessState(
+        _ operation: RepositoryOperation, _ stop: OperationStop?, hasMessage: Bool, foreign: ForeignDraft?
+    ) -> BarActionState {
         guard let stop, stop.operation == operation, stop.progress.map({ $0.operation == operation }) ?? true else {
             return .disabled(ContinueWording.reading(operation))
         }
@@ -103,6 +108,11 @@ enum OperationBarState {
             break
         }
         if stop.pendingMessage != nil, !hasMessage { return .disabled(ContinueWording.enterMessage) }
+        if stop.pendingMessage != nil, let foreign {
+            return .disabled(
+                ContinueWording.foreignReason(
+                    writtenFor: foreign.writtenFor, operation: operation, current: stop.progress?.current))
+        }
         return .enabled
     }
 
@@ -196,34 +206,61 @@ enum OperationBarState {
 
 /// Filling the composer with git's prepared message (spec, "Commit"): an empty draft, once per
 /// stop, never over text the user typed. When the stop changes, a prefill the user left
-/// untouched gives way to the next one; when the operation ends, it is taken back.
+/// untouched gives way to the next one, and edited text stays — marked as written for the commit
+/// it was written for (`ForeignDraft`), which Continue and Commit then refuse to send until the
+/// user uses the stop's message or keeps the text (fix round 1, I1). Text already there when an
+/// operation first stops is marked the same way. When the operation ends, an untouched prefill
+/// is taken back and the mark is dropped.
 enum ComposerPrefill {
 
-    /// What makes two reads the same stop: the operation, the commit and step it stopped at, a
-    /// merge's incoming commit, and whether git had a message (one that failed to read and then
-    /// arrived fills the draft then).
-    static func key(_ stop: OperationStop) -> String {
+    /// A stop as the prefill knows it: what makes two reads the same stop — the operation, the
+    /// commit and step it stopped at, a merge's incoming commit, whether git had a message (one
+    /// that failed to read and then arrived fills the draft then) — and that stop's commit.
+    struct Stop: Hashable {
+        let key: String
+        let commit: CommitRef?
+    }
+
+    static func stop(_ stop: OperationStop) -> Stop {
         let progress = stop.progress
-        return [
+        let key = [
             "\(stop.operation)", progress?.current?.sha ?? "-", progress?.step.map(String.init) ?? "-",
             progress?.mergeHead?.sha ?? "-", stop.pendingMessage == nil ? "0" : "1",
         ].joined(separator: "|")
+        return Stop(key: key, commit: progress?.current)
     }
 
-    /// Applies `stop` to `draft` and returns the key to remember.
-    @MainActor static func apply(_ stop: OperationStop?, lastKey: String?, to draft: CommitDraft) -> String? {
+    /// Applies `stop` to `draft` and returns the stop to remember.
+    @MainActor static func apply(_ stop: OperationStop?, lastKey: Stop?, to draft: CommitDraft) -> Stop? {
         guard let stop else {
             // Only a prefill of ours is taken back — never an amend's, never typed text.
-            if lastKey != nil { draft.clearPrefillIfUntouched() }
+            if lastKey != nil {
+                draft.clearPrefillIfUntouched()
+                draft.keepForeign()
+            }
             return nil
         }
-        let key = key(stop)
-        guard key != lastKey else { return lastKey }
+        let current = self.stop(stop)
+        guard current.key != lastKey?.key else { return lastKey }
         if lastKey != nil { draft.clearPrefillIfUntouched() }
-        if let message = stop.pendingMessage, !draft.amend, draft.subject.isEmpty, draft.body.isEmpty {
-            draft.prefill(from: message.text)
+        guard !draft.amend else { return current }
+        if draft.subject.isEmpty, draft.body.isEmpty {
+            if let message = stop.pendingMessage { draft.prefill(from: message.text) }
+        } else if draft.foreign == nil {
+            // Text that stayed across the change, or was there before the operation stopped: not
+            // written for this stop. A mark already there keeps naming where it was written.
+            draft.markForeign(ForeignDraft(writtenFor: lastKey?.commit))
         }
-        return key
+        return current
+    }
+
+    /// What Continue sends: nil — git's own message, which GitCore writes back stripped — at a
+    /// stop with no message file, and for an untouched prefill of this stop's message; the
+    /// draft otherwise.
+    @MainActor static func continueMessage(_ stop: OperationStop?, _ draft: CommitDraft) -> String? {
+        guard let pending = stop?.pendingMessage else { return nil }
+        if draft.isUntouchedPrefill, draft.prefilledMessage == pending.text { return nil }
+        return draft.message
     }
 }
 
@@ -278,7 +315,8 @@ extension RepositoryStore {
     var continueState: BarActionState {
         guard let operation = operationInProgress else { return .disabled(ContinueWording.nothingToContinue) }
         return OperationBarState.continueState(
-            operation, operationStop, isMutating: isMutating, sheetUp: activeSheet != nil, hasMessage: draft.canCommit)
+            operation, operationStop, isMutating: isMutating, sheetUp: activeSheet != nil, hasMessage: draft.canCommit,
+            foreign: draft.foreign)
     }
 
     var skipState: BarActionState {
@@ -289,7 +327,7 @@ extension RepositoryStore {
     /// The line under the bar.
     var continueReasonLine: String? {
         guard let operation = operationInProgress else { return nil }
-        return OperationBarState.reasonLine(operation, operationStop, hasMessage: draft.canCommit)
+        return OperationBarState.reasonLine(operation, operationStop, hasMessage: draft.canCommit, foreign: draft.foreign)
     }
 
     /// The bar's and the composer's Continue title, with an ellipsis when it will ask first.
@@ -356,10 +394,10 @@ extension RepositoryStore {
             operation, expected: current, step: nil, message: continueMessage, acknowledging: paths, askingEmpty: false)
     }
 
-    /// The composer's message where git has one to replace; nil (git's own is not used — there
-    /// is none) at a stop without one.
+    /// What Continue sends (`ComposerPrefill.continueMessage`): nil for git's own message — at a
+    /// stop without one, and for an untouched prefill, which GitCore writes back as git wrote it.
     private var continueMessage: String? {
-        operationStop?.pendingMessage == nil ? nil : draft.message
+        ComposerPrefill.continueMessage(operationStop, draft)
     }
 
     /// Whether a Continue confirmation can still be acted on: the same operation, and a message
@@ -371,6 +409,12 @@ extension RepositoryStore {
         }
         guard operationStop?.pendingMessage == nil || draft.canCommit else {
             showStickyError(ContinueWording.enterMessage)
+            return false
+        }
+        if operationStop?.pendingMessage != nil, let foreign = draft.foreign {
+            showStickyError(
+                ContinueWording.foreignReason(
+                    writtenFor: foreign.writtenFor, operation: operation, current: operationStop?.progress?.current))
             return false
         }
         return true
@@ -426,7 +470,8 @@ extension RepositoryStore {
             // Nothing was committed: the draft stays as typed.
             showStickyError(ContinueWording.failed(operation, words))
         case .sequenceHalted(let words):
-            // A commit was made with the message.
+            // A commit was made with the message. The bar shows what git left for as long as it
+            // stays (`haltedSequence`); this says what happened.
             restartDraft()
             select(.workingCopy)
             showStickyError(ContinueWording.sequenceHalted(operation, words))
@@ -437,6 +482,28 @@ extension RepositoryStore {
     private func restartDraft() {
         draft.reset()
         syncDraftWithOperation(restart: true)
+    }
+
+    // MARK: - The composer's message
+
+    /// Where the draft came from, when it was not written for this stop and git has a message
+    /// it would replace: the composer names it and offers the two ways on.
+    var composerForeignDraft: ForeignDraft? {
+        guard operationInProgress != nil, operationStop?.pendingMessage != nil else { return nil }
+        return draft.foreign
+    }
+
+    /// "Use 0f3161e's Message": git's prepared message for this stop, in place of the draft.
+    func useOperationMessage() {
+        guard let message = operationStop?.pendingMessage else { return }
+        draft.subject = ""
+        draft.body = ""
+        draft.prefill(from: message.text)
+    }
+
+    /// "Keep This Message": the draft is for this stop now.
+    func keepDraftMessage() {
+        draft.keepForeign()
     }
 
     // MARK: - Skip
@@ -481,6 +548,9 @@ extension RepositoryStore {
 
     private func finishSkip(_ operation: RepositoryOperation, _ current: CommitRef, _ result: SkipOutcome) {
         let recorded = result.recorded
+        // The skipped commit's message has no commit left to go to: the draft starts again from
+        // the next stop's (fix round 1, I1). A failed skip skipped nothing and keeps it.
+        if case .failed = result.outcome {} else { restartDraft() }
         switch result.outcome {
         case .finished:
             select(.workingCopy)
@@ -498,9 +568,12 @@ extension RepositoryStore {
         case .failed(let words):
             showStickyError(ContinueWording.skipFailed(operation, current, words, recorded: recorded != nil))
         case .sequenceHalted(let words):
+            // No commit was made (measured). Sticky, with Show Copy for the entry the skip filed;
+            // the bar names what git left.
             select(.workingCopy)
-            showStickyError(
-                ContinueWording.skipped(current, recorded: recorded, then: ContinueWording.sequenceHalted(operation, words)))
+            announceSkip(
+                ContinueWording.skipHalted(operation, current, recorded: recorded != nil, words), recorded,
+                canPop: false, sticky: true)
         }
     }
 

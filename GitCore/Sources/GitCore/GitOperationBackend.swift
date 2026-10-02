@@ -87,6 +87,11 @@ public protocol GitOperationBackend: Sendable {
     /// `continueOperation` does. With only the stopped commit's changes present, every skip
     /// returns the tree to HEAD (M 32).
     func skip(_ expected: RepositoryOperation, stoppedAt sha: String, at root: URL) async throws -> SkipOutcome
+
+    /// A cherry-pick or revert range git left halted with no operation (`HaltedSequence`): what
+    /// `.sequenceHalted` leaves, and what a later `--continue` would partly drop. Nil while any
+    /// operation is in progress, with no `sequencer/todo`, or with no pick/revert line in it.
+    func haltedSequence(at root: URL) async throws -> HaltedSequence?
 }
 
 extension GitOperationBackend {

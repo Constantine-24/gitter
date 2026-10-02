@@ -299,4 +299,121 @@ import Testing
         _ = ComposerPrefill.apply(later, lastKey: key, to: draft)
         #expect(draft.subject == "Change the parser")
     }
+    // MARK: - Fix round 1, I2: an untouched prefill round-trips
+
+    @Test func anUntouchedPrefillIsSentAsGitWroteIt() {
+        for text in [
+            "Fix A\nand B\n\nBody",  // a two-line first paragraph
+            "Subject\n\nPara one\n\nPara two",  // a body with blank lines
+            "Subject\n\n\nBody after two blank lines",
+            "Only a subject",
+        ] {
+            let draft = CommitDraft()
+            draft.prefill(from: text)
+            #expect(draft.isUntouchedPrefill)
+            #expect(draft.message == text, "\(text.debugDescription)")
+        }
+        // Trailing blank lines are not part of a message (git's cleanup drops them too).
+        let trailing = CommitDraft()
+        trailing.prefill(from: "Subject\n\nBody\n\n\n")
+        #expect(trailing.message == "Subject\n\nBody")
+    }
+
+    @Test func anEditedPrefillIsTheDraftAsShown() {
+        let draft = CommitDraft()
+        draft.prefill(from: "Fix A\nand B\n\nBody")
+        draft.body += " more"
+        #expect(!draft.isUntouchedPrefill)
+        #expect(draft.message == "Fix A\n\nand B\n\nBody more")
+        draft.reset()
+        #expect(!draft.isUntouchedPrefill)
+        #expect(draft.message.isEmpty)
+    }
+
+    /// Continue sends nil — git's own prepared message, written back by GitCore — for an
+    /// untouched prefill of this stop's message, and the draft otherwise.
+    @Test func continueSendsGitsOwnMessageForAnUntouchedPrefill() {
+        let stop = Self.stop(.cherryPick, .ready, message: PendingMessage(text: "Fix A\nand B\n\nBody", commentChar: "#"))
+        let draft = CommitDraft()
+        _ = ComposerPrefill.apply(stop, lastKey: nil, to: draft)
+        #expect(ComposerPrefill.continueMessage(stop, draft) == nil)
+        draft.subject = "Fix A, reworded"
+        #expect(ComposerPrefill.continueMessage(stop, draft) == "Fix A, reworded\n\nand B\n\nBody")
+        // No message file at this stop: nothing is sent whatever the draft says.
+        #expect(ComposerPrefill.continueMessage(Self.stop(.rebase, .ready, message: nil), draft) == nil)
+    }
+
+    // MARK: - Fix round 1, I1: a draft written for another commit
+
+    static let first = CommitRef(sha: "70de437000000000000000000000000000000000", subject: "Feature one")
+    static let third = CommitRef(sha: "0f3161e000000000000000000000000000000000", subject: "Feature three")
+
+    @Test func anEditedDraftCarriedToTheNextStopIsMarkedAsWrittenForTheFirst() {
+        let draft = CommitDraft()
+        let key = ComposerPrefill.apply(Self.stop(.rebase, .ready, current: Self.first), lastKey: nil, to: draft)
+        draft.subject = "Feature one, edited"
+        _ = ComposerPrefill.apply(
+            Self.stop(.rebase, .ready, current: Self.third, message: PendingMessage(text: "Feature three", commentChar: "#")),
+            lastKey: key, to: draft)
+        #expect(draft.subject == "Feature one, edited")
+        #expect(draft.foreign == ForeignDraft(writtenFor: Self.first))
+    }
+
+    @Test func aDraftTypedBeforeTheStopIsMarkedAsWrittenBeforeIt() {
+        let draft = CommitDraft()
+        draft.subject = "typed before the rebase"
+        _ = ComposerPrefill.apply(Self.stop(.rebase, .ready, current: Self.third), lastKey: nil, to: draft)
+        #expect(draft.foreign == ForeignDraft(writtenFor: nil))
+        #expect(draft.subject == "typed before the rebase")
+    }
+
+    @Test func anUntouchedPrefillIsReplacedNotMarked() {
+        let draft = CommitDraft()
+        let key = ComposerPrefill.apply(Self.stop(.rebase, .ready, current: Self.first), lastKey: nil, to: draft)
+        _ = ComposerPrefill.apply(
+            Self.stop(.rebase, .ready, current: Self.third, message: PendingMessage(text: "Feature three", commentChar: "#")),
+            lastKey: key, to: draft)
+        #expect(draft.foreign == nil)
+        #expect(draft.subject == "Feature three")
+    }
+
+    /// Emptying the draft forgets where it came from; Keep adopts it; the operation ending
+    /// forgets it too.
+    @Test func aForeignDraftIsForgottenWhenEmptiedKeptOrTheOperationEnds() {
+        let draft = CommitDraft()
+        draft.subject = "x"
+        draft.markForeign(ForeignDraft(writtenFor: Self.first))
+        draft.subject = ""
+        #expect(draft.foreign == nil)
+        draft.subject = "y"
+        #expect(draft.foreign == nil)
+        draft.markForeign(ForeignDraft(writtenFor: nil))
+        draft.keepForeign()
+        #expect(draft.foreign == nil)
+        draft.markForeign(ForeignDraft(writtenFor: nil))
+        let key = ComposerPrefill.apply(Self.stop(.rebase, .ready), lastKey: nil, to: draft)
+        _ = ComposerPrefill.apply(nil, lastKey: key, to: draft)
+        #expect(draft.foreign == nil)
+        // An empty draft is never marked.
+        let empty = CommitDraft()
+        empty.markForeign(ForeignDraft(writtenFor: nil))
+        #expect(empty.foreign == nil)
+    }
+
+    /// Continue does not send a message written for another commit silently.
+    @Test func continueIsOffWhileTheDraftWasWrittenForAnotherCommit() {
+        let stop = Self.stop(.rebase, .ready, current: Self.third)
+        let foreign = ForeignDraft(writtenFor: Self.first)
+        #expect(
+            OperationBarState.continueState(.rebase, stop, isMutating: false, sheetUp: false, hasMessage: true, foreign: foreign)
+                == .disabled(ContinueWording.foreignReason(writtenFor: Self.first, operation: .rebase, current: Self.third)))
+        // No message file: the draft is not sent, so it does not matter.
+        #expect(
+            OperationBarState.continueState(
+                .rebase, Self.stop(.rebase, .ready, message: nil), isMutating: false, sheetUp: false, hasMessage: true,
+                foreign: foreign) == .enabled)
+        #expect(
+            OperationBarState.reasonLine(.rebase, stop, hasMessage: true, foreign: foreign)
+                == ContinueWording.foreignReason(writtenFor: Self.first, operation: .rebase, current: Self.third))
+    }
 }

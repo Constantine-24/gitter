@@ -21,6 +21,9 @@
     ///   confirmstageall      the Stage All sheet's button.
     ///   commitdraft          the composer's Commit with the draft as it is (`commit:` replaces
     ///                        the subject): a merge's or squash's prefilled message.
+    ///   usemessage           the composer note's "Use <sha>'s Message" (a draft written for
+    ///                        another commit).
+    ///   keepmessage          the composer note's "Keep This Message".
     ///
     /// Each step goes through the store's own entry point, which does nothing where the button is
     /// off; `bar` and the `continue`/`skip` lines say why.
@@ -28,7 +31,7 @@
 
         static let continueCommands: Set<String> = [
             "bar", "message", "continue", "confirmempty", "confirmothers", "skip", "confirmskip", "stageall",
-            "confirmstageall", "commitdraft",
+            "confirmstageall", "commitdraft", "usemessage", "keepmessage",
         ]
 
         static func continueStep(_ command: String, step: String, store: RepositoryStore) async {
@@ -79,6 +82,12 @@
                     return
                 }
                 store.confirmStageAll()
+            case "usemessage":
+                store.useOperationMessage()
+                log("usemessage: draft \(store.draft.subject.debugDescription) \(store.draft.body.debugDescription)")
+            case "keepmessage":
+                store.keepDraftMessage()
+                log("keepmessage: foreign \(store.draft.foreign.map { "\($0)" } ?? "nil")")
             case "commitdraft":
                 log("commitdraft: \(store.draft.message.debugDescription)")
                 store.commit()
@@ -96,7 +105,12 @@
 
         static func logBar(_ store: RepositoryStore) {
             guard let operation = store.operationInProgress else {
-                log("bar: none | draft: \(store.draft.subject.debugDescription) \(store.draft.body.debugDescription)")
+                let halted = store.haltedSequence.map {
+                    "\($0.operation) total \($0.total) notApplied \($0.notApplied.map { "\($0.sha.prefix(7)) \($0.subject)" }) "
+                        + "| \(ContinueWording.halted($0)) | \(ContinueWording.haltedWayForward($0))"
+                }
+                log("bar: none | halted: \(halted ?? "nil") | draft: \(store.draft.subject.debugDescription) "
+                    + "\(store.draft.body.debugDescription)")
                 return
             }
             let stop = store.operationStop
@@ -113,7 +127,9 @@
                 + "| failure: \(stop?.readFailure ?? "nil")")
             log("bar message: \(stop?.pendingMessage.map { "\($0.commentChar) \($0.text.debugDescription)" } ?? "nil") "
                 + "| draft: \(store.draft.subject.debugDescription) \(store.draft.body.debugDescription) "
-                + "| note: \(store.composerCommentNote ?? "nil")")
+                + "| note: \(store.composerCommentNote ?? "nil") "
+                + "| foreign: \(store.composerForeignDraft.map { "written for \($0.writtenFor.map { String($0.sha.prefix(7)) } ?? "nil")" } ?? "nil") "
+                + "| untouched prefill: \(store.draft.isUntouchedPrefill)")
         }
 
         static func describeContinueSheet(_ sheet: BranchSheet?) -> String? {

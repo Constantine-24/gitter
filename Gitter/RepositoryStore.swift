@@ -52,7 +52,11 @@ final class RepositoryStore {
     private(set) var operationStop: OperationStop?
     /// The stop the composer was last prefilled for (`ComposerPrefill`): a stop prefills an
     /// empty draft once, so a draft the user cleared stays clear.
-    private(set) var prefilledStopKey: String?
+    private(set) var prefilledStopKey: ComposerPrefill.Stop?
+    /// A cherry-pick or revert range git left halted with no operation (`HaltedSequence`): read
+    /// with every snapshot that shows none, and shown in the bar's place for as long as git keeps
+    /// it — a later `--continue` would drop a commit, so it must not vanish with a banner.
+    private(set) var haltedSequence: HaltedSequence?
 
     var stagedView = false {
         didSet {
@@ -301,6 +305,7 @@ final class RepositoryStore {
         reopenablePath = nil
         operationStop = nil
         prefilledStopKey = nil
+        haltedSequence = nil
         selection = .workingCopy
         selectedPath = nil
         lastError = nil
@@ -711,8 +716,9 @@ final class RepositoryStore {
 
     /// internal (not private(set) write): used by +Refresh.swift's `loadSnapshot()`, right after
     /// `setSnapshot`, with the stop read for that snapshot.
-    func setOperationStop(_ stop: OperationStop?) {
+    func setOperationStop(_ stop: OperationStop?, halted: HaltedSequence?) {
         operationStop = stop
+        haltedSequence = halted
     }
 
     /// Prefills the composer for the stop on screen (`ComposerPrefill.apply`). `restart` forgets

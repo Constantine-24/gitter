@@ -124,11 +124,15 @@ extension RepositoryStore {
             // The stop of the operation it shows, if any, read before either is written: the bar
             // and the file list must describe the same moment.
             let stop = await Self.readOperationStop(newSnapshot.status, backend: backend, root: root)
+            // With no operation, a range git halted part-way (`sequencer/` left behind). A failed
+            // read shows nothing rather than failing the snapshot.
+            let halted =
+                newSnapshot.status.operationInProgress == nil ? (try? await backend.haltedSequence(at: root)) ?? nil : nil
             // The repository may have been switched (via `open`) while this snapshot was in
             // flight; a snapshot from before that must never overwrite the new state.
             guard generation == capturedGeneration else { return }
             setSnapshot(newSnapshot)
-            setOperationStop(stop)
+            setOperationStop(stop, halted: halted)
             syncDraftWithOperation()
             // A mutation's own failure outranks the reload it provokes. git writes inside
             // `.git` before it fails — a rejected commit has already written COMMIT_EDITMSG —

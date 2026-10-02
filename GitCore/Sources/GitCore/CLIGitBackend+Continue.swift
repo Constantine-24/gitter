@@ -699,6 +699,33 @@ extension CLIGitBackend: GitOperationBackend {
             outcome: try await outcome(of: result, from: before, expected: expected, at: root), recorded: recorded)
     }
 
+    // MARK: - A halted sequence
+
+    public func haltedSequence(at root: URL) async throws -> HaltedSequence? {
+        // The common answer costs one process: no todo, no halt. Only a todo is worth the
+        // operation check (a range stopped at a conflict keeps a todo too, and is an operation).
+        guard let todo = Self.contents(of: try await gitPath("sequencer/todo", at: root), trimmed: false) else {
+            return nil
+        }
+        let entries = Self.todoEntries(todo)
+        guard let first = entries.first, try await operationInProgress(at: root) == nil else { return nil }
+        var listed: [CommitRef] = []
+        for entry in entries.prefix(HaltedSequence.listed) {
+            listed.append(try await commit(entry.name, at: root)?.ref ?? CommitRef(sha: entry.name, subject: entry.subject))
+        }
+        return HaltedSequence(operation: first.revert ? .revert : .cherryPick, notApplied: listed, total: entries.count)
+    }
+
+    /// The `pick <name> <subject>` / `revert <name> <subject>` lines of `sequencer/todo`, in
+    /// order; comments, blank lines and anything else git would not write there are skipped.
+    static func todoEntries(_ text: String) -> [(revert: Bool, name: String, subject: String)] {
+        text.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            guard parts.count >= 2, parts[0] == "pick" || parts[0] == "revert" else { return nil }
+            return (parts[0] == "revert", String(parts[1]), parts.count > 2 ? String(parts[2]) : "")
+        }
+    }
+
     // MARK: - Reads
 
     /// `rev-parse --git-path name`, as a URL: relative to `root` in an ordinary checkout,
