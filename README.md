@@ -123,7 +123,9 @@ writes over its first argument), `restore --ours|--theirs|--merge` and `rm -q` o
 path at a time, and `--skip` only as exactly `rebase --skip`, `cherry-pick --skip` or `revert
 --skip`; `--quit` stays forbidden. A list of paths for `add`, `restore` or `rm --cached` goes
 in a pathspec file rather than one argument per path: past 4 096 arguments macOS's `Process`
-does not fail, it crashes the app, so every call is also checked before git starts.
+does not fail, it crashes the app, so every call is also checked before git starts. (Stage All
+still passes its paths as arguments, `add -- <paths>` in batches of at most 1 000; only the
+writes of a selection use the pathspec file.)
 
 Twelve actions can lose something without being asked for by name, and each is behind a
 confirmation that says what goes and what stays:
@@ -328,8 +330,8 @@ suggest); in a cherry-pick or revert the commit being applied or undone.
 
 **Whole files.** Where git draws no blocks — a binary file, a symlink, a mode change, a merge
 driver of yours, a file one side deleted — the resolver says why and offers that kind's own
-choices: **Take Ours** / **Take Theirs**, or **Keep Their Version** / **Delete the File** for a
-deletion. A side that has no version is not offered (git would delete the file and say
+choices: **Take Ours** / **Take Theirs**, or for a deletion **Delete the File** and **Keep Their
+Version** (we deleted it, they changed it) or **Keep Our Version** (the other way round). A side that has no version is not offered (git would delete the file and say
 nothing). A submodule conflict is shown and explained, not resolved here.
 
 **Your own edits.** **Open in Editor** opens the file; resolve it there, then **Mark Resolved**
@@ -374,9 +376,10 @@ back once the operation is over — the notice after a Skip that finished it off
 straight away.
 
 **What stays a terminal job.** `git am --continue` and `--skip` (Gitter only aborts an `am`), a
-submodule conflict, reopening a file resolved by deleting it, unstaging a file while an
-operation is in progress (Unstage stays off throughout: it can end the operation or collapse a
-conflict), and `--quit`. When a cherry-pick or revert range stops part-way with no operation
+submodule conflict, reopening a file resolved by deleting it, unstaging a whole file while an
+operation is in progress (the row's "−" and Unstage All stay off throughout: they can end the
+operation or collapse a conflict; a modified text file can still be unstaged hunk by hunk or
+line by line, an added file not as a whole), and `--quit`. When a cherry-pick or revert range stops part-way with no operation
 left — git made or skipped one commit, then refused the next — a bar lists the commits git did
 not apply and the commands, with full shas, that apply them (**Copy Command**), and warns that
 `--continue` would leave the first one out. A cherry-pick started over such a leftover list is
