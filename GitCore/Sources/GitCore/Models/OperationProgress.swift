@@ -136,6 +136,10 @@ public enum ContinueReadiness: Sendable, Hashable {
     /// No rebase, cherry-pick or revert is in progress (a merge and a squash conclude with
     /// Commit; `git am` is abort-only).
     case notContinuable
+    /// A single cherry-pick or revert stopped over the `sequencer/` an earlier, halted range
+    /// left (Ruling 29): git's `--continue` would resume that old list, dropping its first
+    /// commit. These are the old list's commits; see `GitOperationBackend.staleSequence`.
+    case staleSequence(HaltedSequence)
 }
 
 /// What a continue (or a skip) left.
@@ -176,6 +180,9 @@ public enum SkipReadiness: Sendable, Hashable {
     /// No rebase, cherry-pick or revert is in progress, or a rebase has no commit pending — an
     /// `exec`, `break` or `edit` stop, where `rebase --skip` skips nothing (Ruling 19).
     case notSkippable
+    /// The stop sits over a halted range's stale `sequencer/` (Ruling 29): git's `--skip` would
+    /// go on with the old list.
+    case staleSequence(HaltedSequence)
 }
 
 /// What a skip left, and the entry it filed first (nil when there was nothing to file).
@@ -202,4 +209,8 @@ public enum OperationError: Error, Sendable, Hashable {
     case notReady(ContinueReadiness)
     /// `skipReadiness` does not allow it.
     case skipRefused(SkipReadiness)
+    /// Continue, Skip or Abort of a cherry-pick or revert whose `sequencer/` is a halted range's
+    /// stale list (Ruling 29): git would resume the old list (`--continue`, `--skip`) or rewind
+    /// HEAD to before it (`--abort`). Nothing ran.
+    case staleSequence(HaltedSequence)
 }

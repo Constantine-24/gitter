@@ -32,6 +32,12 @@ extension RepositoryStore {
     /// while an operation is in progress — so it simply does nothing.
     func requestAbort() {
         guard let operation = operationInProgress else { return }
+        // Over an older range's stale list git's `--abort` rewinds HEAD to before that range
+        // (Ruling 29); the button is off, and GitCore refuses as well.
+        if case .disabled(let reason) = abortState, staleSequence != nil {
+            showStickyError(reason)
+            return
+        }
         activeSheet = .abort(operation)
     }
 

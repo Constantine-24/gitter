@@ -468,6 +468,7 @@ extension CLIGitBackend: GitOperationBackend {
         guard let operation = try await operationInProgress(at: root),
             Self.sequencerOperations.contains(operation)
         else { return .notContinuable }
+        if let stale = try await staleSequence(at: root) { return .staleSequence(stale) }
         return try await continueFacts(operation, at: root).readiness
     }
 
@@ -559,6 +560,8 @@ extension CLIGitBackend: GitOperationBackend {
         let actual = try await operationInProgress(at: root)
         guard actual == expected else { throw OperationError.operationMismatch(expected: expected, found: actual) }
         guard Self.sequencerOperations.contains(expected) else { throw OperationError.notReady(.notContinuable) }
+        // Ruling 29: `--continue` would resume an older range's list.
+        if let stale = try await staleSequence(at: root) { throw OperationError.staleSequence(stale) }
         // Each refusal on its own, not only the first the readiness names: a rebase may go on
         // past an empty result, but never past unstaged changes or unacknowledged staged ones.
         let facts = try await continueFacts(expected, at: root)
@@ -645,6 +648,7 @@ extension CLIGitBackend: GitOperationBackend {
         // Ruling 19: a rebase with no commit pending (`exec`, `break`, `edit`) has nothing to
         // skip — at an `edit` stop `rebase --skip` exits 0 and the commit stays (measured).
         if operation == .rebase, !(try await hasPendingCommit(operation, at: root)) { return .notSkippable }
+        if let stale = try await staleSequence(at: root) { return .staleSequence(stale) }
         let status = try await stashStatus(at: root)
         var seen = Set<String>()
         let changed = status.files
@@ -673,6 +677,7 @@ extension CLIGitBackend: GitOperationBackend {
         // Decided before anything is filed: a refused skip files nothing.
         let readiness = try await skipReadiness(at: root)
         if readiness == .notSkippable { throw OperationError.skipRefused(.notSkippable) }
+        if case .staleSequence(let stale) = readiness { throw OperationError.staleSequence(stale) }
         let before = try await operationProgress(at: root)
         guard let current = before?.current, current.sha == sha else { throw OperationError.stoppedCommitChanged }
         guard case .ready(let paths) = readiness else { throw OperationError.skipRefused(readiness) }
@@ -708,12 +713,38 @@ extension CLIGitBackend: GitOperationBackend {
             return nil
         }
         let entries = Self.todoEntries(todo)
-        guard let first = entries.first, try await operationInProgress(at: root) == nil else { return nil }
+        guard !entries.isEmpty, try await operationInProgress(at: root) == nil else { return nil }
+        return try await sequence(entries, at: root)
+    }
+
+    public func staleSequence(at root: URL) async throws -> HaltedSequence? {
+        guard let todo = Self.contents(of: try await gitPath("sequencer/todo", at: root), trimmed: false) else {
+            return nil
+        }
+        let entries = Self.todoEntries(todo)
+        guard let first = entries.first, let operation = try await operationInProgress(at: root),
+            operation == .cherryPick || operation == .revert
+        else { return nil }
+        // Measured (Ruling 29): at every genuine range stop the todo's first line is the commit
+        // the pseudo-ref names, with the same command. Anything else is an older range's list —
+        // also a first line that no longer resolves: nothing proves it is this stop's.
+        let pseudo = operation == .cherryPick ? "CHERRY_PICK_HEAD" : "REVERT_HEAD"
+        let stopped = try await commit(pseudo, at: root)?.ref.sha
+        let listedFirst = try await commit(first.name, at: root)?.ref.sha
+        if first.revert == (operation == .revert), let stopped, stopped == listedFirst { return nil }
+        return try await sequence(entries, at: root)
+    }
+
+    /// The todo's commits as a `HaltedSequence`: the first `listed` named, every one counted.
+    private func sequence(_ entries: [(revert: Bool, name: String, subject: String)], at root: URL) async throws
+        -> HaltedSequence
+    {
         var listed: [CommitRef] = []
         for entry in entries.prefix(HaltedSequence.listed) {
             listed.append(try await commit(entry.name, at: root)?.ref ?? CommitRef(sha: entry.name, subject: entry.subject))
         }
-        return HaltedSequence(operation: first.revert ? .revert : .cherryPick, notApplied: listed, total: entries.count)
+        return HaltedSequence(
+            operation: entries.first?.revert == true ? .revert : .cherryPick, notApplied: listed, total: entries.count)
     }
 
     /// The `pick <name> <subject>` / `revert <name> <subject>` lines of `sequencer/todo`, in

@@ -108,6 +108,7 @@ import Testing
 
     nonisolated static let readinesses: [ContinueReadiness] = [
         .ready, .unresolved(["a"]), .emptyResult, .unstagedChanges(["b"]), .otherStagedChanges(["c"]), .notContinuable,
+        .staleSequence(HaltedSequence(operation: .cherryPick, notApplied: [], total: 1)),
     ]
 
     @Test(arguments: readinesses)
@@ -415,5 +416,42 @@ import Testing
         #expect(
             OperationBarState.reasonLine(.rebase, stop, hasMessage: true, foreign: foreign)
                 == ContinueWording.foreignReason(writtenFor: Self.first, operation: .rebase, current: Self.third))
+    }
+    // MARK: - Fix round 2: a stale sequencer list (Ruling 29)
+
+    static let oldList = HaltedSequence(
+        operation: .cherryPick, notApplied: [CommitRef(sha: "16", subject: "Pick two")], total: 1)
+
+    @Test func aStaleListTurnsContinueSkipAndAbortOff() {
+        let stop = Self.stop(.cherryPick, .staleSequence(Self.oldList), skip: .staleSequence(Self.oldList))
+        let reason = ContinueWording.staleReason(.cherryPick)
+        #expect(Self.state(stop, operation: .cherryPick) == .disabled(reason))
+        #expect(OperationBarState.skipState(.cherryPick, stop, isMutating: false, sheetUp: false) == .disabled(reason))
+        #expect(OperationBarState.abortState(.cherryPick, stop, isMutating: false) == .disabled(reason))
+        #expect(OperationBarState.staleList(stop) == Self.oldList)
+        // A genuine stop: Abort stays on; off only while a change runs.
+        let genuine = Self.stop(.cherryPick, .ready)
+        #expect(OperationBarState.abortState(.cherryPick, genuine, isMutating: false) == .enabled)
+        #expect(OperationBarState.abortState(.cherryPick, genuine, isMutating: true) == .disabled(ContinueWording.busy))
+        #expect(OperationBarState.abortState(.merge, nil, isMutating: false) == .enabled)
+        #expect(OperationBarState.staleList(genuine) == nil)
+        // Skip's readiness alone says so too.
+        let skipOnly = Self.stop(.cherryPick, .ready, skip: .staleSequence(Self.oldList))
+        #expect(OperationBarState.staleList(skipOnly) == Self.oldList)
+    }
+
+    /// The stop key changed but the commit did not (a message read that failed and came back,
+    /// a step change): text edited for this commit is still this commit's.
+    @Test func aKeyChangeForTheSameCommitDoesNotMarkTheDraft() {
+        let draft = CommitDraft()
+        let withMessage = Self.stop(.rebase, .ready, current: Self.first)
+        let key = ComposerPrefill.apply(withMessage, lastKey: nil, to: draft)
+        draft.subject = "Feature one, edited"
+        let failedRead = Self.stop(.rebase, .ready, current: Self.first, message: nil)
+        let next = ComposerPrefill.apply(failedRead, lastKey: key, to: draft)
+        #expect(draft.foreign == nil)
+        _ = ComposerPrefill.apply(withMessage, lastKey: next, to: draft)
+        #expect(draft.foreign == nil)
+        #expect(draft.subject == "Feature one, edited")
     }
 }

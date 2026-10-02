@@ -92,6 +92,14 @@ public protocol GitOperationBackend: Sendable {
     /// `.sequenceHalted` leaves, and what a later `--continue` would partly drop. Nil while any
     /// operation is in progress, with no `sequencer/todo`, or with no pick/revert line in it.
     func haltedSequence(at root: URL) async throws -> HaltedSequence?
+
+    /// The halted range's list when a single cherry-pick or revert is stopped over it (Ruling
+    /// 29, measured): `sequencer/todo` exists and its first line is not the commit the
+    /// pseudo-ref (`CHERRY_PICK_HEAD` / `REVERT_HEAD`) names, or not the same command. At a
+    /// genuine range stop — first, middle or last — it always is. Nil otherwise, and with no
+    /// cherry-pick or revert in progress. Continue, Skip and Abort refuse while it is non-nil
+    /// (`OperationError.staleSequence`).
+    func staleSequence(at root: URL) async throws -> HaltedSequence?
 }
 
 extension GitOperationBackend {

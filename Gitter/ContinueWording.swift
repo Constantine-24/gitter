@@ -106,10 +106,16 @@ enum ContinueWording {
     /// operation's note. `continueBlocked`: Continue is off for a reason of the repository's,
     /// which the line under the bar gives; "Continue when ready." would contradict it, so only
     /// the conflicts' next step is kept.
+    /// `stale`: the stop sits over an older range's list (Ruling 29) — `remaining` counts that
+    /// list, and the next step is the warning's, so only which commit this is is said.
     static func bar(
         _ operation: RepositoryOperation, _ progress: OperationProgress?, branch: String?, hasConflicts: Bool,
-        continueBlocked: Bool = false
+        continueBlocked: Bool = false, stale: Bool = false
     ) -> String {
+        if stale, let progress {
+            let single = OperationProgress(operation: progress.operation, current: progress.current)
+            if let sentence = self.progress(operation, single, branch: branch) { return sentence }
+        }
         guard let sentence = self.progress(operation, progress, branch: branch) else {
             return operation.note(hasConflicts: hasConflicts)
         }
@@ -380,7 +386,8 @@ enum ContinueWording {
     }
 
     private static func haltedTail(_ operation: RepositoryOperation) -> String {
-        "No \(operation.noun.lowercased()) is in progress now. The bar above lists the commits it did not apply and "
+        // Below: the banner this ends sits above the bar since the banners inset the columns.
+        "No \(operation.noun.lowercased()) is in progress now. The bar below lists the commits it did not apply and "
             + "how to apply them."
     }
 
@@ -423,6 +430,46 @@ enum ContinueWording {
         let first = halted.notApplied.first.map { short($0.sha) } ?? "the first of them"
         return "To apply \(them), move away what git refused over, run `\(command) --quit` in a terminal (it changes "
             + "no file and no commit), \(again) Don't run `\(command) --continue`: it would leave out \(first)."
+    }
+
+    // MARK: - A stop over a stale sequencer list (fix round 2, Ruling 29)
+
+    /// Why Continue, Skip and Abort are off. `operation` nil: a refusal GitCore made, which
+    /// names no operation.
+    static func staleReason(_ operation: RepositoryOperation?) -> String {
+        let this = operation.map { "this \($0.noun.lowercased())" } ?? "this cherry-pick or revert"
+        return "Gitter won't continue, skip or abort \(this): git still keeps an earlier cherry-pick's or revert's list, "
+            + "and its --continue, --skip or --abort would act on that list. The bar says how on."
+    }
+
+    /// Measured (Ruling 29): over the stale list, `--continue` resumes it (its first commit
+    /// dropped) and `--abort` rewinds HEAD to before it.
+    static func staleWarning(_ operation: RepositoryOperation, _ old: HaltedSequence) -> String {
+        let count = old.total == 1 ? "1 commit" : "\(old.total) commits"
+        return "Git still keeps the list of an earlier \(old.operation.noun.lowercased()) that stopped part-way: git did "
+            + "not apply \(count), \(listed(old)). Its --continue, --skip and --abort would act on that list "
+            + "\u{2014} resume it, or rewind HEAD to before it \u{2014} so Gitter won't continue, skip or abort this "
+            + "\(operation.noun.lowercased())."
+    }
+
+    /// Measured (Ruling 29): `git commit` concludes this stop with its pseudo-ref's author and
+    /// message and leaves the old list alone; `--quit` then forgets it. `--quit` first forgets the
+    /// list *and* this stop's pseudo-ref, keeping HEAD, the conflicted stages and the files.
+    static func staleWayForward(_ operation: RepositoryOperation, _ old: HaltedSequence) -> String {
+        let noun = operation.noun.lowercased()
+        let quit = operation == .revert ? "git revert --quit" : "git cherry-pick --quit"
+        let command = old.operation == .revert ? "git revert" : "git cherry-pick"
+        let done = old.operation == .revert ? "reverted" : "cherry-picked"
+        let again: String
+        if old.total > old.notApplied.count {
+            again = "\(done) again, in the order .git/sequencer/todo lists them (copy that list first: --quit removes it)."
+        } else {
+            again = "\(done) again: `\(command) \(old.notApplied.map { short($0.sha) }.joined(separator: " "))`."
+        }
+        return "To finish this \(noun), resolve its conflicts, then run `git commit` in a terminal (it makes this "
+            + "\(noun)'s commit and leaves the old list alone) and `\(quit)` to forget the old list. To drop this "
+            + "\(noun) instead, run `\(quit)` first: it forgets the old list and this \(noun), and the files stay as "
+            + "they are, to resolve or discard here. The old list's commits can then be \(again)"
     }
 
     // MARK: - A draft written for another commit (fix round 1)
@@ -512,6 +559,8 @@ enum ContinueWording {
             return continueRefusal(readiness) + " Nothing was continued."
         case .skipRefused(let readiness):
             return skipRefusal(readiness) + " Nothing was skipped."
+        case .staleSequence:
+            return staleReason(nil) + " Nothing was done."
         }
     }
 
@@ -524,6 +573,7 @@ enum ContinueWording {
         case .otherStagedChanges(let paths):
             "\(names(paths)) \(number(paths.count, "is", "are")) staged but not part of the commit."
         case .notContinuable: "No rebase, cherry-pick or revert is in progress."
+        case .staleSequence: staleReason(nil)
         case .ready: "Gitter could not continue."
         }
     }
@@ -533,6 +583,7 @@ enum ContinueWording {
         case .otherChanges(let paths): skipOtherChanges(paths)
         case .needsCleanPaths(let paths): skipNeedsCleanPaths(paths)
         case .notSkippable: noCommitToSkip
+        case .staleSequence: staleReason(nil)
         case .ready: "Gitter could not skip."
         }
     }

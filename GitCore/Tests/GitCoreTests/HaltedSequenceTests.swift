@@ -180,3 +180,178 @@ import Testing
         #expect(halted.total == 30)
     }
 }
+
+/// A halted range's `sequencer/` meeting a new single cherry-pick or revert (Ruling 29, measured
+/// on git 2.54): the new one stops with its pseudo-ref, so an operation is detected, but
+/// `sequencer/todo` still lists the old range — its first line names another commit than the
+/// pseudo-ref. git's `--continue` would resume the old list (dropping its first commit), and
+/// `--abort` would rewind HEAD to before the old range. At every genuine range stop the todo's
+/// first line is the pseudo-ref's commit (first, middle and last, pick and revert).
+@Suite struct StaleSequenceTests {
+    static let backend = CLIGitBackend()
+
+    /// The halted range of `HaltedSequenceTests.threeCommits` (c1 committed by Continue, c2 and
+    /// c3 not applied), then `cherry-pick side`, which conflicts.
+    static func stalePick() async throws -> TestRepo {
+        let repo = try await HaltedSequenceTests.threeCommits()
+        try await repo.git(["switch", "-q", "-c", "side", "base"])
+        try repo.write("f.txt", "a\nb\nc SIDE\n")
+        try await repo.commitAll("side change")
+        try await repo.git(["switch", "-q", "main"])
+        try repo.write("f.txt", "a\nb M\nc M\n")
+        try await repo.commitAll("main again")
+        try await repo.git(["cherry-pick", "base..feature"], allowedExitCodes: [1])
+        try await SequenceFixtures.resolve(repo)
+        try repo.write("n.txt", "n USER\n")
+        try await repo.git(["cherry-pick", "--continue"], allowedExitCodes: [128])
+        try FileManager.default.removeItem(at: repo.root.appendingPathComponent("n.txt"))
+        try await repo.git(["cherry-pick", "side"], allowedExitCodes: [1])
+        try await ConflictFixtures.requireUnmerged(repo)
+        return repo
+    }
+
+    /// Exactly `.staleSequence` with the old list, nothing else.
+    static func expectStale(_ body: () async throws -> Void) async throws {
+        do {
+            try await body()
+            Issue.record("ran: expected OperationError.staleSequence")
+        } catch OperationError.staleSequence(let stale) {
+            #expect(!stale.notApplied.isEmpty)
+        } catch {
+            Issue.record("expected OperationError.staleSequence, got \(error)")
+        }
+    }
+
+    @Test func aSinglePickOverAHaltedRangesListIsStale() async throws {
+        let repo = try await Self.stalePick()
+        defer { repo.cleanUp() }
+        let stale = try #require(try await Self.backend.staleSequence(at: repo.root))
+        #expect(stale.operation == .cherryPick)
+        #expect(stale.notApplied.map(\.subject) == ["c2 adds n", "c3 adds o"])
+        #expect(try await Self.backend.continueReadiness(at: repo.root) == .staleSequence(stale))
+        #expect(try await Self.backend.skipReadiness(at: repo.root) == .staleSequence(stale))
+    }
+
+    /// git's `--continue` here would resume the old list; Gitter refuses before anything runs.
+    @Test func continueIsRefusedAndNothingChanges() async throws {
+        let repo = try await Self.stalePick()
+        defer { repo.cleanUp() }
+        // A resolution that differs from HEAD: Continue would otherwise be ready.
+        try repo.write("f.txt", "a\nb RES\nc SIDE\n")
+        try await repo.git(["add", "f.txt"])
+        let head = try await repo.headSha()
+        let before = try await OperationState.capture(repo)
+        #expect(before.fingerprint["CHERRY_PICK_HEAD"] != nil)
+        #expect(before.fingerprint["sequencer/todo"] != nil)
+
+        try await Self.expectStale {
+            _ = try await Self.backend.continueOperation(.cherryPick, message: nil, at: repo.root)
+        }
+        #expect(try await repo.headSha() == head)
+        #expect(try await OperationState.capture(repo) == before)
+    }
+
+    /// git's `--abort` here would rewind HEAD past the old range's commit; Gitter refuses.
+    @Test func abortIsRefusedAndHeadStays() async throws {
+        let repo = try await Self.stalePick()
+        defer { repo.cleanUp() }
+        let head = try await repo.headSha()
+        let before = try await OperationState.capture(repo)
+
+        try await Self.expectStale { try await Self.backend.abort(.cherryPick, at: repo.root) }
+        #expect(try await repo.headSha() == head)
+        #expect(try await OperationState.capture(repo) == before)
+        #expect(try await SequenceFixtures.subjects(repo, "-1") == ["c1 f"])
+    }
+
+    @Test func skipIsRefusedAndNothingIsFiled() async throws {
+        let repo = try await Self.stalePick()
+        defer { repo.cleanUp() }
+        let head = try await repo.headSha()
+        let before = try await OperationState.capture(repo)
+        let side = try await repo.revParse("side")
+        let stashes = try await repo.git(["stash", "list"])
+
+        try await Self.expectStale { _ = try await Self.backend.skip(.cherryPick, stoppedAt: side, at: repo.root) }
+        #expect(try await repo.headSha() == head)
+        #expect(try await OperationState.capture(repo) == before)
+        #expect(try await repo.git(["stash", "list"]) == stashes)
+    }
+
+    /// The same for a revert: a halted revert range, then a single conflicting revert.
+    @Test func aSingleRevertOverAHaltedRangesListIsStale() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("f.txt", "one\ntwo\nthree\n")
+        try repo.write("g.txt", "g\n")
+        try await repo.commitAll("base")
+        try await repo.git(["rm", "-q", "g.txt"])
+        try await repo.git(["commit", "-q", "-m", "A deletes g"])
+        let a = try await repo.headSha()
+        try repo.write("f.txt", "one\nTWO\nthree\n")
+        try await repo.commitAll("B two")
+        let b = try await repo.headSha()
+        try repo.write("f.txt", "one\nTWO\nTHREE\n")
+        try await repo.commitAll("C three")
+        let c = try await repo.headSha()
+        try repo.write("f.txt", "one\nTWO2\nTHREE2\n")
+        try await repo.commitAll("D both again")
+        try await repo.git(["revert", "--no-edit", b, a], allowedExitCodes: [1])
+        try repo.write("g.txt", "untracked\n")
+        try await repo.git(["revert", "--skip"], allowedExitCodes: [128])
+        try FileManager.default.removeItem(at: repo.root.appendingPathComponent("g.txt"))
+        try await repo.git(["revert", "--no-edit", c], allowedExitCodes: [1])
+        try await ConflictFixtures.requireUnmerged(repo)
+
+        let stale = try #require(try await Self.backend.staleSequence(at: repo.root))
+        #expect(stale.operation == .revert)
+        #expect(stale.notApplied.map(\.sha) == [a])
+        let head = try await repo.headSha()
+        try await Self.expectStale { try await Self.backend.abort(.revert, at: repo.root) }
+        #expect(try await repo.headSha() == head)
+    }
+
+    /// A genuine range stop is never stale: at its first, middle and last commit, picking and
+    /// reverting — and Continue goes on as before.
+    @Test(arguments: [RepositoryOperation.cherryPick, .revert])
+    func aGenuineRangeIsNeverStale(_ operation: RepositoryOperation) async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("f.txt", "a\n")
+        try await repo.commitAll("base")
+        for index in 1...3 {
+            try repo.write("f.txt", "v\(index)\n")
+            try await repo.commitAll("V\(index)")
+        }
+        if operation == .cherryPick {
+            try await repo.git(["switch", "-q", "-c", "topic"])
+            try await repo.git(["switch", "-q", "main"])
+            try await repo.git(["reset", "-q", "--hard", "HEAD~3"])
+            try repo.write("f.txt", "M\n")
+            try await repo.commitAll("main")
+            try await repo.git(["cherry-pick", "main..topic"], allowedExitCodes: [1])
+        } else {
+            try repo.write("f.txt", "last\n")
+            try await repo.commitAll("last")
+            try await repo.git(["revert", "--no-edit", "HEAD~1", "HEAD~2", "HEAD~3"], allowedExitCodes: [1])
+        }
+        for stop in 1...3 {
+            try await ConflictFixtures.requireUnmerged(repo)
+            #expect(try await Self.backend.staleSequence(at: repo.root) == nil, "stop \(stop)")
+            try await SequenceFixtures.resolve(repo)
+            try repo.write("f.txt", "r\(stop)\n")
+            try await repo.git(["add", "f.txt"])
+            let readiness = try await Self.backend.continueReadiness(at: repo.root)
+            #expect(readiness == .ready, "stop \(stop): \(readiness)")
+            let outcome = try await Self.backend.continueOperation(operation, message: nil, at: repo.root)
+            if stop < 3 {
+                guard case .stoppedAgain = outcome else {
+                    Issue.record("stop \(stop): \(outcome)")
+                    return
+                }
+            } else {
+                #expect(outcome == .finished)
+            }
+        }
+    }
+}

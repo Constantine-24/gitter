@@ -101,6 +101,13 @@ extension CLIGitBackend {
         // missing)") since `--squash` never writes `MERGE_HEAD`. `reset --merge` is what
         // unstages the squashed changes and removes `SQUASH_MSG` with them — including for a
         // squash whose net diff was empty, where removing that message is the entire job.
+        // Ruling 29 (measured): over a halted range's stale `sequencer/`, `cherry-pick --abort` /
+        // `revert --abort` rewind HEAD to before that older range — its commits and anything
+        // made since — not just this stop. Refused before anything runs.
+        if operation == .cherryPick || operation == .revert, let stale = try await staleSequence(at: root) {
+            throw OperationError.staleSequence(stale)
+        }
+
         let arguments: [String]
         switch operation {
         case .merge: arguments = ["merge", "--abort"]

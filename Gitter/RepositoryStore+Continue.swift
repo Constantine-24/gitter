@@ -91,6 +91,8 @@ enum OperationBarState {
         if let failure = stop.readFailure { return .disabled(ContinueWording.readFailed(operation, failure)) }
         guard let readiness = stop.continueReadiness else { return .disabled(ContinueWording.reading(operation)) }
         switch readiness {
+        case .staleSequence:
+            return .disabled(ContinueWording.staleReason(operation))
         case .notContinuable:
             return .disabled(ContinueWording.notContinuable(operation))
         case .unresolved(let paths):
@@ -143,11 +145,29 @@ enum OperationBarState {
         if let failure = stop.readFailure { return .disabled(ContinueWording.readFailed(operation, failure)) }
         guard let readiness = stop.skipReadiness else { return .disabled(ContinueWording.reading(operation)) }
         switch readiness {
+        case .staleSequence: return .disabled(ContinueWording.staleReason(operation))
         case .notSkippable: return .disabled(ContinueWording.noCommitToSkip)
         case .otherChanges(let paths): return .disabled(ContinueWording.skipOtherChanges(paths))
         case .needsCleanPaths(let paths): return .disabled(ContinueWording.skipNeedsCleanPaths(paths))
         case .ready: return stop.progress?.current == nil ? .disabled(ContinueWording.noCommitToSkip) : .enabled
         }
+    }
+
+    // MARK: - A stale sequencer list (Ruling 29)
+
+    /// The older range's list this stop sits over, when GitCore found one.
+    static func staleList(_ stop: OperationStop?) -> HaltedSequence? {
+        if case .staleSequence(let old)? = stop?.continueReadiness { return old }
+        if case .staleSequence(let old)? = stop?.skipReadiness { return old }
+        return nil
+    }
+
+    /// The bar's abort button: off while a change runs, and over a stale list, where git's
+    /// `--abort` would rewind HEAD to before the older range (GitCore refuses it too).
+    static func abortState(_ operation: RepositoryOperation, _ stop: OperationStop?, isMutating: Bool) -> BarActionState {
+        if isMutating { return .disabled(ContinueWording.busy) }
+        if staleList(stop) != nil { return .disabled(ContinueWording.staleReason(operation)) }
+        return .enabled
     }
 
     // MARK: - The files
@@ -246,9 +266,11 @@ enum ComposerPrefill {
         guard !draft.amend else { return current }
         if draft.subject.isEmpty, draft.body.isEmpty {
             if let message = stop.pendingMessage { draft.prefill(from: message.text) }
-        } else if draft.foreign == nil {
-            // Text that stayed across the change, or was there before the operation stopped: not
-            // written for this stop. A mark already there keeps naming where it was written.
+        } else if draft.foreign == nil, lastKey == nil || lastKey?.commit?.sha != current.commit?.sha {
+            // Text that stayed across a change of commit, or was there before the operation
+            // stopped: not written for this stop. A key change for the same commit (a message
+            // read that failed and came back, a step change) leaves it this commit's. A mark
+            // already there keeps naming where it was written.
             draft.markForeign(ForeignDraft(writtenFor: lastKey?.commit))
         }
         return current
@@ -324,6 +346,16 @@ extension RepositoryStore {
         return OperationBarState.skipState(operation, operationStop, isMutating: isMutating, sheetUp: activeSheet != nil)
     }
 
+    /// The older range's list this cherry-pick or revert stops over (Ruling 29), when GitCore
+    /// found one: the bar names it and the safe way out, and Continue, Skip and Abort are off.
+    var staleSequence: HaltedSequence? { OperationBarState.staleList(operationStop) }
+
+    /// The bar's abort button.
+    var abortState: BarActionState {
+        guard let operation = operationInProgress else { return .disabled(ContinueWording.nothingToContinue) }
+        return OperationBarState.abortState(operation, operationStop, isMutating: isMutating)
+    }
+
     /// The line under the bar.
     var continueReasonLine: String? {
         guard let operation = operationInProgress else { return nil }
@@ -343,7 +375,7 @@ extension RepositoryStore {
         let progress = operationStop?.operation == operation ? operationStop?.progress : nil
         return ContinueWording.bar(
             operation, progress, branch: currentBranch, hasConflicts: hasUnmergedFiles,
-            continueBlocked: continueReasonLine != nil)
+            continueBlocked: continueReasonLine != nil, stale: staleSequence != nil)
     }
 
     /// The composer's note under a cherry-pick's or revert's message.

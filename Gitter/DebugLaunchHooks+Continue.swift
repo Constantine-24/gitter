@@ -117,7 +117,12 @@
             let progress = stop?.progress
             log("bar: \(operation) \"\(store.operationBarSentence)\"")
             log("bar continue: \(store.continueTitle) \(describe(store.continueState)) "
-                + "| skip: \(describe(store.skipState)) | line: \(store.continueReasonLine ?? "nil")")
+                + "| skip: \(describe(store.skipState)) | abort: \(describe(store.abortState)) "
+                + "| line: \(store.continueReasonLine ?? "nil")")
+            if let old = store.staleSequence {
+                log("bar stale: \(old.operation) total \(old.total) notApplied \(old.notApplied.map { "\($0.sha.prefix(7)) \($0.subject)" }) "
+                    + "| \(ContinueWording.staleWarning(operation, old)) | \(ContinueWording.staleWayForward(operation, old))")
+            }
             let current = progress?.current.map { "\($0.sha.prefix(7)) \($0.subject)" } ?? "nil"
             log("bar stop: step \(progress?.step.map(String.init) ?? "nil")/\(progress?.total.map(String.init) ?? "nil") "
                 + "remaining \(progress?.remaining.map(String.init) ?? "nil") current \(current) "

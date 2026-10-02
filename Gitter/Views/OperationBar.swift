@@ -26,7 +26,20 @@ struct OperationBar: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .help(sentence)
-            if let line = store.continueReasonLine {
+            if let old = store.staleSequence {
+                // Ruling 29: git's own Continue, Skip and Abort would act on an older range's list.
+                VStack(alignment: .leading, spacing: 2) {
+                    Label(ContinueWording.staleWarning(operation, old), systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(ContinueWording.staleWayForward(operation, old))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            } else if let line = store.continueReasonLine {
                 Text(line)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -45,11 +58,12 @@ struct OperationBar: View {
                         .font(.callout)
                         .disabled(proceed != .enabled, help: proceed.reason ?? ContinueWording.continueHelp(operation))
                 }
+                // Not while another git write is running (this one throws work away, and the sheet
+                // it opens would describe a repository mid-change), nor over a stale list.
+                let abort = store.abortState
                 Button(operation.abortButtonTitle) { store.requestAbort() }
                     .font(.callout)
-                    // Not while another git write is running: this one throws work away, and the
-                    // sheet it opens would describe a repository mid-change.
-                    .disabled(store.isMutating)
+                    .disabled(abort != .enabled, help: abort.reason)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

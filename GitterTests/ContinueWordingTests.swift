@@ -316,7 +316,7 @@ import Testing
             text
                 == "Git made the commit, then stopped the cherry-pick before the next one: error: The following "
                 + "untracked working tree files would be overwritten by merge: g.txt. No cherry-pick is in progress "
-                + "now. The bar above lists the commits it did not apply and how to apply them.")
+                + "now. The bar below lists the commits it did not apply and how to apply them.")
         #expect(!text.contains("--continue"))
     }
 
@@ -326,13 +326,13 @@ import Testing
         #expect(
             text
                 == "Skipped 9f8e7d6 \u{2014} its changes are in the Stashes list. Git then stopped the revert before the "
-                + "next commit: error: would be overwritten. No revert is in progress now. The bar above lists the "
+                + "next commit: error: would be overwritten. No revert is in progress now. The bar below lists the "
                 + "commits it did not apply and how to apply them.")
         #expect(!text.contains("made the commit"))
         #expect(
             ContinueWording.skipHalted(.cherryPick, Self.picked, recorded: false, "")
                 == "Skipped 9f8e7d6. Git then stopped the cherry-pick before the next commit. No cherry-pick is in "
-                + "progress now. The bar above lists the commits it did not apply and how to apply them.")
+                + "progress now. The bar below lists the commits it did not apply and how to apply them.")
     }
 
     static let two = CommitRef(sha: "1600000000000000000000000000000000000000", subject: "Pick two")
@@ -367,6 +367,59 @@ import Testing
             ContinueWording.haltedWayForward(long).contains(
                 "then cherry-pick them again in the order .git/sequencer/todo lists them (copy that list first: --quit "
                 + "removes it)."))
+    }
+
+    // MARK: - A stop over a stale sequencer list (fix round 2, Ruling 29)
+
+    /// Over a stale list `remaining` counts the old list's lines, and "then continue" would
+    /// contradict the warning: the bar says only which commit this stop is.
+    @Test func overAStaleListTheBarSaysOnlyWhichCommit() {
+        let progress = OperationProgress(operation: .cherryPick, remaining: 2, current: Self.picked)
+        #expect(
+            ContinueWording.bar(.cherryPick, progress, branch: "main", hasConflicts: true, stale: true)
+                == "Cherry-picking 9f8e7d6 Change the parser.")
+        #expect(
+            ContinueWording.bar(.cherryPick, progress, branch: "main", hasConflicts: true)
+                == "Cherry-picking 9f8e7d6 Change the parser: 2 commits to go, this one included. Resolve the conflicts, "
+                + "then continue.")
+    }
+
+    @Test func aStaleListIsNamedWithTheSafeWayOut() {
+        let old = HaltedSequence(operation: .cherryPick, notApplied: [Self.two, Self.three], total: 2)
+        #expect(
+            ContinueWording.staleWarning(.cherryPick, old)
+                == "Git still keeps the list of an earlier cherry-pick that stopped part-way: git did not apply 2 "
+                + "commits, 1600000 Pick two and 3800000 Pick three. Its --continue, --skip and --abort would act on "
+                + "that list \u{2014} resume it, or rewind HEAD to before it \u{2014} so Gitter won't continue, skip or "
+                + "abort this cherry-pick.")
+        #expect(
+            ContinueWording.staleWayForward(.cherryPick, old)
+                == "To finish this cherry-pick, resolve its conflicts, then run `git commit` in a terminal (it makes "
+                + "this cherry-pick's commit and leaves the old list alone) and `git cherry-pick --quit` to forget the "
+                + "old list. To drop this cherry-pick instead, run `git cherry-pick --quit` first: it forgets the old "
+                + "list and this cherry-pick, and the files stay as they are, to resolve or discard here. The old "
+                + "list's commits can then be cherry-picked again: `git cherry-pick 1600000 3800000`.")
+        let reverts = HaltedSequence(operation: .revert, notApplied: [Self.two], total: 1)
+        #expect(
+            ContinueWording.staleWarning(.revert, reverts)
+                == "Git still keeps the list of an earlier revert that stopped part-way: git did not apply 1 commit, "
+                + "1600000 Pick two. Its --continue, --skip and --abort would act on that list \u{2014} resume it, or "
+                + "rewind HEAD to before it \u{2014} so Gitter won't continue, skip or abort this revert.")
+        #expect(ContinueWording.staleWayForward(.revert, reverts).contains("`git revert --quit`"))
+        #expect(ContinueWording.staleWayForward(.revert, reverts).hasSuffix("reverted again: `git revert 1600000`."))
+        #expect(
+            ContinueWording.staleReason(.cherryPick)
+                == "Gitter won't continue, skip or abort this cherry-pick: git still keeps an earlier cherry-pick's or "
+                + "revert's list, and its --continue, --skip or --abort would act on that list. The bar says how on.")
+        #expect(
+            ContinueWording.error(.staleSequence(old))
+                == ContinueWording.staleReason(nil) + " Nothing was done.")
+        #expect(
+            ContinueWording.error(.notReady(.staleSequence(old)))
+                == ContinueWording.staleReason(nil) + " Nothing was continued.")
+        #expect(
+            ContinueWording.error(.skipRefused(.staleSequence(old)))
+                == ContinueWording.staleReason(nil) + " Nothing was skipped.")
     }
 
     // MARK: - A draft written for another commit (fix round 1, I1)
