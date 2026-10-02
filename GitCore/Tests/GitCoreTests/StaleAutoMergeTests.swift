@@ -174,14 +174,19 @@ import Testing
         try await expectRefused(try await staged(["b.txt"], repo), .partOfOperation(["b.txt"]), in: repo)
     }
 
-    /// A squash records no source commit, so without a conflict to show that `AUTO_MERGE` is
-    /// fresh its paths cannot be told: nil, every staged path the operation's.
-    @Test func aCleanSquashCannotTellItsPaths() async throws {
+    /// A clean squash's paths are the commits `SQUASH_MSG` lists (Ruling 25). Without them, and
+    /// without a conflict to show that `AUTO_MERGE` is fresh, its paths cannot be told: nil,
+    /// every staged path the operation's.
+    @Test func aCleanSquashCannotTellItsPathsWithoutItsMessage() async throws {
         let repo = try await lab()
         defer { repo.cleanUp() }
         try await repo.git(["merge", "-q", "--squash", "t2"])
         #expect(try await backend.operationInProgress(at: repo.root) == .squash)
         #expect(try await autoMergeDiff(repo) == ["o.txt"])
+        // Ruling 25: `SQUASH_MSG` names t2, whose change is o.txt.
+        #expect(try await backend.operationPaths(at: repo.root) == ["o.txt"])
+
+        try Data("Squash\n".utf8).write(to: try await ConflictFixtures.gitPath(repo, "SQUASH_MSG"))
 
         #expect(try await backend.operationPaths(at: repo.root) == nil)
     }

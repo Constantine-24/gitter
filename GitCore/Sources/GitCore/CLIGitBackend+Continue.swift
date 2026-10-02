@@ -261,12 +261,13 @@ extension CLIGitBackend: GitOperationBackend {
     ///    of them — a fresh one differs at every text conflict (its markers; under rerere too)
     ///    and equals HEAD at a whole-file one (measured). With no text conflict to test it by
     ///    (all whole-file, or nothing unmerged) it is kept.
-    /// 2. The paths the operation's source commits change (`sourcePaths`), exact for a non-ort
-    ///    stop, which follows no rename.
+    /// 2. The paths the operation's source commits change (`sourcePaths`; a squash's from
+    ///    `SQUASH_MSG`, a merge commit's against its mainline), exact for a non-ort stop, which
+    ///    follows no rename.
     /// 3. The unmerged paths.
     ///
-    /// Nil when the source cannot be read: a squash (no source commit is recorded) unless a
-    /// text conflict shows its `AUTO_MERGE` fresh, a rebase stop with no commit pending
+    /// Nil when the source cannot be read: a squash whose `SQUASH_MSG` lists no commit, unless
+    /// a text conflict shows its `AUTO_MERGE` fresh, a rebase stop with no commit pending
     /// (`exec`, `break`, `edit`), or a read that fails. A superset only over-refuses a
     /// staged-side discard. Accepted costs: Skip may count a user's change to a path the commit
     /// also changes as the commit's (Skip records first), and Continue's other-staged check
@@ -284,12 +285,13 @@ extension CLIGitBackend: GitOperationBackend {
         }
 
         let parts: [[String]]
-        if let source = try await sourcePaths(of: operation, at: root) {
+        if let source = try await sourcePaths(of: operation, autoMerge: autoMerge, at: root) {
             parts = [autoMerge ?? [], source, unmerged]
         } else if operation == .squash, let paths = autoMerge,
             try await autoMergeIsProvedFresh(paths, unmerged: unmergedRecords, at: root)
         {
-            // A text conflict it differs at shows it fresh: ort's own result, renames included.
+            // No commit in `SQUASH_MSG`: a text conflict it differs at shows `AUTO_MERGE` fresh,
+            // ort's own result, renames included.
             parts = [paths, unmerged]
         } else {
             return nil
@@ -299,48 +301,109 @@ extension CLIGitBackend: GitOperationBackend {
     }
 
     /// Every path the commit or commits the operation applies change, both sides of a rename;
-    /// nil when there is none to read (see `operationPaths`).
+    /// nil when there is none to read (see `operationPaths`). `autoMerge`: the usable
+    /// `AUTO_MERGE` diff, if any, which picks a merge commit's mainline when nothing records it.
     ///
     /// - merge: for each line of `MERGE_HEAD` (an octopus has several), its changes since each
     ///   merge base with HEAD (`--all`: a criss-cross's virtual base changes nothing the bases
     ///   all agree on).
+    /// - squash (Ruling 25): the same for its tips — `merge-base --independent` of the
+    ///   commits `SQUASH_MSG` lists (`commit <sha>` lines; every commit of `HEAD..tip`, merges
+    ///   included, measured). Nil when it lists none (the message was edited).
     /// - cherry-pick, revert, rebase: `CHERRY_PICK_HEAD` / `REVERT_HEAD` / `REBASE_HEAD`
-    ///   against each of its parents (`diff-tree -m --root`: a merge commit, a root commit).
+    ///   against its parent (`commitPaths`; a root commit against nothing).
     /// - `git am`: the current patch, `rebase-apply/patch`, read by `DiffParser` — only with no
     ///   `apply-opt` (`-p`, `--directory` would move its paths) and only when every `diff --git`
     ///   header parsed.
-    private func sourcePaths(of operation: RepositoryOperation, at root: URL) async throws -> [String]? {
+    private func sourcePaths(
+        of operation: RepositoryOperation, autoMerge: [String]?, at root: URL
+    ) async throws -> [String]? {
         switch operation {
         case .merge:
             guard let text = try? String(contentsOf: try await gitPath("MERGE_HEAD", at: root), encoding: .utf8)
             else { return nil }
-            let heads = text.split(whereSeparator: \.isNewline).map(String.init)
-            guard !heads.isEmpty, heads.allSatisfy(Self.isObjectName) else { return nil }
-            var paths: [String] = []
-            for head in heads {
-                let bases = try await run(["merge-base", "--all", "HEAD", head], cwd: root, allowedExitCodes: [1])
-                let names = GitLines.split(bases)
-                guard !names.isEmpty, names.allSatisfy(Self.isObjectName) else { return nil }
-                for base in names {
-                    paths += Self.nulSeparated(try await run(["diff", "--name-only", "-z", "--no-renames", base, head], cwd: root))
-                }
+            return try await changesSinceMergeBases(of: text.split(whereSeparator: \.isNewline).map(String.init), at: root)
+        case .squash:
+            guard let text = try? String(contentsOf: try await gitPath("SQUASH_MSG", at: root), encoding: .utf8)
+            else { return nil }
+            let listed = text.split(whereSeparator: \.isNewline).compactMap { line -> String? in
+                guard line.hasPrefix("commit ") else { return nil }
+                let name = String(line.dropFirst("commit ".count))
+                return Self.isObjectName(name) ? name : nil
             }
-            return paths
-        case .cherryPick: return try await commitPaths("CHERRY_PICK_HEAD", at: root)
-        case .revert: return try await commitPaths("REVERT_HEAD", at: root)
+            guard !listed.isEmpty else { return nil }
+            let tips = GitLines.split(try await run(["merge-base", "--independent"] + listed, cwd: root))
+            return try await changesSinceMergeBases(of: tips, at: root)
+        case .cherryPick:
+            return try await commitPaths("CHERRY_PICK_HEAD", mainline: try await sequencerMainline(at: root), autoMerge: autoMerge, at: root)
+        case .revert:
+            return try await commitPaths("REVERT_HEAD", mainline: try await sequencerMainline(at: root), autoMerge: autoMerge, at: root)
         case .rebase:
             guard try await hasPendingCommit(.rebase, at: root) else { return nil }
-            return try await commitPaths("REBASE_HEAD", at: root)
+            return try await commitPaths("REBASE_HEAD", mainline: nil, autoMerge: autoMerge, at: root)
         case .applyingPatches: return try await currentPatchPaths(at: root)
-        case .squash: return nil
         }
     }
 
-    /// `pseudoRef`'s changes against each of its parents, or nil when it does not resolve.
-    private func commitPaths(_ pseudoRef: String, at root: URL) async throws -> [String]? {
+    /// Each head's changes since each of its merge bases with HEAD; nil for a head that is not
+    /// a full object name or that shares no base with HEAD.
+    private func changesSinceMergeBases(of heads: [String], at root: URL) async throws -> [String]? {
+        guard !heads.isEmpty, heads.allSatisfy(Self.isObjectName) else { return nil }
+        var paths: [String] = []
+        for head in heads {
+            let bases = GitLines.split(try await run(["merge-base", "--all", "HEAD", head], cwd: root, allowedExitCodes: [1]))
+            guard !bases.isEmpty, bases.allSatisfy(Self.isObjectName) else { return nil }
+            for base in bases { paths += try await namesChanged(from: base, to: head, at: root) }
+        }
+        return paths
+    }
+
+    /// `diff --name-only -z --no-renames from to`.
+    private func namesChanged(from: String, to: String, at root: URL) async throws -> [String] {
+        Self.nulSeparated(try await run(["diff", "--name-only", "-z", "--no-renames", from, to], cwd: root))
+    }
+
+    /// `pseudoRef`'s changes against its parent, or nil when it does not resolve. A root commit
+    /// against nothing. A merge commit (`-m`, Ruling 25) against its mainline: `mainline` when
+    /// recorded (`sequencer/opts`, a range); else the parent whose changes cover `autoMerge` —
+    /// the fewest, when several do — since against the other parent it lists everything the
+    /// mainline did since the fork (measured); else, with no `AUTO_MERGE` to tell or none
+    /// covering it, every parent (safe for a discard; Continue's other-staged check may then
+    /// miss a mainline path).
+    private func commitPaths(
+        _ pseudoRef: String, mainline: Int?, autoMerge: [String]?, at root: URL
+    ) async throws -> [String]? {
         guard try await resolves(pseudoRef, at: root) else { return nil }
-        return Self.nulSeparated(try await run(
-            ["diff-tree", "-r", "-m", "--root", "--name-only", "-z", "--no-renames", "--no-commit-id", pseudoRef], cwd: root))
+        let parents = GitLines.split(try await run(["rev-parse", "\(pseudoRef)^@"], cwd: root))
+        guard parents.count > 1 else {
+            return Self.nulSeparated(try await run(
+                ["diff-tree", "-r", "--root", "--name-only", "-z", "--no-renames", "--no-commit-id", pseudoRef], cwd: root))
+        }
+        guard parents.allSatisfy(Self.isObjectName) else { return nil }
+        if let mainline, parents.indices.contains(mainline - 1) {
+            return try await namesChanged(from: parents[mainline - 1], to: pseudoRef, at: root)
+        }
+        var perParent: [[String]] = []
+        for parent in parents { perParent.append(try await namesChanged(from: parent, to: pseudoRef, at: root)) }
+        if let autoMerge, !autoMerge.isEmpty {
+            let wanted = Set(autoMerge)
+            if let covering = perParent.filter({ Set($0).isSuperset(of: wanted) }).min(by: { $0.count < $1.count }) {
+                return covering
+            }
+        }
+        return perParent.flatMap { $0 }
+    }
+
+    /// `mainline = <n>` in `sequencer/opts`, which a pick or revert range with `-m` records (a
+    /// single one records none, measured); nil without it.
+    private func sequencerMainline(at root: URL) async throws -> Int? {
+        guard let text = try? String(contentsOf: try await gitPath("sequencer/opts", at: root), encoding: .utf8)
+        else { return nil }
+        for line in text.split(whereSeparator: \.isNewline) {
+            let parts = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            if parts.count == 2, parts[0] == "mainline", let n = Int(parts[1]) { return n }
+        }
+        return nil
     }
 
     /// The paths of the patch `git am` stopped on (`rebase-apply/patch`), old and new names.

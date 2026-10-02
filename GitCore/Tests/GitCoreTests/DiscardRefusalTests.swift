@@ -74,8 +74,8 @@ import Testing
 
     /// A2 Task 4 lifted A1's refusal: during each stop, every kind runs on a file the operation
     /// never touched, and the operation's files are as they were (`DiscardDuringOperationTests`
-    /// has the operation's own paths, which the staged side refuses) — except the staged side
-    /// during the clean squash, whose own paths cannot be told (Ruling 22).
+    /// has the operation's own paths, which the staged side refuses). The clean squash's paths
+    /// come from `SQUASH_MSG` (Ruling 25), so keep.txt is not among them.
     @Test(arguments: Stopped.allCases)
     func noKindIsRefusedForTheOperationAlone(_ kind: Stopped) async throws {
         let (repo, operation) = try await makeStopped(kind)
@@ -94,18 +94,9 @@ import Testing
         #expect(try repo.bytes("keep.txt") == Data("keep\n".utf8))
         try repo.write("keep.txt", "keep\nstaged\n")
         try await repo.git(["add", "--", "keep.txt"])
-        if kind == .squash {
-            // A clean squash records no source commit and has no conflict to show its
-            // AUTO_MERGE fresh (Ruling 22): every staged path counts as its own.
-            #expect(try await backend.operationPaths(at: repo.root) == nil)
-            try await expectRefused(try await staged(["keep.txt"], repo), .partOfOperation(["keep.txt"]), in: repo)
-            try await repo.git(["restore", "--staged", "--", "keep.txt"])
-            try repo.write("keep.txt", "keep\n")
-        } else {
-            _ = try await backend.discard(try await staged(["keep.txt"], repo), trasher: trasher, at: repo.root)
-            #expect(try repo.bytes("keep.txt") == Data("keep\n".utf8))
-            #expect(try await repo.indexContent(of: "keep.txt") == Data("keep\n".utf8))
-        }
+        _ = try await backend.discard(try await staged(["keep.txt"], repo), trasher: trasher, at: repo.root)
+        #expect(try repo.bytes("keep.txt") == Data("keep\n".utf8))
+        #expect(try await repo.indexContent(of: "keep.txt") == Data("keep\n".utf8))
         _ = try await backend.discard(try await untracked(["u.txt"], repo), trasher: trasher, at: repo.root)
         #expect(!FileManager.default.fileExists(atPath: repo.root.appendingPathComponent("u.txt").path))
 

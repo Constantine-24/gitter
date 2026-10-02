@@ -247,9 +247,11 @@ import Testing
     }
 
     /// A squash that fast-forwards writes no `AUTO_MERGE` (measured, Task 4; a clean squash
-    /// that merges does write one), so the operation's paths are unknown: every path with a
-    /// staged change is refused on the staged side, and one with none is not named.
-    @Test func aSquashWithoutAutoMergeRefusesEveryStagedPath() async throws {
+    /// that merges does write one). Its paths come from the commits `SQUASH_MSG` lists
+    /// (Ruling 25): z.txt is refused on the staged side, the user's y.txt is not. With those
+    /// lines gone from the message they are unknown: every path with a staged change is
+    /// refused on the staged side, and one with none is not named.
+    @Test func aSquashWithoutAutoMergeReadsItsMessageOrRefusesEveryStagedPath() async throws {
         let repo = try await TestRepo.makeEmpty()
         defer { repo.cleanUp() }
         try repo.write("x.txt", Self.xBase)
@@ -263,11 +265,16 @@ import Testing
         try await repo.git(["merge", "-q", "--squash", "theirs"])
         #expect(try await backend.operationInProgress(at: repo.root) == .squash)
         #expect(try await repo.git(["rev-parse", "-q", "--verify", "AUTO_MERGE"], allowedExitCodes: [1]).isEmpty)
-        #expect(try await backend.operationPaths(at: repo.root) == nil)
+        #expect(try await backend.operationPaths(at: repo.root) == ["z.txt"])
         try repo.write("x.txt", Self.xEdited)
         try repo.write("y.txt", Self.yStaged)
         try await repo.git(["add", "--", "y.txt"])
+        try await expectRefused(try await staged(["y.txt", "z.txt"], repo), .partOfOperation(["z.txt"]), in: repo)
 
+        // The message without its commit lines: nothing tells the squash's paths.
+        let message = try await ConflictFixtures.gitPath(repo, "SQUASH_MSG")
+        try Data("Squash\n".utf8).write(to: message)
+        #expect(try await backend.operationPaths(at: repo.root) == nil)
         try await expectRefused(try await staged(["z.txt"], repo), .partOfOperation(["z.txt"]), in: repo)
         try await expectRefused(try await staged(["x.txt", "y.txt"], repo), .partOfOperation(["y.txt"]), in: repo)
 

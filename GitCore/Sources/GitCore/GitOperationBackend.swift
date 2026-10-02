@@ -27,11 +27,13 @@ public protocol GitOperationBackend: Sendable {
     /// Every path the operation's own result changes against HEAD, both sides of a rename
     /// (M 31) — a superset (Ruling 22): ort's `AUTO_MERGE` diff unless detectably stale, the
     /// paths the operation's source commits change (`MERGE_HEAD` since its merge bases, the
-    /// picked, reverted or replayed commit, `git am`'s current patch), and the unmerged paths.
+    /// commits `SQUASH_MSG` lists, the picked, reverted or replayed commit — a merge commit
+    /// against its mainline — `git am`'s current patch), and the unmerged paths.
     /// `AUTO_MERGE` is read only while an operation is in progress, and alone it is not
     /// enough: only ort writes it, so a `-s resolve` or octopus stop sits over a stale one.
-    /// Nil with no operation, and when the source cannot be read: a squash whose `AUTO_MERGE`
-    /// no conflict shows fresh, a rebase's `exec` / `break` / `edit` stop, a failed read.
+    /// Nil with no operation, and when the source cannot be read: a squash whose `SQUASH_MSG`
+    /// lists no commit and whose `AUTO_MERGE` no text conflict shows fresh, a rebase's `exec` /
+    /// `break` / `edit` stop, a failed read.
     func operationPaths(at root: URL) async throws -> [String]?
 
     /// Whether `continueOperation` would run; see `ContinueReadiness`.
