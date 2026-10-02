@@ -10,7 +10,10 @@ to remotes: fetch, pull and push the current branch, publish a branch, show how 
 branch is ahead of and behind its upstream, and keep that picture current with a quiet fetch
 in the background. And it can now put work aside and throw it away: stash all or some of
 your changes and bring them back, and discard a file, a hunk or a single line — every
-discard leaves a copy, and a notice offers **Undo Discard**.
+discard leaves a copy, and a notice offers **Undo Discard**. When a merge, rebase, cherry-pick
+or revert stops on a conflict, it resolves it in the app — block by block, or a whole file at
+a time — and then continues, skips the commit or commits, with the stopped commit's message in
+the composer.
 
 ![Gitter's main window: the branch button, the sidebar, the lane graph and a diff](docs/screenshots/branches.png)
 
@@ -24,9 +27,16 @@ discard leaves a copy, and a notice offers **Undo Discard**.
   tracking branch; check out a commit or a tag (detached HEAD)
 - Merge, choosing each time between fast-forward if possible, always a merge commit, and
   squash — the last choice is remembered
-- Finish a conflicted merge from the app (resolve in your editor, stage, "Commit Merge"),
-  or end it: abort a merge, cherry-pick, revert, rebase or `git am`, and undo a pending
-  squash
+- **Resolve conflicts** in the app: each conflict as blocks, ours beside theirs (the base on
+  request), with Ours, Theirs, Both (ours first) or Both (theirs first) per block and the result
+  shown before anything is written; whole-file choices for what git cannot draw blocks for
+  (binary files, symlinks, a mode change, deletions); Open in Editor and **Mark Resolved**; and
+  **Reopen Conflict…** while the operation is still going (see "Conflicts" below)
+- **Continue** a stopped rebase, cherry-pick or revert from the operation bar ("Rebasing feature
+  onto 5e248b9: stopped at commit 1 of 3 …"), with the stopped commit's message in the composer
+  to keep or edit, or **Skip This Commit…**; commit a merge or a squash with git's prepared
+  message; or end any of them: abort a merge, cherry-pick, revert, rebase or `git am`, and undo
+  a pending squash
 - Hooks and commit signing apply as configured, because every commit runs through
   your own `git`, not a reimplementation of it
 - Fetch, Pull and Push from the toolbar (Repository menu: ⇧⌘F, ⇧⌘L, ⇧⌘P). The running one
@@ -80,6 +90,10 @@ discard leaves a copy, and a notice offers **Undo Discard**.
 
 ![Discarding two selected lines: the sheet names them and where their copy goes](docs/screenshots/discard.png)
 
+![A conflicted file during a merge: conflict 1 of 3, ours and theirs side by side, "Both (ours first)" chosen and its result below, Resolve File waiting for the other two](docs/screenshots/conflict.png)
+
+![A rebase stopped at commit 1 of 3 with its conflict resolved: the operation bar with Skip This Commit…, Continue Rebase and Abort Rebase…, the stopped commit's message in the composer, and Reopen Conflict… above the resolved file's diff](docs/screenshots/operation-bar.png)
+
 ## Safety
 
 Staging and unstaging change only the index (`git apply --cached`, `git add`, `git reset`)
@@ -104,9 +118,14 @@ it allows `stash` only in five exact spellings — never with a pathspec, `--kee
 `apply --index` — `restore` only with `--no-recurse-submodules`, and forbids `clean`,
 `checkout`, `hash-object` and `--unidiff-zero` everywhere; `read-tree`, `update-index` and
 `write-tree` may appear in one file only, the one that builds a discard's record in a
-temporary index.
+temporary index. For conflicts it allows `merge-file` only with `--object-id` (without it git
+writes over its first argument), `restore --ours|--theirs|--merge` and `rm -q` only on one
+path at a time, and `--skip` only as exactly `rebase --skip`, `cherry-pick --skip` or `revert
+--skip`; `--quit` stays forbidden. A list of paths for `add`, `restore` or `rm --cached` goes
+in a pathspec file rather than one argument per path: past 4 096 arguments macOS's `Process`
+does not fail, it crashes the app, so every call is also checked before git starts.
 
-Eight actions can lose something without being asked for by name, and each is behind a
+Twelve actions can lose something without being asked for by name, and each is behind a
 confirmation that says what goes and what stays:
 
 | action | how it is confirmed |
@@ -119,8 +138,16 @@ confirmation that says what goes and what stays:
 | **Delete a branch on a remote** (sidebar ▸ remote branch ▸ "Delete on "origin"…") | Gitter fetches that remote, then a sheet names the branch, the remote and its tip in full, and says whether its commits are **held by no branch, tag or other remote Gitter can see** (and how many). The deletion is leased on that tip (`--force-with-lease=refs/heads/<b>:<tip>` with `:refs/heads/<b>`), so a branch that moved, or is already gone, is refused by the server and nothing is deleted. The notice afterwards prints the `git push <remote> <tip>:refs/heads/<b>` that recreates it |
 | **Discard** — a file's unstaged changes, its staged and unstaged changes, a hunk, some lines, an untracked file, or Discard All | a sheet names every file with what it loses (`+12 −3`, `2 lines` with the lines themselves, `untracked → Trash`) and says where the copy goes. On confirm Gitter reads everything again and refuses if anything changed since the sheet was shown; then it **records** the tracked changes in the Stashes list before it touches a file, and moves untracked ones to the Trash (see "Stash and discard" below) |
 | **Drop a stash** | a sheet names the stash's message, its files and its full sha, with a live warning if the list moves while it is up; the drop is refused unless the entry at that position is still that sha. The notice afterwards prints the `git stash apply <sha>` that brings it back until git's cleanup removes it |
+| **Skip a commit** of a stopped rebase, cherry-pick or revert | a sheet names the commit and every file that goes back to how HEAD has it, resolved or not; Gitter first files their current contents in the Stashes list as `Skipped by Gitter: <sha> <subject>`, and skips only when every change in the working copy belongs to that commit — git's own `rebase --skip` resets every tracked file, your unrelated edits included |
+| **Leave a commit out of a rebase** — Continue when the resolution leaves the stopped commit with no changes | "Leave d183fcd out of the rebase?": git would drop it without a word. When other files are staged the sheet says the opposite happens — the commit is kept, holding only them, under its own title and author |
+| **Replace a hand-edited conflicted file** — Resolve File, Take Ours or Theirs, Delete or Keep on a file edited since git wrote the conflict | the sheet says the file changed since git wrote the conflict; the edited file is filed as `Replaced by Gitter: <file>` before anything is written |
+| **Reopen a resolved conflict** | the sheet says what comes back — conflict markers; for a binary file ours' version, with no markers; for a mode conflict ours' mode — and the resolution is filed as `Reopened by Gitter: <file>` first |
 
-In the force push, delete-on-remote, discard and drop sheets Cancel holds Return and the
+Three more confirmations stand before a commit rather than a loss: **Mark Resolved** when git
+still finds conflict markers in the file, **Continue** when files that are not part of the
+stopped commit are staged (git commits everything staged into it, under that commit's title),
+and **Stage All** during an operation when it would add files outside it. In the force push,
+delete-on-remote, discard, drop, conflict and continue sheets Cancel holds Return and the
 destructive button has no shortcut. A force push's sha is
 spelled out rather than left to git on purpose: a bare `--force-with-lease` leases against
 the remote-tracking ref, which Gitter's own automatic fetch rewrites — measured, in the
@@ -131,9 +158,10 @@ Pull with **Rebase** rewrites your local commits, and it is asked for by name: t
 sheet says how many commits it rewrites, that it needs a clean working copy, and that a
 merge commit among them is flattened rather than kept. It is never a default you did not
 choose; the old tip stays in `ORIG_HEAD` and the reflog. A rebase that stops on a conflict
-lands in the existing rebase note, whose Abort puts everything back.
+lands in the operation bar: resolve there and Continue, Skip the commit, or Abort, which puts
+everything back.
 
-Amending is the one more — eight confirmed actions, plus amend — and the one with no
+Amending is the one more — twelve confirmed actions, plus amend — and the one with no
 confirmation sheet: it rewrites HEAD and leaves
 the commit it replaces reachable from no branch, tag or remote. What stands in for the sheet
 is that nothing else asks for it — you tick the Amend toggle yourself and the commit button
@@ -262,11 +290,15 @@ anything in the Trash. Applying or popping that entry yourself ends the notice's
 Line and hunk discard are offered only where a patch can take exactly those lines: not for a
 binary, renamed or non-UTF-8 file, a change that covers the whole file, or a file whose line
 endings are not the ones a checkout writes (under `core.autocrlf`, git would rewrite every
-line). There the hunk offers **Discard File…** instead. Nothing is discarded or stashed during
-a merge, rebase, cherry-pick, revert, `git am` or pending squash (git's own stash silently ends
-some of them), nor for a conflicted, intent-to-add (`git add -N`), submodule or nested-repository
-path, nor where a file and a folder swapped places; tracked files cannot be discarded before
-the first commit, since the record needs one.
+line). There the hunk offers **Discard File…** instead. Nothing is stashed during a merge,
+rebase, cherry-pick, revert, `git am` or pending squash (git's own stash silently ends some of
+them), nor applied, popped or dropped while a file is still conflicted. Discard works during
+one, except for a conflicted file (resolve it instead) and the staged side of a file the
+operation itself changed — its commit would lose that change; a whole-file discard's **Undo**
+then waits until the operation has ended (its `stash apply` would disturb it), and the copy
+stays in the Stashes list meanwhile. Nothing is discarded for an intent-to-add (`git add -N`),
+submodule or nested-repository path, nor where a file and a folder swapped places; tracked
+files cannot be discarded before the first commit, since the record needs one.
 
 ### Stash and Continue
 
@@ -279,6 +311,79 @@ fetches again). A notice, `Your changes are in stash "Gitter: before pulling".`,
 popped by itself: if the retried merge conflicts, your changes wait in the stash. If there was
 nothing a stash could hold, or the stash failed, the action is not run again and the banner
 says why.
+
+### Conflicts: resolve, continue, skip
+
+**The chooser.** Select a conflicted file — its row shows git's letters, `UU`, `DU` and so on,
+with the kind in words as the tooltip — and the resolver takes the diff's place. Its blocks are
+rebuilt from the three versions git keeps in the index (`git merge-file`), never parsed out of
+the file, so a line of your code that looks like a marker stays code. Each block shows ours
+beside theirs, the base behind a disclosure, and four choices: **Ours**, **Theirs**, **Both
+(ours first)**, **Both (theirs first)**, with the result under it. Nothing is written while you
+choose; **Resolve File**, once every block has a choice, writes the file in the form git would
+have — line endings, filters, the executable bit, a missing final newline — and stages it. The
+sides are named: in a merge the branch you are on and the one merged; in a rebase **upstream**
+is ours and **your commit** theirs (git's own sides, the other way round from what the words
+suggest); in a cherry-pick or revert the commit being applied or undone.
+
+**Whole files.** Where git draws no blocks — a binary file, a symlink, a mode change, a merge
+driver of yours, a file one side deleted — the resolver says why and offers that kind's own
+choices: **Take Ours** / **Take Theirs**, or **Keep Their Version** / **Delete the File** for a
+deletion. A side that has no version is not offered (git would delete the file and say
+nothing). A submodule conflict is shown and explained, not resolved here.
+
+**Your own edits.** **Open in Editor** opens the file; resolve it there, then **Mark Resolved**
+stages it as it is — and asks first when git still finds conflict markers in it, as do the
+row's stage button, Space and a double-click. A file you edited since git wrote the conflict
+shows as "changed since the conflict", without the chooser, and any choice that would replace
+it asks first and files it in the Stashes list. Every write checks that the file and its index
+entries are still what was on screen; if not, nothing is written and the banner says so.
+
+**Reopen Conflict…** (in a resolved file's staged-row menu, and above its diff) brings the
+conflict back while the operation is still in progress: the markers again — or, as the sheet
+says, ours' version of a binary file, ours' mode for a mode conflict — with the resolution filed
+first. It is not offered once the operation has ended, for a file resolved by deleting it, or
+for a symlink.
+
+**Continue and Skip.** The operation bar says where the operation stopped and what comes next;
+**Continue** is off until every file is resolved, with the reason as its tooltip and on a line
+under the sentence. The composer holds the stopped commit's message without git's comment
+lines: leave it and git's own message goes through unchanged, with the original author and date
+(a revert is yours); edit it and yours is used. A message edited for another commit, or typed
+before the operation stopped, is flagged first: use the stopped commit's message, or keep
+yours. Continue asks first when other files are staged (git would put them into this commit)
+and, in a rebase, when the resolution leaves the commit with no changes (git would leave it
+out). A cherry-pick or revert of several commits stays blocked while a tracked file has
+unstaged changes, because git would make this commit and then stop the range half-way.
+**Skip This Commit…** is offered only when every change belongs to the stopped commit, and
+files those changes first. A merge or squash ends with **Commit**, prefilled with git's message.
+**Abort…** works as before.
+
+**Where the copies go.** Each is an ordinary entry in the Stashes list:
+
+| entry | made by | holds |
+|---|---|---|
+| `Replaced by Gitter: <file>` | Resolve File, Take, Delete or Keep over a file edited since the conflict | the edited file |
+| `Reopened by Gitter: <file>` | Reopen Conflict… | the resolution, staged and on disk |
+| `Skipped by Gitter: <sha> <subject>` | Skip This Commit… | the skipped commit's files as they were, half-resolved ones included |
+| `Discarded by Gitter: …` | a discard during the operation | as in "Stash and discard" above |
+
+The notice after each offers **Show Copy**, which selects the entry. Applying or popping a
+stash is refused while an operation is in progress or a file is conflicted, so an entry comes
+back once the operation is over — the notice after a Skip that finished it offers **Pop Stash**
+straight away.
+
+**What stays a terminal job.** `git am --continue` and `--skip` (Gitter only aborts an `am`), a
+submodule conflict, reopening a file resolved by deleting it, unstaging a file while an
+operation is in progress (Unstage stays off throughout: it can end the operation or collapse a
+conflict), and `--quit`. When a cherry-pick or revert range stops part-way with no operation
+left — git made or skipped one commit, then refused the next — a bar lists the commits git did
+not apply and the commands, with full shas, that apply them (**Copy Command**), and warns that
+`--continue` would leave the first one out. A cherry-pick started over such a leftover list is
+not continued, skipped or aborted by Gitter at all — git's `--continue` would resume the old
+list and its `--abort` rewind past it — and the bar gives the safe way out instead. A range
+commit you concluded with `git commit` in a terminal shows as waiting, with the `git
+cherry-pick --continue` that applies the rest.
 
 ## Design decisions
 
@@ -293,7 +398,8 @@ says why.
 | Discard | Record first (a stash entry built from plumbing in a temporary index), then `git restore` or a reverse `git apply`; untracked items to the Trash | Every discard can be undone, and the copy is in a place git and the user already know |
 | Delete | `git branch -d` first, then `-D` only from the warning its refusal opened, and only if the tip is still the one that warning named | `-d` is git's own authority on "is this merged", and it changes nothing when it refuses |
 | Remotes | git's own transports and credentials; `fetch`, then merge or rebase, instead of `git pull`; an explicit-sha lease on every force; no prune, no tags | Nothing to store or ask for; every step of a pull is one Gitter can explain and stop; the lease the automatic fetch cannot arm |
-| Scope | Browsing, diffs, staging, commit, branch and remote operations, stash and discard are done. Conflict resolution and continuing an operation are next | Each milestone keeps the promise before it adds the next way to lose work |
+| Conflicts | Blocks rebuilt from the index stages with `git merge-file`, choices composed in memory and written once; git's own `--continue` / `--skip` with the message file written back, behind readiness checks of Gitter's own | The worktree file can hold anything (rerere, hand edits, marker-like code); git keeps the author, the date and the sequence, and Gitter refuses before git runs where git would lose something silently |
+| Scope | Browsing, diffs, staging, commit, branch and remote operations, stash and discard, conflict resolution and continuing an operation are done | Each milestone keeps the promise before it adds the next way to lose work |
 
 ## Build & run
 
@@ -321,22 +427,24 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (145 tests in 13 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (249 tests in 17 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
-`DiscardWording`, the pull-request link extraction and the notices' lifetime, which files a
-discard is offered for and when its sheet reads git again, which refusals Stash and Continue
-answers, and when the toolbar reveals a lane's activity. Under a test host the app reopens no repository and starts no
+`DiscardWording`, `ConflictWording`, `ContinueWording`, the pull-request link extraction and
+the notices' lifetime, which files a discard is offered for and when its sheet reads git again,
+which refusals Stash and Continue answers, when the toolbar reveals a lane's activity, the
+resolver's choices and previews (the same composition GitCore writes), and every state of the
+operation bar and the composer's prefill. Under a test host the app reopens no repository and starts no
 automatic fetch (`TestHost`), and no test opens a repository or touches the app's defaults,
 so a run never touches the repository you last had open.
 
-`GitCoreTests` has 967 tests in 80 suites. Most of them run real `git` against a temporary
+`GitCoreTests` has 1 224 tests in 109 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
 for a server, with a second clone as "the colleague" who pushes in between — including one
 that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
 your git configuration (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`) and never
 touches the network.
 
-The run also reports **15 known issues, and they are meant to be there** — please do not
+The run also reports **19 known issues, and they are meant to be there** — please do not
 "fix" them. They are deliberate negative controls: tests that make an assertion helper fail
 on purpose, inside `withKnownIssue`, to prove it *can* fail.
 
@@ -359,15 +467,24 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   every discard must leave alone, its staged layer unstaged on purpose.
 - Three come from the staging preimage check's `expectRefused`
   (`PartialStagingPreimageTests`): a patch on a fresh index, which really applies.
+- One comes from `OperationStateTests`: `assertOperationUnchanged`, the fingerprint of a
+  stopped operation (pseudo-refs, `*_MSG`, `AUTO_MERGE`, the `rebase-merge/` and `sequencer/`
+  files, the unmerged stages, HEAD and the refs) that every conflict write, continue and skip
+  test compares, made to fail by deleting `MERGE_MSG`.
+- Two come from `WriteBaselineTests`: `assertOnlyThePathChanged`, which lets a conflict write
+  change its own path and nothing else, made to fail by another changed file and by a changed
+  `MERGE_MSG`.
+- One comes from `UntouchedTests`: the `Untouched` capture the continue and skip tests use for
+  "the stop is intact".
 
 Deleting any of them would take the proof away and the suite would go on looking green.
 
 ## Project layout
 
-Every `.swift` file in the two product targets — 117 of them, which is what `find
+Every `.swift` file in the two product targets — 141 of them, which is what `find
 GitCore/Sources Gitter -name '*.swift' | wc -l` prints — with the ones inside `Models/`,
-`Parsers/` and `Views/` named in prose rather than one per line. The 94 test files (82 in
-`GitCore/Tests`, 12 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
+`Parsers/` and `Views/` named in prose rather than one per line. The 122 test files (106 in
+`GitCore/Tests`, 16 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
 listed, which is also why the check is that command and not a bare `find . -name '*.swift'`:
 that one reaches them too, and the generated sources under `.build` as well.
 
@@ -379,6 +496,10 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
     GitBranchBackend.swift      Branch/merge/abort protocol and its contract
     GitRemoteBackend.swift      Fetch/push/lease/rebase protocol and its contract
     GitStashBackend.swift       Stash list/push/apply/pop/drop protocol, its outcomes and refusals
+    GitConflictBackend.swift    Read a conflict, resolve/take/delete/keep, Mark Resolved, Reopen;
+                                ConflictError, ConflictReceipt, ReopenedFile
+    GitOperationBackend.swift   Progress, the pending message, the operation's paths, Continue,
+                                Skip and their readiness, halted and stale ranges
     DiscardTypes.swift          DiscardRequest, DiscardReceipt, the refusals and undo outcomes
     Trasher.swift               Moving an untracked item to the Trash and back
     GitError.swift              commandFailed, launchFailed, and the two pre-flight refusals
@@ -393,6 +514,12 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
       +Stash.swift                the stash list, an entry's contents, push, apply, pop, drop
       +StashRecord.swift          the path-limited record in a temporary index, and stashPaths
       +Discard.swift              discard and its undo; every worktree `git apply`
+      +Pathspecs.swift            path lists in a pathspec file, reads in batches
+      +ConflictRead.swift         the two rebuilds, the whole-file kinds, what git wrote,
+                                  `AUTO_MERGE`'s staleness, canReopen, reopenedFile
+      +ConflictWrite.swift        resolve, take, delete, keep, Mark Resolved, Reopen
+      +Continue.swift             progress, the message, operationPaths, Continue, Skip,
+                                  halted and stale ranges
       +Branches.swift             create, switch, detach, track, rename
       +BranchDelete.swift         `branch -d`, and `-D` only against an expected tip
       +Merge.swift                the three merge modes and the name/tag comparison
@@ -407,11 +534,12 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
     PatchBuilder.swift          Builds a hunk- or line-level patch from a parsed diff, with
       +Markers.swift / +Paths.swift
     Models/                     RepoSnapshot, Commit, FileStatus, Diff, Branch, Graph, Remote,
-                                Stash
+                                Stash, Conflict, OperationProgress
     Parsers/                    Status, Log, Ref, Diff (+Paths), BranchRefusal, Remote,
-                                PushPorcelain, RemoteFailure, StashList and StashFailure
-                                parsers, and GitLines (git's output split at the newline byte)
-  Tests/GitCoreTests/           80 suites; ForceFlagScanner(+Lexing) is the force-flag grep
+                                PushPorcelain, RemoteFailure, StashList, StashFailure and
+                                Conflict parsers, and GitLines (git's output split at the
+                                newline byte)
+  Tests/GitCoreTests/           109 suites; ForceFlagScanner(+Lexing) is the force-flag grep
 
 Gitter/                   macOS app (SwiftUI)
   GitterApp.swift            App entry point, the one store (`AppModel`), the Repository
@@ -433,12 +561,18 @@ Gitter/                   macOS app (SwiftUI)
   RepositoryStore+Stash.swift     Stash, apply, pop and drop; the Pop Stash notice by sha
   RepositoryStore+Discard.swift   The discard sheet's model, the gates, discard and Undo
   RepositoryStore+StashAndContinue.swift  Which refusals a stash answers, and the retry
+  RepositoryStore+Conflicts.swift The resolver: its document, choices, writes, Reopen
+  RepositoryStore+Continue.swift  The operation bar, Continue, Skip, Stage All's question,
+                                  the composer's prefill
   AutoFetchScheduler.swift   When the quiet automatic fetch runs (the store decides what it does)
   QuitGuard.swift            Quitting while the network lane is busy: stop, or ask first
   RemoteActivity.swift       What the lane is running, a refused push, the progress relay
   RemoteWording.swift        Every sentence about the network, and making server text plain
   StashWording.swift         Every sentence about a stash and Stash and Continue
   DiscardWording.swift       Every sentence a discard, its sheet and its Undo show
+  ConflictWording.swift      Every sentence of the resolver and its sheets; side labels
+  ContinueWording.swift      Every sentence of the operation bar, Continue, Skip and the
+                              halted and stale ranges
   Notice.swift               A notice's text, links and buttons, and the link extraction
   BranchSheet.swift          Which confirmation or form the store wants on screen
   CommitDraft.swift          The commit message + amend toggle being edited
@@ -450,26 +584,32 @@ Gitter/                   macOS app (SwiftUI)
     +Branches.swift            the `GITTER_DEBUG_BRANCH_ACTION` step list
     +Stash.swift               its stash steps
     +Discard.swift             its discard steps
+    +Conflicts.swift           its resolver steps
+    +Continue.swift            its operation bar and composer steps
   Views/                     MainWindow, SidebarView, SidebarMenus, StashesSection,
                               CommitListView, CommitGraphCell, DetailView, StashDetailView,
                               WorkingCopyFileList, CommitComposerView, DiffView, DiffHunkView,
                               DiffLineSelection, Banners, BranchToolbar, BranchNameValidator,
-                              BranchSheetHost, RemoteToolbar, TrackingBadge and the thirteen
-                              sheets (NewBranch, Rename, Merge, DeleteBranch, Abort,
-                              LeaveDetached, Pull, Publish, ForcePush, DeleteRemoteBranch,
-                              Stash, DropStash, Discard)
+                              BranchSheetHost, RemoteToolbar, TrackingBadge,
+                              ConflictResolverView, ConflictBlockView, OperationBar (with the
+                              halted bar) and the nineteen sheets (NewBranch, Rename, Merge,
+                              DeleteBranch, Abort, LeaveDetached, Pull, Publish, ForcePush,
+                              DeleteRemoteBranch, Stash, DropStash, Discard, ReplaceHandEdited,
+                              MarkResolved, ReopenConflict, ContinueEmpty, Skip, StageAll)
 
 GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app): wording,
                           notices and links, the discard (and its sheet's stale check) and
-                          Stash and Continue decisions, the toolbar's activity reveal, and
-                          the test-host check
+                          Stash and Continue decisions, the toolbar's activity reveal, the
+                          resolver's choices, the operation bar's states and the prefill,
+                          and the test-host check
 ```
 
 ## Debug launch hooks
 
 `Gitter/DebugLaunchHooks.swift`, `DebugLaunchHooks+Events.swift`,
-`DebugLaunchHooks+Branches.swift`, `DebugLaunchHooks+Stash.swift` and
-`DebugLaunchHooks+Discard.swift` exist only in Debug builds (`#if DEBUG`, compiled out of
+`DebugLaunchHooks+Branches.swift`, `DebugLaunchHooks+Stash.swift`,
+`DebugLaunchHooks+Discard.swift`, `DebugLaunchHooks+Conflicts.swift` and
+`DebugLaunchHooks+Continue.swift` exist only in Debug builds (`#if DEBUG`, compiled out of
 Release) and drive the UI from environment variables, read once at startup. They exist because the verification environment has Screen Recording
 but not Accessibility, so nothing outside the process can click — without these, a diff can
 never be put on screen from a script, and a focus bug can never be reproduced.
@@ -515,7 +655,7 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `deleteremote:<remote>/<branch>` / `confirmdeleteremote` | open the delete-on-remote sheet, and answer it |
 | `cancel` | stop what the network lane is running, and wait for it to say so |
 | `start:<step>` / `idle` | run a step without waiting for its network lane, so the next steps run *during* it; `idle` then waits for the lane to free |
-| `stageall` / `commit:<subject>` | stage everything, and commit through the composer's own path |
+| `stageall` / `commit:<subject>` | stage everything — during an operation, when files outside it would be added, it opens Stage All's question instead (`confirmstageall`) — and commit through the composer's own path |
 | `snapshot:<name>` | draw the window into `GITTER_DEBUG_SNAPSHOT_DIR/<name>.png` |
 | `open:<path>` | open that repository as "Open Repository…" does — mid-script, e.g. while a push is running |
 | `menu:<title>` | log every item of that main-menu menu — title, shortcut, enabled — as it would be when opened; a script cannot open a menu. As the **very first** step it can read stale state (seen: every item `enabled=false` before the first snapshot had loaded), so put `wait:1` before it |
@@ -540,6 +680,18 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `undodiscard` | **acts**: the sticky notice's **Undo Discard**; logs each receipt (kind, paths, record, Trash URLs) |
 | `stashcontinue[:merge\|:rebase]` | **acts**: the error banner's **Stash and Continue**, waiting for the stash and the retry; with a mode, then answers the pull sheet if the retry opened one. Logs `stashcontinue: not offered` when the banner offers nothing |
 | `alert` / `alertbutton:<title>` | log every text and button (with its key equivalent) of the alert on screen — the snapshot draws an alert's buttons but not its text — and click one of its buttons |
+| `select:<path>` / `resolver` | select a working-copy file (a conflicted file's unstaged row, a resolved one's staged row) and wait for the resolver's read; `resolver` logs its state: kind, blocks or the whole-file reason, whether the file is what git wrote, the hash, the side names, the actions offered |
+| `blocks:<path>:<O\|T\|B\|b\|.…>` | choose each block in turn — Ours, Theirs, Both (ours first), Both (theirs first), `.` none — and log the composed file and its SHA-256; writes nothing |
+| `resolve` / `take:ours\|theirs:<path>` / `keep:<path>` / `deletefile:<path>` / `markresolved:<path>` | **act**: Resolve File, Take Ours / Theirs, Keep … Version, Delete the File (`delete:` is the branch step), Mark Resolved — each through the resolver's own entry point, which logs the offer first, so a refused one shows |
+| `confirmreplace` / `confirmmarkers` | answer the "changed since the conflict" sheet and the leftover-markers sheet |
+| `reopen:<path>` / `confirmreopen` | open Reopen Conflict… for a resolved file (logs `reopen: not offered` when it is not), and answer it |
+| `noticeshow` / `cancelsheet` | press the sticky notice's **Show Copy**; close the sheet on screen as its Cancel does — `quit` does nothing while a sheet is attached, so write `cancelsheet;wait:1;quit` |
+| `bar` | log the operation bar: its sentence, Continue's and Skip's state and reason, the stop as read, the halted or stale list, the draft and the composer's note |
+| `message:<text>` | replace the composer's draft (`\n` for a line break) |
+| `continue` / `confirmempty` / `confirmothers` | **acts**: the bar's Continue, which runs or opens the sheet the stop needs; answer the empty-result sheet and the other-staged-files sheet |
+| `skip` / `confirmskip` | open Skip This Commit…, and answer it for the commit it names |
+| `confirmstageall` | answer Stage All's question |
+| `commitdraft` / `usemessage` / `keepmessage` | commit the draft as it is (a merge's or squash's prefill); the composer note's "Use <sha>'s Message" and "Keep This Message" |
 
 A step that starts network work waits for the lane to free as well, for up to 120 seconds; a
 step taken while the lane is already busy waits only for the mutation slot, so a second
@@ -593,10 +745,14 @@ files into the Trash, every discard recorded first and undoable; offers Stash an
 when a switch, merge or pull is refused over local changes; and keeps a pushed branch's
 pull-request link on screen until it is used.
 
-Next up is milestone **A2**: conflict resolution and continuing a rebase, merge or
-cherry-pick inside the app (today you resolve in your editor and a stopped rebase can only be
-aborted here). After that: prune with a confirmation plus cleaning up "gone" branches, and tags
-(creating them, then pushing one by name). Everything wanted and deliberately deferred is kept
+Resolves conflicts in the app (milestone A2) — block by block, by whole file, or in your editor
+and then Mark Resolved, with Reopen Conflict… while the operation lasts — and continues a
+stopped rebase, cherry-pick or revert with the stopped commit's message, skips a commit with
+its changes recorded first, and commits a merge or squash with git's prepared message.
+
+Next up: prune with a confirmation plus cleaning up "gone" branches, and tags (creating them,
+then pushing one by name). Everything wanted and deliberately deferred is kept
 in [`docs/BACKLOG.md`](docs/BACKLOG.md), with what is already known about each item —
 including what only a person at the keyboard can still check (real HTTPS and ssh credentials,
-the menus, tooltips, VoiceOver, the Trash's Put Back in Finder).
+the menus, tooltips, VoiceOver, the Trash's Put Back in Finder, the resolver in both
+appearances and a real rebase of a branch of yours).
