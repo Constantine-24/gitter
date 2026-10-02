@@ -60,7 +60,7 @@ struct WorkingCopyFileList: View {
         // The row's discard; `primaryAction` is the list's own double-click (and Return)
         // handler, rather than a tap gesture racing the selection.
         .contextMenu(forSelectionType: String.self) { keys in
-            discardMenu(keys)
+            rowMenu(keys)
         } primaryAction: { keys in
             guard let key = keys.first, let row = RowKey.parse(key) else { return }
             let files = row.staged ? store.stagedFiles : store.unstagedFiles
@@ -162,7 +162,11 @@ struct WorkingCopyFileList: View {
             .disabled(store.isMutating || blocked, help: help(staged: staged, blocked: blocked))
             .accessibilityLabel(staged ? "Unstage \(file.path)" : "Stage \(file.path)")
 
-            ChangeBadge(kind: staged ? file.staged : file.unstaged)
+            if let conflict = file.conflict {
+                ConflictBadge(file: conflict, sides: store.conflictSides)
+            } else {
+                ChangeBadge(kind: staged ? file.staged : file.unstaged)
+            }
 
             Text(label(for: file))
                 .lineLimit(1)
@@ -221,14 +225,20 @@ struct WorkingCopyFileList: View {
         return file.isUntracked ? DiscardWording.moveToTrash : DiscardWording.discardChanges
     }
 
-    /// The row's context menu: its discard, or the item disabled with the reason under it (a
+    /// The row's context menu: Reopen Conflict… where the store found it can be (the selected
+    /// file, `reopenablePath`), and its discard, or the item disabled with the reason under it (a
     /// menu item shows no tooltip).
     @ViewBuilder
-    private func discardMenu(_ keys: Set<String>) -> some View {
+    private func rowMenu(_ keys: Set<String>) -> some View {
         if keys.count == 1, let key = keys.first, let row = RowKey.parse(key),
             let file = (row.staged ? store.stagedFiles : store.unstagedFiles)
                 .first(where: { $0.path == row.path })
         {
+            if row.staged, store.reopenablePath == file.path {
+                Button(ConflictWording.reopenMenuItem) { store.requestReopen(file.path) }
+                    .disabled(store.conflictActionBlockedReason != nil)
+                Divider()
+            }
             let reason = store.discardBlockedReason(for: file)
             Button(discardTitle(file, staged: row.staged)) { discard(file, staged: row.staged) }
                 .disabled(reason != nil)
@@ -323,5 +333,22 @@ struct WorkingCopyFileList: View {
         // Exactly one side has it now; follow the file there so the row stays selected and
         // the diff below shows the version that still exists.
         if store.stagedView != inStaged { store.stagedView = inStaged }
+    }
+}
+
+/// A conflicted row's badge: git's two letters for the kind (`UU`, `DU`, …), what each side did
+/// in its tooltip and for VoiceOver.
+struct ConflictBadge: View {
+    let file: ConflictedFile
+    let sides: SideLabels
+
+    var body: some View {
+        Text(ConflictWording.badge(file.kind))
+            .font(.system(.caption2, design: .monospaced).weight(.bold))
+            .frame(width: 22, height: 16)
+            .background(Color.orange.opacity(0.2), in: RoundedRectangle(cornerRadius: 3))
+            .foregroundStyle(.orange)
+            .help(ConflictWording.kind(file, sides: sides))
+            .accessibilityLabel(ConflictWording.kind(file, sides: sides))
     }
 }

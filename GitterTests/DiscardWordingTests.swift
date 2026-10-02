@@ -42,13 +42,14 @@ import Testing
 
     // MARK: - Rows
 
-    /// GitCore's argument guard (Ruling 26) reaches the banner as an ordinary error, saying git
-    /// was not run and why.
+    /// GitCore's argument guard (Ruling 26) reaches the banner as an ordinary error, saying which
+    /// command was not run and why — not that nothing ran: earlier commands of the same action (a
+    /// record, say) may have.
     @MainActor @Test func tooManyArgumentsIsAnOrdinaryErrorSentence() {
         #expect(
             RepositoryStore.describe(GitError.tooManyArguments(count: 5_003, limit: 4_000))
-                == "Gitter did not run git: the command needed 5003 arguments, more than the 4000 one git "
-                + "process can take.")
+                == "Gitter stopped before a git command that needed 5003 arguments, more than the 4000 one git "
+                + "process can take; that command did not run.")
     }
 
     @Test func everyRowKindSaysWhatItLoses() {
@@ -249,17 +250,8 @@ import Testing
     // MARK: - Refusals
 
     @Test func everyRefusalIsASentence() {
-        #expect(
-            DiscardWording.refusal(.operationInProgress(.merge))
-                == "Can't discard while a merge is in progress. Commit or abort it first.")
-        #expect(
-            DiscardWording.refusal(.partOfOperation(["z.txt"]))
-                == "Can't discard the staged changes in \"z.txt\": they are part of the operation "
-                + "in progress, and its commit would lose them. Nothing was discarded.")
-        #expect(
-            DiscardWording.untrackedPartRefused(.partOfOperation(["z.txt"]))
-                == "The untracked files were not moved to the Trash: the staged changes in "
-                + "\"z.txt\" are part of the operation in progress.")
+        // `.operationInProgress` (only Undo throws it now) and `.partOfOperation` are pinned in
+        // `ConflictWordingTests` (A2 Task 5).
         #expect(
             DiscardWording.refusal(.unmerged(["c.txt"]))
                 == "Can't discard \"c.txt\": it has unresolved conflicts. Resolve them and stage "
@@ -452,8 +444,8 @@ import Testing
 
     @Test func anUndoThatCouldNotRunSaysWhy() {
         #expect(
-            DiscardWording.undoRefused(.operationInProgress(.rebase))
-                == "Couldn't undo: a rebase is in progress; the copy is still in the Stashes list.")
+            DiscardWording.undoRefused(.unmerged(["c.txt"]))
+                == "Couldn't undo: \"c.txt\" has unresolved conflicts; the copy is still in the Stashes list.")
         #expect(
             DiscardWording.undoFailed(DiscardFailure(receipt: Self.staged, gitsWords: "fatal: nope\n"))
                 == "Restored \"p\", but not its staged part: fatal: nope. The copy, which holds "
@@ -491,10 +483,6 @@ import Testing
     }
 
     @Test func theWholeRepositoryReasonsAreSentences() {
-        #expect(
-            DiscardWording.blockedDuringOperation(.cherryPick)
-                == "Changes can't be discarded while a cherry-pick is in progress. Commit or abort "
-                + "it first.")
         #expect(DiscardWording.nothingToDiscard == "There are no unstaged changes to discard.")
     }
 

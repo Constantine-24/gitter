@@ -4,8 +4,9 @@ import SwiftUI
 /// which question is on screen.
 ///
 /// The switch is exhaustive on purpose: every question the store can ask has a view here, and
-/// seven of the thirteen are confirmations for actions that can lose work — five here (Drop
-/// Stash… and Discard… among them), two on the server.
+/// nine of the sixteen are confirmations for actions that can replace or lose work — seven here
+/// (Drop Stash…, Discard…, replacing a hand-edited conflict and Reopen Conflict… among them),
+/// two on the server. Mark Resolved with markers left loses nothing, and still asks.
 struct BranchSheetHost: View {
     let sheet: BranchSheet
 
@@ -42,6 +43,12 @@ struct BranchSheetHost: View {
             DropStashSheet(stash: stash)
         case .discard(let model):
             DiscardSheet(model: model)
+        case .replaceHandEdited(let snapshot, let pending):
+            ReplaceHandEditedSheet(snapshot: snapshot, pending: pending)
+        case .markResolved(let snapshot, _):
+            MarkResolvedSheet(snapshot: snapshot)
+        case .reopen(let path, _):
+            ReopenConflictSheet(path: path)
         }
     }
 }

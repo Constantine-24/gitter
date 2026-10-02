@@ -48,6 +48,16 @@ enum BranchSheet: Identifiable, Hashable {
     /// A discard's confirmation: the requests with what the sheet shows (`expected`), which
     /// `confirmDiscard` hands to GitCore as they are.
     case discard(DiscardSheetModel)
+    /// A resolving write GitCore refused because the file holds bytes git did not write
+    /// (`ConflictError.wouldReplaceEdits`): the snapshot the resolver showed and what was asked,
+    /// which `confirmReplaceHandEdited` runs again with the bytes filed first.
+    case replaceHandEdited(ConflictSnapshot, PendingResolution)
+    /// Mark Resolved found conflict markers left (`ConflictError.leftoverMarkers`). The count
+    /// can be high (a content line that is exactly a marker), so the sheet does not show it.
+    case markResolved(ConflictSnapshot, markers: Int)
+    /// Reopen Conflict… on a resolved file: `hash` is the file's worktree hash when the sheet
+    /// opened (nil = no file), which `confirmReopen` hands to GitCore as what it must still be.
+    case reopen(path: String, hash: String?)
 
     var id: Self { self }
 

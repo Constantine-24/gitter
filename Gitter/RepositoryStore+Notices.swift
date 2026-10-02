@@ -55,6 +55,7 @@ extension RepositoryStore {
     /// - Pop Stash pops the entry the notice names, found again by sha (`popOfferedStash`),
     ///   with `popStash`'s own gates.
     /// - Undo Discard puts back what the discard took (`undoDiscard`).
+    /// - Show Copy selects the entry a conflict write filed (`showOfferedStash`).
     ///
     /// `pasteboard` and `openURL` are the seams: a test and the DEBUG harness pass a private
     /// pasteboard and an opener that records, so neither ever touches the user's clipboard or
@@ -73,6 +74,8 @@ extension RepositoryStore {
             popOfferedStash(stash)
         case .undoDiscard(let receipts):
             undoDiscard(receipts)
+        case .showStash(let stash):
+            showOfferedStash(stash)
         }
     }
 }

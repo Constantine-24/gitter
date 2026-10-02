@@ -460,3 +460,13 @@ extension CLIGitBackend: GitConflictBackend {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }
+
+extension ConflictSnapshot {
+    /// The hash a snapshot carries for what is at `path` now — a regular file's bytes, a
+    /// symlink's target path; nil for a missing path, a directory or anything unreadable. What
+    /// `GitConflictBackend.reopen` takes as `expectingWorktreeHash` for a resolved file, which
+    /// has no `ConflictDocument` to read it from.
+    public static func worktreeHash(of path: String, at root: URL) -> String? {
+        CLIGitBackend.conflictWorktree(of: path, at: root).map { CLIGitBackend.sha256($0.bytes) }
+    }
+}

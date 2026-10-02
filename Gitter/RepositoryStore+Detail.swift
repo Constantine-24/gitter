@@ -115,6 +115,9 @@ extension RepositoryStore {
     // `selectPath()`
     func loadDiff() {
         diffTask?.cancel()
+        // The resolver reads alongside: a conflicted file's `diff --cc` says nothing the parser
+        // reads, and a resolved one may be reopened.
+        loadConflict()
 
         guard let root, let selectedPath else {
             setDiff([], staged: stagedView)

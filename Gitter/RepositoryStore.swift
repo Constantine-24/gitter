@@ -30,6 +30,20 @@ final class RepositoryStore {
     /// disagree. Anything that has to describe the diff actually on screen — the hunk buttons'
     /// labels, the direction their patch is applied in — reads this instead of `stagedView`.
     private(set) var diffIsStaged = false
+
+    /// The selected conflicted file, read for the resolver (`RepositoryStore+Conflicts`): nil
+    /// unless the working copy's selected file is unmerged and its read has landed. It can lag
+    /// the selection for the moment a read takes, so the views go through `selectedConflict`.
+    private(set) var conflictDocument: ConflictDocument?
+    /// Where the operation is, read with the document, for the side labels.
+    private(set) var conflictProgress: OperationProgress?
+    /// The resolver's block choices, in memory only (nothing is written while the user
+    /// chooses), kept while the document's `ConflictSnapshot` stays the same and dropped when it
+    /// changes.
+    private(set) var resolverChoices = ResolverChoices()
+    /// The selected file, when it is a resolved conflict that Reopen Conflict… can bring back
+    /// (`GitConflictBackend.canReopen`, read when it is selected).
+    private(set) var reopenablePath: String?
     var stagedView = false {
         didSet {
             guard stagedView != oldValue else { return }
@@ -177,10 +191,10 @@ final class RepositoryStore {
     private var errorIsSticky = false
 
     /// Everything the store can ask git to do: reads, index and commit writes, branch,
-    /// checkout and merge writes, the network, and the stash. Five protocols so a fake can
-    /// implement any one on its own.
+    /// checkout and merge writes, the network, the stash, conflicts and the operation in
+    /// progress. Seven protocols so a fake can implement any one on its own.
     typealias Backend = any GitBackend & GitWorkingCopyBackend & GitBranchBackend & GitRemoteBackend
-        & GitStashBackend
+        & GitStashBackend & GitConflictBackend & GitOperationBackend
 
     let backend: Backend
     // internal (not private): used by +Opening.swift's `checkGitAvailability()`
@@ -196,6 +210,8 @@ final class RepositoryStore {
     var detailTask: Task<Void, Never>?
     // internal (not private), bookkeeping only, views must not touch this: used by +Detail.swift
     var diffTask: Task<Void, Never>?
+    // internal (not private), bookkeeping only, views must not touch this: used by +Conflicts.swift
+    var conflictTask: Task<Void, Never>?
     /// The most recently scheduled snapshot load; new ones chain behind it. See `refresh()`.
     // internal (not private), bookkeeping only, views must not touch this: used by +Refresh.swift
     var lastRefresh: Task<Void, Never>?
@@ -260,6 +276,7 @@ final class RepositoryStore {
         refreshTask?.cancel()
         detailTask?.cancel()
         diffTask?.cancel()
+        conflictTask?.cancel()
         // `lastRefresh` is deliberately left in place: a load still in flight for the old root
         // writes nothing (it re-checks `root` before it lands), and keeping the chain intact
         // keeps this repository's first load from overlapping it.
@@ -270,6 +287,8 @@ final class RepositoryStore {
         detailFiles = []
         stashContents = nil
         setDiff([], staged: stagedView)
+        setConflict(nil, progress: nil)
+        reopenablePath = nil
         selection = .workingCopy
         selectedPath = nil
         lastError = nil
@@ -657,6 +676,25 @@ final class RepositoryStore {
     // belongs to has been put up
     func setRejectedPush(_ value: RejectedPush?) {
         rejectedPush = value
+    }
+
+    /// The one place the resolver's document is written: the choices follow its snapshot
+    /// (`ResolverChoices.show`), so they can never outlive the conflict they were made for.
+    /// internal (not private): used by +Conflicts.swift's `loadConflict()`
+    func setConflict(_ document: ConflictDocument?, progress: OperationProgress?) {
+        conflictDocument = document
+        conflictProgress = progress
+        resolverChoices.show(document?.snapshot, blockCount: document.flatMap(ResolverOffer.blocks(of:))?.count ?? 0)
+    }
+
+    /// internal (not private(set) write): used by +Conflicts.swift's `chooseBlock`
+    func setBlockChoice(_ index: Int, _ choice: BlockChoice) {
+        resolverChoices.choose(index, choice)
+    }
+
+    /// internal (not private(set) write): used by +Conflicts.swift's `loadConflict()`
+    func setReopenablePath(_ path: String?) {
+        reopenablePath = path
     }
 
     /// The one place `diff` is written, so `diffIsStaged` can never drift from it.

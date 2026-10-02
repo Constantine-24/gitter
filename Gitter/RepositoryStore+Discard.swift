@@ -199,12 +199,13 @@ extension RepositoryStore {
 
     // MARK: - Why an entry point is off
 
-    /// Why every discard is off right now, or nil: no repository, a sheet is up, an operation is
-    /// in progress (GitCore refuses it too, M 13), or another change is running.
+    /// Why every discard is off right now, or nil: no repository, a sheet is up, or another
+    /// change is running. Not an operation in progress (A2): a discard leaves its files alone and
+    /// it concludes afterwards (M 20). GitCore still refuses the staged side of the operation's
+    /// own paths (`.partOfOperation`, M 21) and a whole-file undo until it ends (Ruling 21).
     var discardBlockedReason: String? {
         guard root != nil, snapshot != nil else { return DiscardWording.nothingToDiscard }
         if activeSheet != nil { return StashWording.blockedBySheet }
-        if let operation = operationInProgress { return DiscardWording.blockedDuringOperation(operation) }
         if isMutating { return StashWording.busy }
         return nil
     }
@@ -513,7 +514,7 @@ extension RepositoryStore {
             if !discarded.isEmpty {
                 showStickyNotice(
                     Notice(
-                        text: DiscardWording.done(discarded),
+                        text: DiscardWording.done(discarded, during: operationInProgress),
                         actions: undoable.isEmpty ? [] : [.undoDiscard(undoable)]))
             }
             if let failure = run.failure { showStickyError(failure) }
@@ -582,11 +583,27 @@ extension RepositoryStore {
             let text = texts.joined(separator: " ")
             if allBack {
                 showStickyNotice(Notice(text: text))
+            } else if Self.onlyWaitingForTheOperation(results) {
+                // Nothing ran: every undo waits for the operation to end (Ruling 21). The notice
+                // and its Undo stay, for when it has.
+                showStickyError(text)
             } else {
                 dismissStickyNotice()
                 showStickyError(text)
             }
         })
+    }
+
+    /// Whether every undo was refused only because an operation is in progress.
+    static func onlyWaitingForTheOperation(_ results: [(DiscardReceipt, Result<UndoDiscardOutcome, Error>)]) -> Bool {
+        !results.isEmpty && results.allSatisfy { _, result in
+            if case .failure(let error) = result, let refusal = error as? DiscardRefusal,
+                case .operationInProgress = refusal
+            {
+                return true
+            }
+            return false
+        }
     }
 
     private static func undoFailureText(_ error: Error) -> String {

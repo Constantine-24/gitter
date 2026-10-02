@@ -94,10 +94,41 @@ public struct ConflictBlock: Sendable, Hashable {
     }
 }
 
+extension ConflictBlock {
+    /// The bytes `choice` puts in place of this block: one side's, or both in the order named.
+    /// Pure; the one composition both `GitConflictBackend.resolve` and the app's preview use.
+    public func composed(_ choice: BlockChoice) -> Data {
+        switch choice {
+        case .ours: ours
+        case .theirs: theirs
+        case .oursThenTheirs: ours + theirs
+        case .theirsThenOurs: theirs + ours
+        }
+    }
+}
+
 /// A stretch of a conflicted file: text both sides agree on, or a block.
 public enum ConflictSegment: Sendable, Hashable {
     case common(Data)
     case block(ConflictBlock)
+
+    /// The file `choices` compose to — common text as it is, each block replaced by its choice —
+    /// or nil unless there is exactly one choice per block. `resolve` writes exactly this, except
+    /// in a block that ends the file, where it also drops the line terminator merge-file gave a
+    /// side whose stage has none (Ruling 9): that needs the stage itself, which this does not read.
+    public static func composed(_ segments: [ConflictSegment], choices: [BlockChoice]) -> Data? {
+        let blocks = segments.count { if case .block = $0 { true } else { false } }
+        guard choices.count == blocks else { return nil }
+        var bytes = Data()
+        var next = choices.makeIterator()
+        for segment in segments {
+            switch segment {
+            case .common(let text): bytes.append(text)
+            case .block(let block): bytes.append(block.composed(next.next()!))
+            }
+        }
+        return bytes
+    }
 }
 
 /// What the UI showed, carried into every write so it can refuse when the repository moved.

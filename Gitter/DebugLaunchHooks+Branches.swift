@@ -48,6 +48,14 @@
     ///     discardhunk:<n>              confirmdiscard               undodiscard
     ///     discardstale
     ///
+    ///   The resolver (`RepositoryStore+Conflicts`, `DebugLaunchHooks+Conflicts`):
+    ///
+    ///     select:<path>                blocks:<path>:<O|T|B|b…>     resolve
+    ///     take:ours|theirs:<path>      deletefile:<path>            keep:<path>
+    ///     confirmreplace               markresolved:<path>          confirmmarkers
+    ///     reopen:<path>                confirmreopen                resolver
+    ///     noticeshow                   cancelsheet
+    ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
     /// `start:<step>` runs a step **without** waiting for its lane, which is how the steps after
@@ -332,6 +340,8 @@
             case "discard", "discardstaged", "discardall", "discardhunk", "confirmdiscard", "undodiscard",
                 "discardstale":
                 await discardStep(command, step: step, store: store)
+            case let conflict where conflictCommands.contains(conflict):
+                await conflictStep(command, step: step, store: store)
             case "stashcontinue":
                 guard store.offeredStashAndContinue != nil else {
                     log("stashcontinue: not offered")
@@ -636,6 +646,8 @@
                 "discard(\(model.requests.map(describe)), title: \(model.title), "
                     + "rows: \(model.rows.map { "\($0.name): \($0.loses)\($0.preview.isEmpty ? "" : " \($0.preview)")" }), "
                     + "destination: \(model.destination), button: \(model.confirmTitle))"
+            case .replaceHandEdited, .markResolved, .reopen:
+                describeConflictSheet(sheet) ?? "?"
             }
         }
 

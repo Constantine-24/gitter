@@ -159,7 +159,10 @@ enum DiscardWording {
     /// row would run them together. What went to the Trash can also come back through Finder's
     /// Put Back, which outlives this notice (a later one replaces it, and its Undo with it).
     /// A receipt the undo could not check (`isUndoable`) is named with its copy instead.
-    static func done(_ receipts: [DiscardReceipt]) -> String {
+    ///
+    /// `operation` is the one in progress once the discard has run: during one, a whole-file
+    /// undo waits for it to end (Ruling 21), and the notice says so up front.
+    static func done(_ receipts: [DiscardReceipt], during operation: RepositoryOperation? = nil) -> String {
         let tracked = receipts.filter { if case .untracked = $0.request { false } else { true } }
         let trashed = receipts.filter { if case .untracked = $0.request { true } else { false } }
             .flatMap { receipt in receipt.request.paths.filter { receipt.trashed[$0] != nil } }
@@ -179,7 +182,39 @@ enum DiscardWording {
                     + "you apply it there."
             }
         }
+        if let operation, tracked.contains(where: { isUndoable($0) && isWholeFile($0.request) }) {
+            text += " " + wholeFileUndoWaits(operation)
+        }
         return text
+    }
+
+    /// A tracked discard whose undo is a `stash apply` of its record, which an operation cannot
+    /// take (`DiscardRefusal.operationInProgress`).
+    private static func isWholeFile(_ request: DiscardRequest) -> Bool {
+        switch request {
+        case .unstaged, .stagedAndUnstaged: true
+        case .lines, .untracked: false
+        }
+    }
+
+    /// The operation as a sentence names it once it has been introduced.
+    private static func the(_ operation: RepositoryOperation) -> String {
+        switch operation {
+        case .merge: "the merge"
+        case .cherryPick: "the cherry-pick"
+        case .revert: "the revert"
+        case .rebase: "the rebase"
+        case .applyingPatches: "git am"
+        case .squash: "the squash"
+        }
+    }
+
+    /// Ruling 21: during an operation the whole-file undo is refused — git refuses its `stash
+    /// apply` over a conflict and otherwise it rewrites `AUTO_MERGE` — and runs once the
+    /// operation has ended. The record stays listed meanwhile.
+    static func wholeFileUndoWaits(_ operation: RepositoryOperation) -> String {
+        "Undo Discard can't put whole files back while \(StashWording.inProgress(operation)); it works "
+            + "once \(the(operation)) ends, and until then the copy stays in the Stashes list."
     }
 
     static let undoButton = "Undo Discard"
@@ -220,7 +255,7 @@ enum DiscardWording {
         case .nothingSelected: "there was nothing left to discard"
         case .notTracked(let paths): "git no longer tracks \(names(paths))"
         case .partOfOperation(let paths):
-            "the staged changes in \(names(paths)) are part of the operation in progress"
+            "the staged changes in \(names(paths)) can't be discarded while an operation is in progress"
         }
     }
 
@@ -231,7 +266,8 @@ enum DiscardWording {
     static func refusal(_ refusal: DiscardRefusal) -> String {
         switch refusal {
         case .operationInProgress(let operation):
-            return "Can't discard while \(StashWording.inProgress(operation)). Commit or abort it first."
+            // Only Undo Discard throws this now (A2: a discard runs during an operation).
+            return wholeFileUndoWaits(operation)
         case .unmerged(let paths):
             let it = number(paths.count, "it has", "they have")
             let file = number(paths.count, "the file", "the files")
@@ -266,9 +302,12 @@ enum DiscardWording {
             return "Can't discard \(names(paths)): git no longer tracks "
                 + "\(number(paths.count, "it", "them")). Nothing was discarded."
         case .partOfOperation(let paths):
-            // Minimal (A2 Task 4); Task 5 owns the final wording.
-            return "Can't discard the staged changes in \(names(paths)): they are part of the "
-                + "operation in progress, and its commit would lose them. Nothing was discarded."
+            // "May be": when GitCore cannot tell the operation's paths apart (`operationPaths` nil)
+            // it refuses every staged path, and those can be the user's own.
+            let their = number(paths.count, "Its", "Their")
+            return "Can't discard the staged changes in \(names(paths)) while an operation is in "
+                + "progress: they may be part of its result, which its commit would lose. Nothing was "
+                + "discarded. \(their) unstaged changes, if any, can still be discarded on their own."
         }
     }
 
@@ -406,9 +445,13 @@ enum DiscardWording {
         }
     }
 
-    /// An undo GitCore refused before it ran (`DiscardRefusal`, an operation in progress).
+    /// An undo GitCore refused before it ran (`DiscardRefusal`): a whole-file undo during an
+    /// operation waits for it to end.
     static func undoRefused(_ refusal: DiscardRefusal) -> String {
-        "Couldn't undo: \(reason(refusal)); the copy is still in the Stashes list."
+        if case .operationInProgress(let operation) = refusal {
+            return "Couldn't undo yet: \(wholeFileUndoWaits(operation))"
+        }
+        return "Couldn't undo: \(reason(refusal)); the copy is still in the Stashes list."
     }
 
     /// A staged-side undo whose content came back but whose staged part could not be restored.
@@ -454,11 +497,6 @@ enum DiscardWording {
             "Tracked changes can't be discarded before the first commit: there is no commit to keep "
                 + "a copy of them on. Untracked files can still be moved to the Trash."
         }
-    }
-
-    static func blockedDuringOperation(_ operation: RepositoryOperation) -> String {
-        "Changes can't be discarded while \(StashWording.inProgress(operation)). Commit or abort it "
-            + "first."
     }
 
     static let nothingToDiscard = "There are no unstaged changes to discard."

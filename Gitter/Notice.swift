@@ -37,6 +37,10 @@ enum NoticeAction: Equatable {
     /// confirm — Discard All…'s tracked request and its untracked one — in the order they ran;
     /// the undo runs them in reverse.
     case undoDiscard([DiscardReceipt])
+    /// Shows the entry a conflict write filed first — "Replaced by Gitter: …", "Reopened by
+    /// Gitter: …" — in the detail pane, found again by sha. Shows, never pops: during an operation
+    /// the stash is refused, and that is when these entries are made.
+    case showStash(Stash)
 }
 
 /// The words on a notice's buttons.
@@ -47,6 +51,7 @@ enum NoticeWording {
         case .copyLink: "Copy Link"
         case .popStash: "Pop Stash"
         case .undoDiscard: DiscardWording.undoButton
+        case .showStash: ConflictWording.showCopy
         }
     }
 }

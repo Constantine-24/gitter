@@ -33,17 +33,21 @@ extension RepositoryStore {
                 // the disabled toggle's tooltip, so the two never describe the state differently.
                 return operation.amendBlockedHelp
             case .tooManyArguments(let count, let limit):
-                // GitCore's guard (Ruling 26): git was not started, so this one command changed
-                // nothing. Every path list goes through a pathspec file or in batches, so this is
-                // a safety net for a vector nobody has written yet, not a path.
-                return "Gitter did not run git: the command needed \(count) arguments, more than the "
-                    + "\(limit) one git process can take."
+                // GitCore's guard (Ruling 26): this one command was not started. Earlier commands
+                // of the same action (a record, say) may have run, so the sentence is about the
+                // command, not the action. Every path list goes through a pathspec file or in
+                // batches, so this is a safety net for a vector nobody has written yet, not a path.
+                return "Gitter stopped before a git command that needed \(count) arguments, more than "
+                    + "the \(limit) one git process can take; that command did not run."
             }
         }
         // A refusal that reached here without the action that provoked it. Every throw site in
         // `+Branches`/`+BranchSheets` wraps these (see `reporting`), so this is a safety net,
         // not a path — but it still beats `localizedDescription`'s "The operation couldn't be
         // completed. (GitCore.BranchOperationError error 0.)".
+        if let refusal = error as? ConflictError {
+            return ConflictWording.error(refusal)
+        }
         if let refusal = error as? BranchOperationError {
             return refusal.sentence(refusing: "do that")
         }

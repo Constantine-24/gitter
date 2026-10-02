@@ -29,13 +29,8 @@ extension CLIGitBackend {
         let recorded = try await recordUnlessWrittenByGit(document, recordIfEdited: recordIfEdited, at: root)
         // The parse rebuild's text is in worktree form (`cat-file --filters`), so the composed
         // bytes are what git would write, and `add` cleans them for the index (M 9 route b).
-        var bytes = Data()
-        var next = choices.makeIterator()
-        for segment in segments {
-            switch segment {
-            case .common(let text): bytes.append(text)
-            case .block(let block): bytes.append(Self.compose(block, next.next()!))
-            }
+        guard var bytes = ConflictSegment.composed(segments, choices: choices) else {
+            throw ConflictError.choicesDoNotMatch(path)
         }
         // merge-file ends every side of a block with a line terminator (Ruling 9, measured): in
         // a block that ends the file, a stage whose last line has none looks as if it had one.
@@ -309,15 +304,6 @@ extension CLIGitBackend {
         if stageEnds(with: side.dropLast(1)) { return 1 }
         if side.dropLast().last == UInt8(ascii: "\r"), stageEnds(with: side.dropLast(2)) { return 2 }
         return 0
-    }
-
-    static func compose(_ block: ConflictBlock, _ choice: BlockChoice) -> Data {
-        switch choice {
-        case .ours: return block.ours
-        case .theirs: return block.theirs
-        case .oursThenTheirs: return block.ours + block.theirs
-        case .theirsThenOurs: return block.theirs + block.ours
-        }
     }
 
     /// Writes `bytes` over the regular file at `path` **in place** — truncate, then write — so

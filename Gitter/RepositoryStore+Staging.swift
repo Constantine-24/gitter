@@ -11,6 +11,13 @@ extension RepositoryStore {
     // MARK: - File-level staging
 
     func stage(_ file: FileStatus) {
+        // An unmerged file goes through Mark Resolved: `git add` would take leftover conflict
+        // markers without a word (M 10). A submodule has none, and staging it is how its
+        // conflict is resolved (`ConflictWording.submodule`).
+        if let conflict = file.conflict, !conflict.isSubmodule {
+            markResolved(conflict)
+            return
+        }
         let path = file.path
         // `git add` on a path whose worktree side is a deletion stages the deletion, so a
         // removed file needs no special case here.
@@ -31,8 +38,14 @@ extension RepositoryStore {
         mutate { backend, root in try await backend.unstage(paths: paths, at: root) }
     }
 
+    /// Stages everything but an unmerged path (GitCore, M 22), and says how many conflicted
+    /// files it left out.
     func stageAll() {
-        mutate { backend, root in try await backend.stageAll(at: root) }
+        let conflicted = Set(snapshot?.status.files.filter(isUnmerged).map(\.path) ?? [])
+        mutate({ backend, root in try await backend.stageAll(at: root) }, onSuccess: { [self] in
+            let left = snapshot?.status.files.filter { conflicted.contains($0.path) && isUnmerged($0) } ?? []
+            if !left.isEmpty { showNotice(ConflictWording.stageAllSkipped(left.count)) }
+        })
     }
 
     func unstageAll() {

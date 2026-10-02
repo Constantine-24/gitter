@@ -15,6 +15,37 @@ struct DiffView: View {
     @State private var selection = DiffLineSelection()
 
     var body: some View {
+        if store.selectedFileIsUnmerged {
+            // A conflicted file: git describes it with `diff --cc`, which the parser does not
+            // match, and what the user needs is the resolver anyway.
+            ConflictResolverView()
+        } else {
+            VStack(spacing: 0) {
+                if let path = store.reopenablePath, path == store.selectedPath { reopenOffer(path) }
+                diffOrPlaceholder
+            }
+        }
+    }
+
+    /// A resolved conflict that can still be reopened (`GitConflictBackend.canReopen`).
+    private func reopenOffer(_ path: String) -> some View {
+        let blocked = store.conflictActionBlockedReason
+        return HStack(spacing: 8) {
+            Text(ConflictWording.reopenOffer(path))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            Button(ConflictWording.reopenMenuItem) { store.requestReopen(path) }
+                .disabled(blocked != nil, help: blocked)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .headerRow(background: .quaternary.opacity(0.5))
+    }
+
+    @ViewBuilder
+    private var diffOrPlaceholder: some View {
         if diffs.isEmpty {
             placeholder
         } else {
@@ -36,23 +67,12 @@ struct DiffView: View {
         }
     }
 
-    /// A conflicted file gets its own text: git describes one with `diff --cc`, which the
-    /// parser does not match, so the pane comes up empty for a file that plainly does have
-    /// changes — and "No Changes" there would read as an invitation to commit it.
+    /// A conflicted file never gets here: it has the resolver (`ConflictResolverView`).
     private var placeholder: some View {
         ContentUnavailableView(
-            placeholderTitle,
-            systemImage: store.selectedFileIsUnmerged
-                ? "exclamationmark.triangle" : "doc.text.magnifyingglass"
+            hasSelection ? "No Changes" : "No File Selected", systemImage: "doc.text.magnifyingglass"
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var placeholderTitle: String {
-        if store.selectedFileIsUnmerged {
-            return "Conflicted file — resolve it in your editor, then stage it."
-        }
-        return hasSelection ? "No Changes" : "No File Selected"
     }
 
     private func resetSelection() {
