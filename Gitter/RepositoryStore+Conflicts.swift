@@ -330,14 +330,38 @@ extension RepositoryStore {
     // MARK: - Reopen
 
     /// Reopen Conflict…: offered only for the file `canReopen` said yes to, and always asked.
-    /// The sheet carries the file's hash now; a change while it is up is refused by GitCore.
+    /// The sheet carries the file's hash now — a change while it is up is refused by GitCore —
+    /// what `restore --merge` will write (text gets markers, a binary the ours side's bytes, a
+    /// mode-only add the ours side's mode), and the side names to say it with: a resolved file
+    /// has no conflict read, so the operation's progress is read here too.
     func requestReopen(_ path: String) {
         guard reopenablePath == path, let root, conflictActionBlockedReason == nil else { return }
-        activeSheet = .reopen(path: path, hash: ConflictSnapshot.worktreeHash(of: path, at: root))
+        let hash = ConflictSnapshot.worktreeHash(of: path, at: root)
+        let generation = self.generation
+        let operation = operationInProgress
+        let branch = currentBranch
+        Task { [self] in
+            let comesBack: ReopenedFile?
+            do {
+                comesBack = try await backend.reopenedFile(path, at: root)
+            } catch {
+                guard self.generation == generation else { return }
+                showStickyError(Self.describe(error))
+                return
+            }
+            let progress = operation == nil ? nil : try? await backend.operationProgress(at: root)
+            guard self.generation == generation, activeSheet == nil, reopenablePath == path else { return }
+            guard let comesBack else {
+                showStickyError(ConflictWording.error(.notAvailable(path)))
+                return
+            }
+            let sides = ConflictWording.sides(operation: operation, progress: progress, branch: branch)
+            activeSheet = .reopen(path: path, hash: hash, comesBack: comesBack, sides: sides)
+        }
     }
 
     func confirmReopen(_ path: String) {
-        guard case .reopen(let shown, let hash) = activeSheet, shown == path else { return }
+        guard case .reopen(let shown, let hash, _, _) = activeSheet, shown == path else { return }
         activeSheet = nil
         mutate(result: { backend, root in
             try await backend.reopen(path, expectingWorktreeHash: hash, at: root)

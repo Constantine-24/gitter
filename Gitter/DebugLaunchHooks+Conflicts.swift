@@ -124,11 +124,12 @@
                     return
                 }
                 store.requestReopen(rest)
-                if case .reopen(rest, _)? = store.activeSheet {} else {
+                let shown = await wait({ if case .reopen(rest, _, _, _)? = store.activeSheet { true } else { false } })
+                if !shown {
                     log("reopen: no sheet for \(rest) | blocked: \(store.conflictActionBlockedReason ?? "nil")")
                 }
             case "confirmreopen":
-                guard case .reopen(let path, _) = store.activeSheet else {
+                guard case .reopen(let path, _, _, _) = store.activeSheet else {
                     log("confirmreopen: no reopen sheet")
                     return
                 }
@@ -219,8 +220,9 @@
                 "replaceHandEdited(\(snapshot.file.path), \(pending), hash: \(snapshot.worktreeHash?.prefix(12) ?? "nil"))"
             case .markResolved(let snapshot, let markers)?:
                 "markResolved(\(snapshot.file.path), markers: \(markers))"
-            case .reopen(let path, let hash)?:
-                "reopen(\(path), hash: \(hash?.prefix(12) ?? "nil"))"
+            case .reopen(let path, let hash, let comesBack, let sides)?:
+                "reopen(\(path), hash: \(hash?.prefix(12) ?? "nil"), comesBack: \(comesBack), "
+                    + "sides: \(sides.ours) / \(sides.theirs), body: \(ConflictWording.reopenBody(path, comesBack, sides)))"
             default: nil
             }
         }

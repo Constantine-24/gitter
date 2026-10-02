@@ -239,7 +239,7 @@ import Testing
 
     @Test func theReopenSheetSaysWhatComesBackAndWhereTheResolutionGoes() {
         #expect(ConflictWording.reopenTitle("f.txt") == "Reopen the conflict in \"f.txt\"?")
-        #expect(ConflictWording.reopenBody("f.txt")
+        #expect(ConflictWording.reopenBody("f.txt", .markers, Self.sides)
             == "Git's conflict comes back in place of the resolution: \"f.txt\" gets its conflict "
             + "markers again and is unmerged until it is resolved again.")
         #expect(ConflictWording.reopenDestination("f.txt")
@@ -249,6 +249,31 @@ import Testing
         #expect(ConflictWording.reopenMenuItem == "Reopen Conflict\u{2026}")
         #expect(ConflictWording.reopenOffer("f.txt")
             == "The conflict in \"f.txt\" was resolved. It can be reopened while the operation is in progress.")
+    }
+
+    /// Fix round 1: reopening a binary puts ours' bytes back with no markers, a mode-only add
+    /// puts ours' mode back, a driver writes the file again (measured, `ReopenedFileTests`) —
+    /// each said with the operation's side names, where a rebase's "ours" is the upstream.
+    @Test func theReopenSheetSaysWhatComesBackForEachKind() {
+        let rebase = SideLabels(ours: "upstream (1234567)", theirs: "your commit fedcba9 Fix")
+        #expect(ConflictWording.reopenBody("b.bin", .oursVersion, Self.sides)
+            == "Git's conflict comes back in place of the resolution, without conflict markers: git "
+            + "can't merge \"b.bin\" line by line, so the file goes back to the version from main and "
+            + "is unmerged until it is resolved again.")
+        #expect(ConflictWording.reopenBody("b.bin", .oursVersion, rebase)
+            == "Git's conflict comes back in place of the resolution, without conflict markers: git "
+            + "can't merge \"b.bin\" line by line, so the file goes back to the version from upstream "
+            + "(1234567) and is unmerged until it is resolved again.")
+        #expect(ConflictWording.reopenBody("n.sh", .oursMode, rebase)
+            == "Git's conflict comes back in place of the resolution: the content of \"n.sh\" stays as "
+            + "it is, its mode goes back to the one in upstream (1234567), and it is unmerged until it "
+            + "is resolved again.")
+        #expect(ConflictWording.reopenBody("t.txt", .driver("mine"), Self.sides)
+            == "Git's conflict comes back in place of the resolution: the \"mine\" merge driver writes "
+            + "\"t.txt\" again, and it is unmerged until it is resolved again.")
+        for kind in [ReopenedFile.oursVersion, .oursMode, .driver("mine")] {
+            #expect(!ConflictWording.reopenBody("f", kind, Self.sides).contains("markers again"))
+        }
     }
 
     // MARK: - Refusals

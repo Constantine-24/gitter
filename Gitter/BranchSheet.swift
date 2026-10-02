@@ -56,8 +56,10 @@ enum BranchSheet: Identifiable, Hashable {
     /// can be high (a content line that is exactly a marker), so the sheet does not show it.
     case markResolved(ConflictSnapshot, markers: Int)
     /// Reopen Conflict… on a resolved file: `hash` is the file's worktree hash when the sheet
-    /// opened (nil = no file), which `confirmReopen` hands to GitCore as what it must still be.
-    case reopen(path: String, hash: String?)
+    /// opened (nil = no file), which `confirmReopen` hands to GitCore as what it must still be;
+    /// `comesBack` is what `restore --merge` will write (`GitConflictBackend.reopenedFile`) and
+    /// `sides` the operation's side names, both read as the sheet opened.
+    case reopen(path: String, hash: String?, comesBack: ReopenedFile, sides: SideLabels)
 
     var id: Self { self }
 

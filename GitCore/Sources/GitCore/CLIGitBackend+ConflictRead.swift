@@ -434,6 +434,31 @@ extension CLIGitBackend: GitConflictBackend {
         return stages == ["0"]
     }
 
+    public func reopenedFile(_ path: String, at root: URL) async throws -> ReopenedFile? {
+        let undo = try await run(["ls-files", "--resolve-undo", "-z", "--", literalPathspec(path)], cwd: root)
+        var stages: [String: (mode: String, sha: String)] = [:]
+        for entry in Self.indexRecords(undo) where entry.path == path { stages[entry.stage] = (entry.mode, entry.sha) }
+        guard let ours = stages["2"], let theirs = stages["3"] else { return nil }
+        if ours.sha == theirs.sha, ours.mode != theirs.mode { return .oursMode }
+        // As `restore --merge` chooses: the path's merge driver first (`mergeDriver`, as the
+        // conflict reader asks it), then git's text merge, which gives up on a binary stage.
+        let attributes = try await conflictAttributes(of: path, at: root)
+        if let driver = try await mergeDriver(attributes.merge, at: root) {
+            return driver.keepsOurs ? .oursVersion : .driver(driver.name)
+        }
+        for stage in ["1", "2", "3"] {
+            guard let object = stages[stage]?.sha else { continue }
+            let bytes = try await run(["cat-file", "blob", object], cwd: root)
+            if Self.isBinary(bytes) { return .oursVersion }
+        }
+        return .markers
+    }
+
+    /// git's own test (`buffer_is_binary`): a NUL in the first 8 000 bytes.
+    static func isBinary(_ bytes: Data) -> Bool {
+        bytes.prefix(8_000).contains(0)
+    }
+
     // MARK: - The worktree
 
     /// The bytes at `path` as git would hash them: a symlink's target path (never followed), a

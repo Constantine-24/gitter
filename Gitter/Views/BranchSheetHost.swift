@@ -47,8 +47,8 @@ struct BranchSheetHost: View {
             ReplaceHandEditedSheet(snapshot: snapshot, pending: pending)
         case .markResolved(let snapshot, _):
             MarkResolvedSheet(snapshot: snapshot)
-        case .reopen(let path, _):
-            ReopenConflictSheet(path: path)
+        case .reopen(let path, _, let comesBack, let sides):
+            ReopenConflictSheet(path: path, comesBack: comesBack, sides: sides)
         }
     }
 }

@@ -100,6 +100,27 @@ public protocol GitConflictBackend: Sendable {
     /// when the worktree's hash is not `expectingWorktreeHash` (nil = no file);
     /// `.notAvailable` when `canReopen` is false.
     func reopen(_ path: String, expectingWorktreeHash: String?, at root: URL) async throws -> ConflictReceipt
+
+    /// What `reopen` would put in the worktree, read from the path's resolve-undo record and
+    /// attributes — so a confirmation can say it. Nil when there is no record with stages 2 and 3.
+    /// Reads only (`ls-files --resolve-undo`, `check-attr`, `config --get`, `cat-file blob`).
+    func reopenedFile(_ path: String, at root: URL) async throws -> ReopenedFile?
+}
+
+/// What `restore --merge` writes for a reopened path (measured on git 2.54, A2 Task 5 fix
+/// round 1). In every case the stages come back and the path is unmerged again.
+public enum ReopenedFile: Sendable, Hashable {
+    /// Text: git's conflict markers, labelled `ours` / `base` / `theirs`.
+    case markers
+    /// A binary stage (a NUL in the first 8 000 bytes) or a merge attribute that keeps ours
+    /// (`binary`, `-merge`): stage 2's bytes and no markers — git warns "Cannot merge binary
+    /// files" and exits 0.
+    case oursVersion
+    /// A mode-only add/add (stages 2 and 3 hold the same blob): the content stays and the mode
+    /// goes back to stage 2's.
+    case oursMode
+    /// A merge driver the user defined (or `union`): whatever it writes.
+    case driver(String)
 }
 
 /// Why a conflict write refused. Each names the path it was asked about.

@@ -1,3 +1,4 @@
+import GitCore
 import SwiftUI
 
 /// Reopen Conflict…: `restore --merge` puts git's conflict back over the resolution, so the
@@ -9,6 +10,10 @@ import SwiftUI
 /// button has no shortcut.
 struct ReopenConflictSheet: View {
     let path: String
+    /// What `restore --merge` will write: markers for text, the ours side's bytes for a binary,
+    /// its mode for a mode-only add (`GitConflictBackend.reopenedFile`).
+    let comesBack: ReopenedFile
+    let sides: SideLabels
 
     @Environment(RepositoryStore.self) private var store
 
@@ -18,7 +23,7 @@ struct ReopenConflictSheet: View {
                 .font(.headline)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text(ConflictWording.reopenBody(path))
+            Text(ConflictWording.reopenBody(path, comesBack, sides))
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
 
