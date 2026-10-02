@@ -78,7 +78,22 @@ import Testing
         defer { repo.cleanUp() }
         try await Self.resolve(repo, "t.txt", with: "a\nB\nc\n")
 
-        #expect(try await Self.backend.reopenedFile("t.txt", at: repo.root) == .oursVersion)
+        #expect(try await Self.backend.reopenedFile("t.txt", at: repo.root) == .oursByAttribute("binary"))
+
+        try await Self.reopen(repo, "t.txt")
+        #expect(try repo.bytes("t.txt") == Data("a\nX\nc\n".utf8))
+    }
+
+    /// Final review L170: `-merge` and the `binary` macro on TEXT — git is told not to merge it
+    /// (not unable to): ours' bytes, no markers, said as the attribute's doing.
+    @Test(arguments: ["t.txt -merge\n", "t.txt binary\n"])
+    func anUnsetMergeAttributeGoesBackToOursByTheAttribute(attributes: String) async throws {
+        let repo = try await Self.merge(
+            "t.txt", base: "a\nb\nc\n", ours: "a\nX\nc\n", theirs: "a\nB\nc\n", attributes: attributes)
+        defer { repo.cleanUp() }
+        try await Self.resolve(repo, "t.txt", with: "a\nB\nc\n")
+
+        #expect(try await Self.backend.reopenedFile("t.txt", at: repo.root) == .oursByAttribute("unset"))
 
         try await Self.reopen(repo, "t.txt")
         #expect(try repo.bytes("t.txt") == Data("a\nX\nc\n".utf8))

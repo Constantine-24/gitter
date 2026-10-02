@@ -112,10 +112,14 @@ public protocol GitConflictBackend: Sendable {
 public enum ReopenedFile: Sendable, Hashable {
     /// Text: git's conflict markers, labelled `ours` / `base` / `theirs`.
     case markers
-    /// A binary stage (a NUL in the first 8 000 bytes) or a merge attribute that keeps ours
-    /// (`binary`, `-merge`): stage 2's bytes and no markers — git warns "Cannot merge binary
-    /// files" and exits 0.
+    /// A binary stage (a NUL in the first 8 000 bytes): stage 2's bytes and no markers — git
+    /// warns "Cannot merge binary files" and exits 0.
     case oursVersion
+    /// Stage 2's bytes and no markers too, but because git is told not to merge the path — its
+    /// `merge` attribute is unset (`-merge`, or the `binary` macro) or `binary` (`merge=binary`,
+    /// or `merge.default=binary`) — whatever its content (final review L170: text too). The
+    /// value is the attribute as `check-attr` reads it: `unset` or `binary`.
+    case oursByAttribute(String)
     /// A mode-only add/add (stages 2 and 3 hold the same blob): the content stays and the mode
     /// goes back to stage 2's.
     case oursMode

@@ -279,8 +279,9 @@ enum ConflictWording {
     static func reopenTitle(_ path: String) -> String { "Reopen the conflict in \(name(path))?" }
 
     /// What comes back, as `GitConflictBackend.reopenedFile` read it: markers only for text.
-    /// A binary (or `merge=binary`) file gets the ours side's bytes, a mode-only add the ours
-    /// side's mode — named with the operation's side names, so a rebase says the upstream.
+    /// A binary file — or one whose merge attribute tells git not to merge it, said as such —
+    /// gets the ours side's bytes, a mode-only add the ours side's mode — named with the
+    /// operation's side names, so a rebase says the upstream.
     static func reopenBody(_ path: String, _ comesBack: ReopenedFile, _ sides: SideLabels) -> String {
         let back = "Git's conflict comes back in place of the resolution"
         let unmerged = "is unmerged until it is resolved again."
@@ -289,6 +290,14 @@ enum ConflictWording {
             return "\(back): \(name(path)) gets its conflict markers again and \(unmerged)"
         case .oursVersion:
             return "\(back), without conflict markers: git can't merge \(name(path)) line by line, so the "
+                + "file goes back to the version from \(sides.ours) and \(unmerged)"
+        case .oursByAttribute(let value):
+            // Not "can't merge": git is told not to (final review L170) — text included.
+            let attribute =
+                value == "unset"
+                ? "the merge attribute of \(name(path)) is unset (-merge, or the binary attribute)"
+                : "the merge attribute of \(name(path)) is \"\(value)\""
+            return "\(back), without conflict markers: \(attribute), which tells git not to merge it, so the "
                 + "file goes back to the version from \(sides.ours) and \(unmerged)"
         case .oursMode:
             return "\(back): the content of \(name(path)) stays as it is, its mode goes back to the one in "

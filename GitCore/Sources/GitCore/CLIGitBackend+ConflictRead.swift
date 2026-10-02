@@ -444,7 +444,7 @@ extension CLIGitBackend: GitConflictBackend {
         // conflict reader asks it), then git's text merge, which gives up on a binary stage.
         let attributes = try await conflictAttributes(of: path, at: root)
         if let driver = try await mergeDriver(attributes.merge, at: root) {
-            return driver.keepsOurs ? .oursVersion : .driver(driver.name)
+            return driver.keepsOurs ? .oursByAttribute(driver.name) : .driver(driver.name)
         }
         for stage in ["1", "2", "3"] {
             guard let object = stages[stage]?.sha else { continue }

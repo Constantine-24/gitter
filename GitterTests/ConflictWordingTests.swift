@@ -271,7 +271,21 @@ import Testing
         #expect(ConflictWording.reopenBody("t.txt", .driver("mine"), Self.sides)
             == "Git's conflict comes back in place of the resolution: the \"mine\" merge driver writes "
             + "\"t.txt\" again, and it is unmerged until it is resolved again.")
-        for kind in [ReopenedFile.oursVersion, .oursMode, .driver("mine")] {
+        // Final review L170: an attribute that tells git not to merge the file (text too) is
+        // not "can't merge line by line".
+        #expect(ConflictWording.reopenBody("t.txt", .oursByAttribute("unset"), Self.sides)
+            == "Git's conflict comes back in place of the resolution, without conflict markers: the "
+            + "merge attribute of \"t.txt\" is unset (-merge, or the binary attribute), which tells git "
+            + "not to merge it, so the file goes back to the version from main and is unmerged until it "
+            + "is resolved again.")
+        #expect(ConflictWording.reopenBody("t.txt", .oursByAttribute("binary"), rebase)
+            == "Git's conflict comes back in place of the resolution, without conflict markers: the "
+            + "merge attribute of \"t.txt\" is \"binary\", which tells git not to merge it, so the file "
+            + "goes back to the version from upstream (1234567) and is unmerged until it is resolved again.")
+        for kind in [ReopenedFile.oursByAttribute("unset"), .oursByAttribute("binary")] {
+            #expect(!ConflictWording.reopenBody("t.txt", kind, Self.sides).contains("line by line"))
+        }
+        for kind in [ReopenedFile.oursVersion, .oursByAttribute("unset"), .oursMode, .driver("mine")] {
             #expect(!ConflictWording.reopenBody("f", kind, Self.sides).contains("markers again"))
         }
     }
