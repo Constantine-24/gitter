@@ -42,6 +42,15 @@ import Testing
 
     // MARK: - Rows
 
+    /// GitCore's argument guard (Ruling 26) reaches the banner as an ordinary error, saying git
+    /// was not run and why.
+    @MainActor @Test func tooManyArgumentsIsAnOrdinaryErrorSentence() {
+        #expect(
+            RepositoryStore.describe(GitError.tooManyArguments(count: 5_003, limit: 4_000))
+                == "Gitter did not run git: the command needed 5003 arguments, more than the 4000 one git "
+                + "process can take.")
+    }
+
     @Test func everyRowKindSaysWhatItLoses() {
         #expect(DiscardWording.loss(.counts(added: 12, removed: 3)) == "+12 \u{2212}3")
         #expect(DiscardWording.loss(.counts(added: 0, removed: 7)) == "+0 \u{2212}7")

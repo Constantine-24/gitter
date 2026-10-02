@@ -3,9 +3,14 @@ import Foundation
 /// File-level stage/unstage operations. See `GitWorkingCopyBackend` for the command each
 /// method runs.
 extension CLIGitBackend: GitWorkingCopyBackend {
+    /// One `add` for every path, however many, through a pathspec file (Ruling 26): one
+    /// argument per path crashed `Process` past 4096, and a path git does not know still
+    /// refuses them all (measured, git 2.54).
     public func stage(paths: [String], at root: URL) async throws {
         guard !paths.isEmpty else { return }
-        _ = try await run(["add", "--"] + paths.map(literalPathspec), cwd: root)
+        _ = try await withPathspecFile(paths) { file in
+            try await run(["add", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)
+        }
     }
 
     public func unstage(paths: [String], at root: URL) async throws {
@@ -15,9 +20,11 @@ extension CLIGitBackend: GitWorkingCopyBackend {
             // worktree; measured with `submodule.recurse=true`: the submodule's checkout and
             // an untracked file inside it were kept), and the scanner requires it of every
             // `restore` vector, because on `--worktree` it is what keeps a submodule's work.
-            _ = try await run(
-                ["restore", "--no-recurse-submodules", "--staged", "--"] + paths.map(literalPathspec),
-                cwd: root)
+            _ = try await withPathspecFile(paths) { file in
+                try await run(
+                    ["restore", "--no-recurse-submodules", "--staged", "--pathspec-from-file=\(file)", "--pathspec-file-nul"],
+                    cwd: root)
+            }
         } else {
             // `--ignore-unmatch`: without commits, a caller may pass a mix of paths that are
             // and aren't in the index (e.g. after another change already removed one). Without
@@ -25,9 +32,11 @@ extension CLIGitBackend: GitWorkingCopyBackend {
             // path — matched or not — still staged. `unstageAll`'s `rm --cached -r -- .` fallback
             // doesn't need it: `.` either matches something or the empty-index case is handled
             // separately below.
-            _ = try await run(
-                ["rm", "--cached", "-q", "--ignore-unmatch", "--"] + paths.map(literalPathspec),
-                cwd: root)
+            _ = try await withPathspecFile(paths) { file in
+                try await run(
+                    ["rm", "--cached", "-q", "--ignore-unmatch", "--pathspec-from-file=\(file)", "--pathspec-file-nul"],
+                    cwd: root)
+            }
         }
     }
 

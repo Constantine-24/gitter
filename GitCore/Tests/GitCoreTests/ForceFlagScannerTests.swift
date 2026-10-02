@@ -215,8 +215,8 @@ import Testing
         #"_ = try await run(["switch", "--no-guess", "--end-of-options", branch], cwd: root)"#,
         #"_ = try await run(["switch", "--detach", "--end-of-options", revision], cwd: root)"#,
         // `--no-recurse-submodules` joined the unstage vector in the working-copy milestone,
-        // when every `restore` without it became a finding.
-        #"_ = try await run(["restore", "--no-recurse-submodules", "--staged", "--"] + paths, cwd: root)"#,
+        // when every `restore` without it became a finding; the pathspec file in A2 (Ruling 26).
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--staged", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
         #"_ = try await run(["reset", "-q"], cwd: root)"#,
     ])
     func allowsTheOperationsThisMilestoneNeeds(source: String) {
@@ -609,15 +609,16 @@ import Testing
     /// survey they rest on: `git grep -nE
     /// '"(prune|rm|remove|set-url|rename|set-head|set-branches|add|update)"' -- GitCore/Sources`
     /// returns **four** hits, all in `CLIGitBackend+WorkingCopy.swift` — `["add", "--"] + …`
-    /// (:8), `["rm", "--cached", "-q", "--ignore-unmatch", "--"] + …` (:23), `["add", "-A"]`
+    /// (:8), `["rm", "--cached", "-q", "--ignore-unmatch", "--"] + …` (:23; both through a
+    /// pathspec file since Ruling 26, spelled so below), `["add", "-A"]`
     /// (:29), `["rm", "--cached", "-r", "-q", "--", "."]` (:42). Every one is the first element
     /// of a classified vector, so no fragment rule looks there; `add` is excluded from both
     /// lists anyway, because `git remote add` adds a remote rather than destroying one and
     /// `git add` is a command four lines away.
     @Test(arguments: [
-        #"_ = try await run(["add", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"_ = try await run(["add", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
         #"_ = try await run(["add", "-A"], cwd: root)"#,
-        #"_ = try await run(["rm", "--cached", "-q", "--ignore-unmatch", "--"] + paths, cwd: root)"#,
+        #"_ = try await run(["rm", "--cached", "-q", "--ignore-unmatch", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
         #"_ = try await run(["rm", "--cached", "-r", "-q", "--", "."], cwd: root)"#,
         #"async let remoteData = run(["remote", "-v"], cwd: root)"#,
     ])
@@ -1153,10 +1154,11 @@ import Testing
         #"_ = try await run(t ? ["rev-parse", "\(s)^{tree}", "\(s)^3^{tree}"] : ["rev-parse", "\(s)^{tree}"], cwd: root)"#,
         #"_ = try await run(["commit-tree", tree, "-p", "HEAD", "-m", m], cwd: root)"#,
         #"_ = try await run(["commit-tree", tree, "-p", "HEAD", "-p", i, "-m", m], cwd: root)"#,
-        #"_ = try await run(["restore", "--no-recurse-submodules", "--worktree", "--"] + paths.map(literalPathspec), cwd: root)"#,
-        #"_ = try await run(["restore", "--no-recurse-submodules", "--source=HEAD", "--staged", "--worktree", "--"] + paths.map(literalPathspec), cwd: root)"#,
-        #"_ = try await run(["restore", "--no-recurse-submodules", "--source=\(sha)^2", "--staged", "--"] + paths.map(literalPathspec), cwd: root)"#,
-        #"_ = try await run(["restore", "--no-recurse-submodules", "--staged", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        // Ruling 26: the paths in a pathspec file, one call however many.
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--worktree", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--source=HEAD", "--staged", "--worktree", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--source=\(sha)^2", "--staged", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--staged", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
         #"_ = try await run(["apply", "--reverse", "--whitespace=nowarn", tmp.path], cwd: root)"#,
         #"_ = try await run(["apply", "--whitespace=nowarn", tmp.path], cwd: root)"#,
         // Today's line staging, as `CLIGitBackend+WorkingCopy.swift` writes it: no
@@ -1182,9 +1184,9 @@ import Testing
         // none of the words a stash vector could take).
         #"_ = try await runWithEnvironment(["update-index", "--add"] + cacheinfo, cwd: root, extra: index)"#,
         #"entries[start..<end].flatMap { entry in ["--cacheinfo", "\(entry.mode),\(entry.sha),\(entry.path)"] }"#,
-        #"_ = try await runWithEnvironment(["update-index", "--force-remove", "--"] + removed, cwd: root, extra: index)"#,
+        #"_ = try await runWithEnvironment(["update-index", "--force-remove", "--"] + batch, cwd: root, extra: index)"#,
         #"_ = try await runWithEnvironment(["write-tree"], cwd: root, extra: index)"#,
-        #"_ = try await runWithEnvironment(["update-index", "--add", "--remove", "--"] + paths, cwd: root, extra: index)"#,
+        #"_ = try await runWithEnvironment(["update-index", "--add", "--remove", "--"] + batch, cwd: root, extra: index)"#,
         #"_ = try await run(["stash", "store", "-q", "-m", message, w], cwd: root)"#,
     ])
     func allowsTheRecordsVectorsInItsOwnFile(source: String) {
@@ -1337,6 +1339,60 @@ import Testing
         #expect(!ForceFlagScanner.findings(in: changed, fileName: file).isEmpty)
     }
 
+    // MARK: - Path lists in a pathspec file (Ruling 26)
+
+    /// A **contract**: every write of a path list, spelled as the sources write it — the paths
+    /// in a pathspec file (`withPathspecFile`), so one call takes any number of them and stays
+    /// all or nothing; `Process` crashes past 4096 arguments.
+    @Test(arguments: [
+        #"_ = try await run(["add", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
+        #"try await run(["restore", "--no-recurse-submodules", "--staged", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
+        #"try await run(["restore", "--no-recurse-submodules", "--worktree", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
+        #"try await run(["restore", "--no-recurse-submodules", "--source=HEAD", "--staged", "--worktree", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
+        #"try await run(["restore", "--no-recurse-submodules", "--source=\(sha)^2", "--staged", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
+        #"try await run(["rm", "--cached", "-q", "--ignore-unmatch", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
+        #"""
+        _ = try await withPathspecFile(survey.paths) { file in
+            try await run(["restore", "--no-recurse-submodules", "--worktree", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)
+        }
+        """#,
+    ])
+    func allowsThePathspecFileWrites(source: String) {
+        for name in [nil, "CLIGitBackend+Stash.swift", Self.recordFile] as [String?] {
+            #expect(ForceFlagScanner.findings(in: source, fileName: name).isEmpty,
+                    "false positive in \(name ?? "an unnamed file"): \(ForceFlagScanner.findings(in: source, fileName: name))")
+        }
+    }
+
+    /// And every other way to hand `restore` or `rm --cached` a path list is a finding: the
+    /// paths as arguments again (`-- + paths`, the crash), a file that is not one interpolation
+    /// (`-`, stdin, which is `/dev/null` here; a concatenation), a pathspec beside the file, no
+    /// `--pathspec-file-nul` (a newline in a name would split it), or the file on a vector
+    /// without `--no-recurse-submodules` or with another layer. Built in test strings only.
+    @Test(arguments: [
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--staged", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--worktree", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--source=HEAD", "--staged", "--worktree", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--source=\(sha)^2", "--staged", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"_ = try await run(["rm", "--cached", "-q", "--ignore-unmatch", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--worktree", "--pathspec-from-file=-", "--pathspec-file-nul"], cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--worktree", "--pathspec-from-file=" + file, "--pathspec-file-nul"], cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--worktree", "--pathspec-from-file=\(file)extra", "--pathspec-file-nul"], cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--worktree", "--pathspec-from-file=\(file)", "--pathspec-file-nul"] + paths, cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--worktree", "--pathspec-from-file=\(file)", "--pathspec-file-nul", "--", p], cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--worktree", "--pathspec-from-file=\(file)"], cwd: root)"#,
+        #"_ = try await run(["restore", "--worktree", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
+        #"_ = try await run(["restore", "--no-recurse-submodules", "--staged", "--worktree", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
+        #"_ = try await run(["rm", "--cached", "-q", "--ignore-unmatch", "--pathspec-from-file=-", "--pathspec-file-nul"], cwd: root)"#,
+        #"_ = try await run(["rm", "-q", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
+        #"_ = try await run(["rm", "--cached", "-q", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
+    ])
+    func catchesAPathListOutsideThePathspecFileShapes(source: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(!findings.isEmpty, "missed: \(source)")
+        #expect(findings.contains { $0.contains("`git restore` vector") || $0.contains("`git rm` vector") }, "\(findings)")
+    }
+
     // MARK: - Conflict writes (A2 Task 2)
 
     /// A **contract**: the conflict writer's vectors, spelled as
@@ -1351,7 +1407,7 @@ import Testing
         #"let data = try await run(["ls-files", "--resolve-undo", "-z", "--", literalPathspec(path)], cwd: root)"#,
         #"let data = try await run(["ls-files", "-s", "-z", "--", literalPathspec(path)], cwd: root)"#,
         #"let data = try await run(["diff", "--check", "--", literalPathspec(path)], cwd: root, allowedExitCodes: [2])"#,
-        #"_ = try await run(["rm", "--cached", "-q", "--ignore-unmatch", "--"] + paths.map(literalPathspec), cwd: root)"#,
+        #"_ = try await run(["rm", "--cached", "-q", "--ignore-unmatch", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)"#,
         #"_ = try await run(["rm", "--cached", "-r", "-q", "--", "."], cwd: root)"#,
     ])
     func allowsTheConflictWritesThisMilestoneNeeds(source: String) {
@@ -1539,8 +1595,10 @@ import Testing
          #"backend.runWithEnvironment(["write-tree"], cwd: root, extra: [:])"#),
         (#"backend.runWithEnvironment(["update-index", "--add"] + cacheinfo, cwd: root, extra: index)"#,
          #"backend.run(["update-index", "--add"] + cacheinfo, cwd: root)"#),
-        (#"_ = try await backend.runWithEnvironment(["update-index", "--add", "--remove", "--"] + paths, cwd: root, extra: index)"#,
-         #"let vector = ["update-index", "--add", "--remove", "--"] + paths; _ = try await backend.runWithEnvironment(vector, cwd: root, extra: index)"#),
+        (#"_ = try await backend.runWithEnvironment(["update-index", "--add", "--remove", "--"] + batch, cwd: root, extra: index)"#,
+         #"let vector = ["update-index", "--add", "--remove", "--"] + batch; _ = try await backend.runWithEnvironment(vector, cwd: root, extra: index)"#),
+        (#"_ = try await backend.runWithEnvironment(["update-index", "--force-remove", "--"] + batch, cwd: root, extra: index)"#,
+         #"_ = try await backend.run(["update-index", "--force-remove", "--"] + batch, cwd: root)"#),
     ])
     func catchesAVectorThatWouldRunOnTheRealIndex(original: String, mutated: String) throws {
         let source = try Self.recordSource

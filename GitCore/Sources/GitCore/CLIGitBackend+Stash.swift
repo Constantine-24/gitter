@@ -231,15 +231,19 @@ extension CLIGitBackend {
 
     /// Each of `paths` that the tree of `rev` has an entry for, with its mode (`100644`,
     /// `100755`, `120000`, `160000`, or `040000` for a directory). `ls-tree` takes pathspecs, so
-    /// each is literal; `<mode> SP <type> SP <object> TAB <path> NUL` per entry.
+    /// each is literal; `<mode> SP <type> SP <object> TAB <path> NUL` per entry. In batches past
+    /// `pathBatch` paths (Ruling 26), merged by path: without `-r` a named directory lists its
+    /// own entry, so no named path covers another and none is left out.
     func modes(of paths: [String], in rev: String, at root: URL) async throws -> [String: String] {
         guard !paths.isEmpty else { return [:] }
-        let data = try await run(
-            ["ls-tree", "-z", "--full-tree", rev, "--"] + paths.map(literalPathspec), cwd: root)
         var result: [String: String] = [:]
-        for record in String(decoding: data, as: UTF8.self).split(separator: "\0") {
-            guard let tab = record.firstIndex(of: "\t"), let space = record.firstIndex(of: " ") else { continue }
-            result[String(record[record.index(after: tab)...])] = String(record[..<space])
+        for data in try await readInBatches(of: paths, covering: false, { batch in
+            try await run(["ls-tree", "-z", "--full-tree", rev, "--"] + batch.map(literalPathspec), cwd: root)
+        }) {
+            for record in String(decoding: data, as: UTF8.self).split(separator: "\0") {
+                guard let tab = record.firstIndex(of: "\t"), let space = record.firstIndex(of: " ") else { continue }
+                result[String(record[record.index(after: tab)...])] = String(record[..<space])
+            }
         }
         return result
     }

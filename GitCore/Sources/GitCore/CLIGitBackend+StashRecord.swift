@@ -14,13 +14,19 @@ import Foundation
 /// 1. Read-only survey and refusals: `status`, one `ls-files -s -z` for all the paths,
 ///    `ls-tree HEAD`.
 /// 2. `read-tree HEAD` into the temporary index (it creates the file).
-/// 3. The paths the real index has no entry for (a staged deletion or rename source) in one
+/// 3. The paths the real index has no entry for (a staged deletion or rename source) through
 ///    `update-index --force-remove`, then every real index entry of the paths through
 ///    `update-index --add --cacheinfo …`, at most `cacheinfoLimit` entries a call.
 ///    `write-tree`, `commit-tree -p HEAD`: the index commit I.
 /// 4. `update-index --add --remove -- paths` reads the worktree as git would (content,
 ///    deletion, executable bit, the link itself — never `hash-object`, which follows links).
 ///    `write-tree`, `commit-tree -p HEAD -p I`: W.
+///
+/// Every `update-index` of named paths runs in `pathBatches` (Ruling 26: one argument per path
+/// crashed `Process` past 4096; `update-index` has no pathspec file, and `--stdin` has nothing
+/// to read from the runner's `/dev/null`). Splitting them is safe because they write only the
+/// temporary index, one path at a time: a batch that fails throws before `write-tree`, nothing
+/// is filed, and the real index and worktree were never touched.
 /// 5. `stash store -q -m <message> W`, judged by `refs/stash` afterwards.
 ///
 /// The real index, HEAD, every other ref and the worktree are untouched (M A.0,
@@ -83,7 +89,9 @@ struct StashRecord {
         // it either — so removing first is the per-path order's result.
         let removed = paths.filter { (entries[$0] ?? []).isEmpty }
         if !removed.isEmpty {
-            _ = try await backend.runWithEnvironment(["update-index", "--force-remove", "--"] + removed, cwd: root, extra: index)
+            for batch in CLIGitBackend.pathBatches(removed) {
+                _ = try await backend.runWithEnvironment(["update-index", "--force-remove", "--"] + batch, cwd: root, extra: index)
+            }
         }
         // Stage 0 only: an unmerged path's stages 1–3 have no place in a tree, and I keeps
         // HEAD's entry for it (`allowingUnmerged`); any other path has nothing but stage 0.
@@ -94,7 +102,9 @@ struct StashRecord {
             tree: try await writeTree(backend, index, root), parents: nil,
             message: "index on \(head.branch): \(head.summary)", backend: backend, at: root)
         // `update-index` takes file names, not pathspecs: no `:(literal)` here, and none needed.
-        _ = try await backend.runWithEnvironment(["update-index", "--add", "--remove", "--"] + paths, cwd: root, extra: index)
+        for batch in CLIGitBackend.pathBatches(paths) {
+            _ = try await backend.runWithEnvironment(["update-index", "--add", "--remove", "--"] + batch, cwd: root, extra: index)
+        }
         let w = try await commit(
             tree: try await writeTree(backend, index, root), parents: i,
             message: message, backend: backend, at: root)
@@ -156,10 +166,14 @@ struct StashRecord {
 
         // Read-only: every call here leaves the index alone (`GIT_OPTIONAL_LOCKS=0`).
         let status = try await backend.stashStatus(at: root)
-        // One `ls-files` for every path, split back to each path what its own read gave: its
-        // entry, or everything under it as a directory (final review I1: one process per path).
-        let data = try await backend.run(["ls-files", "-s", "-z", "--"] + paths.map(backend.literalPathspec), cwd: root)
-        let entriesOf = CLIGitBackend.grouping(CLIGitBackend.indexRecords(data), by: \.path)
+        // One `ls-files` for every path (in batches past `pathBatch`, Ruling 26), split back to
+        // each path what its own read gave: its entry, or everything under it as a directory
+        // (final review I1: one process per path).
+        let records = try await backend.readInBatches(of: paths, covering: true) { batch in
+            CLIGitBackend.indexRecords(
+                try await backend.run(["ls-files", "-s", "-z", "--"] + batch.map(backend.literalPathspec), cwd: root))
+        }.flatMap { $0 }
+        let entriesOf = CLIGitBackend.grouping(records, by: \.path)
         var entries: [String: [(mode: String, sha: String, stage: String, path: String)]] = [:]
         for p in paths { entries[p] = entriesOf(p) }
         let headModes = try await backend.modes(of: paths, in: "HEAD", at: root)
@@ -327,7 +341,10 @@ extension CLIGitBackend {
                 }
             }
             if !record.tracked.isEmpty {
-                _ = try await run(["restore", "--no-recurse-submodules", "--source=HEAD", "--staged", "--worktree", "--"] + record.tracked.map(literalPathspec), cwd: root)
+                // One call however many, through a pathspec file (Ruling 26): all or nothing.
+                _ = try await withPathspecFile(record.tracked) { file in
+                    try await run(["restore", "--no-recurse-submodules", "--source=HEAD", "--staged", "--worktree", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)
+                }
             }
         } catch GitError.commandFailed(_, let stderr) {
             return .savedWithError(record.stash, gitsWords: stderr)

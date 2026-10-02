@@ -11,9 +11,10 @@ import Foundation
 /// directions: `apply.whitespace=fix` would silently change the lines it puts back, and
 /// `=error` would refuse them (M 9).
 ///
-/// Every git vector is one array literal, optionally `+ paths`, and every `restore` carries
-/// `--no-recurse-submodules` (under `submodule.recurse=true`, `restore --worktree -- sub`
-/// throws away the work inside a submodule, M A.5).
+/// Every git vector is one array literal, optionally `+ batch` (a read, `readInBatches`), and
+/// every `restore` carries `--no-recurse-submodules` (under `submodule.recurse=true`, `restore
+/// --worktree -- sub` throws away the work inside a submodule, M A.5) and takes its paths from a
+/// pathspec file (`withPathspecFile`): one call, all or nothing, however many (Ruling 26).
 extension CLIGitBackend {
 
     // MARK: - What the sheet shows
@@ -29,13 +30,19 @@ extension CLIGitBackend {
     /// its destination added — and with both paths in one call, `-M` would pair them into one
     /// diff the sheet never showed. The format flags are `workingCopyDiff`'s, for its reasons:
     /// without them a user's `diff.noprefix` left every tracked discard `nothingSelected`.
+    ///
+    /// Past `pathBatch` paths each read runs in batches (Ruling 26), joined as one call's
+    /// output (`readInBatches`); `ArgumentLimitTests` pins 5 000 files against the read of
+    /// their directory.
     public func discardExpectation(tracked paths: [String], includingStaged: Bool, at root: URL) async throws
         -> DiscardExpectation
     {
         guard !paths.isEmpty else { return .diffs([]) }
         let staged: [FileDiff]
         if includingStaged {
-            staged = DiffParser.parse(try await run(["diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--full-index", "-U3", "--no-renames", "--"] + paths.map(literalPathspec), cwd: root))
+            staged = try await readInBatches(of: paths, covering: true) { batch in
+                DiffParser.parse(try await run(["diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--full-index", "-U3", "--no-renames", "--"] + batch.map(literalPathspec), cwd: root))
+            }.flatMap { $0 }
         } else {
             staged = []
         }
@@ -47,7 +54,9 @@ extension CLIGitBackend {
             unstaged = []
         } else {
             let named = paths.filter(indexed.contains)
-            unstaged = DiffParser.parse(try await run(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--full-index", "-U3", "--no-renames", "--"] + named.map(literalPathspec), cwd: root))
+            unstaged = try await readInBatches(of: named, covering: true) { batch in
+                DiffParser.parse(try await run(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "--full-index", "-U3", "--no-renames", "--"] + batch.map(literalPathspec), cwd: root))
+            }.flatMap { $0 }
         }
         let stagedOf = Self.grouping(staged, by: \.displayPath)
         let unstagedOf = Self.grouping(unstaged, by: \.displayPath)
@@ -83,7 +92,7 @@ extension CLIGitBackend {
     }
 
     /// `a/b/c` → `a`, `a/b`.
-    private static func ancestors(of path: String) -> [String] {
+    static func ancestors(of path: String) -> [String] {
         var result: [String] = []
         var index = path.startIndex
         while let slash = path[index...].firstIndex(of: "/") {
@@ -198,13 +207,18 @@ extension CLIGitBackend {
 
         // 4. Change. Between the stale check (and the record) and this command is one process
         // start: an edit made in that window is overwritten and is in no record. No git option
-        // closes it; it is the same window `applyToIndex` documents.
+        // closes it; it is the same window `applyToIndex` documents. One `restore` for every
+        // path, however many, through a pathspec file (Ruling 26): still all or nothing.
         do {
             switch request {
             case .unstaged:
-                _ = try await run(["restore", "--no-recurse-submodules", "--worktree", "--"] + survey.paths.map(literalPathspec), cwd: root)
+                _ = try await withPathspecFile(survey.paths) { file in
+                    try await run(["restore", "--no-recurse-submodules", "--worktree", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)
+                }
             case .stagedAndUnstaged:
-                _ = try await run(["restore", "--no-recurse-submodules", "--source=HEAD", "--staged", "--worktree", "--"] + survey.paths.map(literalPathspec), cwd: root)
+                _ = try await withPathspecFile(survey.paths) { file in
+                    try await run(["restore", "--no-recurse-submodules", "--source=HEAD", "--staged", "--worktree", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)
+                }
             case .lines(_, let patch, _, _):
                 try await applyToWorktree(patch, reverse: true, at: root)
             case .untracked:
@@ -428,7 +442,9 @@ extension CLIGitBackend {
             .union(try await indexPaths(paths, at: root))
         let restorable = paths.filter(known.contains)
         guard !restorable.isEmpty else { return }
-        _ = try await run(["restore", "--no-recurse-submodules", "--source=\(sha)^2", "--staged", "--"] + restorable.map(literalPathspec), cwd: root)
+        _ = try await withPathspecFile(restorable) { file in
+            try await run(["restore", "--no-recurse-submodules", "--source=\(sha)^2", "--staged", "--pathspec-from-file=\(file)", "--pathspec-file-nul"], cwd: root)
+        }
     }
 
     /// Each trashed item back where it was. A path that exists again is not overwritten
@@ -487,10 +503,12 @@ extension CLIGitBackend {
     }
 
     /// The paths under `paths` with a staged change (the index differs from HEAD), each as git
-    /// names it.
+    /// names it. In batches past `pathBatch` paths (Ruling 26).
     private func stagedPaths(_ paths: [String], at root: URL) async throws -> Set<String> {
-        let data = try await run(["diff", "--cached", "--name-only", "-z", "--no-renames", "--"] + paths.map(literalPathspec), cwd: root)
-        return Set(String(decoding: data, as: UTF8.self).split(separator: "\0").map(String.init))
+        Set(try await readInBatches(of: paths, covering: true) { batch in
+            let data = try await run(["diff", "--cached", "--name-only", "-z", "--no-renames", "--"] + batch.map(literalPathspec), cwd: root)
+            return String(decoding: data, as: UTF8.self).split(separator: "\0").map(String.init)
+        }.joined())
     }
 
     /// The named paths whose staged side is the operation's own result, as named — none when
@@ -527,10 +545,13 @@ extension CLIGitBackend {
         try? Data(contentsOf: root.appendingPathComponent(path))
     }
 
-    /// Which of `paths` the index has an entry for (at any stage).
+    /// Which of `paths` the index has an entry for (at any stage). In batches past `pathBatch`
+    /// paths (Ruling 26).
     private func indexPaths(_ paths: [String], at root: URL) async throws -> Set<String> {
-        let data = try await run(["ls-files", "-z", "--"] + paths.map(literalPathspec), cwd: root)
-        return Set(String(decoding: data, as: UTF8.self).split(separator: "\0").map(String.init))
+        Set(try await readInBatches(of: paths, covering: true) { batch in
+            let data = try await run(["ls-files", "-z", "--"] + batch.map(literalPathspec), cwd: root)
+            return String(decoding: data, as: UTF8.self).split(separator: "\0").map(String.init)
+        }.joined())
     }
 
     /// HEAD's sha, or "" in a repository with no commits.

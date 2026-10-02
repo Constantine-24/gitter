@@ -13,4 +13,8 @@ public enum GitError: Error, Sendable, Equatable {
     /// `operation`. Thrown before git runs at all — see `GitWorkingCopyBackend.commit` for the
     /// measured table of which four of the six git would otherwise have gone through with.
     case amendDuringOperation(RepositoryOperation)
+    /// A git command was built with `count` arguments, more than `limit`
+    /// (`CLIGitBackend.argumentLimit`). Thrown before git runs at all: `Process` raises an
+    /// Objective-C exception — a crash — for more than 4096 (Ruling 26).
+    case tooManyArguments(count: Int, limit: Int)
 }

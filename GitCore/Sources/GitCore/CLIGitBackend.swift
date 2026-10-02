@@ -137,9 +137,27 @@ public struct CLIGitBackend: GitBackend {
 
     // MARK: - Helpers
 
+    /// The most arguments one git process is given (Ruling 26). `Process` raises an Objective-C
+    /// exception for more than 4096 — the app crashes, and nothing can catch it (measured on
+    /// macOS 27: `NSInvalidArgumentException`, "too many arguments (4097) -- limit is 4096";
+    /// 4096 itself launches). The largest vector Gitter builds is a `--cacheinfo` batch's
+    /// 2 002; a list of paths goes through a pathspec file or in batches
+    /// (`CLIGitBackend+Pathspecs.swift`). `run`, `runStreaming` and `runWithEnvironment` — every
+    /// way this type starts git — throw `GitError.tooManyArguments` over it instead of
+    /// launching, so no future call can crash the app this way. (Over 1 MiB of arguments,
+    /// `E2BIG`, is already a thrown `launchFailed`, measured.)
+    static let argumentLimit = 4_000
+
+    private static func checkArgumentCount(_ arguments: [String]) throws {
+        guard arguments.count <= argumentLimit else {
+            throw GitError.tooManyArguments(count: arguments.count, limit: argumentLimit)
+        }
+    }
+
     // Internal (not private) so CLIGitBackend+WorkingCopy.swift can share this helper.
     func run(_ arguments: [String], cwd: URL, allowedExitCodes: Set<Int32> = []) async throws -> Data {
-        try await runner.run(gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes)
+        try Self.checkArgumentCount(arguments)
+        return try await runner.run(gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes)
     }
 
     /// `run`'s cancellable, streaming twin, for the network operations: the same git and the
@@ -172,7 +190,8 @@ public struct CLIGitBackend: GitBackend {
         _ arguments: [String], cwd: URL, allowedExitCodes: Set<Int32> = [],
         progress: @escaping @Sendable (String) -> Void
     ) async throws -> ProcessRunner.StreamedResult {
-        try await runner.runStreaming(
+        try Self.checkArgumentCount(arguments)
+        return try await runner.runStreaming(
             gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes,
             onStderr: { segment in
                 let trimmed = segment.trimmingCharacters(in: .whitespaces)
@@ -194,8 +213,9 @@ public struct CLIGitBackend: GitBackend {
     /// runner's `SSH_ASKPASS_REQUIRE=force`, which no local command reads.
     ///
     /// Failures are `run`'s: an exit code that is neither 0 nor in `allowedExitCodes` throws
-    /// `GitError.commandFailed` with the trimmed stderr, and a launch failure
-    /// `GitError.launchFailed`. On success the result carries stdout, the untrimmed stderr and
+    /// `GitError.commandFailed` with the trimmed stderr, a launch failure
+    /// `GitError.launchFailed`, and more than `argumentLimit` arguments
+    /// `GitError.tooManyArguments` before anything is launched. On success the result carries stdout, the untrimmed stderr and
     /// the exit code — which matters for an apply, where exit 1 is a conflict to report.
     ///
     /// Here rather than in `CLIGitBackend+Environment.swift` because `gitPath` and `runner`
@@ -204,6 +224,7 @@ public struct CLIGitBackend: GitBackend {
         _ arguments: [String], cwd: URL, extra: [String: String],
         allowedExitCodes: Set<Int32> = []
     ) async throws -> ProcessRunner.StreamedResult {
+        try Self.checkArgumentCount(arguments)
         let environment = ProcessInfo.processInfo.environment.merging(extra) { _, added in added }
         return try await runner.runStreaming(
             gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes, onLaunch: nil,

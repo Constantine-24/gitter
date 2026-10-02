@@ -1060,17 +1060,20 @@ enum ForceFlagScanner {
         ],
         // Unstage, then the discard section's three literals. Every one carries
         // `--no-recurse-submodules`: under `submodule.recurse=true`, `restore --worktree -- sub`
-        // checks the submodule out and discards the work inside it (M A.5).
+        // checks the submodule out and discards the work inside it (M A.5). Ruling 26: each
+        // takes its paths from a pathspec file (`withPathspecFile`), never `-- + paths` — one
+        // argument per path crashed `Process` past 4096, and batches would end the all-or-nothing
+        // refusal (M A.5). The file slot is one interpolation (a path, never `-`, stdin).
         "restore": [
-            Shape(.literal("--no-recurse-submodules"), .literal("--staged"), .literal("--")),
-            Shape(.literal("--no-recurse-submodules"), .literal("--worktree"), .literal("--")),
+            Shape(.literal("--no-recurse-submodules"), .literal("--staged")) + pathspecFile,
+            Shape(.literal("--no-recurse-submodules"), .literal("--worktree")) + pathspecFile,
             Shape(
                 .literal("--no-recurse-submodules"), .literal("--source=HEAD"),
-                .literal("--staged"), .literal("--worktree"), .literal("--")),
+                .literal("--staged"), .literal("--worktree")) + pathspecFile,
             Shape(
                 .literal("--no-recurse-submodules"),
                 .interpolated(prefix: restoreSourcePrefix, suffix: "^2"),
-                .literal("--staged"), .literal("--")),
+                .literal("--staged")) + pathspecFile,
             // A2 Task 2's conflict writes, each of exactly one path the write has just checked:
             // `--ours`/`--theirs` delete a file whose stage is missing and exit 0, and discard an
             // unstaged change on a path that is not conflicted (M 27); `--merge` overwrites the
@@ -1082,7 +1085,7 @@ enum ForceFlagScanner {
         // `rm` without `--cached` deletes files on disk, and `-r` whatever is under a directory:
         // Stage and Unstage's two index-only vectors, and Delete's one path (M 28).
         "rm": [
-            Shape(.literal("--cached"), .literal("-q"), .literal("--ignore-unmatch"), .literal("--")),
+            Shape(.literal("--cached"), .literal("-q"), .literal("--ignore-unmatch")) + pathspecFile,
             Shape(.literal("--cached"), .literal("-r"), .literal("-q"), .literal("--"), .literal(".")),
             Shape(.literal("-q"), .literal("--"), .data),
         ],
@@ -1141,6 +1144,13 @@ enum ForceFlagScanner {
         "revert": [Shape(.literal("--skip"))],
     ]
 
+    /// The two slots that end a vector whose paths are in a pathspec file (Ruling 26):
+    /// `"--pathspec-from-file=\(file)"`, exactly one interpolation, then `--pathspec-file-nul`.
+    /// Nothing may follow, and nothing be concatenated: git refuses a pathspec beside the file.
+    static let pathspecFile: [ShapeSlot] = [
+        .interpolated(prefix: "--pathspec-from-file=", suffix: ""), .literal("--pathspec-file-nul"),
+    ]
+
     /// One element of an allowed shape.
     enum ShapeSlot {
         /// Exactly this string literal (escapes decoded).
@@ -1172,6 +1182,9 @@ enum ForceFlagScanner {
     struct Shape {
         let slots: [ShapeSlot]
         init(_ slots: ShapeSlot...) { self.slots = slots }
+        private init(slots: [ShapeSlot]) { self.slots = slots }
+
+        static func + (shape: Shape, tail: [ShapeSlot]) -> Shape { Shape(slots: shape.slots + tail) }
 
         /// Whether `+ …` may follow the array literal: only after a trailing `"--"`.
         var allowsConcatenation: Bool {
@@ -1333,8 +1346,9 @@ enum ForceFlagScanner {
         "`restore` overwrites files on disk through `--worktree` and `--source=…`, and without "
             + "`--no-recurse-submodules` it discards work inside a submodule under "
             + "`submodule.recurse=true` (M A.5); the only permitted vectors are the unstage "
-            + "vector, the discard section's three literals and a conflict write's `--ours`, "
-            + "`--theirs` or `--merge` of one path"
+            + "vector, the discard section's three literals — each with its paths in a pathspec "
+            + "file (Ruling 26) — and a conflict write's `--ours`, `--theirs` or `--merge` of one "
+            + "path"
 
     /// The scanner's first per-file rule. Without `GIT_INDEX_FILE`, `read-tree HEAD` overwrites
     /// the real index and drops every staged change, and this scanner cannot see an

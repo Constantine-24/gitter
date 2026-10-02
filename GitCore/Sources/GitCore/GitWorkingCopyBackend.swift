@@ -6,12 +6,14 @@ import Foundation
 /// so either half can be faked independently in tests.
 public protocol GitWorkingCopyBackend: Sendable {
     /// `git add -- <paths>`. Stages the given paths, whether modified, deleted, or untracked.
-    /// A no-op (does not invoke git) when `paths` is empty.
+    /// A no-op (does not invoke git) when `paths` is empty. One call however many paths, all
+    /// or nothing: the paths go in a pathspec file (Ruling 26).
     func stage(paths: [String], at root: URL) async throws
 
     /// `git restore --staged -- <paths>`. In a repository with no commits yet (where `restore`
     /// has nothing to restore to), falls back to `git rm --cached -q -- <paths>`, which leaves
-    /// the paths untracked and unchanged on disk. A no-op when `paths` is empty.
+    /// the paths untracked and unchanged on disk. A no-op when `paths` is empty. The paths go
+    /// in a pathspec file, as `stage`'s.
     func unstage(paths: [String], at root: URL) async throws
 
     /// What `git add -A` stages — every modified, deleted and untracked path — except an

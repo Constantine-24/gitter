@@ -32,6 +32,12 @@ extension RepositoryStore {
                 // operation yet (a terminal started one between two refreshes). Same sentence as
                 // the disabled toggle's tooltip, so the two never describe the state differently.
                 return operation.amendBlockedHelp
+            case .tooManyArguments(let count, let limit):
+                // GitCore's guard (Ruling 26): git was not started, so this one command changed
+                // nothing. Every path list goes through a pathspec file or in batches, so this is
+                // a safety net for a vector nobody has written yet, not a path.
+                return "Gitter did not run git: the command needed \(count) arguments, more than the "
+                    + "\(limit) one git process can take."
             }
         }
         // A refusal that reached here without the action that provoked it. Every throw site in
