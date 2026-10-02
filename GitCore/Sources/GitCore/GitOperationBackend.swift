@@ -24,11 +24,14 @@ public protocol GitOperationBackend: Sendable {
     /// exist (a rebase's `exec` or `break` stop).
     func pendingMessage(at root: URL) async throws -> PendingMessage?
 
-    /// Every path the operation's own result changes against HEAD — `diff --name-only -z
-    /// --no-renames HEAD AUTO_MERGE`, both sides of a rename (M 31). Read only while an
-    /// operation is in progress: `AUTO_MERGE` outlives a clean finish and a `stash apply`
-    /// writes one with no operation at all. Nil with no operation or no `AUTO_MERGE` (a
-    /// `git am` stop, a rebase's `exec` / `break` stop).
+    /// Every path the operation's own result changes against HEAD, both sides of a rename
+    /// (M 31) — a superset (Ruling 22): ort's `AUTO_MERGE` diff unless detectably stale, the
+    /// paths the operation's source commits change (`MERGE_HEAD` since its merge bases, the
+    /// picked, reverted or replayed commit, `git am`'s current patch), and the unmerged paths.
+    /// `AUTO_MERGE` is read only while an operation is in progress, and alone it is not
+    /// enough: only ort writes it, so a `-s resolve` or octopus stop sits over a stale one.
+    /// Nil with no operation, and when the source cannot be read: a squash whose `AUTO_MERGE`
+    /// no conflict shows fresh, a rebase's `exec` / `break` / `edit` stop, a failed read.
     func operationPaths(at root: URL) async throws -> [String]?
 
     /// Whether `continueOperation` would run; see `ContinueReadiness`.
@@ -62,7 +65,7 @@ public protocol GitOperationBackend: Sendable {
     /// Whether `skip` would run. `.notSkippable` with no rebase, pick or revert, and for a rebase
     /// with no commit pending (`exec`, `break`, `edit` stop; Ruling 19). `.otherChanges` unless
     /// every path with a tracked change (staged, unstaged or unmerged; untracked files are not
-    /// touched by any skip, M 17) is unmerged or one of `operationPaths` — with no `AUTO_MERGE`,
+    /// touched by any skip, M 17) is unmerged or one of `operationPaths` — when that is nil,
     /// unmerged only; renames count by both names. `.needsCleanPaths` for those of them git
     /// would refuse to reset: an untracked file at the path (all three), or — for a pick or
     /// revert — a worktree that differs from a non-unmerged index entry (fix round 1).

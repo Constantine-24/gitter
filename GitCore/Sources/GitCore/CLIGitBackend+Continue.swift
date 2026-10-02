@@ -250,14 +250,123 @@ extension CLIGitBackend: GitOperationBackend {
 
     // MARK: - The operation's paths (M 31)
 
+    /// Ruling 22 (A2 Task 4, fix round 1): the union of three reads, because `AUTO_MERGE` alone
+    /// can be stale while an operation is in progress — only ort writes it, so `merge -s
+    /// resolve`, an octopus merge and `--strategy=resolve` picks and reverts stop over whatever
+    /// a clean cherry-pick, a clean finished rebase or a clean `stash apply` left (measured).
+    ///
+    /// 1. `diff --name-only -z --no-renames HEAD AUTO_MERGE`: ort's result, which alone has the
+    ///    paths a rename carried a change to. Left out when detectably stale: a fresh one differs
+    ///    from HEAD at every text conflict (its markers; under rerere too), so with paths
+    ///    conflicted on both sides (stages 2 and 3) and none of them in it, it is not this
+    ///    operation's. Measured: at a binary, symlink, mode-only or `merge=binary` conflict a
+    ///    fresh one equals HEAD — a stop with only those reads as stale, and only the rename's
+    ///    carried path is lost from the set.
+    /// 2. The paths the operation's source commits change (`sourcePaths`), exact for a non-ort
+    ///    stop, which follows no rename.
+    /// 3. The unmerged paths.
+    ///
+    /// Nil when the source cannot be read: a squash (no source commit is recorded) unless a
+    /// conflict shows its `AUTO_MERGE` fresh, a rebase stop with no commit pending (`exec`,
+    /// `break`, `edit`), or a read that fails. A superset only over-refuses a staged-side
+    /// discard. Accepted costs: Skip may count a user's change to a path the commit also
+    /// changes as the commit's (Skip records first), and Continue's other-staged check misses
+    /// such a path.
     public func operationPaths(at root: URL) async throws -> [String]? {
-        guard try await operationInProgress(at: root) != nil,
-            try await resolves("AUTO_MERGE", at: root)
-        else { return nil }
-        let data = try await run(["diff", "--name-only", "-z", "--no-renames", "HEAD", "AUTO_MERGE"], cwd: root)
+        guard let operation = try await operationInProgress(at: root) else { return nil }
+        let unmergedRecords = Self.indexRecords(try await run(["ls-files", "-u", "-z"], cwd: root))
+        let unmerged = unmergedRecords.map(\.path)
+        let stagesOf = Dictionary(grouping: unmergedRecords, by: \.path).mapValues { Set($0.map(\.stage)) }
+        let conflictedOnBothSides = Set(stagesOf.filter { $0.value.isSuperset(of: ["2", "3"]) }.keys)
+
+        var autoMerge: [String]?
+        if try await resolves("AUTO_MERGE", at: root) {
+            let data = try await run(["diff", "--name-only", "-z", "--no-renames", "HEAD", "AUTO_MERGE"], cwd: root)
+            autoMerge = Self.nulSeparated(data)
+        }
+        if let paths = autoMerge, !conflictedOnBothSides.isEmpty, conflictedOnBothSides.isDisjoint(with: paths) {
+            autoMerge = nil
+        }
+
+        let parts: [[String]]
+        if let source = try await sourcePaths(of: operation, at: root) {
+            parts = [autoMerge ?? [], source, unmerged]
+        } else if operation == .squash, let paths = autoMerge, !conflictedOnBothSides.isEmpty {
+            // A conflict it differs at shows it fresh: ort's own result, renames included.
+            parts = [paths, unmerged]
+        } else {
+            return nil
+        }
         var seen = Set<String>()
-        return String(decoding: data, as: UTF8.self).split(separator: "\0").map(String.init)
-            .filter { seen.insert($0).inserted }
+        return parts.joined().filter { seen.insert($0).inserted }
+    }
+
+    /// Every path the commit or commits the operation applies change, both sides of a rename;
+    /// nil when there is none to read (see `operationPaths`).
+    ///
+    /// - merge: for each line of `MERGE_HEAD` (an octopus has several), its changes since each
+    ///   merge base with HEAD (`--all`: a criss-cross's virtual base changes nothing the bases
+    ///   all agree on).
+    /// - cherry-pick, revert, rebase: `CHERRY_PICK_HEAD` / `REVERT_HEAD` / `REBASE_HEAD`
+    ///   against each of its parents (`diff-tree -m --root`: a merge commit, a root commit).
+    /// - `git am`: the current patch, `rebase-apply/patch`, read by `DiffParser` — only with no
+    ///   `apply-opt` (`-p`, `--directory` would move its paths) and only when every `diff --git`
+    ///   header parsed.
+    private func sourcePaths(of operation: RepositoryOperation, at root: URL) async throws -> [String]? {
+        switch operation {
+        case .merge:
+            guard let text = try? String(contentsOf: try await gitPath("MERGE_HEAD", at: root), encoding: .utf8)
+            else { return nil }
+            let heads = text.split(whereSeparator: \.isNewline).map(String.init)
+            guard !heads.isEmpty, heads.allSatisfy(Self.isObjectName) else { return nil }
+            var paths: [String] = []
+            for head in heads {
+                let bases = try await run(["merge-base", "--all", "HEAD", head], cwd: root, allowedExitCodes: [1])
+                let names = GitLines.split(bases)
+                guard !names.isEmpty, names.allSatisfy(Self.isObjectName) else { return nil }
+                for base in names {
+                    paths += Self.nulSeparated(try await run(["diff", "--name-only", "-z", "--no-renames", base, head], cwd: root))
+                }
+            }
+            return paths
+        case .cherryPick: return try await commitPaths("CHERRY_PICK_HEAD", at: root)
+        case .revert: return try await commitPaths("REVERT_HEAD", at: root)
+        case .rebase:
+            guard try await hasPendingCommit(.rebase, at: root) else { return nil }
+            return try await commitPaths("REBASE_HEAD", at: root)
+        case .applyingPatches: return try await currentPatchPaths(at: root)
+        case .squash: return nil
+        }
+    }
+
+    /// `pseudoRef`'s changes against each of its parents, or nil when it does not resolve.
+    private func commitPaths(_ pseudoRef: String, at root: URL) async throws -> [String]? {
+        guard try await resolves(pseudoRef, at: root) else { return nil }
+        return Self.nulSeparated(try await run(
+            ["diff-tree", "-r", "-m", "--root", "--name-only", "-z", "--no-renames", "--no-commit-id", pseudoRef], cwd: root))
+    }
+
+    /// The paths of the patch `git am` stopped on (`rebase-apply/patch`), old and new names.
+    private func currentPatchPaths(at root: URL) async throws -> [String]? {
+        let directory = try await gitPath("rebase-apply", at: root)
+        let options = (try? String(contentsOf: directory.appendingPathComponent("apply-opt"), encoding: .utf8)) ?? ""
+        guard options.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            let data = FileManager.default.contents(atPath: directory.appendingPathComponent("patch").path)
+        else { return nil }
+        let files = DiffParser.parse(data)
+        let headers = String(decoding: data, as: UTF8.self).split(separator: "\n").filter { $0.hasPrefix("diff --git ") }
+        guard !files.isEmpty, files.count == headers.count else { return nil }
+        return files.flatMap { [$0.oldPath, $0.newPath].compactMap { $0 } }
+    }
+
+    /// `-z` output: one name per NUL-terminated record.
+    private static func nulSeparated(_ data: Data) -> [String] {
+        String(decoding: data, as: UTF8.self).split(separator: "\0").map(String.init)
+    }
+
+    /// A full object name, as git writes one into `MERGE_HEAD` (SHA-1 or SHA-256).
+    private static func isObjectName(_ text: String) -> Bool {
+        (text.count == 40 || text.count == 64) && text.allSatisfy(\.isHexDigit)
     }
 
     // MARK: - Continue
@@ -294,7 +403,7 @@ extension CLIGitBackend: GitOperationBackend {
             return ContinueFacts(unresolved: unmerged, empty: false, unstaged: [], otherStaged: [])
         }
         // Fix round 1 (I1, measured): every staged path rides into the continued commit, for all
-        // three. The operation's own are `operationPaths`; without `AUTO_MERGE` there is no telling
+        // three. The operation's own are `operationPaths`; when that is nil there is no telling
         // them apart, and none is needed — a rebase's `exec` / `break` stop refuses staged changes
         // itself, and at an `edit` stop amending is the point.
         let staged = try await stagedPaths(at: root)

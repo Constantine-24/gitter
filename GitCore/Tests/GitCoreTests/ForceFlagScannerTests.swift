@@ -1204,6 +1204,10 @@ import Testing
         #"_ = try await run(["diff", "--quiet"], cwd: root)"#,
         #"let data = try await run(["diff", "--cached", "--name-only", "-z", "--no-renames", "--"] + paths.map(literalPathspec), cwd: root)"#,
         #"let data = try await run(["diff", "--cached", "--raw", "-z", "--no-abbrev", "--no-renames", "--no-color", "--", pathspec], cwd: root)"#,
+        // Ruling 22: the operation's source commits, names only.
+        #"paths += Self.nulSeparated(try await run(["diff", "--name-only", "-z", "--no-renames", base, head], cwd: root))"#,
+        #"let bases = try await run(["merge-base", "--all", "HEAD", head], cwd: root, allowedExitCodes: [1])"#,
+        #"return Self.nulSeparated(try await run(["diff-tree", "-r", "-m", "--root", "--name-only", "-z", "--no-renames", "--no-commit-id", pseudoRef], cwd: root))"#,
     ])
     func allowsTheDiffReadsGitterMakes(source: String) {
         #expect(ForceFlagScanner.findings(in: source).isEmpty,

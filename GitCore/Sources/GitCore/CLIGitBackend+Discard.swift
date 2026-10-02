@@ -495,8 +495,8 @@ extension CLIGitBackend {
 
     /// The named paths whose staged side is the operation's own result, as named — none when
     /// no operation is in progress (`DiscardRefusal.partOfOperation`). The operation's paths
-    /// are `operationPaths` (M 21, M 31); without `AUTO_MERGE` nothing tells them apart, so
-    /// every path with a staged change counts. A named directory counts when it holds one.
+    /// are `operationPaths` (M 21, M 31, Ruling 22); when that is nil nothing tells them apart,
+    /// so every path with a staged change counts. A named directory counts when it holds one.
     private func operationsOwn(_ named: [String], at root: URL) async throws -> [String] {
         guard try await operationInProgress(at: root) != nil else { return [] }
         let own: Set<String>

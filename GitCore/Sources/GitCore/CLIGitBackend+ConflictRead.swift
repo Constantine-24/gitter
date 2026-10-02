@@ -321,10 +321,10 @@ extension CLIGitBackend: GitConflictBackend {
     /// Ruling 13 (A2 Task 3): the path must also belong to *this* operation — unmerged, or one
     /// of `operationPaths` — because the record outlives the operation that made it: a merge
     /// resolved and committed leaves one that a later `git am` stop still shows
-    /// (`ReopenTests.aResolutionFromAnEarlierCommittedMergeIsNotReopenedDuringAnAmStop`). With
-    /// no `AUTO_MERGE` there are no operation paths, and the answer is the safe one: no.
+    /// (`ReopenTests.aResolutionFromAnEarlierCommittedMergeIsNotReopenedDuringAnAmStop`). When
+    /// the operation's paths cannot be told (nil), the answer is the safe one: no.
     public func canReopen(_ path: String, at root: URL) async throws -> Bool {
-        // Nil with no operation in progress, as well as with no `AUTO_MERGE`.
+        // Nil with no operation in progress, as well as when its paths cannot be told.
         guard let paths = try await operationPaths(at: root) else { return false }
         if !paths.contains(path) {
             guard try await unmergedPaths(at: root).contains(path) else { return false }

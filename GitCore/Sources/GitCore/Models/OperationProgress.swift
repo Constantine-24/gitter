@@ -93,7 +93,7 @@ public enum ContinueReadiness: Sendable, Hashable {
     /// drop the commit without a word, and a cherry-pick or revert refuses (exit 1). Continue is
     /// allowed for a rebase only, after the UI has said the commit will be left out; Skip is the
     /// way on for the other two. Judged on the operation's own paths (`operationPaths`; the
-    /// whole index without `AUTO_MERGE`): an unrelated staged file does not make the result
+    /// whole index when that is nil): an unrelated staged file does not make the result
     /// non-empty — git would commit it alone under the stopped commit's title (fix round 1).
     case emptyResult
     /// Tracked files whose worktree differs from the index (not unmerged). A rebase refuses any
@@ -103,8 +103,8 @@ public enum ContinueReadiness: Sendable, Hashable {
     case unstagedChanges([String])
     /// Staged paths that are not the operation's (neither unmerged nor among `operationPaths`):
     /// git commits them into the stopped commit. Continue needs them acknowledged, by name.
-    /// Not judged without `AUTO_MERGE` (a rebase's `exec` / `break` stop refuses staged changes
-    /// itself; at an `edit` stop amending is the point).
+    /// Not judged when `operationPaths` is nil (a rebase's `exec` / `break` stop refuses staged
+    /// changes itself; at an `edit` stop amending is the point).
     case otherStagedChanges([String])
     /// No rebase, cherry-pick or revert is in progress (a merge and a squash conclude with
     /// Commit; `git am` is abort-only).
