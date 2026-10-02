@@ -73,12 +73,17 @@ extension RepositoryStore {
         }
     }
 
-    /// Why the composer's Commit is off beyond an empty subject or a running change: during a
-    /// merge or squash, a draft written before it began (`composerForeignDraft`).
+    /// Why the composer's Commit is off beyond an empty subject or a running change: a file still
+    /// unmerged (git would refuse; final review I3), then, during a merge or squash, a draft
+    /// written before it began (`composerForeignDraft`). The button and `commit()` both read it.
     var composerCommitBlockedReason: String? {
-        guard let operation = operationInProgress, let foreign = composerForeignDraft else { return nil }
-        return ContinueWording.foreignReason(
-            writtenFor: foreign.writtenFor, operation: operation, current: operationStop?.progress?.current)
+        let foreign = operationInProgress.flatMap { operation in
+            composerForeignDraft.map {
+                ContinueWording.foreignReason(
+                    writtenFor: $0.writtenFor, operation: operation, current: operationStop?.progress?.current)
+            }
+        }
+        return OperationBarState.commitBlockedReason(unmerged: unmergedPaths, foreign: foreign)
     }
 
     /// Turns amending on or off, prefilling an untouched draft with HEAD's message.

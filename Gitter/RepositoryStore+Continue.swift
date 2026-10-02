@@ -135,6 +135,16 @@ enum OperationBarState {
         }
     }
 
+    // MARK: - The composer's Commit (merge, squash)
+
+    /// Why Commit Merge / Commit Squash (or a plain Commit) is off beyond an empty subject or a
+    /// running change: a file still unmerged — git refuses the commit ("Committing is not
+    /// possible because you have unmerged files"), so the bar's own reason is said first (final
+    /// review I3) — then a draft written for something else (`foreign`).
+    static func commitBlockedReason(unmerged: [String], foreign: String?) -> String? {
+        unmerged.isEmpty ? foreign : ContinueWording.unresolved(unmerged)
+    }
+
     // MARK: - Abort
 
     /// What the abort now offered does to commits already made (final review I2): `git am`

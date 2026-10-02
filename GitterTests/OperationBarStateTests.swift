@@ -478,4 +478,19 @@ import Testing
         #expect(OperationBarState.abortRewind(.rebase, Self.stop(.rebase)) == .none)
         #expect(OperationBarState.abortRewind(nil, nil) == .none)
     }
+
+    // MARK: - The composer's Commit (final review I3)
+
+    /// A merge or squash with a file still unmerged: git refuses the commit, so the button is
+    /// off with the bar's reason — before the foreign-draft reason, which it outranks.
+    @Test func commitIsOffWhileAFileIsUnmergedWithTheBarsReason() {
+        #expect(OperationBarState.commitBlockedReason(unmerged: ["f.txt"], foreign: nil)
+            == ContinueWording.unresolved(["f.txt"]))
+        #expect(OperationBarState.commitBlockedReason(unmerged: ["f.txt"], foreign: nil)
+            == "Resolve the conflict in \"f.txt\" first.")
+        #expect(OperationBarState.commitBlockedReason(unmerged: ["a", "b"], foreign: "written for another")
+            == ContinueWording.unresolved(["a", "b"]))
+        #expect(OperationBarState.commitBlockedReason(unmerged: [], foreign: "written for another") == "written for another")
+        #expect(OperationBarState.commitBlockedReason(unmerged: [], foreign: nil) == nil)
+    }
 }
