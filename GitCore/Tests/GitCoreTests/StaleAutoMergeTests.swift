@@ -206,4 +206,73 @@ import Testing
         try await repo.git(["add", "--", "f.txt"])
         #expect(try await backend.continueReadiness(at: repo.root) == .ready)
     }
+
+    // MARK: - Ruling 23: freshness that cannot be decided keeps AUTO_MERGE
+
+    /// base: a.txt (8 lines) and bin.dat; theirs changes line 4 of a.txt and bin.dat; ours
+    /// renames a.txt to b.txt and changes bin.dat. ort carries theirs' change into b.txt.
+    private func renameFollowRepo(conflictingBinary: Bool) async throws -> TestRepo {
+        let repo = try await TestRepo.makeEmpty()
+        try repo.write("a.txt", (1...8).map { "a\($0)\n" }.joined())
+        try Data("\u{0}bin base\n".utf8).write(to: try repo.url("bin.dat"))
+        try await repo.commitAll("base")
+        try await repo.git(["switch", "-q", "-c", "theirs"])
+        try repo.write("a.txt", (1...8).map { $0 == 4 ? "a4 THEIRS\n" : "a\($0)\n" }.joined())
+        if conflictingBinary { try Data("\u{0}bin THEIRS\n".utf8).write(to: try repo.url("bin.dat")) }
+        try await repo.commitAll("theirs")
+        try await repo.git(["switch", "-q", "main"])
+        try await repo.git(["mv", "a.txt", "b.txt"])
+        if conflictingBinary { try Data("\u{0}bin OURS\n".utf8).write(to: try repo.url("bin.dat")) }
+        try await repo.commitAll("ours")
+        return repo
+    }
+
+    /// The only conflict is binary, where a fresh `AUTO_MERGE` equals HEAD (measured): nothing
+    /// can show it fresh or stale, so it is kept, and with it the path ort carried the change to.
+    @Test func aBinaryOnlyOrtStopKeepsTheRenameCarriedPath() async throws {
+        let repo = try await renameFollowRepo(conflictingBinary: true)
+        defer { repo.cleanUp() }
+        try await repo.git(["merge", "--no-edit", "theirs"], allowedExitCodes: [1])
+        #expect(try await backend.operationInProgress(at: repo.root) == .merge)
+        #expect(Set(try await repo.git(["ls-files", "-u", "--", "bin.dat"]).split(separator: UInt8(ascii: "\n"))).count == 3)
+        #expect(String(decoding: try await repo.git(["ls-files", "-u"]), as: UTF8.self).contains("b.txt") == false)
+        let diff = try await autoMergeDiff(repo)
+        #expect(diff.contains("b.txt") && !diff.contains("bin.dat"))
+
+        let paths = Set(try #require(try await backend.operationPaths(at: repo.root)))
+        #expect(paths.isSuperset(of: ["b.txt", "bin.dat"]))
+        try await expectRefused(try await staged(["b.txt"], repo), .partOfOperation(["b.txt"]), in: repo)
+    }
+
+    /// A clean `merge --no-commit --no-ff`: nothing unmerged to test freshness by; kept.
+    @Test func aCleanNoCommitOrtMergeKeepsTheRenameCarriedPath() async throws {
+        let repo = try await renameFollowRepo(conflictingBinary: false)
+        defer { repo.cleanUp() }
+        try await repo.git(["merge", "-q", "--no-edit", "--no-commit", "--no-ff", "theirs"])
+        #expect(try await backend.operationInProgress(at: repo.root) == .merge)
+        #expect(String(decoding: try await repo.indexContent(of: "b.txt"), as: UTF8.self).contains("a4 THEIRS"))
+
+        let paths = Set(try #require(try await backend.operationPaths(at: repo.root)))
+        #expect(paths.contains("b.txt"))
+        try await expectRefused(try await staged(["b.txt"], repo), .partOfOperation(["b.txt"]), in: repo)
+    }
+
+    // MARK: - Ruling 24: a stale AUTO_MERGE is not what git wrote for a conflict
+
+    /// At a `merge -s resolve` stop over the pick's stale `AUTO_MERGE`, the stale tree holds
+    /// HEAD's f.txt. A worktree edited to exactly that is the user's, not git's conflict.
+    @Test func aStaleAutoMergeDoesNotMakeAnEditLookUntouched() async throws {
+        let repo = try await lab()
+        defer { repo.cleanUp() }
+        try await leaveAStaleAutoMerge(repo)
+        try await repo.git(["merge", "--no-edit", "-s", "resolve", "t1"], allowedExitCodes: [1])
+        let head = try await repo.git(["show", "HEAD:f.txt"])
+        #expect(try await repo.git(["show", "AUTO_MERGE:f.txt"]) == head, "the stale tree does not hold HEAD's f.txt")
+        // The baseline that can fail: git's own conflict, untouched, matches.
+        #expect(try await ConflictReadTests.document(repo, "f.txt").matchesGitsConflict)
+
+        try head.write(to: repo.root.appendingPathComponent("f.txt"))
+
+        #expect(!(try await ConflictReadTests.document(repo, "f.txt").matchesGitsConflict))
+    }
 }

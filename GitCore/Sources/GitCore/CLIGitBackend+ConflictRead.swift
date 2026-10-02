@@ -23,9 +23,13 @@ extension CLIGitBackend: GitConflictBackend {
 
         if file.isSubmodule { return document(.submodule, matches: false) }
         // What the merge machinery wrote (M 21) — read only while an operation is in progress:
-        // a `stash apply` writes one too and nothing removes it (measured, fix round 1).
-        let written: AutoMergeEntry =
-            try await operationInProgress(at: root) != nil ? try await autoMergeEntry(file.path, at: root) : .unknown
+        // a `stash apply` writes one too and nothing removes it (measured, fix round 1) — and
+        // not when it is provably stale (Ruling 24): a `-s resolve` or octopus stop writes
+        // none, and a leftover one holds HEAD's version of a conflicted path.
+        var written = AutoMergeEntry.unknown
+        if try await operationInProgress(at: root) != nil, try await autoMergeState(at: root).isUsable {
+            written = try await autoMergeEntry(file.path, at: root)
+        }
         func wholeFile(_ reason: WholeFileReason, left: LeftInWorktree) async throws -> ConflictDocument {
             var matches = try await isWritten(written, worktree, markerSize: nil, path: file.path, at: root)
             if !matches { matches = try await isLeft(left, worktree, path: file.path, at: root) }
@@ -172,6 +176,95 @@ extension CLIGitBackend: GitConflictBackend {
     private func conflictConfigValue(_ key: String, at root: URL) async throws -> String {
         let data = try await run(["config", "--get", key], cwd: root, allowedExitCodes: [1])
         return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - Whether AUTO_MERGE is this operation's (Rulings 22–24)
+
+    /// `AUTO_MERGE` as far as it can be trusted. Only ort writes it, and a clean cherry-pick, a
+    /// clean finished rebase or a clean `stash apply` leaves one behind, so a `merge -s
+    /// resolve`, an octopus or a `--strategy=resolve` stop sits over a stale one (measured, A2
+    /// Task 4 fix round 1). A fresh one differs from HEAD at every **text** conflict (its
+    /// markers; under rerere too) and equals HEAD at a whole-file one — binary, symlink,
+    /// mode-only, a `merge` attribute or driver that keeps ours (measured).
+    enum AutoMergeState: Equatable {
+        /// No `AUTO_MERGE`.
+        case unavailable
+        /// A text conflict exists, and `AUTO_MERGE` differs from HEAD at none of them.
+        case provablyStale
+        /// Fresh, or not provably stale (no text conflict to test it by: all whole-file, or
+        /// nothing unmerged) — kept, since keeping a stale one only over-refuses (Ruling 23).
+        /// `diff`: `diff --name-only -z --no-renames HEAD AUTO_MERGE`.
+        case usable(diff: [String])
+
+        var isUsable: Bool { if case .usable = self { true } else { false } }
+    }
+
+    /// `autoMergeState` with the unmerged entries read here. The caller gates on an operation.
+    func autoMergeState(at root: URL) async throws -> AutoMergeState {
+        try await autoMergeState(unmerged: Self.indexRecords(try await run(["ls-files", "-u", "-z"], cwd: root)), at: root)
+    }
+
+    /// Whether `AUTO_MERGE` is provably stale, given `ls-files -u -z`'s entries. A path both
+    /// sides changed as regular files that is in the diff keeps it, with no further reads; only
+    /// when none is are they classified (`isTextConflict`), until one is text.
+    func autoMergeState(
+        unmerged records: [(mode: String, sha: String, stage: String, path: String)], at root: URL
+    ) async throws -> AutoMergeState {
+        guard try await resolves("AUTO_MERGE", at: root) else { return .unavailable }
+        let diff = Self.nulSeparated(try await run(["diff", "--name-only", "-z", "--no-renames", "HEAD", "AUTO_MERGE"], cwd: root))
+        let inDiff = Set(diff)
+        let candidates = Self.contentConflicts(records)
+        if candidates.contains(where: { inDiff.contains($0.path) }) { return .usable(diff: diff) }
+        for candidate in candidates where try await isTextConflict(candidate, at: root) {
+            return .provablyStale
+        }
+        return .usable(diff: diff)
+    }
+
+    /// Whether a text conflict shows `diff` (a usable `AUTO_MERGE`'s) fresh: one that differs
+    /// from HEAD there. What a squash, which records no source commit, needs to use it.
+    func autoMergeIsProvedFresh(
+        _ diff: [String], unmerged records: [(mode: String, sha: String, stage: String, path: String)],
+        at root: URL
+    ) async throws -> Bool {
+        let inDiff = Set(diff)
+        for candidate in Self.contentConflicts(records) where inDiff.contains(candidate.path) {
+            if try await isTextConflict(candidate, at: root) { return true }
+        }
+        return false
+    }
+
+    /// A path whose stages 2 and 3 are both regular files with different blobs — what may be a
+    /// text conflict (a symlink, a gitlink and a mode-only add/add are not), in index order.
+    struct ContentConflict { let path: String; let ours: String; let hasBase: Bool }
+
+    static func contentConflicts(
+        _ records: [(mode: String, sha: String, stage: String, path: String)]
+    ) -> [ContentConflict] {
+        var order: [String] = []
+        var stages: [String: [String: (mode: String, sha: String)]] = [:]
+        for record in records {
+            if stages[record.path] == nil { order.append(record.path) }
+            stages[record.path, default: [:]][record.stage] = (record.mode, record.sha)
+        }
+        let regular: Set<String> = ["100644", "100755"]
+        return order.compactMap { path in
+            guard let byStage = stages[path], let ours = byStage["2"], let theirs = byStage["3"],
+                regular.contains(ours.mode), regular.contains(theirs.mode), ours.sha != theirs.sha
+            else { return nil }
+            return ContentConflict(path: path, ours: ours.sha, hasBase: byStage["1"] != nil)
+        }
+    }
+
+    /// Whether git text-merged the path, writing markers: no `merge` attribute or driver that
+    /// takes it whole, and not binary to `merge-file` (exit 255) — `conflictDocument`'s own
+    /// classification.
+    private func isTextConflict(_ candidate: ContentConflict, at root: URL) async throws -> Bool {
+        let attributes = try await conflictAttributes(of: candidate.path, at: root)
+        if try await mergeDriver(attributes.merge, at: root) != nil { return false }
+        let base = candidate.hasBase ? ":1:\(candidate.path)" : Self.emptyBlob(like: candidate.ours)
+        return try await rebuild(
+            candidate.path, base: base, diff3: false, markerSize: attributes.markerSize, at: root) != nil
     }
 
     // MARK: - What git wrote

@@ -256,43 +256,40 @@ extension CLIGitBackend: GitOperationBackend {
     /// a clean cherry-pick, a clean finished rebase or a clean `stash apply` left (measured).
     ///
     /// 1. `diff --name-only -z --no-renames HEAD AUTO_MERGE`: ort's result, which alone has the
-    ///    paths a rename carried a change to. Left out when detectably stale: a fresh one differs
-    ///    from HEAD at every text conflict (its markers; under rerere too), so with paths
-    ///    conflicted on both sides (stages 2 and 3) and none of them in it, it is not this
-    ///    operation's. Measured: at a binary, symlink, mode-only or `merge=binary` conflict a
-    ///    fresh one equals HEAD — a stop with only those reads as stale, and only the rename's
-    ///    carried path is lost from the set.
+    ///    paths a rename carried a change to. Left out only when provably stale
+    ///    (`autoMergeState`, Ruling 23): a text conflict exists and it differs from HEAD at none
+    ///    of them — a fresh one differs at every text conflict (its markers; under rerere too)
+    ///    and equals HEAD at a whole-file one (measured). With no text conflict to test it by
+    ///    (all whole-file, or nothing unmerged) it is kept.
     /// 2. The paths the operation's source commits change (`sourcePaths`), exact for a non-ort
     ///    stop, which follows no rename.
     /// 3. The unmerged paths.
     ///
     /// Nil when the source cannot be read: a squash (no source commit is recorded) unless a
-    /// conflict shows its `AUTO_MERGE` fresh, a rebase stop with no commit pending (`exec`,
-    /// `break`, `edit`), or a read that fails. A superset only over-refuses a staged-side
-    /// discard. Accepted costs: Skip may count a user's change to a path the commit also
-    /// changes as the commit's (Skip records first), and Continue's other-staged check misses
-    /// such a path.
+    /// text conflict shows its `AUTO_MERGE` fresh, a rebase stop with no commit pending
+    /// (`exec`, `break`, `edit`), or a read that fails. A superset only over-refuses a
+    /// staged-side discard. Accepted costs: Skip may count a user's change to a path the commit
+    /// also changes as the commit's (Skip records first), and Continue's other-staged check
+    /// misses such a path — and, where a stale `AUTO_MERGE` cannot be proved stale (a non-ort
+    /// stop with no text conflict), a user's path it lists.
     public func operationPaths(at root: URL) async throws -> [String]? {
         guard let operation = try await operationInProgress(at: root) else { return nil }
         let unmergedRecords = Self.indexRecords(try await run(["ls-files", "-u", "-z"], cwd: root))
         let unmerged = unmergedRecords.map(\.path)
-        let stagesOf = Dictionary(grouping: unmergedRecords, by: \.path).mapValues { Set($0.map(\.stage)) }
-        let conflictedOnBothSides = Set(stagesOf.filter { $0.value.isSuperset(of: ["2", "3"]) }.keys)
-
-        var autoMerge: [String]?
-        if try await resolves("AUTO_MERGE", at: root) {
-            let data = try await run(["diff", "--name-only", "-z", "--no-renames", "HEAD", "AUTO_MERGE"], cwd: root)
-            autoMerge = Self.nulSeparated(data)
-        }
-        if let paths = autoMerge, !conflictedOnBothSides.isEmpty, conflictedOnBothSides.isDisjoint(with: paths) {
+        let autoMerge: [String]?
+        if case .usable(let diff) = try await autoMergeState(unmerged: unmergedRecords, at: root) {
+            autoMerge = diff
+        } else {
             autoMerge = nil
         }
 
         let parts: [[String]]
         if let source = try await sourcePaths(of: operation, at: root) {
             parts = [autoMerge ?? [], source, unmerged]
-        } else if operation == .squash, let paths = autoMerge, !conflictedOnBothSides.isEmpty {
-            // A conflict it differs at shows it fresh: ort's own result, renames included.
+        } else if operation == .squash, let paths = autoMerge,
+            try await autoMergeIsProvedFresh(paths, unmerged: unmergedRecords, at: root)
+        {
+            // A text conflict it differs at shows it fresh: ort's own result, renames included.
             parts = [paths, unmerged]
         } else {
             return nil
@@ -360,7 +357,7 @@ extension CLIGitBackend: GitOperationBackend {
     }
 
     /// `-z` output: one name per NUL-terminated record.
-    private static func nulSeparated(_ data: Data) -> [String] {
+    static func nulSeparated(_ data: Data) -> [String] {
         String(decoding: data, as: UTF8.self).split(separator: "\0").map(String.init)
     }
 

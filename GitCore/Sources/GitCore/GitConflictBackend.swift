@@ -30,9 +30,10 @@ public protocol GitConflictBackend: Sendable {
     ///   mode-only, `merge=binary`, UD, AU; theirs for DU, UA; no file for DD). A driver's
     ///   output matches only through `AUTO_MERGE`; a submodule never matches. An absent
     ///   `AUTO_MERGE` (a `merge -s resolve` stop writes none) can only turn a true into a false.
-    ///   A leftover one is not ruled out: a `stash apply`'s survives until a commit or a reset,
-    ///   so a later stop that writes none reads it — equal to it only when the worktree holds
-    ///   that earlier result for this very path.
+    ///   A leftover one (a `stash apply`'s, a clean pick's, read at a `-s resolve` or octopus
+    ///   stop that writes none) is not read when provably stale — a text conflict exists and it
+    ///   differs from HEAD at none of them (Ruling 24); otherwise it can still be read, and is
+    ///   equal only when the worktree holds that earlier result for this very path.
     /// - The snapshot carries `file` as given and the SHA-256 of the worktree bytes: a symlink's
     ///   target path, a regular file's content, nil for anything else.
     func conflictDocument(for file: ConflictedFile, at root: URL) async throws -> ConflictDocument
