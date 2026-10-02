@@ -166,7 +166,9 @@ enum ContinueWording {
     /// A cherry-pick or revert whose resolution equals HEAD (M 30): git refuses to continue,
     /// Skip is the way on. With other staged files Skip is refused too (Ruling 20); the way out
     /// is to take them out of the index — stash is refused during an operation, and the app's
-    /// own unstage is (it would end the operation's state), so a terminal or a discard.
+    /// file-level unstage is off (it could end the operation's state), but a modified text file
+    /// can be unstaged hunk by hunk (or line by line) in its staged diff here; an added, binary
+    /// or non-UTF-8 file in a terminal; or a discard.
     static func emptyResult(_ operation: RepositoryOperation, _ current: CommitRef?, otherStaged: [String]) -> String {
         let it = current.map { short($0.sha) } ?? "the commit"
         guard !otherStaged.isEmpty else {
@@ -175,8 +177,9 @@ enum ContinueWording {
         let are = number(otherStaged.count, "is", "are")
         let them = number(otherStaged.count, "it", "them")
         return "The resolution leaves \(it) with no changes of its own, and \(names(otherStaged)) \(are) staged but "
-            + "not part of it, so it can't be continued or skipped. Unstage \(names(otherStaged)) in a terminal "
-            + "(git restore --staged), or discard \(them) (Gitter keeps a copy in the Stashes list), then skip the commit."
+            + "not part of it, so it can't be continued or skipped. Unstage \(names(otherStaged)) \u{2014} a modified "
+            + "text file hunk by hunk in its staged diff here, any file in a terminal (git restore --staged) \u{2014} "
+            + "or discard \(them) (Gitter keeps a copy in the Stashes list), then skip the commit."
     }
 
     static let enterMessage = "Enter a commit message first."

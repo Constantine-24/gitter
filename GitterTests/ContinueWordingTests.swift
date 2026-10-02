@@ -180,8 +180,9 @@ import Testing
         #expect(
             ContinueWording.emptyResult(.revert, Self.picked, otherStaged: ["n.txt"])
                 == "The resolution leaves 9f8e7d6 with no changes of its own, and \"n.txt\" is staged but not part "
-                + "of it, so it can't be continued or skipped. Unstage \"n.txt\" in a terminal (git restore "
-                + "--staged), or discard it (Gitter keeps a copy in the Stashes list), then skip the commit.")
+                + "of it, so it can't be continued or skipped. Unstage \"n.txt\" — a modified text file hunk by "
+                + "hunk in its staged diff here, any file in a terminal (git restore --staged) — or discard it "
+                + "(Gitter keeps a copy in the Stashes list), then skip the commit.")
     }
 
     // MARK: - Why Skip is off
