@@ -195,3 +195,75 @@ import Testing
         try await assertRepoUnchanged(repo, since: before, worktree: worktree)
     }
 }
+
+/// Final review M1 (measured on git 2.54): the snapshot's status honours
+/// `status.showUntrackedFiles=no`, so an untracked `secret.env` is not on screen, while Stage All
+/// reads `--untracked-files=normal` and adds it — a merge's Commit then took it unasked. The
+/// confirmation is built from `stageAllPaths`, the very list `stageAll` stages, and the staging
+/// refuses a list that is not the confirmed one.
+@Suite struct StageAllPreviewTests {
+    static let backend = CLIGitBackend()
+
+    /// A merge stopped on f.txt (resolved, staged) and h.txt (still unmerged); g.txt edited; an
+    /// untracked secret.env; `status.showUntrackedFiles=no`.
+    static func mergeWithAHiddenFile() async throws -> TestRepo {
+        let repo = try await TestRepo.makeEmpty()
+        try repo.write("f.txt", "a\n")
+        try repo.write("g.txt", "g\n")
+        try repo.write("h.txt", "h\n")
+        try await repo.commitAll("base")
+        try await repo.git(["switch", "-q", "-c", "feature"])
+        try repo.write("f.txt", "F\n")
+        try repo.write("h.txt", "H F\n")
+        try await repo.commitAll("F")
+        try await repo.git(["switch", "-q", "main"])
+        try repo.write("f.txt", "M\n")
+        try repo.write("h.txt", "H M\n")
+        try await repo.commitAll("M")
+        try await repo.git(["config", "status.showUntrackedFiles", "no"])
+        try await repo.git(["merge", "feature"], allowedExitCodes: [1])
+        try repo.write("f.txt", "RES\n")
+        try await repo.git(["add", "f.txt"])
+        try repo.write("g.txt", "g edit\n")
+        try repo.write("secret.env", "SECRET=1\n")
+        return repo
+    }
+
+    @Test func thePreviewIsExactlyWhatStageAllStagesWhateverShowUntrackedFiles() async throws {
+        let repo = try await Self.mergeWithAHiddenFile()
+        defer { repo.cleanUp() }
+        // The baseline that can fail: the snapshot does not show the untracked file.
+        let shown = try await Self.backend.snapshot(at: repo.root).status.files.map(\.path)
+        #expect(!shown.contains("secret.env"))
+        #expect(shown.contains("g.txt"))
+
+        let preview = try await Self.backend.stageAllPaths(at: repo.root)
+        #expect(Set(preview) == ["g.txt", "secret.env"])
+
+        let reference = try StageAllTests.copy(repo)
+        defer { reference.cleanUp() }
+        try await Self.backend.stageAll(at: reference.root)
+        try await Self.backend.stageAll(expecting: preview, at: repo.root)
+
+        #expect(try await StageAllTests.staging(repo) == (try await StageAllTests.staging(reference)))
+        #expect(try await repo.isInIndex("secret.env"))
+        let unmerged = String(decoding: try await repo.git(["ls-files", "-u"]), as: UTF8.self)
+        #expect(unmerged.contains("h.txt"), "the conflict stays")
+    }
+
+    /// The list the snapshot would have shown (no secret.env): refused, nothing staged.
+    @Test func aListThatIsNotTheCurrentOneIsRefusedAndNothingIsStaged() async throws {
+        let repo = try await Self.mergeWithAHiddenFile()
+        defer { repo.cleanUp() }
+        let state = try await RepoState.capture(repo)
+        let operation = try await OperationState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+
+        await #expect(throws: StageAllChanged(paths: ["g.txt", "secret.env"])) {
+            try await Self.backend.stageAll(expecting: ["g.txt"], at: repo.root)
+        }
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+        try await assertOperationUnchanged(repo, since: operation)
+        #expect(!(try await repo.isInIndex("secret.env")))
+    }
+}

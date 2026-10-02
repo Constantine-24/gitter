@@ -21,6 +21,18 @@ public protocol GitWorkingCopyBackend: Sendable {
     /// (M 22). Runs `add -- <paths>` over the status's list; a no-op when nothing is left.
     func stageAll(at root: URL) async throws
 
+    /// Exactly the paths `stageAll` would add now, in its order: the same status read
+    /// (`--untracked-files=normal`, whatever `status.showUntrackedFiles` says) and the same list
+    /// — so a confirmation built from it names every file the staging takes (final review M1:
+    /// under `status.showUntrackedFiles=no` the snapshot's status hides untracked files that
+    /// `stageAll` adds). Reads only.
+    func stageAllPaths(at root: URL) async throws -> [String]
+
+    /// `stageAll`, only when the paths it would add now are exactly `expected` (as a set, as
+    /// `stageAllPaths` returned them for the confirmation); otherwise throws `StageAllChanged`
+    /// with the current list, having staged nothing.
+    func stageAll(expecting expected: [String], at root: URL) async throws
+
     /// `git reset -q`. In a repository with no commits yet, falls back to
     /// `git rm --cached -r -q -- .`, which leaves every path untracked and unchanged on disk.
     /// A no-op when the index is already empty in such a repository (where that fallback
@@ -176,4 +188,14 @@ public protocol GitWorkingCopyBackend: Sendable {
     /// fails.
     func undoDiscard(_ receipt: DiscardReceipt, trasher: any Trasher, at root: URL) async throws
         -> UndoDiscardOutcome
+}
+
+/// `stageAll(expecting:at:)` refused: Stage All would now add `paths`, not the confirmed list.
+/// Nothing was staged.
+public struct StageAllChanged: Error, Sendable, Hashable {
+    public let paths: [String]
+
+    public init(paths: [String]) {
+        self.paths = paths
+    }
 }

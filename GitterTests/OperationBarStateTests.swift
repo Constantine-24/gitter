@@ -196,16 +196,18 @@ import Testing
         #expect(OperationBarState.unstaged(in: Self.files) == ["own.txt", "loose.txt"])
     }
 
-    /// Stage All adds every unstaged change except an unmerged path (M 22); the confirmation
-    /// names those outside the operation's paths — all of them when those are unknown.
-    @Test func theStageAllSweepIsWhatItWouldAddOutsideTheOperation() {
+    /// The confirmation names the paths GitCore's own Stage All list (`stageAllPaths`) holds
+    /// outside the operation's paths — all of them when those are unknown (final review M1: not
+    /// the snapshot's files, which hide untracked ones under `status.showUntrackedFiles=no`).
+    /// The list already carries a worktree rename's old name and never an unmerged path.
+    @Test func theStageAllSweepIsGitCoresListOutsideTheOperation() {
+        let paths = ["own.txt", "loose.txt", "secret.env", "new.txt", "old.txt", "sub"]
         #expect(
-            OperationBarState.stageAllSweep(Self.files, own: ["own.txt"])
-                == ["loose.txt", "untracked.txt", "sub"])
-        #expect(
-            OperationBarState.stageAllSweep(Self.files, own: nil)
-                == ["own.txt", "loose.txt", "untracked.txt", "sub"])
-        #expect(OperationBarState.stageAllSweep(Self.files, own: ["own.txt", "loose.txt", "untracked.txt", "sub"]) == [])
+            OperationBarState.stageAllSweep(paths, own: ["own.txt"])
+                == ["loose.txt", "secret.env", "new.txt", "old.txt", "sub"])
+        #expect(OperationBarState.stageAllSweep(paths, own: nil) == paths)
+        #expect(OperationBarState.stageAllSweep(paths, own: paths) == [])
+        #expect(OperationBarState.stageAllSweep(["a", "a", "b"], own: []) == ["a", "b"])
     }
 
     // MARK: - The composer's note

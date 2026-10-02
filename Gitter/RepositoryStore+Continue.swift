@@ -229,16 +229,14 @@ enum OperationBarState {
         files.filter { !$0.isUntracked && !$0.isSubmodule && !isUnmerged($0) && $0.unstaged != nil }.map(\.path)
     }
 
-    /// The paths Stage All would add (every unstaged change but an unmerged path, M 22) that
-    /// are not among `own` — all of them when `own` is nil.
-    static func stageAllSweep(_ files: [FileStatus], own: [String]?) -> [String] {
+    /// The paths of GitCore's Stage All list (`stageAllPaths`: every unstaged change and
+    /// untracked path but an unmerged one, M 22, a worktree rename's old name too) that are not
+    /// among `own` — all of them when `own` is nil. From GitCore's list, never the snapshot's
+    /// files: under `status.showUntrackedFiles=no` those hide untracked files Stage All adds
+    /// (final review M1).
+    static func stageAllSweep(_ paths: [String], own: [String]?) -> [String] {
         let ownSet = Set(own ?? [])
-        let added = files.filter { $0.unstaged != nil && !isUnmerged($0) }
-            .flatMap { file in
-                // A worktree-side rename (an intent-to-add entry) adds its old name's deletion too.
-                [file.path] + (file.unstaged == .renamed ? file.originalPath.map { [$0] } ?? [] : [])
-            }
-        return unique(added.filter { !ownSet.contains($0) })
+        return unique(paths.filter { !ownSet.contains($0) })
     }
 
     // MARK: - The composer
@@ -658,8 +656,8 @@ extension RepositoryStore {
     // MARK: - Stage All
 
     /// The Stage All button. With no operation it stages at once; during one it first reads the
-    /// operation's paths and asks about the files outside them (M 22) — at once when there are
-    /// none.
+    /// operation's paths and GitCore's own Stage All list and asks about the files outside the
+    /// operation (M 22) — stages at once when there are none.
     func requestStageAll() {
         guard let operation = operationInProgress else {
             stageAll()
@@ -670,29 +668,46 @@ extension RepositoryStore {
         Task { [self] in
             // A failed read cannot tell: every file is listed (conservative).
             let own = (try? await backend.operationPaths(at: root)) ?? nil
-            guard self.generation == generation, activeSheet == nil, !isMutating, operationInProgress == operation,
-                let files = snapshot?.status.files
+            // A failed read here asks nothing: the staging below reads again and says why.
+            let paths = try? await backend.stageAllPaths(at: root)
+            guard self.generation == generation, activeSheet == nil, !isMutating, operationInProgress == operation
             else { return }
-            let sweep = OperationBarState.stageAllSweep(files, own: own)
+            let sweep = paths.map { OperationBarState.stageAllSweep($0, own: own) } ?? []
             if sweep.isEmpty {
-                stageAll()
+                runStageAll(operation, confirmed: [])
             } else {
                 activeSheet = .stageAll(operation, sweep: sweep, known: own != nil)
             }
         }
     }
 
-    /// The Stage All sheet's button, only as the answer to it. Read again first: a file that
-    /// is not on the sheet — appeared since it opened — is asked about instead of staged.
+    /// The Stage All sheet's button, only as the answer to it.
     func confirmStageAll() {
         guard case .stageAll(let operation, let shown, _) = activeSheet else { return }
         activeSheet = nil
+        runStageAll(operation, confirmed: shown)
+    }
+
+    /// Stage All during an operation, with `confirmed` the files outside it the user agreed to.
+    /// Read again first: a file outside the operation that is not among them is asked about
+    /// instead of staged. Then GitCore stages exactly the list just read, and refuses
+    /// (`StageAllChanged`, nothing staged) if it changed in between — asked again when that adds
+    /// an unconfirmed file, said otherwise.
+    private func runStageAll(_ operation: RepositoryOperation, confirmed: [String]) {
         let conflicted = Set(unmergedPaths)
-        mutate(result: { [self] backend, root -> (sweep: [String], known: Bool)? in
+        let agreed = Set(confirmed)
+        mutate(result: { backend, root -> (sweep: [String], known: Bool)? in
             let own = (try? await backend.operationPaths(at: root)) ?? nil
-            let now = OperationBarState.stageAllSweep(snapshot?.status.files ?? [], own: own)
-            guard Set(now).isSubset(of: Set(shown)) else { return (now, own != nil) }
-            try await backend.stageAll(at: root)
+            let paths = try await backend.stageAllPaths(at: root)
+            let now = OperationBarState.stageAllSweep(paths, own: own)
+            guard Set(now).isSubset(of: agreed) else { return (now, own != nil) }
+            do {
+                try await backend.stageAll(expecting: paths, at: root)
+            } catch let changed as StageAllChanged {
+                let grown = OperationBarState.stageAllSweep(changed.paths, own: own)
+                guard Set(grown).isSubset(of: agreed) else { return (grown, own != nil) }
+                throw changed
+            }
             return nil
         }, onSuccess: { [self] grown in
             if let grown {

@@ -51,6 +51,9 @@ extension RepositoryStore {
         if let refusal = error as? OperationError {
             return ContinueWording.error(refusal)
         }
+        if error is StageAllChanged {
+            return ContinueWording.stageAllChanged
+        }
         if let refusal = error as? BranchOperationError {
             return refusal.sentence(refusing: "do that")
         }

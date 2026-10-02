@@ -335,6 +335,11 @@ enum ContinueWording {
 
     static let stageAllConfirm = "Stage All"
 
+    /// GitCore refused: the list it would stage now is not the one confirmed (final review M1).
+    static let stageAllChanged =
+        "The files Stage All would add changed after they were read, so nothing was staged. "
+        + "Look at the list again, then use Stage All."
+
     // MARK: - Outcomes
 
     static func finished(_ operation: RepositoryOperation) -> String { "\(operation.noun) finished." }

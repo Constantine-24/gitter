@@ -58,6 +58,10 @@ extension CLIGitBackend: GitWorkingCopyBackend {
     /// `status.showUntrackedFiles` says. A staged-only change (worktree side `.`) is left out:
     /// there is nothing to add, and a staged deletion's path matches no file.
     public func stageAll(at root: URL) async throws {
+        try await add(inBatches: try await stageAllPaths(at: root), at: root)
+    }
+
+    public func stageAllPaths(at root: URL) async throws -> [String] {
         let status = try await stashStatus(at: root)
         // Every path with a conflict stage, checked last against every path the list builds:
         // a conflicted file moved to a name marked intent-to-add reads `2 .R … e` then the
@@ -65,7 +69,7 @@ extension CLIGitBackend: GitWorkingCopyBackend {
         // resolve the conflict as a deletion.
         let unmerged = Set(status.files.filter { $0.conflict != nil || $0.staged == .unmerged }.map(\.path))
         var seen = Set<String>()
-        let paths = status.files
+        return status.files
             .filter { $0.conflict == nil && $0.staged != .unmerged && $0.unstaged != nil }
             .flatMap { file -> [String] in
                 // A worktree rename or copy (`2 .R … e` then `q`) is git pairing an
@@ -76,6 +80,18 @@ extension CLIGitBackend: GitWorkingCopyBackend {
                 return [file.path, original]
             }
             .filter { !unmerged.contains($0) && seen.insert($0).inserted }
+    }
+
+    public func stageAll(expecting expected: [String], at root: URL) async throws {
+        // Read again here, at the last moment before git runs: the confirmation named
+        // `expected`, and a file that appeared since (or one that went) is asked about again.
+        let paths = try await stageAllPaths(at: root)
+        guard Set(paths) == Set(expected) else { throw StageAllChanged(paths: paths) }
+        try await add(inBatches: paths, at: root)
+    }
+
+    /// `add -- <paths>` in batches of `stageAllBatch`.
+    private func add(inBatches paths: [String], at root: URL) async throws {
         for start in stride(from: 0, to: paths.count, by: Self.stageAllBatch) {
             let batch = paths[start..<min(start + Self.stageAllBatch, paths.count)]
             _ = try await run(["add", "--"] + batch.map(literalPathspec), cwd: root)

@@ -281,6 +281,10 @@ import Testing
                 == "Gitter can't tell which changes belong to the cherry-pick, so these are all 2 files Stage All "
                 + "would add. Every one of them will be in its commit:")
         #expect(ContinueWording.stageAllConfirm == "Stage All")
+        // Final review M1: GitCore refused a list that was not the confirmed one.
+        #expect(ContinueWording.stageAllChanged
+            == "The files Stage All would add changed after they were read, so nothing was staged. "
+            + "Look at the list again, then use Stage All.")
     }
 
     // MARK: - Outcomes

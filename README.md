@@ -148,7 +148,9 @@ confirmation that says what goes and what stays:
 Three more confirmations stand before a commit rather than a loss: **Mark Resolved** when git
 still finds conflict markers in the file, **Continue** when files that are not part of the
 stopped commit are staged (git commits everything staged into it, under that commit's title),
-and **Stage All** during an operation when it would add files outside it. In the force push,
+and **Stage All** during an operation when it would add files outside it — named from the very
+list Stage All stages, untracked files included even when `status.showUntrackedFiles=no` hides
+them from the file list, and nothing is staged if that list changed after you agreed. In the force push,
 delete-on-remote, discard, drop, conflict and continue sheets Cancel holds Return and the
 destructive button has no shortcut. A force push's sha is
 spelled out rather than left to git on purpose: a bare `--force-with-lease` leases against
