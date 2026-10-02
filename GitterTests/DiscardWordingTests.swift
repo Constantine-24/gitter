@@ -244,6 +244,14 @@ import Testing
             DiscardWording.refusal(.operationInProgress(.merge))
                 == "Can't discard while a merge is in progress. Commit or abort it first.")
         #expect(
+            DiscardWording.refusal(.partOfOperation(["z.txt"]))
+                == "Can't discard the staged changes in \"z.txt\": they are part of the operation "
+                + "in progress, and its commit would lose them. Nothing was discarded.")
+        #expect(
+            DiscardWording.untrackedPartRefused(.partOfOperation(["z.txt"]))
+                == "The untracked files were not moved to the Trash: the staged changes in "
+                + "\"z.txt\" are part of the operation in progress.")
+        #expect(
             DiscardWording.refusal(.unmerged(["c.txt"]))
                 == "Can't discard \"c.txt\": it has unresolved conflicts. Resolve them and stage "
                 + "the file first.")

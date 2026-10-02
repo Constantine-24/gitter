@@ -72,17 +72,34 @@ import Testing
         return (repo, operation)
     }
 
+    /// A2 Task 4 lifted A1's refusal: during each stop, every kind runs on a file the operation
+    /// never touched, and the operation's files are as they were (`DiscardDuringOperationTests`
+    /// has the operation's own paths, which the staged side refuses).
     @Test(arguments: Stopped.allCases)
-    func everyKindIsRefusedWhileAnOperationIsInProgress(_ kind: Stopped) async throws {
+    func noKindIsRefusedForTheOperationAlone(_ kind: Stopped) async throws {
         let (repo, operation) = try await makeStopped(kind)
         defer { repo.cleanUp() }
+        let trasher = try FakeTrasher()
+        defer { trasher.cleanUp() }
+        #expect(try await backend.operationInProgress(at: repo.root) == operation)
+        let before = try await OperationState.capture(repo)
         let file = try await loadDiff(repo, "keep.txt")
 
-        try await expectRefused(try await unstaged(["keep.txt"], repo), .operationInProgress(operation), in: repo)
-        try await expectRefused(try await staged(["keep.txt"], repo), .operationInProgress(operation), in: repo)
-        try await expectRefused(
-            try linesRequest(file, hunks: everyHunkID(file), lines: nil), .operationInProgress(operation), in: repo)
-        try await expectRefused(try await untracked(["u.txt"], repo), .operationInProgress(operation), in: repo)
+        _ = try await backend.discard(
+            try linesRequest(file, hunks: everyHunkID(file), lines: nil), trasher: trasher, at: repo.root)
+        #expect(try repo.bytes("keep.txt") == Data("keep\n".utf8))
+        try repo.write("keep.txt", "keep\ndirty\n")
+        _ = try await backend.discard(try await unstaged(["keep.txt"], repo), trasher: trasher, at: repo.root)
+        #expect(try repo.bytes("keep.txt") == Data("keep\n".utf8))
+        try repo.write("keep.txt", "keep\nstaged\n")
+        try await repo.git(["add", "--", "keep.txt"])
+        _ = try await backend.discard(try await staged(["keep.txt"], repo), trasher: trasher, at: repo.root)
+        #expect(try repo.bytes("keep.txt") == Data("keep\n".utf8))
+        #expect(try await repo.indexContent(of: "keep.txt") == Data("keep\n".utf8))
+        _ = try await backend.discard(try await untracked(["u.txt"], repo), trasher: trasher, at: repo.root)
+        #expect(!FileManager.default.fileExists(atPath: repo.root.appendingPathComponent("u.txt").path))
+
+        try await assertOperationUnchanged(repo, since: before)
     }
 
     // MARK: Paths the record cannot take

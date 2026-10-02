@@ -156,7 +156,11 @@ public struct DiscardedFileState: Sendable, Hashable {
 
 /// Why a discard was refused before anything was written: no record, no change, no Trash.
 public enum DiscardRefusal: Error, Sendable, Hashable {
-    /// No discard while a merge, cherry-pick, revert, rebase, `git am` or squash is part-way.
+    /// The undo of a whole-file discard (`.unstaged`, `.stagedAndUnstaged`) while a merge,
+    /// cherry-pick, revert, rebase, `git am` or squash is part-way: its `stash apply` is
+    /// refused by git over a conflict and otherwise rewrites `AUTO_MERGE` (measured, A2 Task
+    /// 4). The record stays listed, and the undo runs once the operation is concluded. A
+    /// discard itself is not refused for an operation (A2; see `partOfOperation`).
     case operationInProgress(RepositoryOperation)
     case unmerged([String])
     case intentToAdd([String])
@@ -180,6 +184,13 @@ public enum DiscardRefusal: Error, Sendable, Hashable {
     /// `.stagedAndUnstaged` in the index or HEAD. An untracked path is discarded as
     /// `.untracked`, to the Trash.
     case notTracked([String])
+    /// `.stagedAndUnstaged` during an operation, of paths whose staged side is the operation's
+    /// own result: restoring them from HEAD drops that change from the commit the operation
+    /// makes — in a rebase, part of the user's own commit (M 21). The paths in
+    /// `diff --name-only --no-renames HEAD AUTO_MERGE` (`GitOperationBackend.operationPaths`),
+    /// or, with no `AUTO_MERGE` to tell (a fast-forward squash, an `exec` or `break` stop, M 31),
+    /// every named path with a staged change. Their unstaged side can be discarded alone.
+    case partOfOperation([String])
 
     /// The refusal the record's own (`StashRecord`) surfaces as. `stashListChanged` is never
     /// thrown by a record, and has no discard counterpart: nil.

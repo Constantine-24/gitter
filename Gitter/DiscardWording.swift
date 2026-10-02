@@ -219,6 +219,8 @@ enum DiscardWording {
             "\(names(paths)) changed between a file and a folder"
         case .nothingSelected: "there was nothing left to discard"
         case .notTracked(let paths): "git no longer tracks \(names(paths))"
+        case .partOfOperation(let paths):
+            "the staged changes in \(names(paths)) are part of the operation in progress"
         }
     }
 
@@ -263,6 +265,10 @@ enum DiscardWording {
         case .notTracked(let paths):
             return "Can't discard \(names(paths)): git no longer tracks "
                 + "\(number(paths.count, "it", "them")). Nothing was discarded."
+        case .partOfOperation(let paths):
+            // Minimal (A2 Task 4); Task 5 owns the final wording.
+            return "Can't discard the staged changes in \(names(paths)): they are part of the "
+                + "operation in progress, and its commit would lose them. Nothing was discarded."
         }
     }
 

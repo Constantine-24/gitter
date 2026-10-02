@@ -440,11 +440,12 @@ import Testing
         }
     }
 
-    /// M 13 for the undo: an operation that began **after** the discard still refuses it, before
-    /// anything is written — HEAD, the index, every ref and the worktree as they were — and the
-    /// record stays listed for later.
-    @Test(arguments: Begun.allCases, Kind.allCases)
-    func anUndoIsRefusedDuringAnOperationBegunAfterTheDiscard(_ operation: Begun, _ kind: Kind) async throws {
+    /// M 13 for the undo: an operation that began **after** the discard still refuses a
+    /// whole-file undo, before anything is written — HEAD, the index, every ref and the worktree
+    /// as they were — and the record stays listed for later. Its `stash apply` is refused by git
+    /// over a conflict and otherwise rewrites `AUTO_MERGE` (measured, A2 Task 4).
+    @Test(arguments: Begun.allCases, [Kind.unstaged, .stagedAndUnstaged])
+    func aWholeFileUndoIsRefusedDuringAnOperationBegunAfterTheDiscard(_ operation: Begun, _ kind: Kind) async throws {
         let repo = try await TestRepo.makeConflicting()
         defer { repo.cleanUp() }
         let trasher = try FakeTrasher()
@@ -467,5 +468,46 @@ import Testing
         try await assertRepoUnchanged(repo, since: state, worktree: worktree)
         #expect(try await repo.stashShas() == stashes, "the record was dropped or another entry filed")
         #expect(try repo.bytes("keep.txt") == Data("keep\n".utf8), "the discarded change came back")
+    }
+
+    /// A line discard's undo is a forward patch on the worktree, which leaves an operation's
+    /// files alone (measured, A2 Task 4), so an operation begun after the discard does not
+    /// refuse it. It still runs only onto exactly what the discard left: where HEAD moved (the
+    /// revert's set-up commit) it is refused with nothing written.
+    @Test(arguments: Begun.allCases)
+    func aLineUndoDuringAnOperationBegunAfterTheDiscardRunsOnlyOntoWhatTheDiscardLeft(_ operation: Begun) async throws {
+        let repo = try await TestRepo.makeConflicting()
+        defer { repo.cleanUp() }
+        let trasher = try FakeTrasher()
+        defer { trasher.cleanUp() }
+        let receipt = try await discardKeep(.lines, in: repo, trasher: trasher)
+        let record = try #require(receipt.record)
+        let head = try await repo.headSha()
+
+        let expected = try await begin(operation, in: repo)
+        #expect(try await backend.operationInProgress(at: repo.root) == expected)
+        let state = try await RepoState.capture(repo)
+        let before = try await OperationState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+
+        let outcome = try await backend.undoDiscard(receipt, trasher: trasher, at: repo.root)
+
+        try await assertOperationUnchanged(repo, since: before)
+        // Which way each goes is known: only the revert's set-up commit moves HEAD (the
+        // rebase stops detached at main's tip, the very commit the discard was made on).
+        let movedHead = operation == .revert
+        #expect((try await repo.headSha() != head) == movedHead)
+        if !movedHead {
+            #expect(outcome == .restored)
+            #expect(try repo.bytes("keep.txt") == Data("keep\ndirty\n".utf8))
+            #expect(!(try await repo.stashShas()).contains(record.sha))
+        } else {
+            guard case .refused(_, let kept) = outcome else {
+                Issue.record("expected a refusal, got \(outcome)")
+                return
+            }
+            #expect(kept?.sha == record.sha)
+            try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+        }
     }
 }

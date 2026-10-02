@@ -86,22 +86,28 @@ enum ConflictFixtures {
 
     static func lines(_ lines: [String]) -> String { lines.map { $0 + "\n" }.joined() }
 
-    static func merge(kind: ConflictFixtureKind, prepare: Prepare = { _ in }) async throws -> TestRepo {
-        let repo = try await history(kind, prepare: prepare)
+    static func merge(
+        kind: ConflictFixtureKind, prepare: Prepare = { _ in }, onTheirs: Prepare = { _ in }
+    ) async throws -> TestRepo {
+        let repo = try await history(kind, prepare: prepare, onTheirs: onTheirs)
         try await repo.git(["merge", "--no-edit", "theirs"], allowedExitCodes: [1])
         try await requireStopped(repo, marker: ConflictOperation.merge.marker)
         return repo
     }
 
-    static func squash(kind: ConflictFixtureKind, prepare: Prepare = { _ in }) async throws -> TestRepo {
-        let repo = try await history(kind, prepare: prepare)
+    static func squash(
+        kind: ConflictFixtureKind, prepare: Prepare = { _ in }, onTheirs: Prepare = { _ in }
+    ) async throws -> TestRepo {
+        let repo = try await history(kind, prepare: prepare, onTheirs: onTheirs)
         try await repo.git(["merge", "--squash", "theirs"], allowedExitCodes: [1])
         try await requireStopped(repo, marker: ConflictOperation.squash.marker)
         return repo
     }
 
-    static func cherryPick(kind: ConflictFixtureKind, prepare: Prepare = { _ in }) async throws -> TestRepo {
-        let repo = try await history(kind, prepare: prepare)
+    static func cherryPick(
+        kind: ConflictFixtureKind, prepare: Prepare = { _ in }, onTheirs: Prepare = { _ in }
+    ) async throws -> TestRepo {
+        let repo = try await history(kind, prepare: prepare, onTheirs: onTheirs)
         try await repo.git(["cherry-pick", "theirs"], allowedExitCodes: [1])
         try await requireStopped(repo, marker: ConflictOperation.cherryPick.marker)
         return repo
@@ -110,16 +116,20 @@ enum ConflictFixtures {
     /// A revert that meets base / main / theirs as a merge does: `theirs` gets a second commit
     /// that puts the base tree back, and reverting *that* on main takes the base as stage 1 and
     /// the theirs version (the reverted commit's parent) as stage 3 (M 6).
-    static func revert(kind: ConflictFixtureKind, prepare: Prepare = { _ in }) async throws -> TestRepo {
-        let repo = try await history(kind, prepare: prepare, backToBaseOnTheirs: true)
+    static func revert(
+        kind: ConflictFixtureKind, prepare: Prepare = { _ in }, onTheirs: Prepare = { _ in }
+    ) async throws -> TestRepo {
+        let repo = try await history(kind, prepare: prepare, onTheirs: onTheirs, backToBaseOnTheirs: true)
         try await repo.git(["revert", "--no-edit", "theirs"], allowedExitCodes: [1])
         try await requireStopped(repo, marker: ConflictOperation.revert.marker)
         return repo
     }
 
     /// `theirs` rebased onto `main`: stage 2 is main (the upstream), stage 3 the replayed commit.
-    static func rebase(kind: ConflictFixtureKind, prepare: Prepare = { _ in }) async throws -> TestRepo {
-        let repo = try await history(kind, prepare: prepare)
+    static func rebase(
+        kind: ConflictFixtureKind, prepare: Prepare = { _ in }, onTheirs: Prepare = { _ in }
+    ) async throws -> TestRepo {
+        let repo = try await history(kind, prepare: prepare, onTheirs: onTheirs)
         try await repo.git(["switch", "-q", "theirs"])
         try await repo.git(["rebase", "main"], allowedExitCodes: [1])
         try await requireStopped(repo, marker: ConflictOperation.rebase.marker)
@@ -127,15 +137,33 @@ enum ConflictFixtures {
     }
 
     static func stopped(
-        _ operation: ConflictOperation, kind: ConflictFixtureKind, prepare: Prepare = { _ in }
+        _ operation: ConflictOperation, kind: ConflictFixtureKind, prepare: Prepare = { _ in },
+        onTheirs: Prepare = { _ in }
     ) async throws -> TestRepo {
         switch operation {
-        case .merge: return try await merge(kind: kind, prepare: prepare)
-        case .squash: return try await squash(kind: kind, prepare: prepare)
-        case .cherryPick: return try await cherryPick(kind: kind, prepare: prepare)
-        case .revert: return try await revert(kind: kind, prepare: prepare)
-        case .rebase: return try await rebase(kind: kind, prepare: prepare)
+        case .merge: return try await merge(kind: kind, prepare: prepare, onTheirs: onTheirs)
+        case .squash: return try await squash(kind: kind, prepare: prepare, onTheirs: onTheirs)
+        case .cherryPick: return try await cherryPick(kind: kind, prepare: prepare, onTheirs: onTheirs)
+        case .revert: return try await revert(kind: kind, prepare: prepare, onTheirs: onTheirs)
+        case .rebase: return try await rebase(kind: kind, prepare: prepare, onTheirs: onTheirs)
         }
+    }
+
+    /// `git am -3` of `theirs`' commit on `main`: stage 2 is main, stage 3 the patch's side.
+    /// Exits 128 on the conflict (measured, A2 Task 4) and stops with `rebase-apply/`. Not a
+    /// `ConflictOperation` case, so the suites iterating those keep their five.
+    static func am(
+        kind: ConflictFixtureKind, prepare: Prepare = { _ in }, onTheirs: Prepare = { _ in }
+    ) async throws -> TestRepo {
+        let repo = try await history(kind, prepare: prepare, onTheirs: onTheirs)
+        let patch = try await repo.git(["format-patch", "-1", "--stdout", "theirs"])
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitter-am-\(UUID().uuidString).patch")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try patch.write(to: file)
+        try await repo.git(["am", "-3", file.path], allowedExitCodes: [128])
+        try await requireStopped(repo, marker: "rebase-apply")
+        return repo
     }
 
     /// `cherry-pick base..theirs` over three commits, each adding `pick-<n>.txt`; commit
@@ -182,8 +210,12 @@ enum ConflictFixtures {
     // MARK: - Histories
 
     /// The history alone, on `main`, with no operation started: for a test that starts its own.
+    /// `onTheirs` runs on `theirs` before its commit: more changes the operation brings in
+    /// cleanly (a revert gets them back through the commit that undoes them). Not committed for
+    /// `.submodule`, whose commits take `keep.txt` alone.
     static func history(
-        _ kind: ConflictFixtureKind, prepare: Prepare = { _ in }, backToBaseOnTheirs: Bool = false
+        _ kind: ConflictFixtureKind, prepare: Prepare = { _ in }, onTheirs: Prepare = { _ in },
+        backToBaseOnTheirs: Bool = false
     ) async throws -> TestRepo {
         let repo = try await TestRepo.makeEmpty()
         try await prepare(repo)
@@ -194,6 +226,7 @@ enum ConflictFixtures {
 
         try await repo.git(["switch", "-q", "-c", "theirs"])
         try await write(kind, .theirs, in: repo)
+        try await onTheirs(repo)
         try await commit(kind, "theirs change", in: repo)
         if backToBaseOnTheirs {
             try await repo.git(["revert", "--no-edit", "HEAD"])

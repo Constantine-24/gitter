@@ -110,12 +110,13 @@ public protocol GitWorkingCopyBackend: Sendable {
     /// Discards what `request` names, after recording it (tracked kinds) or on its way to the
     /// Trash (untracked). In this order, each step only if the one before it passed:
     ///
-    /// 1. **Guard**, before anything runs: `DiscardRefusal` for an operation in progress,
-    ///    unmerged, intent-to-add, submodule and nested-repository paths, a file and a
-    ///    directory that swapped places (the record's own refusals, run first), a path the kind
-    ///    cannot take (`notTracked`), and for `.lines` anything but a plain modification of a
-    ///    text file that is valid UTF-8, or a patch with a context-free hunk
-    ///    (`needsWholeFile`). After the record, a `.lines` file must also be in its checkout
+    /// 1. **Guard**, before anything runs: `DiscardRefusal` for unmerged, intent-to-add,
+    ///    submodule and nested-repository paths, a file and a directory that swapped places
+    ///    (the record's own refusals, run first), a path the kind cannot take (`notTracked`),
+    ///    during an operation the staged side of its own paths (`.partOfOperation`, M 21 —
+    ///    nothing else is refused for an operation, M 20), and for `.lines` anything but a
+    ///    plain modification of a text file that is valid UTF-8, or a patch with a context-free
+    ///    hunk (`needsWholeFile`). After the record, a `.lines` file must also be in its checkout
     ///    form (`RecordedForm`), or the record is dropped again and `needsWholeFile` thrown.
     /// 2. **Stale check**: `discardExpectation` again, compared with `request.expected`;
     ///    any difference is `.changedSinceShown`, with no record written.
@@ -165,8 +166,12 @@ public protocol GitWorkingCopyBackend: Sendable {
     /// refused and the record kept; the outcome is still `.restored`, since the content is
     /// back. A refused or conflicted apply keeps the record.
     ///
-    /// Throws `DiscardRefusal.operationInProgress` (or `.unmerged`) before anything runs for a
-    /// tracked kind; `DiscardFailure` when step 2 of a staged-side undo fails.
+    /// Throws `DiscardRefusal.operationInProgress` (or `.unmerged`) before anything runs for
+    /// `.unstaged` and `.stagedAndUnstaged`: an operation cannot take their `stash apply`
+    /// (git refuses it over a conflict, and otherwise it rewrites `AUTO_MERGE`; measured, A2
+    /// Task 4). `.lines` and `.untracked` undo during an operation too — the forward patch and
+    /// the Trash leave its files alone. `DiscardFailure` when step 2 of a staged-side undo
+    /// fails.
     func undoDiscard(_ receipt: DiscardReceipt, trasher: any Trasher, at root: URL) async throws
         -> UndoDiscardOutcome
 }

@@ -139,9 +139,9 @@ extension CLIGitBackend {
 
     public func discard(_ request: DiscardRequest, trasher: any Trasher, at root: URL) async throws -> DiscardReceipt {
         guard !request.paths.isEmpty else { throw DiscardRefusal.nothingSelected }
-        if let operation = try await operationInProgress(at: root) {
-            throw DiscardRefusal.operationInProgress(operation)
-        }
+        // No refusal for an operation in progress (A2): every discard mechanism leaves its
+        // files alone and it concludes afterwards (M 20). Only the staged side of the
+        // operation's own paths is refused, below.
         if case .untracked(let paths, let expected) = request {
             return try await discardUntracked(paths, expected: expected, request: request, trasher: trasher, at: root)
         }
@@ -156,6 +156,10 @@ extension CLIGitBackend {
             return !inIndex
         }
         if !notTracked.isEmpty { throw DiscardRefusal.notTracked(notTracked) }
+        if case .stagedAndUnstaged(let paths, _) = request {
+            let own = try await operationsOwn(paths, at: root)
+            if !own.isEmpty { throw DiscardRefusal.partOfOperation(own) }
+        }
         if case .lines(let path, let patch, _, let expected) = request {
             try Self.guardLines(path: path, patch: patch, expected: expected)
         }
@@ -323,10 +327,10 @@ extension CLIGitBackend {
         guard let record = receipt.record else {
             throw GitError.commandFailed(exitCode: -1, stderr: "This discard left no record to bring back.")
         }
-        if let operation = try await operationInProgress(at: root) {
-            throw DiscardRefusal.operationInProgress(operation)
-        }
 
+        // A line discard's undo runs during an operation too: its forward patch on the
+        // worktree, like the Trash's way back, leaves the operation's files alone (measured,
+        // A2 Task 4), and it runs only onto exactly what the discard left.
         if case .lines(let path, let patch, _, _) = receipt.request {
             // Only onto exactly what the discard left, on every layer: in a file that moved on,
             // the patch's context can match elsewhere, and git applies it there at an offset
@@ -360,6 +364,15 @@ extension CLIGitBackend {
             }
             _ = try? await dropRecord(record, at: root)
             return .restored
+        }
+
+        // The whole-file undo goes through `stash apply`, which an operation cannot take
+        // (measured, A2 Task 4): over a conflict git refuses it (`could not write index`), and
+        // otherwise it rewrites `AUTO_MERGE` — the operation's own paths (`operationPaths`)
+        // would then be the record's. Refused until the operation is concluded or aborted; the
+        // record stays listed.
+        if let operation = try await operationInProgress(at: root) {
+            throw DiscardRefusal.operationInProgress(operation)
         }
 
         // Whether the staged side moved since the discard, which left each path's index entry
@@ -470,8 +483,31 @@ extension CLIGitBackend {
 
     /// Whether any of `paths` has a staged change (the index differs from HEAD).
     private func hasStagedChanges(_ paths: [String], at root: URL) async throws -> Bool {
+        !(try await stagedPaths(paths, at: root)).isEmpty
+    }
+
+    /// The paths under `paths` with a staged change (the index differs from HEAD), each as git
+    /// names it.
+    private func stagedPaths(_ paths: [String], at root: URL) async throws -> Set<String> {
         let data = try await run(["diff", "--cached", "--name-only", "-z", "--no-renames", "--"] + paths.map(literalPathspec), cwd: root)
-        return !data.isEmpty
+        return Set(String(decoding: data, as: UTF8.self).split(separator: "\0").map(String.init))
+    }
+
+    /// The named paths whose staged side is the operation's own result, as named — none when
+    /// no operation is in progress (`DiscardRefusal.partOfOperation`). The operation's paths
+    /// are `operationPaths` (M 21, M 31); without `AUTO_MERGE` nothing tells them apart, so
+    /// every path with a staged change counts. A named directory counts when it holds one.
+    private func operationsOwn(_ named: [String], at root: URL) async throws -> [String] {
+        guard try await operationInProgress(at: root) != nil else { return [] }
+        let own: Set<String>
+        if let paths = try await operationPaths(at: root) {
+            own = Set(paths)
+        } else {
+            own = try await stagedPaths(named, at: root)
+        }
+        guard !own.isEmpty else { return [] }
+        let covered = Self.coveredPaths(named.map(StashRecord.withoutTrailingSlash), by: own)
+        return named.filter { covered.contains(StashRecord.withoutTrailingSlash($0)) }
     }
 
     /// The bytes the record's worktree commit holds for `path`: `cat-file` reads the blob raw,
