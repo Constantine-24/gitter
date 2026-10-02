@@ -713,8 +713,56 @@ extension CLIGitBackend: GitOperationBackend {
             return nil
         }
         let entries = Self.todoEntries(todo)
-        guard !entries.isEmpty, try await operationInProgress(at: root) == nil else { return nil }
+        guard let first = entries.first, try await operationInProgress(at: root) == nil else { return nil }
+        // Ruling 30: a range stop the user concluded with `git commit` leaves the same state, its
+        // commit first in the todo. Then the rest is waiting for `--continue`, not halted.
+        if let committed = try await committedFirst(first, at: root) {
+            let rest = Array(entries.dropFirst())
+            guard !rest.isEmpty else { return nil }
+            let waiting = try await sequence(rest, at: root)
+            return HaltedSequence(
+                operation: first.revert ? .revert : .cherryPick, notApplied: waiting.notApplied, total: waiting.total,
+                committed: committed)
+        }
         return try await sequence(entries, at: root)
+    }
+
+    /// The todo's first commit, when HEAD is it, committed since git stopped (measured, Ruling
+    /// 30): HEAD's parent is `sequencer/abort-safety` — a git-made halt leaves that file at HEAD
+    /// itself — and HEAD is that commit's pick (the same author, email and date: a pick keeps
+    /// them) or its revert (git's "This reverts commit <sha>." line). The stale way-out's commit
+    /// also sits on `abort-safety` but is another commit's pick, so it is not this.
+    private func committedFirst(_ first: (revert: Bool, name: String, subject: String), at root: URL) async throws
+        -> CommitRef?
+    {
+        guard let safety = Self.contents(of: try await gitPath("sequencer/abort-safety", at: root)),
+            let head = try await commit("HEAD", at: root)?.ref, head.sha != safety,
+            try await commit("HEAD^", at: root)?.ref.sha == safety,
+            let listed = try await commit(first.name, at: root)?.ref,
+            let made = try await authorship("HEAD", at: root)
+        else { return nil }
+        if first.revert {
+            return made.message.contains("This reverts commit \(listed.sha).") ? listed : nil
+        }
+        guard let original = try await authorship(listed.sha, at: root), made.ident == original.ident else { return nil }
+        // Identity alone can coincide (one author, the same second, in a scripted history): HEAD
+        // also changes nothing but paths that commit changes (its own resolution of them). A
+        // root or merge commit is not judged: nil, a halt — the conservative reading.
+        guard let parent = try await commit("\(listed.sha)^", at: root)?.ref.sha,
+            try await commit("\(listed.sha)^2", at: root) == nil
+        else { return nil }
+        let changed = Set(try await namesChanged(from: safety, to: head.sha, at: root))
+        let ownPaths = Set(try await namesChanged(from: parent, to: listed.sha, at: root))
+        return !changed.isEmpty && changed.isSubset(of: ownPaths) ? listed : nil
+    }
+
+    /// `rev`'s author name, email and date (seconds), and its whole message.
+    private func authorship(_ rev: String, at root: URL) async throws -> (ident: [String], message: String)? {
+        let data = try await run(["log", "-1", "--no-show-signature", "--format=%an%x00%ae%x00%at%x00%B", "--end-of-options", rev], cwd: root, allowedExitCodes: [128])
+        let fields = String(decoding: data, as: UTF8.self).split(separator: "\0", maxSplits: 3, omittingEmptySubsequences: false)
+            .map(String.init)
+        guard fields.count == 4 else { return nil }
+        return (Array(fields.prefix(3)), fields[3])
     }
 
     public func staleSequence(at root: URL) async throws -> HaltedSequence? {

@@ -107,7 +107,9 @@
             guard let operation = store.operationInProgress else {
                 let halted = store.haltedSequence.map {
                     "\($0.operation) total \($0.total) notApplied \($0.notApplied.map { "\($0.sha.prefix(7)) \($0.subject)" }) "
-                        + "| \(ContinueWording.halted($0)) | \(ContinueWording.haltedWayForward($0))"
+                        + "committed \($0.committed.map { "\($0.sha.prefix(7)) \($0.subject)" } ?? "nil") "
+                        + "| \(ContinueWording.halted($0)) | \(ContinueWording.haltedWayForward($0)) "
+                        + "| copy: \(ContinueWording.reapplyCommand($0) ?? "nil")"
                 }
                 log("bar: none | halted: \(halted ?? "nil") | draft: \(store.draft.subject.debugDescription) "
                     + "\(store.draft.body.debugDescription)")
@@ -121,7 +123,8 @@
                 + "| line: \(store.continueReasonLine ?? "nil")")
             if let old = store.staleSequence {
                 log("bar stale: \(old.operation) total \(old.total) notApplied \(old.notApplied.map { "\($0.sha.prefix(7)) \($0.subject)" }) "
-                    + "| \(ContinueWording.staleWarning(operation, old)) | \(ContinueWording.staleWayForward(operation, old))")
+                    + "| \(ContinueWording.staleWarning(operation, old)) | \(ContinueWording.staleWayForward(operation, old)) "
+                    + "| copy: \(ContinueWording.reapplyCommand(old) ?? "nil")")
             }
             let current = progress?.current.map { "\($0.sha.prefix(7)) \($0.subject)" } ?? "nil"
             log("bar stop: step \(progress?.step.map(String.init) ?? "nil")/\(progress?.total.map(String.init) ?? "nil") "

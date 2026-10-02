@@ -340,7 +340,9 @@ import Testing
 
     /// The persistent bar while `sequencer/` stays with no operation: the commits not applied,
     /// the safe way forward (measured: `--quit` keeps HEAD, index and worktree), and what
-    /// `--continue` would do (measured: it leaves the first out).
+    /// `--continue` would do (measured: it leaves the first out). Commands carry full shas, and
+    /// are to be copied first: once git drops `sequencer/`, the bar that holds them is gone
+    /// (fix round 3).
     @Test func theHaltedBarNamesTheCommitsAndTheSafeWayForward() {
         let pick = HaltedSequence(operation: .cherryPick, notApplied: [Self.two, Self.three], total: 2)
         #expect(
@@ -349,24 +351,50 @@ import Testing
                 + "two and 3800000 Pick three.")
         #expect(
             ContinueWording.haltedWayForward(pick)
-                == "To apply them, move away what git refused over, run `git cherry-pick --quit` in a terminal (it "
-                + "changes no file and no commit), then cherry-pick them again: `git cherry-pick 1600000 3800000`. "
-                + "Don't run `git cherry-pick --continue`: it would leave out 1600000.")
+                == "To apply them, first copy this command: `git cherry-pick \(Self.two.sha) \(Self.three.sha)`. Then "
+                + "move away what git refused over, run `git cherry-pick --quit` in a terminal (it changes no file and "
+                + "no commit, and this bar goes with it), then the copied command. Don't run `git cherry-pick "
+                + "--continue`: it would leave out 1600000.")
+        #expect(ContinueWording.reapplyCommand(pick) == "git cherry-pick \(Self.two.sha) \(Self.three.sha)")
         let revert = HaltedSequence(operation: .revert, notApplied: [Self.two], total: 1)
         #expect(
             ContinueWording.halted(revert)
                 == "The revert stopped part-way and is not in progress: git did not apply 1 commit, 1600000 Pick two.")
         #expect(
             ContinueWording.haltedWayForward(revert)
-                == "To apply it, move away what git refused over, run `git revert --quit` in a terminal (it changes "
-                + "no file and no commit), then revert it again: `git revert 1600000`. Don't run `git revert "
-                + "--continue`: it would leave out 1600000.")
+                == "To apply it, first copy this command: `git revert \(Self.two.sha)`. Then move away what git refused "
+                + "over, run `git revert --quit` in a terminal (it changes no file and no commit, and this bar goes "
+                + "with it), then the copied command. Don't run `git revert --continue`: it would leave out 1600000.")
         let long = HaltedSequence(operation: .cherryPick, notApplied: [Self.two, Self.three], total: 25)
         #expect(ContinueWording.halted(long).hasSuffix("1600000 Pick two, 3800000 Pick three and 23 more."))
+        #expect(ContinueWording.reapplyCommand(long) == nil)
         #expect(
-            ContinueWording.haltedWayForward(long).contains(
-                "then cherry-pick them again in the order .git/sequencer/todo lists them (copy that list first: --quit "
-                + "removes it)."))
+            ContinueWording.haltedWayForward(long).hasPrefix(
+                "To apply them, first copy the list in .git/sequencer/todo (--quit removes it). Then move away"))
+    }
+
+    /// Ruling 30: a range stop concluded by `git commit` is not a halt — `--continue` is right.
+    @Test func aCommittedStopSaysTheRestIsWaitingForContinue() {
+        let one = CommitRef(sha: "07b9cd9000000000000000000000000000000000", subject: "c1")
+        let waiting = HaltedSequence(
+            operation: .cherryPick, notApplied: [Self.two, Self.three], total: 2, committed: one)
+        #expect(
+            ContinueWording.halted(waiting)
+                == "07b9cd9 c1 was committed with git commit, and the rest of the cherry-pick is waiting: 2 commits, "
+                + "1600000 Pick two and 3800000 Pick three.")
+        #expect(
+            ContinueWording.haltedWayForward(waiting)
+                == "Run `git cherry-pick --continue` in a terminal to apply them: git treats 07b9cd9 as done. Gitter "
+                + "can't continue it itself, since git keeps no cherry-pick in progress for it. Or run `git "
+                + "cherry-pick --quit` to leave them out.")
+        #expect(ContinueWording.reapplyCommand(waiting) == nil)
+        #expect(!ContinueWording.haltedWayForward(waiting).contains("Don't run"))
+        let revert = HaltedSequence(operation: .revert, notApplied: [Self.two], total: 1, committed: one)
+        #expect(
+            ContinueWording.halted(revert)
+                == "07b9cd9 c1 was committed with git commit, and the rest of the revert is waiting: 1 commit, 1600000 "
+                + "Pick two.")
+        #expect(ContinueWording.haltedWayForward(revert).hasPrefix("Run `git revert --continue` in a terminal to apply it:"))
     }
 
     // MARK: - A stop over a stale sequencer list (fix round 2, Ruling 29)
@@ -394,19 +422,26 @@ import Testing
                 + "abort this cherry-pick.")
         #expect(
             ContinueWording.staleWayForward(.cherryPick, old)
-                == "To finish this cherry-pick, resolve its conflicts, then run `git commit` in a terminal (it makes "
-                + "this cherry-pick's commit and leaves the old list alone) and `git cherry-pick --quit` to forget the "
-                + "old list. To drop this cherry-pick instead, run `git cherry-pick --quit` first: it forgets the old "
-                + "list and this cherry-pick, and the files stay as they are, to resolve or discard here. The old "
-                + "list's commits can then be cherry-picked again: `git cherry-pick 1600000 3800000`.")
+                == "To finish this cherry-pick, first copy this command: `git cherry-pick \(Self.two.sha) "
+                + "\(Self.three.sha)`. Then resolve its conflicts, run `git commit` in a terminal (it makes this "
+                + "cherry-pick's commit and leaves the old list alone), then `git cherry-pick --quit` to forget the old "
+                + "list, then the copied command. To drop this cherry-pick instead, run `git cherry-pick --quit` first "
+                + "(it forgets the old list and this cherry-pick; the files stay as they are, to resolve or discard "
+                + "here), then the copied command.")
         let reverts = HaltedSequence(operation: .revert, notApplied: [Self.two], total: 1)
         #expect(
             ContinueWording.staleWarning(.revert, reverts)
                 == "Git still keeps the list of an earlier revert that stopped part-way: git did not apply 1 commit, "
                 + "1600000 Pick two. Its --continue, --skip and --abort would act on that list \u{2014} resume it, or "
                 + "rewind HEAD to before it \u{2014} so Gitter won't continue, skip or abort this revert.")
-        #expect(ContinueWording.staleWayForward(.revert, reverts).contains("`git revert --quit`"))
-        #expect(ContinueWording.staleWayForward(.revert, reverts).hasSuffix("reverted again: `git revert 1600000`."))
+        // One commit in the old list (measured): `git commit` makes git forget it — no --quit step.
+        #expect(
+            ContinueWording.staleWayForward(.revert, reverts)
+                == "To finish this revert, first copy this command: `git revert \(Self.two.sha)`. Then resolve its "
+                + "conflicts and run `git commit` in a terminal: it makes this revert's commit, and git then forgets the "
+                + "old list, which held one commit \u{2014} run the copied command after it. To drop this revert "
+                + "instead, run `git revert --quit` first (it forgets the old list and this revert; the files stay as "
+                + "they are, to resolve or discard here), then the copied command.")
         #expect(
             ContinueWording.staleReason(.cherryPick)
                 == "Gitter won't continue, skip or abort this cherry-pick: git still keeps an earlier cherry-pick's or "

@@ -407,29 +407,54 @@ enum ContinueWording {
         return shown.joined(separator: ", ") + " and \(more) more"
     }
 
+    /// The command that applies a list's commits again, full shas (a short one can be
+    /// ambiguous); nil when the list is longer than what was read, or for a committed stop
+    /// (`--continue` is its way on).
+    static func reapplyCommand(_ halted: HaltedSequence) -> String? {
+        guard halted.committed == nil, halted.total == halted.notApplied.count, !halted.notApplied.isEmpty else {
+            return nil
+        }
+        let command = halted.operation == .revert ? "git revert" : "git cherry-pick"
+        return command + " " + halted.notApplied.map(\.sha).joined(separator: " ")
+    }
+
+    static let copyCommand = "Copy Command"
+
+    /// "first copy this command: `…`." — or, for a list longer than was read, the todo itself.
+    private static func copyFirst(_ halted: HaltedSequence) -> String {
+        guard let command = reapplyCommand(halted) else {
+            return "first copy the list in .git/sequencer/todo (--quit removes it)."
+        }
+        return "first copy this command: `\(command)`."
+    }
+
     static func halted(_ halted: HaltedSequence) -> String {
         let count = halted.total == 1 ? "1 commit" : "\(halted.total) commits"
+        if let committed = halted.committed {
+            return "\(commit(committed)) was committed with git commit, and the rest of \(the(halted.operation)) is "
+                + "waiting: \(count), \(listed(halted))."
+        }
         return "\(the(halted.operation).capitalizedFirst) stopped part-way and is not in progress: git did not apply "
             + "\(count), \(listed(halted))."
     }
 
-    /// Measured (fix round 1): `--quit` keeps HEAD, the index and the worktree and removes
-    /// `sequencer/`; picking (reverting) the listed commits again then applies them; a later
-    /// `--continue` leaves the first of them out.
+    /// Measured (fix rounds 1 and 3): `--quit` keeps HEAD, the index and the worktree and removes
+    /// `sequencer/` — and with it this bar, so the command is copied first; picking (reverting)
+    /// the listed commits again then applies them; a later `--continue` leaves the first of them
+    /// out. A committed stop (Ruling 30) is the opposite: `--continue` is its way on.
     static func haltedWayForward(_ halted: HaltedSequence) -> String {
         let command = halted.operation == .revert ? "git revert" : "git cherry-pick"
-        let verb = halted.operation == .revert ? "revert" : "cherry-pick"
         let them = halted.total == 1 ? "it" : "them"
-        let again: String
-        if halted.total > halted.notApplied.count {
-            again = "then \(verb) \(them) again in the order .git/sequencer/todo lists them (copy that list first: "
-                + "--quit removes it)."
-        } else {
-            again = "then \(verb) \(them) again: `\(command) \(halted.notApplied.map { short($0.sha) }.joined(separator: " "))`."
+        if let committed = halted.committed {
+            return "Run `\(command) --continue` in a terminal to apply \(them): git treats \(short(committed.sha)) as "
+                + "done. Gitter can't continue it itself, since git keeps no \(halted.operation.noun.lowercased()) in "
+                + "progress for it. Or run `\(command) --quit` to leave \(them) out."
         }
         let first = halted.notApplied.first.map { short($0.sha) } ?? "the first of them"
-        return "To apply \(them), move away what git refused over, run `\(command) --quit` in a terminal (it changes "
-            + "no file and no commit), \(again) Don't run `\(command) --continue`: it would leave out \(first)."
+        let then = reapplyCommand(halted) == nil ? "then apply them again in that order" : "then the copied command"
+        return "To apply \(them), \(copyFirst(halted)) Then move away what git refused over, run `\(command) --quit` in "
+            + "a terminal (it changes no file and no commit, and this bar goes with it), \(then). Don't run "
+            + "`\(command) --continue`: it would leave out \(first)."
     }
 
     // MARK: - A stop over a stale sequencer list (fix round 2, Ruling 29)
@@ -452,24 +477,27 @@ enum ContinueWording {
             + "\(operation.noun.lowercased())."
     }
 
-    /// Measured (Ruling 29): `git commit` concludes this stop with its pseudo-ref's author and
-    /// message and leaves the old list alone; `--quit` then forgets it. `--quit` first forgets the
-    /// list *and* this stop's pseudo-ref, keeping HEAD, the conflicted stages and the files.
+    /// Measured (Ruling 29, fix round 3): `git commit` concludes this stop with its pseudo-ref's
+    /// author and message; with two or more commits in the old list it leaves the list alone and
+    /// `--quit` then forgets it, but with ONE git's cleanup after "the last pick" deletes
+    /// `sequencer/` — the list, and this bar's command with it. So the command (full shas) is
+    /// copied first in every case. `--quit` first forgets the list *and* this stop's pseudo-ref,
+    /// keeping HEAD, the conflicted stages and the files.
     static func staleWayForward(_ operation: RepositoryOperation, _ old: HaltedSequence) -> String {
         let noun = operation.noun.lowercased()
         let quit = operation == .revert ? "git revert --quit" : "git cherry-pick --quit"
-        let command = old.operation == .revert ? "git revert" : "git cherry-pick"
-        let done = old.operation == .revert ? "reverted" : "cherry-picked"
-        let again: String
-        if old.total > old.notApplied.count {
-            again = "\(done) again, in the order .git/sequencer/todo lists them (copy that list first: --quit removes it)."
+        let then = reapplyCommand(old) == nil ? "then apply the copied list again in its order" : "then the copied command"
+        let finish: String
+        if old.total == 1 {
+            finish = "Then resolve its conflicts and run `git commit` in a terminal: it makes this \(noun)'s commit, and "
+                + "git then forgets the old list, which held one commit \u{2014} run the copied command after it."
         } else {
-            again = "\(done) again: `\(command) \(old.notApplied.map { short($0.sha) }.joined(separator: " "))`."
+            finish = "Then resolve its conflicts, run `git commit` in a terminal (it makes this \(noun)'s commit and "
+                + "leaves the old list alone), then `\(quit)` to forget the old list, \(then)."
         }
-        return "To finish this \(noun), resolve its conflicts, then run `git commit` in a terminal (it makes this "
-            + "\(noun)'s commit and leaves the old list alone) and `\(quit)` to forget the old list. To drop this "
-            + "\(noun) instead, run `\(quit)` first: it forgets the old list and this \(noun), and the files stay as "
-            + "they are, to resolve or discard here. The old list's commits can then be \(again)"
+        return "To finish this \(noun), \(copyFirst(old)) \(finish) To drop this \(noun) instead, run `\(quit)` first "
+            + "(it forgets the old list and this \(noun); the files stay as they are, to resolve or discard here), "
+            + "\(then)."
     }
 
     // MARK: - A draft written for another commit (fix round 1)

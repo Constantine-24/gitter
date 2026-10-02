@@ -38,6 +38,7 @@ struct OperationBar: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
+                    CopyCommandButton(command: ContinueWording.reapplyCommand(old))
                 }
             } else if let line = store.continueReasonLine {
                 Text(line)
@@ -81,19 +82,39 @@ struct HaltedSequenceBar: View {
     let halted: HaltedSequence
 
     var body: some View {
+        // A committed stop (Ruling 30) is waiting, not stranded: no warning colour.
+        let waiting = halted.committed != nil
         VStack(alignment: .leading, spacing: 4) {
-            Label(ContinueWording.halted(halted), systemImage: "exclamationmark.triangle.fill")
-                .font(.callout)
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
+            Label(
+                ContinueWording.halted(halted),
+                systemImage: waiting ? "arrow.right.circle" : "exclamationmark.triangle.fill"
+            )
+            .font(.callout)
+            .foregroundStyle(waiting ? Color.secondary : Color.orange)
+            .fixedSize(horizontal: false, vertical: true)
             Text(ContinueWording.haltedWayForward(halted))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
+            CopyCommandButton(command: ContinueWording.reapplyCommand(halted))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
+    }
+}
+
+/// Copies the command that applies a list's commits again (full shas) — to be copied before
+/// the step that removes `sequencer/`, and this bar with it. Nothing when there is no command.
+struct CopyCommandButton: View {
+    let command: String?
+
+    var body: some View {
+        if let command {
+            Button(ContinueWording.copyCommand) { Clipboard.copy(command) }
+                .font(.caption)
+                .help(command)
+        }
     }
 }

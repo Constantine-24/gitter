@@ -82,13 +82,18 @@ public struct HaltedSequence: Sendable, Hashable {
     /// The commits not applied, in order, the first `listed` of them. A todo line naming a
     /// commit that no longer resolves keeps the todo's own words (its abbreviated name).
     public let notApplied: [CommitRef]
-    /// Every commit the todo lists.
+    /// Every commit `notApplied` stands for (the todo's lines, less `committed`).
     public let total: Int
+    /// Not a halt but a range stop the user concluded with `git commit` (Ruling 30, measured):
+    /// the todo's first commit, made since — `notApplied` is then the rest, waiting, and
+    /// `--continue` is the right way on (it treats the first as done).
+    public let committed: CommitRef?
 
-    public init(operation: RepositoryOperation, notApplied: [CommitRef], total: Int) {
+    public init(operation: RepositoryOperation, notApplied: [CommitRef], total: Int, committed: CommitRef? = nil) {
         self.operation = operation
         self.notApplied = notApplied
         self.total = total
+        self.committed = committed
     }
 }
 
