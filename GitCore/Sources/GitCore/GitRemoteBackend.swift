@@ -360,8 +360,9 @@ public protocol GitRemoteBackend: Sendable {
     ) async throws -> PushResult
 
     /// Replay the current branch's own commits on top of `upstream`:
-    /// `git rebase --no-autostash --no-update-refs --end-of-options <upstream>`. The "Rebase"
-    /// answer in the pull sheet.
+    /// `git rebase --no-autostash --no-update-refs --no-rebase-merges --end-of-options <upstream>`
+    /// (`--no-rebase-merges` since B1: `rebase.rebaseMerges=true` would recreate the merges a
+    /// plain rebase flattens, B13). The "Rebase" answer in the pull sheet.
     ///
     /// **It is the one method here that talks to no remote.** `upstream` is whatever the fetch
     /// before it left in `refs/remotes/*`; it is on this protocol because a pull is, and it is

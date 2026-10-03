@@ -87,6 +87,11 @@ public enum BranchOperationError: Error, Sendable, Equatable {
     /// dirty index — and `git reset --merge`, the only way to undo a pending squash, then
     /// destroys whatever was staged beforehand along with the squash. `merge(_:mode:at:)`
     /// checks the index itself before running a squash; see `requireACleanIndexForASquash`.
+    ///
+    /// **A cherry-pick or revert** over any staged change says "error: your local changes would
+    /// be overwritten by cherry-pick." (or "…by revert.") with no file list (B6) and maps here
+    /// too. The history plans refuse tracked changes before git runs
+    /// (`HistoryRefusal.trackedChanges`); this is git's word for one staged in between.
     case indexNotClean
     /// A **rebase** was refused because something tracked is uncommitted — staged or not, and
     /// whether or not the rebase would touch it. Stricter than a merge, and measured on git

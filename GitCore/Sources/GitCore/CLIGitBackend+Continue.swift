@@ -533,7 +533,9 @@ extension CLIGitBackend: GitOperationBackend {
         operation == .rebase ? true : try await hasSequencer(at: root)
     }
 
-    private func hasSequencer(at root: URL) async throws -> Bool {
+    /// Whether `sequencer/` exists: a cherry-pick or revert range in progress or left halted.
+    /// Not `private`: the history plans refuse over a halted one.
+    func hasSequencer(at root: URL) async throws -> Bool {
         var isDirectory: ObjCBool = false
         let found = FileManager.default.fileExists(
             atPath: try await gitPath("sequencer", at: root).path, isDirectory: &isDirectory)

@@ -1,8 +1,9 @@
 import Foundation
 
-/// `rebase(onto:at:)` — the "Rebase" answer to a diverged pull. See `GitRemoteBackend.rebase`
-/// for the contract; this file is about the checks made before git runs and how the outcome is
-/// read back afterwards.
+/// `rebase(onto:at:)` — the "Rebase" answer to a diverged pull — and, since B1, the rebase onto
+/// a chosen target: `rebasePlan(onto:at:)` and `rebase(_:at:)`. See `GitRemoteBackend.rebase`
+/// and `GitHistoryBackend` for the contracts; this file is about the checks made before git
+/// runs, the one vector both share, and how the outcome is read back afterwards.
 ///
 /// It lives beside, not inside, `CLIGitBackend+Remotes.swift` for length: nothing here talks to
 /// a remote. The upstream is whatever the last fetch left in `refs/remotes/*`.
@@ -49,22 +50,28 @@ extension CLIGitBackend {
         if unstaged || staged { throw BranchOperationError.treeNotClean }
 
         let headBefore = try await headSHA(at: root)
+        return try await runRebase(onto: upstream, headBefore: headBefore, at: root)
+    }
 
-        // ONE complete literal, pinned by `ForceFlagScannerTests`'
-        // `allowsTheRemoteOperationsThisMilestoneNeeds`, character for character.
-        // `--no-autostash` defeats `rebase.autoStash=true` (above). `--no-update-refs` defeats
-        // `rebase.updateRefs=true`, which would otherwise move every other local branch that
-        // points into the rewritten commits ("Updated the following refs with --update-refs",
-        // measured) — branches the sheet never named. Both are accepted on git 2.54, also under
-        // `rebase.backend=apply`. `--end-of-options` is accepted in this position (the rebase
-        // runs, and `-x` after it is answered "fatal: invalid upstream '-x'" rather than read
-        // as an option).
+    /// The one rebase vector, for both callers, and the outcome read back.
+    ///
+    /// ONE complete literal, pinned whole by `ForceFlagScannerTests`' shape for `rebase`.
+    /// `--no-autostash` defeats `rebase.autoStash=true` (see `rebase(onto:at:)`).
+    /// `--no-update-refs` defeats `rebase.updateRefs=true`, which would otherwise move every other
+    /// local branch that points into the rewritten commits ("Updated the following refs with
+    /// --update-refs", measured) — branches the sheet never named. `--no-rebase-merges` (B1) defeats
+    /// `rebase.rebaseMerges=true`, which recreates the merges a plain rebase flattens, so the
+    /// commits replayed are no longer the list the sheet showed (B13). All three are accepted on
+    /// git 2.54, also under `rebase.backend=apply`. `--end-of-options` is accepted in this
+    /// position (the rebase runs, and `-x` after it is answered "fatal: invalid upstream '-x'"
+    /// rather than read as an option).
+    private func runRebase(onto target: String, headBefore: String, at root: URL) async throws -> RebaseOutcome {
         do {
-            _ = try await run(["rebase", "--no-autostash", "--no-update-refs", "--end-of-options", upstream], cwd: root)
+            _ = try await run(["rebase", "--no-autostash", "--no-update-refs", "--no-rebase-merges", "--end-of-options", target], cwd: root)
         } catch let error as GitError {
-            // A stopped rebase FIRST, then a refusal. The guard above proved no operation was
-            // in progress before git ran, so a rebase in progress now is this one — and a rebase
-            // that stopped part-way can print text shaped exactly like a refusal: replaying a
+            // A stopped rebase FIRST, then a refusal. Both callers' guards proved no operation
+            // was in progress before git ran, so a rebase in progress now is this one — and a
+            // rebase that stopped part-way can print text shaped exactly like a refusal: replaying a
             // commit that adds a file an untracked one is sitting on says "untracked working
             // tree files would be overwritten", and git echoes the stopped commit's subject
             // ("Could not apply 1a2b3c… <subject>"), which can read like anything. Parsing
@@ -86,7 +93,78 @@ extension CLIGitBackend {
             if let refusal = BranchRefusalParser.parse(stderr: stderr) { throw refusal }
             throw error
         }
-        return try await outcome(onto: upstream, headBefore: headBefore, at: root)
+        return try await outcome(onto: target, headBefore: headBefore, at: root)
+    }
+
+    // MARK: - Rebase onto a chosen target (B1)
+
+    public func rebasePlan(onto target: String, at root: URL) async throws -> RebasePlan {
+        // A ref name or a full object id, as for the pull flow: `main~1` would be read as a
+        // revision and rebase onto a commit the sheet never named.
+        try requireRevision(target)
+        try requireRefNameOrObjectName(target)
+        try await refuseHistoryOperationInProgress(at: root)
+        let head = try await headSHA(at: root)
+        guard !head.isEmpty else { throw HistoryRefusal.unbornHead }
+        let commit = try await targetCommit(target, at: root)
+        let plan = try await replayPlan(head: head, target: commit, named: target, at: root)
+        let changed = try await trackedChanges(at: root)
+        if !changed.isEmpty { throw HistoryRefusal.trackedChanges(changed) }
+        return plan
+    }
+
+    public func rebase(_ plan: RebasePlan, at root: URL) async throws -> RebaseOutcome {
+        guard try await headSHA(at: root) == plan.head else { throw HistoryRefusal.headMoved }
+        let now = try await rebasePlan(onto: plan.targetName, at: root)
+        guard now == plan else { throw HistoryRefusal.planChanged }
+        // The full object id, never the name: a tag spelled like a branch takes the short name
+        // over in git (B17).
+        return try await runRebase(onto: plan.target, headBefore: plan.head, at: root)
+    }
+
+    /// The commit `name` means as the user picked it: a full object id itself; a local branch
+    /// before anything spelled the same (git's own lookup prefers a tag, B17 — RF2); then a
+    /// remote-tracking branch; then git's lookup (a full ref name, a tag, `HEAD`).
+    private func targetCommit(_ name: String, at root: URL) async throws -> String {
+        let candidates =
+            Self.isFullObjectID(name) || name.hasPrefix("refs/")
+            ? [name] : ["refs/heads/" + name, "refs/remotes/" + name, name]
+        for candidate in candidates {
+            let commit = try await revision(candidate, at: root)
+            if !commit.isEmpty { return commit }
+        }
+        throw BranchOperationError.noSuchBranch(name)
+    }
+
+    /// B11–B15, asked of git with both ends as full object ids.
+    ///
+    /// git says "up to date" and replays nothing when the target is an ancestor of HEAD and the
+    /// history between is a straight line (`can_fast_forward` with `is_linear_history`;
+    /// measured: with a merge between, it flattens instead). Otherwise it replays
+    /// `log --reverse --topo-order --cherry-pick --right-only --no-merges <t>...HEAD` — read
+    /// here with `--cherry-mark`, whose `=` marks the patch-identical commits it skips.
+    private func replayPlan(head: String, target: String, named name: String, at root: URL) async throws -> RebasePlan {
+        let range = "\(target)..\(head)"
+        let merges = Self.count(try await run(["rev-list", "--count", "--min-parents=2", "--end-of-options", range], cwd: root))
+        if merges == 0, try await isAncestor(target, of: head, at: root) {
+            return RebasePlan(
+                head: head, target: target, replayed: [], flattenedMerges: 0, skippedAsApplied: 0, alreadyPushed: 0,
+                targetName: name)
+        }
+        let data = try await run(["log", "--reverse", "--topo-order", "--cherry-mark", "--right-only", "--no-merges", "--no-show-signature", "--format=%m%x00%H%x00%s", "--end-of-options", "\(target)...\(head)"], cwd: root)
+        var replayed: [CommitRef] = []
+        var skipped = 0
+        for line in GitLines.split(data) {
+            let fields = line.split(separator: "\0", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
+            guard fields.count == 3 else { continue }
+            if fields[0] == "=" { skipped += 1 } else { replayed.append(CommitRef(sha: fields[1], subject: fields[2])) }
+        }
+        // B15: on some remote-tracking branch — `--remotes` — whichever remote it is.
+        let all = try await commitCount(range, at: root)
+        let unpushed = Self.count(try await run(["rev-list", "--count", "--not", "--remotes", "--not", "--end-of-options", range], cwd: root))
+        return RebasePlan(
+            head: head, target: target, replayed: replayed, flattenedMerges: merges, skippedAsApplied: skipped,
+            alreadyPushed: all - unpushed, targetName: name)
     }
 
     /// The line git prints when a `pre-rebase` hook exits non-zero (git 2.54, `LC_ALL=C`).

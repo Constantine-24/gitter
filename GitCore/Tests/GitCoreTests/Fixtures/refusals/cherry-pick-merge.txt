@@ -1,0 +1,2 @@
+error: commit 8c03d999a0a653642660c088733f563fa444f759 is a merge but no -m option was given.
+fatal: cherry-pick failed

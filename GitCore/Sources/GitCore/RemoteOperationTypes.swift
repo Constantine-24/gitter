@@ -377,8 +377,9 @@ public enum StopClick {
     }
 }
 
-/// What `rebase(onto:at:)` did, read back from the repository afterwards — from
-/// `operationInProgress` and from where HEAD ended up — never from git's exit code or its prose.
+/// What `rebase(onto:at:)` — or, since B1, `rebase(_:at:)` with a `RebasePlan` — did, read back
+/// from the repository afterwards — from `operationInProgress` and from where HEAD ended up —
+/// never from git's exit code or its prose.
 ///
 /// Four cases where the design document had three. **`.fastForwarded` was added in Task 7**
 /// because git words two different things the same way: measured on git 2.54, a branch with

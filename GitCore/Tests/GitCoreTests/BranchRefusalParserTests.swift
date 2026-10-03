@@ -233,3 +233,36 @@ import Testing
         #expect(BranchRefusalParser.parse(stderr: "error: cannot rebase: something new\n") == nil)
     }
 }
+
+/// `git cherry-pick` and `git revert` refusals (B1 Task 1), captured verbatim from git 2.54
+/// (`LC_ALL=C`) with the vectors Gitter runs into `Fixtures/refusals/{cherry-pick,revert}-*.txt`.
+/// Both are refused before git runs (a clean tree, no merge commits); these are the defence for
+/// a change made in between.
+@Suite struct HistoryRefusalParserTests {
+    /// Any staged change, related or not: one sentence and no file list (B6). The index does
+    /// not match HEAD — `.indexNotClean`'s meaning and its way out (commit or unstage).
+    @Test(arguments: ["cherry-pick-staged", "revert-staged"])
+    func aStagedChangeIsIndexNotClean(fixture: String) throws {
+        #expect(try BranchRefusalParserTests.parseFixture(fixture) == .indexNotClean)
+    }
+
+    /// A merge commit without `-m`: not a branch refusal, but the commit is named (B5).
+    @Test(arguments: ["cherry-pick-merge", "revert-merge"])
+    func aMergeWithoutAMainlineNamesTheCommit(fixture: String) throws {
+        let stderr = try BranchRefusalParserTests.fixture(fixture)
+        #expect(BranchRefusalParser.parse(stderr: stderr) == nil)
+        #expect(BranchRefusalParser.mergeWithoutMainline(stderr: stderr) == "8c03d999a0a653642660c088733f563fa444f759")
+    }
+
+    /// The match is on git's whole sentence, at the start of a line.
+    @Test(arguments: [
+        "error: commit abc is a merge but no -m option was given. extra\n",
+        "hint: commit 8c03d999a0a653642660c088733f563fa444f759 is a merge but no -m option was given.\n",
+        "error: commit  is a merge but no -m option was given.\n",
+        "error: your local changes would be overwritten by rebase.\n",
+    ])
+    func otherLinesAreNotRecognised(stderr: String) {
+        #expect(BranchRefusalParser.mergeWithoutMainline(stderr: stderr) == nil)
+        #expect(BranchRefusalParser.parse(stderr: stderr) == nil)
+    }
+}

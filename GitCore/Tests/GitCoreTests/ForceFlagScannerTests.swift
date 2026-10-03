@@ -708,7 +708,7 @@ import Testing
         _ = try await run(["fetch", "--progress", "--no-prune", "--end-of-options", remote], cwd: root)
         _ = try await run(["fetch", "--progress", "--no-prune", "--all"], cwd: root)
         """#,
-        #"_ = try await run(["rebase", "--no-autostash", "--no-update-refs", "--end-of-options", upstream], cwd: root)"#,
+        #"_ = try await run(["rebase", "--no-autostash", "--no-update-refs", "--no-rebase-merges", "--end-of-options", target], cwd: root)"#,
         #"_ = try await run(["remote", "-v"], cwd: root)"#,
         #"""
         arguments = ["merge", "--no-autostash", "--ff", "--no-edit", "--end-of-options", target]
@@ -1554,6 +1554,84 @@ import Testing
         let source = try String(contentsOf: Self.sourcesRoot.appendingPathComponent(file), encoding: .utf8)
         #expect(ForceFlagScanner.findings(in: source, fileName: file).isEmpty)
         #expect(source.contains(original), "the file no longer spells \(original)")
+        let changed = source.replacingOccurrences(of: original, with: mutated)
+        #expect(changed != source)
+
+        #expect(!ForceFlagScanner.findings(in: changed, fileName: file).isEmpty)
+    }
+
+    // MARK: - History actions (B1 Task 1)
+
+    /// A **contract**: the three vectors that start a history action, spelled as the sources
+    /// write them, and the reads the plans make. `cherry-pick`, `revert` and `rebase` are
+    /// shape-governed since B1: these, `--abort`, `--continue` and `--skip` are their only
+    /// permitted forms, so a vector that leaves out a pin is a finding — an absence no deny
+    /// table could see.
+    @Test(arguments: [
+        #"let result = try await runWithEnvironment(["cherry-pick", "--empty=drop", "--end-of-options"] + shas, cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"let result = try await runWithEnvironment(["revert", "--no-edit", "--no-reference", "--end-of-options"] + shas, cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"_ = try await run(["rebase", "--no-autostash", "--no-update-refs", "--no-rebase-merges", "--end-of-options", target], cwd: root)"#,
+        #"_ = try await run(["cherry-pick", "--abort"], cwd: root)"#,
+        #"_ = try await run(["revert", "--continue"], cwd: root)"#,
+        #"arguments = ["rebase", "--skip"]"#,
+        #"let data = try await run(["rev-list", "--topo-order", "--reverse", "--end-of-options"] + sorted + ["^" + head], cwd: root)"#,
+        #"let data = try await run(["rev-list", "--count", "--not", "--remotes", "--not", "--end-of-options", range], cwd: root)"#,
+        #"let data = try await run(["log", "--reverse", "--topo-order", "--cherry-mark", "--right-only", "--no-merges", "--no-show-signature", "--format=%m%x00%H%x00%s", "--end-of-options", "\(target)...\(head)"], cwd: root)"#,
+    ])
+    func allowsTheHistoryVectorsThisMilestoneNeeds(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
+    /// Each pin left out, an option added, the shas passed before `--end-of-options`, or the
+    /// vector hidden from its shape: a finding. Built in test strings only, never in a source.
+    @Test(arguments: [
+        // `--empty=drop` left out: an already-applied commit stops the pick as "empty" (B4).
+        #"_ = try await run(["cherry-pick", "--end-of-options"] + shas, cwd: root)"#,
+        #"_ = try await run(["cherry-pick", "--empty=stop", "--end-of-options"] + shas, cwd: root)"#,
+        #"_ = try await run(["cherry-pick", "--empty=keep", "--end-of-options"] + shas, cwd: root)"#,
+        #"_ = try await run(["cherry-pick", "--empty=drop", "-x", "--end-of-options"] + shas, cwd: root)"#,
+        #"_ = try await run(["cherry-pick", "--empty=drop", "--no-commit", "--end-of-options"] + shas, cwd: root)"#,
+        #"_ = try await run(["cherry-pick", "--empty=drop"] + shas, cwd: root)"#,
+        #"_ = try await run(["cherry-pick", "--empty=drop", "--end-of-options", sha], cwd: root)"#,
+        // `--no-reference` left out: `revert.reference=true` commits git's placeholder (B9).
+        #"_ = try await run(["revert", "--no-edit", "--end-of-options"] + shas, cwd: root)"#,
+        #"_ = try await run(["revert", "--no-reference", "--end-of-options"] + shas, cwd: root)"#,
+        #"_ = try await run(["revert", "--no-edit", "--no-reference", "-m", "1", "--end-of-options"] + shas, cwd: root)"#,
+        // `--no-rebase-merges` left out: `rebase.rebaseMerges=true` recreates merges (B13).
+        #"_ = try await run(["rebase", "--no-autostash", "--no-update-refs", "--end-of-options", target], cwd: root)"#,
+        #"_ = try await run(["rebase", "--no-autostash", "--no-update-refs", "--rebase-merges", "--end-of-options", target], cwd: root)"#,
+        #"_ = try await run(["rebase", "--no-autostash", "--no-update-refs", "--no-rebase-merges", "--end-of-options", target] + more, cwd: root)"#,
+        #"_ = try await run(["rebase", "--no-update-refs", "--no-rebase-merges", "--end-of-options", target], cwd: root)"#,
+        #"_ = try await run(["rebase", "--no-autostash", "--no-update-refs", "--no-rebase-merges", "-i", "--end-of-options", target], cwd: root)"#,
+        #"_ = try await run(["rebase", "--continue", "--no-verify"], cwd: root)"#,
+    ])
+    func catchesAHistoryVectorOutsideItsShapes(source: String) {
+        #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// The three subcommands are shape-governed, and their shapes are exactly these.
+    @Test func theHistorySubcommandsAreShapeGoverned() {
+        #expect(ForceFlagScanner.spelling(of: "cherry-pick", ForceFlagScanner.allowedShapes["cherry-pick"] ?? [])
+            == #"["cherry-pick", "--abort"] or ["cherry-pick", "--continue"] or ["cherry-pick", "--empty=drop", "--end-of-options"] + revisions"#)
+        #expect(ForceFlagScanner.spelling(of: "revert", ForceFlagScanner.allowedShapes["revert"] ?? [])
+            == #"["revert", "--abort"] or ["revert", "--continue"] or ["revert", "--no-edit", "--no-reference", "--end-of-options"] + revisions"#)
+        #expect(ForceFlagScanner.spelling(of: "rebase", ForceFlagScanner.allowedShapes["rebase"] ?? [])
+            == #"["rebase", "--abort"] or ["rebase", "--continue"] or ["rebase", "--no-autostash", "--no-update-refs", "--no-rebase-merges", "--end-of-options", <data>]"#)
+    }
+
+    /// Not vacuous: each file is clean, and each of its history vectors, changed in memory
+    /// only, becomes a finding.
+    @Test(arguments: [
+        ("CLIGitBackend+History.swift", #"["cherry-pick", "--empty=drop", "--end-of-options"]"#, #"["cherry-pick", "--end-of-options"]"#),
+        ("CLIGitBackend+History.swift", #"["revert", "--no-edit", "--no-reference", "--end-of-options"]"#, #"["revert", "--no-edit", "--end-of-options"]"#),
+        ("CLIGitBackend+Rebase.swift", #"["rebase", "--no-autostash", "--no-update-refs", "--no-rebase-merges", "--end-of-options", target]"#, #"["rebase", "--no-autostash", "--no-update-refs", "--end-of-options", target]"#),
+        ("CLIGitBackend+Abort.swift", #"arguments = ["rebase", "--abort"]"#, #"arguments = ["rebase", "--abort", "--no-verify"]"#),
+    ])
+    func theHistoryFilesVectorsAreChecked(file: String, original: String, mutated: String) throws {
+        let source = try String(contentsOf: Self.sourcesRoot.appendingPathComponent(file), encoding: .utf8)
+        #expect(ForceFlagScanner.findings(in: source, fileName: file).isEmpty)
+        #expect(source.contains(original), "\(file) no longer spells \(original)")
         let changed = source.replacingOccurrences(of: original, with: mutated)
         #expect(changed != source)
 

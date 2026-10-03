@@ -75,6 +75,13 @@ public enum BranchRefusalParser {
                 || line.contains("cannot rebase: Your index contains uncommitted changes.") {
                 return .treeNotClean
             }
+            // `git cherry-pick` / `git revert` over any staged change, related or not (B6):
+            // one sentence, no file list. The index does not match HEAD, which is what
+            // `.indexNotClean` says and how it is undone (commit or unstage).
+            if line == "error: your local changes would be overwritten by cherry-pick."
+                || line == "error: your local changes would be overwritten by revert." {
+                return .indexNotClean
+            }
             if let operation = operationInProgress(in: line) {
                 return .operationInProgress(operation)
             }
@@ -100,6 +107,24 @@ public enum BranchRefusalParser {
             if let name = unquotedName(
                 in: line, after: "merge: ", before: " - not something we can merge") {
                 return .noSuchBranch(name)
+            }
+        }
+        return nil
+    }
+
+    /// The commit a cherry-pick or revert refused because it is a merge and no `-m` was given —
+    /// "error: commit <full sha> is a merge but no -m option was given." (B5, B10) — or nil.
+    /// Not a `BranchOperationError`: the history backend refuses with
+    /// `HistoryRefusal.mergeCommits`. The whole line must be git's sentence around one full
+    /// object id.
+    public static func mergeWithoutMainline(stderr: String) -> String? {
+        let prefix = "error: commit "
+        let suffix = " is a merge but no -m option was given."
+        for line in stderr.split(separator: "\n").map(String.init)
+        where line.hasPrefix(prefix) && line.hasSuffix(suffix) {
+            let sha = line.dropFirst(prefix.count).dropLast(suffix.count)
+            if sha.count == 40 || sha.count == 64, sha.allSatisfy(\.isHexDigit), sha.allSatisfy(\.isASCII) {
+                return String(sha)
             }
         }
         return nil

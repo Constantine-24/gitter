@@ -1,0 +1,3 @@
+error: your local changes would be overwritten by revert.
+hint: commit your changes or stash them to proceed.
+fatal: revert failed

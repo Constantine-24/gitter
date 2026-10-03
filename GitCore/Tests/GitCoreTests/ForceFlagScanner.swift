@@ -355,7 +355,11 @@ enum ForceFlagScanner {
                         }
                     }
                 }
-                continue
+                // A matched shape is complete. A mismatched vector of a subcommand that also
+                // keeps its deny table (`sequencerSubcommands`) goes on to the per-element
+                // rules, so the finding names the offending flag (`rebase --autostash`,
+                // `cherry-pick --merge`) as well as the shape it missed.
+                if matchedShapes[arrayIndex] != nil || !sequencerSubcommands.contains(subcommand) { continue }
             }
             // One of `skipShapes`: every element is a pinned literal, vouched for above.
             if matchedShapes[arrayIndex] != nil { continue }
@@ -1046,6 +1050,12 @@ enum ForceFlagScanner {
     /// whether anything may be concatenated after the array literal: only after a trailing
     /// `"--"`, where whatever follows is a path. `["stash", "push", "-q", "--message", m] +
     /// paths` would be a pathspec on `stash push`, which is exactly what the shape forbids.
+    ///
+    /// **B1 made `cherry-pick`, `revert` and `rebase` shape-governed**, to pin a *presence*: the
+    /// vector that starts each action must carry the flag that keeps the user's config from
+    /// rewriting it, and a deny table cannot see a flag left out. Their shas follow a trailing
+    /// `"--end-of-options"`, the second place concatenation is allowed (revisions, never
+    /// options). They keep their deny tables for a vector that misses (`sequencerSubcommands`).
     static let allowedShapes: [String: [Shape]] = [
         "remote": [Shape(.literal("-v"))],
         "stash": [
@@ -1123,7 +1133,33 @@ enum ForceFlagScanner {
                 .literal("-z"), .literal("merge"), .literal("conflict-marker-size"), .literal("--"),
                 .data),
         ],
+        // B1 Task 1: the vectors that start a history action, each with the pin that keeps the
+        // user's config from rewriting it — `--empty=drop` (an already-applied commit would
+        // stop the pick as "empty", B4), `--no-reference` (`revert.reference=true` commits git's
+        // placeholder comment as the subject, B9), `--no-rebase-merges` (`rebase.rebaseMerges`
+        // recreates merges the replay list flattened, B13) — and the two ways out A2 runs
+        // (`--skip` is `skipShapes`'). The shas follow `--end-of-options`, concatenated.
+        "cherry-pick": [
+            Shape(.literal("--abort")), Shape(.literal("--continue")),
+            Shape(.literal("--empty=drop"), .literal("--end-of-options")),
+        ],
+        "revert": [
+            Shape(.literal("--abort")), Shape(.literal("--continue")),
+            Shape(.literal("--no-edit"), .literal("--no-reference"), .literal("--end-of-options")),
+        ],
+        "rebase": [
+            Shape(.literal("--abort")), Shape(.literal("--continue")),
+            Shape(
+                .literal("--no-autostash"), .literal("--no-update-refs"), .literal("--no-rebase-merges"),
+                .literal("--end-of-options"), .data),
+        ],
     ]
+
+    /// The shape-governed subcommands that also keep a deny table (`forbiddenFlags`) and the
+    /// positional rules (`--abort`, `--merge`): a vector of theirs that misses every shape is
+    /// also read flag by flag, so its finding names the flag. Their tables still feed
+    /// `fragmentForbidden` either way.
+    static let sequencerSubcommands: Set<String> = ["cherry-pick", "revert", "rebase"]
 
     /// The only three vectors that may carry `--skip` (A2 Task 3's Skip), each whole and with
     /// nothing concatenated: `["rebase", "--skip"]`, `["cherry-pick", "--skip"]` and
@@ -1131,11 +1167,11 @@ enum ForceFlagScanner {
     ///
     /// `--skip` stays in `alwaysForbidden`, so the sweep still reports it in every literal but an
     /// element of an array literal matching one of these shapes (`vouched` in `findings`), and a
-    /// matched array is complete: no per-element rule has anything left to read. Unlike
-    /// `allowedShapes`, a subcommand here is **not** made shape-only — `rebase`, `cherry-pick`
-    /// and `revert` keep their deny tables and positional rules (`rebase --autostash`,
-    /// `cherry-pick --merge`, the `--abort` family) for every other vector, which is what names
-    /// the offending flag in their findings. What makes the flag safe is not the vector but what
+    /// matched array is complete: no per-element rule has anything left to read. Since B1 the
+    /// three subcommands are shape-governed as well (`allowedShapes`: `--abort`, `--continue`
+    /// and the vector that starts each action), and they keep their deny tables and positional
+    /// rules (`rebase --autostash`, `cherry-pick --merge`) for a vector that misses every shape
+    /// (`sequencerSubcommands`), which is what names the offending flag in their findings. What makes the flag safe is not the vector but what
     /// runs before it: `skip(_:stoppedAt:at:)` refuses unless every change is the stopped
     /// commit's and files them first (M 17, M 31, M 32).
     static let skipShapes: [String: [Shape]] = [
@@ -1186,9 +1222,10 @@ enum ForceFlagScanner {
 
         static func + (shape: Shape, tail: [ShapeSlot]) -> Shape { Shape(slots: shape.slots + tail) }
 
-        /// Whether `+ …` may follow the array literal: only after a trailing `"--"`.
+        /// Whether `+ …` may follow the array literal: only after a trailing `"--"` (paths) or
+        /// `"--end-of-options"` (revisions — git reads nothing after it as an option, B25).
         var allowsConcatenation: Bool {
-            if case .literal("--") = slots.last { return true }
+            if case .literal(let last) = slots.last { return last == "--" || last == "--end-of-options" }
             return false
         }
 
@@ -1228,6 +1265,16 @@ enum ForceFlagScanner {
             "the conflict reader and the discard section parse exactly these reads; `-p`, "
             + "`--textconv` or a read without `--filters` gives them bytes in another form",
         "check-attr": "the conflict reader asks for exactly these two attributes, of one plain path",
+        "cherry-pick":
+            "a pick without `--empty=drop` stops on an already-applied commit as an empty pick (B4), "
+            + "and every other option (`-x`, `-n`, `-m`, `--empty=keep`) changes what the sheet showed",
+        "revert":
+            "a revert without `--no-reference` commits git's placeholder comment as its subject under "
+            + "`revert.reference=true` (B9), and without `--no-edit` it may open an editor",
+        "rebase":
+            "a rebase without `--no-rebase-merges` recreates merges under `rebase.rebaseMerges=true` "
+            + "(B13), and the autostash and update-refs pins keep config from moving work and branches "
+            + "the sheet never named",
     ]
 
     static let shapeConcatenationNote =
@@ -1519,7 +1566,12 @@ enum ForceFlagScanner {
                 case .interpolated(let prefix, let suffix): return "\"\(prefix)\\(…)\(suffix)\""
                 }
             }
-            let tail = shape.allowsConcatenation ? " + paths" : ""
+            let tail: String
+            if case .literal("--end-of-options") = shape.slots.last {
+                tail = " + revisions"
+            } else {
+                tail = shape.allowsConcatenation ? " + paths" : ""
+            }
             return "[" + ([subcommand.debugDescription] + slots).joined(separator: ", ") + "]" + tail
         }
         .joined(separator: " or ")
