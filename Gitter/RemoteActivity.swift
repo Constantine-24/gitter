@@ -23,15 +23,20 @@ struct RemoteActivity: Equatable {
         case publish
         case forcePush
         case deleteRemoteBranch
+        /// One tag pushed to a remote (`GitTagBackend.pushTag`): never forced.
+        case pushTag
+        /// One tag deleted on a remote, leased on the id its sheet showed
+        /// (`GitTagBackend.deleteRemoteTag`).
+        case deleteRemoteTag
     }
 
     let kind: Kind
 
-    /// Whether this operation writes on the server — the four that hold the mutation slot too,
+    /// Whether this operation writes on the server — the six that hold the mutation slot too,
     /// and whose cancellation leaves the remote in an unknown state.
     var isWrite: Bool {
         switch kind {
-        case .push, .publish, .forcePush, .deleteRemoteBranch: true
+        case .push, .publish, .forcePush, .deleteRemoteBranch, .pushTag, .deleteRemoteTag: true
         case .fetch, .autoFetch, .pull: false
         }
     }
@@ -55,7 +60,8 @@ struct RemoteActivity: Equatable {
 struct RemoteLane: Sendable {
     let token: Int
     let generation: Int
-    /// Set when the lane also holds the mutation slot (push, publish, force push, delete).
+    /// Set when the lane also holds the mutation slot (push, publish, force push, delete, and a
+    /// tag's push or remote delete).
     let mutationGeneration: Int?
 }
 

@@ -31,8 +31,10 @@ struct CommitListView: View {
 
     var body: some View {
         let rows = rows()
+        // Once per body, not per row: the pills of 500 rows look up one dictionary.
+        let tags = TagWording.tagsByCommit(store.snapshot?.refs.tags ?? [])
         ScrollViewReader { proxy in
-            table(rows)
+            table(rows, tags: tags)
                 .onChange(of: store.selection) { _, newValue in
                     // Cleared whichever branch is taken, so the flag can only ever suppress
                     // the one scroll it was set for. Left standing, a selection the table made
@@ -59,7 +61,7 @@ struct CommitListView: View {
     }
 
     @ViewBuilder
-    private func table(_ rows: [CommitRow]) -> some View {
+    private func table(_ rows: [CommitRow], tags: [String: [Tag]]) -> some View {
         Table(rows, selection: selectionBinding(rows)) {
             TableColumn("") { row in
                 switch row {
@@ -91,8 +93,17 @@ struct CommitListView: View {
                     }
                 case .commit(let commit, _, _):
                     HStack(spacing: 4) {
-                        ForEach(Array(commit.refs.enumerated()), id: \.offset) { _, ref in
+                        // The log's branch decorations, then the commit's tags from the tag
+                        // list: `%D`'s tag entries change with `log.decorate=full` and vanish
+                        // under `log.excludeDecoration` (B18), the tag list does not.
+                        ForEach(
+                            Array(TagWording.branchDecorations(commit.refs).enumerated()),
+                            id: \.offset
+                        ) { _, ref in
                             RefCapsule(ref: ref)
+                        }
+                        ForEach(tags[commit.sha] ?? []) { tag in
+                            TagCapsule(tag: tag)
                         }
                         Text(commit.summary).lineLimit(1)
                     }
@@ -188,23 +199,49 @@ struct CommitListView: View {
     }
 }
 
-/// A small tinted capsule for one of git's `%D` decorations.
+/// A small tinted capsule for one of git's `%D` branch decorations (tags are `TagCapsule`).
 private struct RefCapsule: View {
     let ref: String
 
     var body: some View {
-        let isTag = ref.hasPrefix("tag: ")
         let isHead = ref.hasPrefix("HEAD")
-        Text(isTag ? String(ref.dropFirst(5)) : ref)
+        Text(ref)
             .font(.caption2)
             .fontWeight(isHead ? .bold : .regular)
             .lineLimit(1)
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
-            .background(
-                (isTag ? Color.orange : Color.accentColor).opacity(0.2),
-                in: Capsule()
-            )
-            .foregroundStyle(isTag ? Color.orange : Color.accentColor)
+            .background(Color.accentColor.opacity(0.2), in: Capsule())
+            .foregroundStyle(Color.accentColor)
+    }
+}
+
+/// A tag's pill on its commit's row, from the tag list — the same icon and tooltip as its
+/// sidebar row. The icon tells it from a branch's pill whatever the accent colour is (with an
+/// orange system accent the two tints are the same).
+private struct TagCapsule: View {
+    let tag: Tag
+
+    var body: some View {
+        Label(tag.name, systemImage: TagWording.rowIcon(tag))
+            .labelStyle(TagPillLabelStyle())
+            .font(.caption2)
+            .lineLimit(1)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Color.orange.opacity(0.2), in: Capsule())
+            .foregroundStyle(Color.orange)
+            .help(TagWording.rowHelp(tag))
+            .accessibilityLabel(TagWording.rowAccessibility(tag))
+    }
+}
+
+/// Icon and title close together, sized for a pill.
+private struct TagPillLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 2) {
+            configuration.icon.imageScale(.small)
+            configuration.title
+        }
     }
 }

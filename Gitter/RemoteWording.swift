@@ -164,6 +164,9 @@ enum RemoteWording {
         case .deleteRemoteBranch(let remote, let branch, _, _):
             "The warning for deleting \"\(branch)\" on \"\(remote)\" wasn't shown because "
                 + "another sheet was open. Nothing was deleted."
+        case .deleteRemoteTag(let name, let remote, _):
+            "The warning for deleting tag \(TagWording.quoted(name)) on \(TagWording.quoted(remote)) "
+                + "wasn't shown because another sheet was open. Nothing was deleted."
         default:
             "Another sheet was open, so the next question wasn't shown. Nothing was changed."
         }
@@ -179,6 +182,8 @@ enum RemoteWording {
         case .publish: "publishing to\(remote)"
         case .forcePush: "the force push to\(remote)"
         case .deleteRemoteBranch: "the deletion on\(remote)"
+        case .pushTag: "the tag push to\(remote)"
+        case .deleteRemoteTag: "the tag deletion on\(remote)"
         }
     }
 
@@ -196,6 +201,8 @@ enum RemoteWording {
         case .publish: "Publishing to\(remote)…"
         case .forcePush: "Force pushing to\(remote)…"
         case .deleteRemoteBranch: "Deleting on\(remote)…"
+        case .pushTag: "Pushing a tag to\(remote)…"
+        case .deleteRemoteTag: "Deleting a tag on\(remote)…"
         }
     }
 
@@ -236,10 +243,10 @@ enum RemoteWording {
         switch kind {
         case .fetch, .autoFetch: "Fetching"
         case .pull: "Pulling"
-        case .push: "Pushing"
+        case .push, .pushTag: "Pushing"
         case .publish: "Publishing"
         case .forcePush: "Force pushing"
-        case .deleteRemoteBranch: "Deleting"
+        case .deleteRemoteBranch, .deleteRemoteTag: "Deleting"
         }
     }
 

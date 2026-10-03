@@ -74,7 +74,9 @@ extension RepositoryStore {
         switch kind {
         case .publish: return inGit == "config"
         case .deleteRemoteBranch: return inGit == "packed-refs"
-        case .fetch, .autoFetch, .pull, .push, .forcePush: return false
+        // A tag's push or remote delete writes nothing here: `refs/tags/…` is already in the
+        // first row, and neither updates a remote-tracking ref.
+        case .fetch, .autoFetch, .pull, .push, .forcePush, .pushTag, .deleteRemoteTag: return false
         }
     }
 

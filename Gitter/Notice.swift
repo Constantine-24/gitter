@@ -41,6 +41,9 @@ enum NoticeAction: Equatable {
     /// Gitter: …" — in the detail pane, found again by sha. Shows, never pops: during an operation
     /// the stash is refused, and that is when these entries are made.
     case showStash(Stash)
+    /// Puts back the tag a Delete Tag took (`RepositoryStore.restoreTag`) — the only way back,
+    /// since tags keep no reflog: the receipt's `objectID` recreates the identical tag (B19).
+    case restoreTag(TagReceipt)
 }
 
 /// The words on a notice's buttons.
@@ -52,6 +55,7 @@ enum NoticeWording {
         case .popStash: "Pop Stash"
         case .undoDiscard: DiscardWording.undoButton
         case .showStash: ConflictWording.showCopy
+        case .restoreTag: TagWording.restoreButton
         }
     }
 }

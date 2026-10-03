@@ -82,6 +82,18 @@ enum BranchSheet: Identifiable, Hashable {
     /// Rebase onto…: the plan GitCore made (`rebasePlan`), handed back to `rebase(_:at:)` as it
     /// is, with the same promise.
     case rebaseOnto(RebasePlan)
+    /// New Tag… on the commit `sha` (a full object id, which `confirmNewTag` hands to GitCore
+    /// as the target).
+    case newTag(sha: String)
+    /// Delete Tag…: the tag as the list showed it — `objectID` is what GitCore's
+    /// compare-and-delete names, so a tag that moved under the sheet is refused — and the
+    /// remotes this session saw holding it (`RemoteTagsSeen`, Ruling 2), for the sheet's "the
+    /// next fetch brings it back" line.
+    case deleteTag(Tag, comesBackFrom: [String])
+    /// Delete from <remote>…: `id` is the tag's **unpeeled** id on `remote`, read on the lane as
+    /// the sheet opened (`remoteTagID`) — the lease `confirmDeleteRemoteTag` hands to git. Nil
+    /// when the remote has no such tag: the sheet then says so and offers nothing.
+    case deleteRemoteTag(name: String, remote: String, id: String?)
 
     var id: Self { self }
 
@@ -100,6 +112,8 @@ enum BranchSheet: Identifiable, Hashable {
             a == b && r == s && ra == rb
         case (.deleteRemoteBranch(let r, let a, _, _), .deleteRemoteBranch(let s, let b, _, _)):
             r == s && a == b
+        case (.deleteRemoteTag(let a, let r, _), .deleteRemoteTag(let b, let s, _)):
+            a == b && r == s
         default: false
         }
     }

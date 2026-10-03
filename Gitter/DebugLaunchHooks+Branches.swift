@@ -70,6 +70,12 @@
     ///     revert                       rebaseonto:<rev>             confirmhistory
     ///     confirmrebase
     ///
+    ///   Tags (`RepositoryStore+Tags`, `DebugLaunchHooks+History`):
+    ///
+    ///     newtag:<name>:<rev>[:<msg>]  deletetag:<name>             confirmdeletetag
+    ///     restoretag                   pushtag:<name>:<remote>      deleteremotetag:<name>:<remote>
+    ///     confirmdeleteremotetag       tags
+    ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
     /// `start:<step>` runs a step **without** waiting for its lane, which is how the steps after
@@ -680,6 +686,8 @@
                 describeContinueSheet(sheet) ?? "?"
             case .historyAction, .rebaseOnto:
                 describeHistorySheet(sheet) ?? "?"
+            case .newTag, .deleteTag, .deleteRemoteTag:
+                describeTagSheet(sheet, store) ?? "?"
             }
         }
 

@@ -192,32 +192,63 @@ struct RemoteMenu: View {
     }
 }
 
-/// A tag: check it out (which detaches HEAD), branch from it, copy its name.
+/// A tag: check it out (which detaches HEAD), branch from it, copy its name, delete it — with
+/// Restore Tag in the notice after — and push it to, or delete it on, each remote.
+///
+/// Delete Tag… and Delete from <remote>… only open their confirmation; Push Tag to <remote>
+/// pushes at once — one tag, never forced, so a remote with a different tag of that name keeps
+/// it. A symbolic ref under `refs/tags` gets all three disabled with the reason: a delete or
+/// push that followed it would act on the branch it names.
 struct TagMenu: View {
-    let tag: String
+    let tag: Tag
 
     @Environment(RepositoryStore.self) private var store
 
     var body: some View {
         let reason = store.branchSwitchingBlockedReason
+        let deleteReason = store.deleteTagBlockedReason(tag)
+        let remotes = store.snapshot?.refs.remotes ?? []
+        let remoteReason = remotes.isEmpty ? nil : store.remoteTagBlockedReason(tag)
 
-        MenuReasons(reasons: [reason])
+        MenuReasons(reasons: [reason, deleteReason, remoteReason])
 
-        Button("Check Out (detached)") { store.detach(at: tag) }
+        Button("Check Out (detached)") { store.detach(at: tag.name) }
             .disabled(reason != nil)
 
         Divider()
 
-        Button("New Branch from Here…") { store.requestNewBranch(from: tag) }
+        Button("New Branch from Here…") { store.requestNewBranch(from: tag.name) }
 
         Divider()
 
-        Button("Copy Name") { Clipboard.copy(tag) }
+        Button("Copy Name") { Clipboard.copy(tag.name) }
+
+        Divider()
+
+        Button(TagWording.deleteTagTitle) { store.requestDeleteTag(tag) }
+            .disabled(deleteReason != nil)
+
+        if !remotes.isEmpty {
+            Divider()
+
+            ForEach(remotes) { remote in
+                Button(TagWording.pushTitle(remote: remote.name)) {
+                    store.pushTag(tag.name, to: remote.name)
+                }
+                .disabled(remoteReason != nil)
+            }
+            ForEach(remotes) { remote in
+                Button(TagWording.deleteFromRemoteTitle(remote: remote.name)) {
+                    store.requestDeleteRemoteTag(tag.name, on: remote.name)
+                }
+                .disabled(remoteReason != nil)
+            }
+        }
     }
 }
 
 /// One commit in the list, or several selected together: cherry-pick or revert them, rebase onto
-/// one; and for a single commit branch from it, check it out detached, copy its sha.
+/// one; and for a single commit branch or tag from it, check it out detached, copy its sha.
 ///
 /// `shas` are in the order the list shows them. The history items only open their sheet — the
 /// plan is GitCore's, and nothing runs before its confirmation.
@@ -255,6 +286,8 @@ struct CommitMenu: View {
             Button("New Branch from Here…") {
                 store.requestNewBranch(from: sha, labelled: String(sha.prefix(7)))
             }
+            // The full sha: it is what `createTag` is given (Ruling 1).
+            Button(TagWording.newTagTitle) { store.requestNewTag(at: sha) }
             Button("Check Out (detached)") { store.detach(at: sha) }
                 .disabled(reason != nil)
 

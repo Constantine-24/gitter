@@ -186,6 +186,12 @@ final class RepositoryStore {
     /// paths are "its own" depends on the kind of work (`RepositoryStore.isLaneOwnWrite`).
     private(set) var watcherEventDuringLane = false
 
+    /// Which remotes this session has seen holding which tag (`RemoteTagsSeen`): what the Delete
+    /// Tag sheet may name as bringing a tag back (Ruling 2). Written by a tag's push and remote
+    /// delete (`RepositoryStore+Tags`), forgotten by `open()` — it is about the repository that
+    /// was open.
+    private(set) var remoteTagsSeen = RemoteTagsSeen()
+
     #if DEBUG
         /// How many snapshot loads have run, for the harness's "exactly one refresh when the
         /// lane frees" check.
@@ -228,10 +234,11 @@ final class RepositoryStore {
 
     /// Everything the store can ask git to do: reads, index and commit writes, branch,
     /// checkout and merge writes, the network, the stash, conflicts, the operation in progress
-    /// and the history actions (cherry-pick, revert, rebase onto). Eight protocols so a fake can
-    /// implement any one on its own.
+    /// the history actions (cherry-pick, revert, rebase onto) and tags. Nine protocols so a fake
+    /// can implement any one on its own.
     typealias Backend = any GitBackend & GitWorkingCopyBackend & GitBranchBackend & GitRemoteBackend
         & GitStashBackend & GitConflictBackend & GitOperationBackend & GitHistoryBackend
+        & GitTagBackend
 
     let backend: Backend
     // internal (not private): used by +Opening.swift's `checkGitAvailability()`
@@ -355,6 +362,7 @@ final class RepositoryStore {
         remoteActivity = nil
         rejectedPush = nil
         clearStashAndContinueOffer()
+        remoteTagsSeen = RemoteTagsSeen()
         // The automatic fetch belongs to the repository it fetches: the old one's schedule
         // stops here, and its mark says nothing about this one. This one's starts once its first
         // snapshot is in (below), so the first tick can see whether it has a remote at all.
@@ -683,7 +691,7 @@ final class RepositoryStore {
         switch kind {
         case .push, .publish, .forcePush:
             if stickyNotice?.links.isEmpty == false { stickyNotice = nil }
-        case .fetch, .autoFetch, .pull, .deleteRemoteBranch: break
+        case .fetch, .autoFetch, .pull, .deleteRemoteBranch, .pushTag, .deleteRemoteTag: break
         }
         laneToken += 1
         remoteActivity = RemoteActivity(kind: kind, remote: remote, progress: nil)
@@ -758,6 +766,11 @@ final class RepositoryStore {
     func clearStashAndContinueOffer() {
         stashAndContinueOffer = nil
         stashAndContinueBanner = nil
+    }
+
+    // internal (not private(set) write): used by +Tags.swift, once a remote has answered
+    func noteRemoteTag(_ name: String, on remote: String, present: Bool) {
+        remoteTagsSeen.note(name, on: remote, present: present)
     }
 
     // internal (not private(set) write): used by +Remotes.swift, right after the banner it

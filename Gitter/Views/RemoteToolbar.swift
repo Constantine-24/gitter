@@ -106,13 +106,14 @@ struct RemoteToolbarItem: View {
     }
 
     /// The item that shows a lane's progress and stop button. Every kind has one, so the stop
-    /// button is always somewhere: a force push and a deletion on the remote are writes to the
-    /// server, like a push, so they show on Push; the automatic fetch shows on Fetch.
+    /// button is always somewhere: a force push, a deletion on the remote and a tag's push or
+    /// remote delete are writes to the server, like a push, so they show on Push; the automatic
+    /// fetch shows on Fetch.
     static func owner(of kind: RemoteActivity.Kind) -> Action {
         switch kind {
         case .fetch, .autoFetch: .fetch
         case .pull: .pull
-        case .push, .publish, .forcePush, .deleteRemoteBranch: .push
+        case .push, .publish, .forcePush, .deleteRemoteBranch, .pushTag, .deleteRemoteTag: .push
         }
     }
 

@@ -88,10 +88,14 @@ struct SidebarView: View {
                         Button {
                             store.select(.commit(tag.sha))
                         } label: {
-                            Label(tag.name, systemImage: "tag")
+                            // Filled for an annotated tag, outlined for a lightweight one; the
+                            // tooltip says which, who tagged it, when, and its message.
+                            Label(tag.name, systemImage: TagWording.rowIcon(tag))
                         }
                         .buttonStyle(.plain)
-                        .contextMenu { TagMenu(tag: tag.name) }
+                        .help(TagWording.rowHelp(tag))
+                        .accessibilityLabel(TagWording.rowAccessibility(tag))
+                        .contextMenu { TagMenu(tag: tag) }
                         // No double-click action on purpose: checking out a tag detaches HEAD,
                         // and the design asks for that to be deliberate.
                     }

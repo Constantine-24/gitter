@@ -56,6 +56,7 @@ extension RepositoryStore {
     ///   with `popStash`'s own gates.
     /// - Undo Discard puts back what the discard took (`undoDiscard`).
     /// - Show Copy selects the entry a conflict write filed (`showOfferedStash`).
+    /// - Restore Tag recreates the tag a Delete Tag took (`restoreTag`).
     ///
     /// `pasteboard` and `openURL` are the seams: a test and the DEBUG harness pass a private
     /// pasteboard and an opener that records, so neither ever touches the user's clipboard or
@@ -76,6 +77,8 @@ extension RepositoryStore {
             undoDiscard(receipts)
         case .showStash(let stash):
             showOfferedStash(stash)
+        case .restoreTag(let receipt):
+            restoreTag(receipt)
         }
     }
 }
