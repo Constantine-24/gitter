@@ -232,6 +232,7 @@ extension CLIGitBackend: GitTagBackend {
         let n = name
         // Unpeeled: with a pattern `ls-remote` prints no `^{}` line (B21), and the tag object is
         // what a lease on an annotated tag must name. Exit 2 is `--exit-code`'s "no such ref".
+        try await requireRemoteURL(remote, forPushing: false, at: root)
         let result: ProcessRunner.StreamedResult
         do {
             result = try await runStreaming(["ls-remote", "--exit-code", "--end-of-options", remote, "refs/tags/\(n)"], cwd: root, allowedExitCodes: [2], progress: { _ in })
@@ -258,6 +259,7 @@ extension CLIGitBackend: GitTagBackend {
         // `v1`, B20), never `+`, and `--no-follow-tags`: `push.followTags=true` pushed every
         // annotated tag on the pushed commits besides this one (B20). `remote.<r>.push` and
         // `push.default=matching` add nothing to an explicit refspec (measured, B20).
+        try await requireRemoteURL(remote, forPushing: true, at: root)
         let arguments = ["push", "--porcelain", "--no-follow-tags", "--no-recurse-submodules", "--end-of-options", remote, "refs/tags/\(n):refs/tags/\(n)"]
         let streamed = try await runStreaming(arguments, cwd: root, allowedExitCodes: Self.anyExitCode, progress: { _ in })
 
@@ -289,6 +291,7 @@ extension CLIGitBackend: GitTagBackend {
         // missing tag even "succeeds" (B21).
         try requireFullObjectName(id)
         let n = name
+        try await requireRemoteURL(remote, forPushing: true, at: root)
         let arguments = ["push", "--porcelain", "--no-follow-tags", "--no-recurse-submodules", "--force-with-lease=refs/tags/\(n):\(id)", "--end-of-options", remote, ":refs/tags/\(n)"]
         let streamed = try await runStreaming(arguments, cwd: root, allowedExitCodes: Self.anyExitCode, progress: { _ in })
 

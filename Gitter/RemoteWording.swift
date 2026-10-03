@@ -43,6 +43,8 @@ enum RemoteWording {
         guard gate.hasRepository else { return noRepository }
         if let activity = gate.activity { return laneBusy(activity) }
         if gate.remotes.isEmpty { return noRemotes }
+        // Fetch All skips a remote with no fetch URL (fix round 1, I1).
+        if !gate.remotes.contains(where: \.canFetch) { return noRemoteToFetchFrom }
         return nil
     }
 
@@ -59,6 +61,12 @@ enum RemoteWording {
         if let operation = gate.operation { return operation.movingHeadBlocked }
         if gate.isDetached { return detachedPull }
         guard let branch = gate.branch else { return noCommitsYet }
+        // Pull fetches the upstream's remote first (fix round 1, I1).
+        if let remote = branch.upstreamRemote,
+            let reason = fetchURLBlocked(gate.remotes.first { $0.name == remote })
+        {
+            return reason
+        }
         switch PullPlan.decide(branch.tracking) {
         case .noUpstream: return noUpstream(branch.name)
         case .upstreamGone: return upstreamGone(branch)
@@ -77,7 +85,9 @@ enum RemoteWording {
         guard let branch = gate.branch else { return noCommitsYet }
         switch PushTarget.resolve(branch, remotes: gate.remotes) {
         case .push: return nil
-        case .unpublished: return gate.remotes.isEmpty ? noRemotes : nil
+        case .unpublished:
+            if gate.remotes.isEmpty { return noRemotes }
+            return gate.remotes.contains(where: \.canPush) ? nil : noRemoteToPushTo
         case .refused(let refusal): return refused(refusal, branch: branch.name)
         }
     }
@@ -131,6 +141,8 @@ enum RemoteWording {
         case .unknownRemote(let name):
             "\"\(branch)\" is set to push to \"\(name)\", which is not a configured remote. Fix "
                 + "branch.\(branch).pushRemote or remote.pushDefault in a terminal."
+        case .noURL(let name):
+            "\"\(branch)\" is set to push to \"\(plain(name))\", which has no URL configured."
         case .upstreamNameDiffers(let upstream):
             "\"\(branch)\" tracks \"\(upstream)\", a branch with a different name, so Gitter "
                 + "can't tell which one a push should update. Push it once from a terminal with "
@@ -916,6 +928,41 @@ enum RemoteWording {
         "\"\(remote)\" has no URL configured."
     }
 
+    // MARK: - Remotes without a URL (B2 Task 3, fix round 1, I1)
+
+    /// git uses a remote with no URL's **name as a path** — measured, a nested checkout of that
+    /// name was fetched from and had a branch deleted — so nothing that talks to a remote is
+    /// offered for one.
+    static func remoteHasNoFetchURL(_ remote: String) -> String {
+        "\"\(remote)\" has only a push URL, so there is nothing to fetch from."
+    }
+    static let noRemoteToFetchFrom = "No remote has a URL to fetch from."
+    static let noRemoteToPushTo = "No remote has a URL to push to."
+
+    /// Why a fetch from `remote` — or a read of its refs — is off: it has no URL, or only a
+    /// push URL. Nil for a remote it can fetch from, and for nil (no configured remote).
+    static func fetchURLBlocked(_ remote: Remote?) -> String? {
+        guard let remote, !remote.canFetch else { return nil }
+        return remote.canPush ? remoteHasNoFetchURL(remote.name) : remoteHasNoURL(remote.name)
+    }
+
+    /// Why a push to `remote` is off: it has no URL at all.
+    static func pushURLBlocked(_ remote: Remote?) -> String? {
+        guard let remote, !remote.canPush else { return nil }
+        return remoteHasNoURL(remote.name)
+    }
+
+    /// Why "Delete on <remote>…" is off: the sheet fetches first, then pushes the delete.
+    static func deleteOnRemoteURLBlocked(_ remote: Remote?) -> String? {
+        pushURLBlocked(remote) ?? fetchURLBlocked(remote)
+    }
+
+    /// The remotes the tag menu offers: Push Tag to each one it can push to; Delete from each
+    /// one it can also read (the delete reads the tag there first, `ls-remote`).
+    static func tagMenuRemotes(_ remotes: [Remote]) -> (push: [String], delete: [String]) {
+        (remotes.filter(\.canPush).map(\.name), remotes.filter { $0.canPush && $0.canFetch }.map(\.name))
+    }
+
     static func deleteOnRemoteTitle(_ remote: String) -> String { "Delete on \"\(remote)\"…" }
 
     // MARK: - Failures
@@ -961,6 +1008,9 @@ enum RemoteWording {
             "Couldn't \(attempt): there is no such remote."
         case .noUpstream:
             "Couldn't \(attempt): the branch has no upstream."
+        case .noURL(let remote):
+            "Couldn't \(attempt): \"\(plain(remote))\" has no URL for that, so nothing was run — git "
+                + "would have used the name as a path."
         case .invalidLease(let value):
             "Couldn't \(attempt): \"\(plain(value))\" is not a full commit id, so nothing was sent."
         case .unsafeFetchRefspec(let remote, let refspec):

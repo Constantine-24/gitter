@@ -350,6 +350,51 @@ struct RemoveFixture {
         #expect(try await processesMatching(sleep).isEmpty)
     }
 
+    /// Fix round 1, m1: what the read-back compares against is read **before** the kept branches
+    /// are created, so a read that fails after one was created cannot leave it unreported.
+    /// Staged with a git that refuses the repository's config read once a `branch` has run.
+    @Test func noReadAfterTheKeptBranchesCanLoseThem() async throws {
+        let fixture = try await RemoveFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        let impact = try await backend.removalImpact(of: "origin", at: repo.root)
+        let git = try ScriptedGit(before: """
+            [ "$1" = branch ] && : > "$DIR/branched"
+            if [ "$1" = config ] && [ "$2" = --local ] && [ -e "$DIR/branched" ]; then
+              echo 'fatal: staged read failure' >&2; exit 128
+            fi
+            """)
+        defer { git.cleanUp() }
+
+        try await git.backend.removeRemote(impact, keeping: [PruneFixture.gone2Ref: "kept-g2"], at: repo.root)
+
+        #expect(try await repo.revParse("refs/heads/kept-g2") == fixture.prune.gone2)
+        #expect(try await repo.configValues("remote.origin.url").isEmpty)
+    }
+
+    /// Fix round 1, m2: the refs git will delete are compared with the sheet's once more, from
+    /// the state read right before git runs — a ref that appears after the impact was re-read is
+    /// refused, not deleted. Staged with a git that adds `origin/late` as that state is read.
+    @Test func aRefThatAppearsJustBeforeGitRunsIsRefused() async throws {
+        let fixture = try await RemoveFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        let impact = try await backend.removalImpact(of: "origin", at: repo.root)
+        let git = try ScriptedGit(before: """
+            if [ "$1" = config ] && [ "$2" = --local ] && [ ! -e "$DIR/added" ]; then
+              : > "$DIR/added"; /usr/bin/git update-ref refs/remotes/origin/late refs/heads/main
+            fi
+            """)
+        defer { git.cleanUp() }
+
+        let error = await thrownError { try await git.backend.removeRemote(impact, keeping: [PruneFixture.gone2Ref: "kept-g2"], at: repo.root) }
+
+        #expect(error as? RemoteAdminRefusal == .impactChanged)
+        #expect(try await repo.gitRefExists("refs/remotes/origin/late"))
+        #expect(try await repo.configValues("remote.origin.url") == [fixture.prune.origin.path])
+        #expect(!(try await repo.gitRefExists("refs/heads/kept-g2")), "a refusal creates nothing")
+    }
+
     /// With `config.lock` held git changes nothing (R23, exit 128): git's words, and the
     /// repository as it was.
     @Test func aRemovalUnderAHeldConfigLockChangesNothingAndIsGitsWords() async throws {
@@ -373,4 +418,24 @@ struct RemoveFixture {
         try await assertConfigUnchanged(repo, since: config)
         #expect(try await RepoState.capture(repo) == state)
     }
+}
+
+/// A shell script standing in for `/usr/bin/git`: runs `before` (with `$DIR` its own directory
+/// for markers), then the real git. For staging what another process does at a given moment.
+struct ScriptedGit {
+    let directory: URL
+    var wrapper: URL { directory.appendingPathComponent("git") }
+
+    init(before: String) throws {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitter-scripted-git-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let script = "#!/bin/sh\nDIR='\(directory.path)'\n\(before)\nexec /usr/bin/git \"$@\"\n"
+        try script.write(to: wrapper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapper.path)
+    }
+
+    var backend: CLIGitBackend { CLIGitBackend(gitPath: wrapper.path) }
+
+    func cleanUp() { try? FileManager.default.removeItem(at: directory) }
 }

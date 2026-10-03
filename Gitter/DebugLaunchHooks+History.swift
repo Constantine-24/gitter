@@ -179,16 +179,16 @@
 
         /// What the sidebar's tag rows, their menus and the commit list's pills draw.
         private static func logTags(_ store: RepositoryStore) {
-            let remotes = store.snapshot?.refs.remotesWithURL.map(\.name) ?? []
+            let remotes = RemoteWording.tagMenuRemotes(store.snapshot?.refs.remotes ?? [])
             for tag in store.snapshot?.refs.tags ?? [] {
                 log("tag \(tag.name): icon \(TagWording.rowIcon(tag)) "
                     + "| voiceover: \(TagWording.rowAccessibility(tag)) "
                     + "| help: \(TagWording.rowHelp(tag).replacingOccurrences(of: "\n", with: " / ")) "
                     + "| objectID: \(tag.objectID) sha: \(tag.sha)")
                 let delete = store.deleteTagBlockedReason(tag)
-                let remote = remotes.isEmpty ? nil : store.remoteTagBlockedReason(tag)
-                let items = [TagWording.deleteTagTitle] + remotes.map { TagWording.pushTitle(remote: $0) }
-                    + remotes.map { TagWording.deleteFromRemoteTitle(remote: $0) }
+                let remote = remotes.push.isEmpty ? nil : store.remoteTagBlockedReason(tag)
+                let items = [TagWording.deleteTagTitle] + remotes.push.map { TagWording.pushTitle(remote: $0) }
+                    + remotes.delete.map { TagWording.deleteFromRemoteTitle(remote: $0) }
                 log("tagmenu \(tag.name): \(items) | delete: [\(delete ?? "enabled")] "
                     + "| remote: [\(remote ?? "enabled")]")
             }

@@ -15,7 +15,8 @@ struct PublishSheet: View {
     /// The remote picked here, or nil while the sheet still shows the default.
     @State private var chosen: String?
 
-    private var remotes: [Remote] { store.snapshot?.refs.remotesWithURL ?? [] }
+    /// Only remotes with a URL to push to (fix round 1, I1).
+    private var remotes: [Remote] { (store.snapshot?.refs.remotes ?? []).filter(\.canPush) }
 
     /// "origin" when it is configured, else git's first remote (git lists them alphabetically).
     ///

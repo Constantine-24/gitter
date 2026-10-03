@@ -98,7 +98,7 @@ extension RepositoryStore {
             showStickyError(RemoteWording.publishSheetStale)
             return
         }
-        guard snapshot?.refs.remotesWithURL.contains(where: { $0.name == remote }) == true else {
+        guard snapshot?.refs.remotes.contains(where: { $0.name == remote && $0.canPush }) == true else {
             showStickyError(RemoteWording.noSuchRemote(remote))
             return
         }
@@ -275,6 +275,11 @@ extension RepositoryStore {
             let remote = refs.remote(of: ref)
         else {
             showStickyError(RemoteWording.noSuchRemoteBranch(remoteBranch))
+            return
+        }
+        // Fetched from, then pushed to: neither with no URL (fix round 1, I1).
+        if let reason = RemoteWording.deleteOnRemoteURLBlocked(remote) {
+            showStickyError(reason)
             return
         }
         let remoteName = remote.name

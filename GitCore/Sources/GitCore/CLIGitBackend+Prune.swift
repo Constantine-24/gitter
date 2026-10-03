@@ -39,6 +39,8 @@ extension CLIGitBackend: GitRemoteAdminBackend {
         guard try await configuredRemoteNames(at: root).contains(remote) else {
             throw RemoteAdminRefusal.noSuchRemote(remote)
         }
+        // The listing talks to the remote's fetch URL (fix round 1, I1).
+        try await requireRemoteURL(remote, forPushing: false, at: root)
         // A mirror remote's `+refs/*:refs/*` lists local branches as prunable (R3); the filter to
         // `refs/remotes/` below would hide them, but a remote whose fetch writes outside
         // `refs/remotes/` is refused outright, as fetch refuses it.

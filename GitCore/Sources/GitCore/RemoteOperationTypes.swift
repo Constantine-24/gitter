@@ -61,6 +61,12 @@ public enum RemoteOperationError: Error, Equatable, Sendable {
     /// thrown by `fetch`, which does not need one; it is here for the operations in the tasks
     /// that follow, which do.
     case noUpstream
+    /// The remote is configured but git has no URL for what was asked — none at all, or (for a
+    /// fetch or a read of the remote's refs) only a push URL. git would use the remote's **name
+    /// as a path** (fix round 1, I1, measured: a nested checkout called `vendor` was fetched
+    /// from, and a branch in it deleted by a push). Thrown before any fetch, push or `ls-remote`
+    /// runs; the payload is the remote's name.
+    case noURL(String)
     /// An expected tip handed to `forcePush` or `deleteRemoteBranch` — the lease, or
     /// `forcePush`'s `expectedLocalTip`, the refspec's source side — is not a full object
     /// name — 40 or 64 **lower-case** hexadecimal characters, and not all zeros. Thrown
@@ -235,6 +241,9 @@ public enum PushTargetRefusal: Equatable, Sendable {
     /// end with `fatal: '<name>' does not appear to be a git repository`. Naming the bad name
     /// here is more use than showing the user that sentence.
     case unknownRemote(String)
+    /// `%(push:remotename)` named a configured remote that has no URL to push to (fix round 1,
+    /// I1): git would use its name as a path.
+    case noURL(String)
     /// The branch and its upstream have different names on the same remote, and no explicit
     /// refspec settles which one a push means. The payload is the upstream as git spells it
     /// (`origin/main`). See `PushTarget` for why this is refused rather than resolved.
@@ -260,8 +269,8 @@ public enum PushTargetRefusal: Equatable, Sendable {
 ///    branch publishes to `origin`), and Gitter deliberately does not follow that fallback:
 ///    Publish names the remote out loud instead. A branch whose upstream is another *local*
 ///    branch lands here too, because git reports `.` as its push remote and `.` is not a remote.
-/// 2. A `pushRemote` that is not in `remotes`, or is one with no URL (`Remote.hasURL`) →
-///    `.refused(.unknownRemote)`. First, because a
+/// 2. A `pushRemote` that is not in `remotes` → `.refused(.unknownRemote)`; one with no URL to
+///    push to (`Remote.canPush`) → `.refused(.noURL)`. First, because a
 ///    destination on a remote that does not exist is not a destination whatever else is set.
 /// 3. `pushRef` non-nil → `.push(pushRemote, pushRef)`. That field is filled in by exactly one
 ///    configuration, `remote.<name>.push` (measured row h), and honouring it is the difference
@@ -304,11 +313,12 @@ public enum PushTarget: Equatable, Sendable {
     /// and an empty remote list.
     public static func resolve(_ branch: Branch, remotes: [Remote]) -> PushTarget {
         guard let pushRemote = branch.pushRemote else { return .unpublished }
-        // A remote with no URL (listed since B2 Task 3) is no destination either: before it was
-        // listed this was `.unknownRemote` too, and a push to it uses its name as a path.
-        guard remotes.contains(where: { $0.name == pushRemote && $0.hasURL }) else {
+        guard let entry = remotes.first(where: { $0.name == pushRemote }) else {
             return .refused(.unknownRemote(pushRemote))
         }
+        // A remote with no URL (listed since B2 Task 3) is no destination: a push to it uses its
+        // name as a path (fix round 1, I1).
+        guard entry.canPush else { return .refused(.noURL(pushRemote)) }
         if let pushRef = branch.pushRef { return .push(remote: pushRemote, ref: pushRef) }
 
         let ownRef = "refs/heads/" + branch.name

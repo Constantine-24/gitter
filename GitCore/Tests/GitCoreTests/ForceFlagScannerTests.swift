@@ -1866,7 +1866,7 @@ import Testing
     /// compare-and-deletes (and, since Task 2, the fast-forward's compare-and-set).
     @Test func thePruneShapesAreExactlyTheListingAndTheDelete() {
         let exceptions = ForceFlagScanner.denyTableExceptionShapes
-        #expect(Set(exceptions.keys) == ["fetch", "branch"], "Task 2 added `branch`'s three upstream vectors")
+        #expect(Set(exceptions.keys) == ["fetch", "branch", "config"], "Task 2 added `branch`'s three upstream vectors, Task 3 `config`'s clear")
         #expect(ForceFlagScanner.spelling(of: "fetch", exceptions["fetch"] ?? [])
             == #"["fetch", "--prune", "--no-prune-tags", "--dry-run", "--porcelain", "--no-progress", "--end-of-options", <expression>]"#)
         #expect(ForceFlagScanner.forbiddenFlags["fetch"]?["--prune"] != nil, "still forbidden everywhere else")
@@ -1981,7 +1981,7 @@ import Testing
         #expect(ForceFlagScanner.spelling(of: "update-ref", ForceFlagScanner.allowedShapes["update-ref"] ?? [])
             == #"["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(…)", "\(…)"] or ["update-ref", "--no-deref", "-d", "--end-of-options", "refs/remotes/\(…)", "\(…)"] or ["update-ref", "--no-deref", "-m", <expression>, "--end-of-options", "refs/heads/\(…)", "\(…)", "\(…)"]"#)
         let exceptions = ForceFlagScanner.denyTableExceptionShapes
-        #expect(Set(exceptions.keys) == ["fetch", "branch"])
+        #expect(Set(exceptions.keys) == ["fetch", "branch", "config"])
         #expect(ForceFlagScanner.spelling(of: "branch", exceptions["branch"] ?? [])
             == #"["branch", "--set-upstream-to=refs/remotes/\(…)", "--end-of-options", <expression>] or ["branch", "--set-upstream-to=refs/heads/\(…)", "--end-of-options", <expression>] or ["branch", "--unset-upstream", "--end-of-options", <expression>]"#)
         #expect(Set((ForceFlagScanner.forbiddenFlags["branch"] ?? [:]).keys)
@@ -2051,6 +2051,8 @@ import Testing
         #"let data = try await run(["for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", "--end-of-options", "refs/remotes"], cwd: root)"#,
         #"let data = try await run(["for-each-ref", "--format=%(refname)%00%(symref)", "--end-of-options", "refs/heads"], cwd: root)"#,
         #"let data = try await run(["remote", "-v"], cwd: root)"#,
+        #"result = try await runWithEnvironment(["config", "--unset-all", "--end-of-options", "remote.\(remote).pushurl"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"let listed = RemoteParser.parse(String(decoding: try await run(["remote", "-v"], cwd: root), as: UTF8.self))"#,
     ])
     func allowsTheRemoteManagementVectorsThisMilestoneNeeds(source: String) {
         #expect(ForceFlagScanner.findings(in: source).isEmpty,
@@ -2098,6 +2100,19 @@ import Testing
         #"let verb = "remove"; _ = try await run(["remote", verb, "--end-of-options", remote], cwd: root)"#,
         #"var a = ["remote", "-v"]; a.append("set-url")"#,
         #"var a = ["remote"]; a += ["rename", "--no-progress", "--end-of-options", old, new]"#,
+        // Fix round 1, I3: the clear of a push URL is the only `config --unset-all`.
+        #"_ = try await run(["config", "--unset-all", "--end-of-options", "remote.\(remote).url"], cwd: root)"#,
+        #"_ = try await run(["config", "--unset-all", "--end-of-options", "remote.\(remote).fetch"], cwd: root)"#,
+        #"_ = try await run(["config", "--unset-all", "--end-of-options", key], cwd: root)"#,
+        #"_ = try await run(["config", "--unset-all", "--end-of-options", "remote.origin.pushurl"], cwd: root)"#,
+        #"_ = try await run(["config", "--unset-all", "remote.\(remote).pushurl"], cwd: root)"#,
+        #"_ = try await run(["config", "--unset-all", "--end-of-options", "remote.\(remote).pushurl"] + more, cwd: root)"#,
+        #"_ = try await run(["config", "--unset-all", "--end-of-options", "remote.\(remote).pushurl", value], cwd: root)"#,
+        #"_ = try await run(["config", "--unset-a", "--end-of-options", "remote.\(remote).pushurl"], cwd: root)"#,
+        #"_ = try await run(["config", "--unset-al", "--end-of-options", "remote.\(remote).pushurl"], cwd: root)"#,
+        #"_ = try await run(["config", "--unset-", "--end-of-options", "remote.\(remote).pushurl"], cwd: root)"#,
+        #"_ = try await run([repoFlag, "config", "--unset-all", "--end-of-options", "remote.\(remote).pushurl"], cwd: root)"#,
+        #"var a = ["config"]; a.append("--unset-all"); a += [key]"#,
     ])
     func catchesARemoteManagementVectorOutsideItsShapes(source: String) {
         #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
@@ -2124,6 +2139,8 @@ import Testing
         (#"["remote", "rename", "--no-progress", "--end-of-options", old, new]"#, #"["remote", "rename", "--end-of-options", old, new]"#),
         (#"["remote", "remove", "--end-of-options", remote]"#, #"["remote", "rm", "--end-of-options", remote]"#),
         (#"["remote", "remove", "--end-of-options", remote]"#, #"["remote", "remove", remote]"#),
+        (#"["config", "--unset-all", "--end-of-options", "remote.\(remote).pushurl"]"#, #"["config", "--unset-all", "--end-of-options", "remote.\(remote).url"]"#),
+        (#"["config", "--unset-all", "--end-of-options", "remote.\(remote).pushurl"]"#, #"["config", "--unset-all", "remote.\(remote).pushurl"]"#),
     ])
     func theRemoteAdminFilesVectorsAreChecked(original: String, mutated: String) throws {
         let file = "CLIGitBackend+RemoteAdmin.swift"

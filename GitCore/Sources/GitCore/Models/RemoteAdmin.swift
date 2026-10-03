@@ -212,6 +212,17 @@ public struct RemoteURLs: Sendable, Hashable {
     }
 }
 
+/// What Edit URL does to a remote's push URL (fix round 1, I3).
+public enum PushURLChange: Sendable, Hashable {
+    /// Every `pushurl` stays as it is.
+    case unchanged
+    /// The push URL becomes this one (`remote set-url --push`).
+    case set(String)
+    /// No push URL: the remote pushes to its fetch URL again (`config --unset-all
+    /// remote.<n>.pushurl`). With none configured, nothing is written.
+    case clear
+}
+
 /// A local branch whose push destination Remove Remote changes **without being asked**: its
 /// push went to the removed remote through `branch.<b>.pushRemote` or `remote.pushDefault`, and
 /// git unsets both (R23) — so the branch silently starts pushing wherever is left.

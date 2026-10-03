@@ -36,14 +36,14 @@ extension RepositoryStore {
     }
 
     /// Everything the blocked reasons are decided on, read in one place. An automatic fetch on
-    /// the lane blocks nothing (`blockingRemoteActivity`): the user's action stops it. Remotes
-    /// with a URL only (`remotesWithURL`): one with none is listed since B2 Task 3 so that it can
-    /// be given one, and is nothing to fetch from, publish to or count "has remotes" by.
+    /// the lane blocks nothing (`blockingRemoteActivity`): the user's action stops it. Every
+    /// configured remote, one with no URL included (listed since B2 Task 3): the decisions ask
+    /// `Remote.canFetch` / `canPush` themselves (fix round 1, I1).
     var remoteGate: RemoteWording.Gate {
         RemoteWording.Gate(
             hasRepository: root != nil && snapshot != nil, activity: blockingRemoteActivity,
             isMutating: isMutating, operation: operationInProgress, isDetached: isDetached,
-            branch: currentBranchRef, remotes: snapshot?.refs.remotesWithURL ?? [])
+            branch: currentBranchRef, remotes: snapshot?.refs.remotes ?? [])
     }
 
     var fetchBlockedReason: String? { RemoteWording.fetchBlocked(remoteGate) }
@@ -69,7 +69,7 @@ extension RepositoryStore {
 
     /// Push, Publish or Re-publish — decided on the push remote, not on the upstream.
     var pushKind: PushKind {
-        RemoteWording.pushKind(branch: currentBranchRef, remotes: snapshot?.refs.remotesWithURL ?? [])
+        RemoteWording.pushKind(branch: currentBranchRef, remotes: snapshot?.refs.remotes ?? [])
     }
 
     /// "Push", "Publish" or "Re-publish", from `pushKind`.
@@ -81,7 +81,7 @@ extension RepositoryStore {
     /// none.
     var pushAheadCount: Int? {
         guard let branch = currentBranchRef else { return nil }
-        return PushTarget.aheadCountToDisplay(for: branch, remotes: snapshot?.refs.remotesWithURL ?? [])
+        return PushTarget.aheadCountToDisplay(for: branch, remotes: snapshot?.refs.remotes ?? [])
     }
 
     /// The behind count the Pull button may draw, or nil (`PullPlan.behindCountToDisplay`):
@@ -93,7 +93,7 @@ extension RepositoryStore {
     /// The Push item's tooltip while it is enabled: where a push would go.
     var pushHelp: String {
         RemoteWording.pushHelp(
-            pushKind, branch: currentBranchRef, remotes: snapshot?.refs.remotesWithURL ?? [])
+            pushKind, branch: currentBranchRef, remotes: snapshot?.refs.remotes ?? [])
     }
 
     /// Whether the error banner on screen is the refusal "Force Push…" answers, and so should
@@ -232,12 +232,14 @@ extension RepositoryStore {
             showStickyError(reason)
             return
         }
-        guard let branch = currentBranchRef, let remotes = snapshot?.refs.remotesWithURL else { return }
+        guard let branch = currentBranchRef, let remotes = snapshot?.refs.remotes else { return }
         switch PushTarget.resolve(branch, remotes: remotes) {
         case .push(let remote, let ref):
             send(branch, to: remote, remoteRef: ref, publishing: false)
         case .unpublished:
-            if remotes.count == 1, let only = remotes.first {
+            // Only a remote with a URL to push to is somewhere to publish (fix round 1, I1).
+            let pushable = remotes.filter(\.canPush)
+            if pushable.count == 1, let only = pushable.first {
                 send(branch, to: only.name, remoteRef: "refs/heads/" + branch.name, publishing: true)
             } else {
                 activeSheet = .publish(branch: branch.name)
@@ -345,7 +347,8 @@ extension RepositoryStore {
         guard root != nil, let snapshot else { return "no repository" }
         if let remoteActivity { return "the lane is busy (\(remoteActivity.kind))" }
         if let operationInProgress { return "an operation is in progress (\(operationInProgress))" }
-        if snapshot.refs.remotesWithURL.isEmpty { return "no remotes" }
+        // Fetch All skips a remote with no fetch URL (fix round 1, I1).
+        if !snapshot.refs.remotes.contains(where: \.canFetch) { return "no remotes" }
         return nil
     }
 

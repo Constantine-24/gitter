@@ -127,7 +127,9 @@ extension CLIGitBackend {
 
     // MARK: - Set URL
 
-    public func setURLs(of remote: String, fetch: String, push: String?, at root: URL) async throws {
+    public func setURLs(of remote: String, fetch: String, push change: PushURLChange, at root: URL) async throws {
+        var push: String?
+        if case .set(let url) = change { push = url }
         guard !Self.isUnsafeURL(fetch), !(push.map(Self.isUnsafeURL) ?? false) else {
             throw RemoteAdminRefusal.unsafeURL
         }
@@ -135,7 +137,7 @@ extension CLIGitBackend {
         try await requireConfiguredRemote(remote, at: root)
         let current = try await configuredURLs(of: remote, at: root)
         // Both refusals before the first write: a plain `set-url` fails on several values (R22).
-        if current.fetch.count > 1 || (push != nil && current.push.count > 1) {
+        if current.fetch.count > 1 || (change != .unchanged && current.push.count > 1) {
             throw RemoteAdminRefusal.severalURLs
         }
         let before = try await localConfigEntries(at: root)
@@ -154,6 +156,18 @@ extension CLIGitBackend {
             let result: ProcessRunner.StreamedResult
             do {
                 result = try await runWithEnvironment(["remote", "set-url", "--push", "--end-of-options", remote, url], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
+            } catch is CancellationError {
+                throw RemoteAdminPartial.urlsOutcomeUnknown(remote: remote)
+            }
+            if result.exitCode != 0 { try await readBackFailedURLWrite(of: remote, before: before, result: result, at: root) }
+        }
+        // Fix round 1, I3: no push URL — the remote pushes to its fetch URL again. Not `set-url
+        // --push --delete` (forbidden): a config write, pinned whole in the scanner. With none
+        // configured there is nothing to clear and nothing is written (git would exit 5).
+        if change == .clear, !current.push.isEmpty {
+            let result: ProcessRunner.StreamedResult
+            do {
+                result = try await runWithEnvironment(["config", "--unset-all", "--end-of-options", "remote.\(remote).pushurl"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
             } catch is CancellationError {
                 throw RemoteAdminPartial.urlsOutcomeUnknown(remote: remote)
             }
@@ -238,26 +252,7 @@ extension CLIGitBackend {
 
     public func removalImpact(of remote: String, at root: URL) async throws -> RemovalImpact {
         try requireRemoteName(remote)
-        let names = try await configuredRemoteNames(at: root)
-        guard names.contains(remote) else { throw RemoteAdminRefusal.noSuchRemote(remote) }
-        var refspecs: [String: [String]] = [:]
-        for name in names { refspecs[name] = try await configValues("remote.\(name).fetch", at: root) }
-        let others = names.filter { $0 != remote }
-
-        // What `git remote remove` deletes, as it decides it (R23): a `refs/remotes/` ref this
-        // remote's refspecs map and no other remote's do.
-        var refs: [RefTip] = []
-        var symbolic: Set<String> = []
-        var leftBehind: [String] = []
-        for ref in try await trackingRefs(at: root) {
-            let keptByAnother = others.contains { Self.fetchRefspecsMap(ref.ref, refspecs[$0] ?? []) }
-            if !keptByAnother, Self.fetchRefspecsMap(ref.ref, refspecs[remote] ?? []) {
-                refs.append(RefTip(ref: ref.ref, id: ref.id))
-                if !ref.symref.isEmpty { symbolic.insert(ref.ref) }
-            } else if !keptByAnother, ref.ref.hasPrefix("refs/remotes/\(remote)/") {
-                leftBehind.append(ref.ref)
-            }
-        }
+        let (refs, symbolic, leftBehind) = try await refsTheRemovalDeletes(remote, from: try await trackingRefs(at: root), at: root)
         // A symbolic ref holds nothing of its own (R5); its target is listed itself if it goes.
         let stranded = try await stranded(by: refs.map(\.ref).filter { !symbolic.contains($0) }, at: root)
 
@@ -276,6 +271,33 @@ extension CLIGitBackend {
         return RemovalImpact(
             remote: remote, refs: refs, stranded: stranded, upstreamOf: upstreamOf,
             pushRedirects: pushRedirects, leftBehind: leftBehind)
+    }
+
+    /// What `git remote remove` deletes of `tracking`, as it decides it (R23): a `refs/remotes/`
+    /// ref this remote's refspecs map and no other remote's do; which of those are symbolic; and
+    /// the refs under `refs/remotes/<remote>/` it leaves that no other remote claims. Reads the
+    /// remotes and their refspecs; `.noSuchRemote` when `remote` is not one of them.
+    private func refsTheRemovalDeletes(
+        _ remote: String, from tracking: [TrackingRef], at root: URL
+    ) async throws -> (refs: [RefTip], symbolic: Set<String>, leftBehind: [String]) {
+        let names = try await configuredRemoteNames(at: root)
+        guard names.contains(remote) else { throw RemoteAdminRefusal.noSuchRemote(remote) }
+        var refspecs: [String: [String]] = [:]
+        for name in names { refspecs[name] = try await configValues("remote.\(name).fetch", at: root) }
+        let others = names.filter { $0 != remote }
+        var refs: [RefTip] = []
+        var symbolic: Set<String> = []
+        var leftBehind: [String] = []
+        for ref in tracking {
+            let keptByAnother = others.contains { Self.fetchRefspecsMap(ref.ref, refspecs[$0] ?? []) }
+            if !keptByAnother, Self.fetchRefspecsMap(ref.ref, refspecs[remote] ?? []) {
+                refs.append(RefTip(ref: ref.ref, id: ref.id))
+                if !ref.symref.isEmpty { symbolic.insert(ref.ref) }
+            } else if !keptByAnother, ref.ref.hasPrefix("refs/remotes/\(remote)/") {
+                leftBehind.append(ref.ref)
+            }
+        }
+        return (refs, symbolic, leftBehind)
     }
 
     /// Whether a fetch through `refspecs` writes `ref` — git's `remote_find_tracking`, which is
@@ -432,12 +454,20 @@ extension CLIGitBackend {
         // 2. The whole impact again (RF1).
         guard try await removalImpact(of: remote, at: root) == impact else { throw RemoteAdminRefusal.impactChanged }
 
-        // 3. The kept branches, before anything is removed.
+        // 3. What the read-back compares against, read **before** any kept branch exists, so a
+        // read that fails cannot leave one unreported (fix round 1, m1) — and, from it, the refs
+        // git will delete compared with the sheet's once more (m2): the last check, closest to
+        // git. Creating the kept branches touches neither the configuration nor `refs/remotes/`.
+        let before = try await adminState(at: root)
+        guard try await refsTheRemovalDeletes(remote, from: before.refs, at: root).refs == impact.refs else {
+            throw RemoteAdminRefusal.impactChanged
+        }
+
+        // 4. The kept branches, before anything is removed.
         let kept = impact.refs.compactMap { tip in keeping[tip.ref].map { (tip: tip, name: $0) } }
         let keptBranches = try await createKeptBranches(kept, at: root)
 
-        // 4. The removal.
-        let before = try await adminState(at: root)
+        // 5. The removal.
         let result: ProcessRunner.StreamedResult
         do {
             result = try await runWithEnvironment(["remote", "remove", "--end-of-options", remote], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
@@ -544,11 +574,14 @@ extension CLIGitBackend {
         }
     }
 
-    /// Whether the repository's configuration holds a `remote.<remote>.*` key — the section git
+    /// Whether the repository's configuration holds a `remote.<remote>.<variable>` key — the section git
     /// renames first and removes last. (The section name is matched as written: git compares a
     /// subsection case-sensitively.)
-    private static func configures(_ remote: String, _ config: [ConfigEntry]) -> Bool {
-        config.contains { $0.key.hasPrefix("remote.\(remote).") }
+    static func configures(_ remote: String, _ config: [ConfigEntry]) -> Bool {
+        // `remote.<name>.<variable>`, and a variable holds no dot: `remote.origin.bak.url` is
+        // `origin.bak`'s, not `origin`'s (fix round 1, I2).
+        let prefix = "remote.\(remote)."
+        return config.contains { $0.key.hasPrefix(prefix) && !$0.key.dropFirst(prefix.count).contains(".") }
     }
 
     private static func unique(_ values: [String]) -> [String] {

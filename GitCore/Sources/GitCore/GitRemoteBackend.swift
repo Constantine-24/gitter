@@ -140,6 +140,11 @@ public protocol GitRemoteBackend: Sendable {
     ///   `.unsafeFetchRefspec` for a remote it will not fetch, `GitError.commandFailed` with
     ///   git's own words for a failure it does not recognise, and `CancellationError` if the
     ///   task was cancelled.
+    ///
+    /// A configured remote with no URL for this (`Remote.canFetch` / `canPush`) is
+    /// `RemoteOperationError.noURL`, before any fetch, push or `ls-remote` (B2 Task 3, fix round
+    /// 1, I1: git would use its name as a path). Fetch All (`remote == nil`) skips such a remote
+    /// and fetches the rest one by one — `--all` would visit it.
     func fetch(
         remote: String?, at root: URL, progress: @escaping @Sendable (String) -> Void
     ) async throws
@@ -236,6 +241,10 @@ public protocol GitRemoteBackend: Sendable {
     ///   name refused before git runs (nothing happened), `RemoteOperationError` for a network
     ///   failure Gitter recognises, `GitError.commandFailed` with git's own words for one it
     ///   does not, and `CancellationError` if the task was cancelled.
+    ///
+    /// A configured remote with no URL for this (`Remote.canFetch` / `canPush`) is
+    /// `RemoteOperationError.noURL`, before any fetch, push or `ls-remote` (B2 Task 3, fix round
+    /// 1, I1: git would use its name as a path).
     func push(
         _ branch: String, to remote: String, remoteRef: String, setUpstream: Bool,
         at root: URL, progress: @escaping @Sendable (String) -> Void
@@ -306,6 +315,10 @@ public protocol GitRemoteBackend: Sendable {
     ///   `RemoteOperationError` for a network failure Gitter recognises,
     ///   `GitError.commandFailed` with git's own words for one it does not, and
     ///   `CancellationError` if the task was cancelled.
+    ///
+    /// A configured remote with no URL for this (`Remote.canFetch` / `canPush`) is
+    /// `RemoteOperationError.noURL`, before any fetch, push or `ls-remote` (B2 Task 3, fix round
+    /// 1, I1: git would use its name as a path).
     func forcePush(
         _ branch: String, to remote: String, remoteRef: String, expectedRemoteTip: String,
         expectedLocalTip: String,
@@ -355,6 +368,10 @@ public protocol GitRemoteBackend: Sendable {
     /// nothing about whether the server carried it out.
     ///
     /// - Throws: the same set as `forcePush`.
+    ///
+    /// A configured remote with no URL for this (`Remote.canFetch` / `canPush`) is
+    /// `RemoteOperationError.noURL`, before any fetch, push or `ls-remote` (B2 Task 3, fix round
+    /// 1, I1: git would use its name as a path).
     func deleteRemoteBranch(
         _ branch: String, on remote: String, expectedTip: String, at root: URL
     ) async throws -> PushResult

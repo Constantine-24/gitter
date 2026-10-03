@@ -20,6 +20,14 @@ public struct Remote: Sendable, Hashable, Identifiable {
     /// would use its name as a path ("does not appear to be a git repository").
     public var hasURL: Bool { fetchURL != nil || pushURL != nil }
 
+    /// Whether a fetch — or a read of the remote's refs (`ls-remote`) — has a URL to go to. A
+    /// remote with only a push URL has none: git would use its name as a path (fix round 1, I1).
+    public var canFetch: Bool { fetchURL != nil }
+
+    /// Whether a push — publish, force push, a delete on the remote, a tag pushed or deleted —
+    /// has a URL to go to (`pushurl`, or the fetch URL git pushes to without one).
+    public var canPush: Bool { pushURL != nil }
+
     public init(name: String, fetchURL: String?, pushURL: String?) {
         self.name = name
         self.fetchURL = fetchURL

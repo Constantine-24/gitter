@@ -40,7 +40,8 @@ public protocol GitRemoteAdminBackend: Sendable {
     /// Refused before git runs: `RemoteOperationError.noRemote` for a name that is empty, `.`
     /// or begins with `-`; `RemoteAdminRefusal.noSuchRemote` when no such remote is configured;
     /// `.unsafeRefspec` when one of its fetch refspecs writes outside `refs/remotes/` (a mirror
-    /// remote lists local branches as prunable, R3). A network failure is `RemoteOperationError`
+    /// remote lists local branches as prunable, R3); `RemoteOperationError.noURL` when the remote
+    /// has no fetch URL (fix round 1, I1). A network failure is `RemoteOperationError`
     /// when Gitter can word it, git's own (redacted) words otherwise.
     func prunePlan(_ remote: String, at root: URL) async throws -> PrunePlan
 
@@ -178,18 +179,19 @@ public protocol GitRemoteAdminBackend: Sendable {
     /// cancellation while git runs, `.urlsOutcomeUnknown`. Contacts nothing.
     func addRemote(_ name: String, url: String, at root: URL) async throws
 
-    /// Sets `remote`'s fetch URL to `fetch` and, when `push` is not nil, its push URL to `push`:
-    /// `remote set-url --end-of-options <n> <url>`, then `remote set-url --push
-    /// --end-of-options <n> <url>` — each only when the value differs from the configured one.
-    /// `push == nil` leaves every `pushurl` as it is (removing one would take `set-url --push
-    /// --delete`, which Gitter does not run). Works on a remote with no URL, giving it one (R22).
+    /// Sets `remote`'s fetch URL to `fetch` and its push URL as `push` says: `remote set-url
+    /// --end-of-options <n> <url>`, then for `.set(url)` `remote set-url --push --end-of-options
+    /// <n> <url>` — each only when the value differs from the configured one — or for `.clear`
+    /// `config --unset-all --end-of-options remote.<n>.pushurl` (fix round 1, I3; never `set-url
+    /// --push --delete`), which writes nothing when no push URL is configured. `.unchanged` leaves
+    /// every `pushurl` as it is. Works on a remote with no URL, giving it one (R22).
     ///
     /// Refused with nothing written: `.unsafeURL` for either URL (before git runs);
     /// `.noSuchRemote`; `.severalURLs` when the remote has more than one `url` — or more than one
-    /// `pushurl` and `push` is given — since a plain `set-url` fails on it (R22). A failure after
+    /// `pushurl` and `push` is not `.unchanged` — since a plain `set-url` fails on it (R22). A failure after
     /// the first write is `RemoteAdminPartial.urlsChangedThenFailed` with what the remote holds
     /// now; a cancellation while git runs, `.urlsOutcomeUnknown`. Contacts nothing.
-    func setURLs(of remote: String, fetch: String, push: String?, at root: URL) async throws
+    func setURLs(of remote: String, fetch: String, push: PushURLChange, at root: URL) async throws
 
     /// Renames a remote: `remote rename --no-progress --end-of-options <old> <new>`, which moves
     /// every ref its default refspec maps (with their reflogs), rewrites `branch.<b>.remote`,
@@ -221,16 +223,20 @@ public protocol GitRemoteAdminBackend: Sendable {
     /// 1. Every kept ref is one of `impact.refs` (`BranchOperationError.invalidName`), with a full
     ///    non-zero id (`.invalidObjectID`), before any process runs.
     /// 2. The impact is read again; any difference at all is `.impactChanged` (RF1).
-    /// 3. The kept branches (`keeping`: ref → new branch name) are checked and created at the ids
+    /// 3. The configuration and `refs/remotes/` the read-back compares against are read, and the
+    ///    refs git will delete compared with the sheet's once more from them (`.impactChanged`;
+    ///    fix round 1, m1/m2) — before any kept branch exists, so a refusal or a failed read
+    ///    creates nothing.
+    /// 4. The kept branches (`keeping`: ref → new branch name) are checked and created at the ids
     ///    the sheet showed, exactly as `prune` creates them (`.invalidBranchName`,
     ///    `.branchExists`, `RemoteAdminPartial.keptBranchesThenStopped`).
-    /// 4. `remote remove --end-of-options <remote>`. **Run it on the lane.** A failure is read
+    /// 5. `remote remove --end-of-options <remote>`. **Run it on the lane.** A failure is read
     ///    back (R23: under a held `packed-refs.lock` or ref lock git exits 1 with the remote and
     ///    its refs kept and every branch setting naming it already unset):
     ///    `RemoteAdminPartial.removeHalfDone` when anything changed or kept branches were
     ///    created; otherwise git's words. Cancelled while git runs: `.removeOutcomeUnknown`.
     ///
-    /// Residual race: a ref a process outside Gitter creates between step 2 and git's own
-    /// listing is deleted too. Contacts nothing.
+    /// Residual race: a ref a process outside Gitter creates between step 3 and git's own
+    /// listing — while the kept branches are created — is deleted too. Contacts nothing.
     func removeRemote(_ impact: RemovalImpact, keeping: [String: String], at root: URL) async throws
 }

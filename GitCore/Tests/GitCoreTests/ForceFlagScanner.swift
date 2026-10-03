@@ -657,6 +657,15 @@ enum ForceFlagScanner {
             "--set-upstream-to": "sets an upstream from a name a tag or branch can shadow (R17); Gitter writes `--set-upstream-to=refs/remotes/…`",
             "--unset-upstream": "rewrites the branch's configuration; permitted only as the whole unset vector",
         ],
+        // B2 Task 3, fix round 1 (I3): the one config write Gitter makes is Edit URL's clear of a
+        // push URL, pinned whole in `denyTableExceptionShapes`. `--unset-all` removes every value
+        // of a key, and git takes `--unset-a` and `--unset-al` for it (measured; `--unset-` is
+        // already `isUpstreamAbbreviation`'s).
+        "config": [
+            "--unset-all": "removes every value of a configuration key; permitted only as Edit URL's clear of `remote.<n>.pushurl`",
+            "--unset-a": "is `--unset-all` (git takes a unique prefix of a long option)",
+            "--unset-al": "is `--unset-all` (git takes a unique prefix of a long option)",
+        ],
         "reset": ["--keep": "can still discard local changes"],  // `--hard` is always forbidden
         "restore": [
             "--worktree": "overwrites files on disk", "-W": "overwrites files on disk",
@@ -1315,6 +1324,11 @@ enum ForceFlagScanner {
     /// concatenated: a refspec after it would change what is listed. What is deleted afterwards
     /// is `update-ref`'s remote-tracking shape, one ref at a time on the id the sheet showed.
     ///
+    /// **`config`'s one is B2 Task 3's clear of a push URL** (fix round 1, I3): `--unset-all` of
+    /// exactly `remote.<name>.pushurl` — the name one interpolation, after `--end-of-options` —
+    /// and nothing appended. Every other config write is unscanned (only reads exist), and this
+    /// table makes `--unset-all` a finding everywhere else.
+    ///
     /// **`branch`'s three are B2 Task 2's upstream vectors** (R17): `--set-upstream-to=` with a
     /// full `refs/remotes/` name or (fix round 1) a full `refs/heads/` one — one interpolation
     /// after the prefix, so never a short `<r>/<b>` a tag or a local branch of that name
@@ -1328,6 +1342,11 @@ enum ForceFlagScanner {
                 .literal("--prune"), .literal("--no-prune-tags"), .literal("--dry-run"),
                 .literal("--porcelain"), .literal("--no-progress"), .literal("--end-of-options"),
                 .expression),
+        ],
+        "config": [
+            Shape(
+                .literal("--unset-all"), .literal("--end-of-options"),
+                .interpolated(prefix: "remote.", suffix: ".pushurl")),
         ],
         "branch": [
             Shape(

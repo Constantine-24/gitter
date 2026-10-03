@@ -91,19 +91,23 @@ struct RemoteBranchMenu: View {
     @Environment(RepositoryStore.self) private var store
 
     /// The remote this branch belongs to, or nil for a ref no configured remote claims.
-    private var remote: String? {
+    private var owner: Remote? {
         guard let refs = store.snapshot?.refs,
             let ref = refs.remoteBranches.first(where: { $0.name == branch })
         else { return nil }
-        return refs.remote(of: ref)?.name
+        return refs.remote(of: ref)
     }
 
     var body: some View {
         let reason = store.branchSwitchingBlockedReason
-        let remote = remote
+        let owner = owner
+        let remote = owner?.name
         // Only asked for a branch that has a remote to delete it on: a ref no configured
-        // remote claims (the sidebar's "Other" group) gets no delete item at all.
-        let deleteReason = remote == nil ? nil : store.deleteRemoteBranchBlockedReason
+        // remote claims (the sidebar's "Other" group) gets no delete item at all. A remote with
+        // no URL gets it disabled, with the reason (fix round 1, I1).
+        let deleteReason =
+            remote == nil
+            ? nil : (RemoteWording.deleteOnRemoteURLBlocked(owner) ?? store.deleteRemoteBranchBlockedReason)
 
         MenuReasons(reasons: [reason, deleteReason])
 
@@ -174,14 +178,13 @@ struct RemoteMenu: View {
 
     var body: some View {
         let fetchReason = store.fetchBlockedReason
-        let urlReason =
-            remote.fetchURL == nil && remote.pushURL == nil
-            ? RemoteWording.remoteHasNoURL(remote.name) : nil
+        // git would fetch from the remote's name as a path (fix round 1, I1).
+        let urlReason = RemoteWording.fetchURLBlocked(remote)
 
         MenuReasons(reasons: [fetchReason, urlReason])
 
         Button(RemoteWording.fetchRemoteTitle(remote.name)) { store.fetch(remote: remote.name) }
-            .disabled(fetchReason != nil)
+            .disabled(fetchReason != nil || urlReason != nil)
 
         Divider()
 
@@ -207,8 +210,9 @@ struct TagMenu: View {
     var body: some View {
         let reason = store.branchSwitchingBlockedReason
         let deleteReason = store.deleteTagBlockedReason(tag)
-        let remotes = store.snapshot?.refs.remotesWithURL ?? []
-        let remoteReason = remotes.isEmpty ? nil : store.remoteTagBlockedReason(tag)
+        // Only remotes with a URL for it (fix round 1, I1).
+        let remotes = RemoteWording.tagMenuRemotes(store.snapshot?.refs.remotes ?? [])
+        let remoteReason = remotes.push.isEmpty ? nil : store.remoteTagBlockedReason(tag)
 
         MenuReasons(reasons: [reason, deleteReason, remoteReason])
 
@@ -228,18 +232,18 @@ struct TagMenu: View {
         Button(TagWording.deleteTagTitle) { store.requestDeleteTag(tag) }
             .disabled(deleteReason != nil)
 
-        if !remotes.isEmpty {
+        if !remotes.push.isEmpty {
             Divider()
 
-            ForEach(remotes) { remote in
-                Button(TagWording.pushTitle(remote: remote.name)) {
-                    store.pushTag(tag.name, to: remote.name)
+            ForEach(remotes.push, id: \.self) { remote in
+                Button(TagWording.pushTitle(remote: remote)) {
+                    store.pushTag(tag.name, to: remote)
                 }
                 .disabled(remoteReason != nil)
             }
-            ForEach(remotes) { remote in
-                Button(TagWording.deleteFromRemoteTitle(remote: remote.name)) {
-                    store.requestDeleteRemoteTag(tag.name, on: remote.name)
+            ForEach(remotes.delete, id: \.self) { remote in
+                Button(TagWording.deleteFromRemoteTitle(remote: remote)) {
+                    store.requestDeleteRemoteTag(tag.name, on: remote)
                 }
                 .disabled(remoteReason != nil)
             }

@@ -111,6 +111,8 @@ extension CLIGitBackend {
             arguments = ["push", "--porcelain", "--progress", "--no-follow-tags", "--no-recurse-submodules", "--end-of-options", remote, "refs/heads/\(branch):\(remoteRef)"]
         }
 
+        // Last, after every check that needs no process (fix round 1, I1).
+        try await requireRemoteURL(remote, forPushing: true, at: root)
         let (outcome, streamed) = try await pushing(
             arguments, destinationRef: remoteRef, at: root, progress: progress)
         return result(
@@ -162,6 +164,8 @@ extension CLIGitBackend {
         let tip = expectedRemoteTip
         let arguments = ["push", "--porcelain", "--progress", "--no-follow-tags", "--no-recurse-submodules", "--force-with-lease=\(remoteRef):\(tip)", "--end-of-options", remote, "\(expectedLocalTip):\(remoteRef)"]
 
+        // Last, after every check that needs no process (fix round 1, I1).
+        try await requireRemoteURL(remote, forPushing: true, at: root)
         let (outcome, streamed) = try await pushing(
             arguments, destinationRef: remoteRef, at: root, progress: progress)
         // `.notRequested`, not `.notSet`: nothing asked for an upstream here, so there is
@@ -193,6 +197,8 @@ extension CLIGitBackend {
         // No progress to report: a deletion sends one command and transfers no objects, so git
         // prints no counters. It is cancellable all the same — `runStreaming` is what makes it
         // so — and a cancelled deletion says nothing about whether the server carried it out.
+        // Last, after every check that needs no process (fix round 1, I1).
+        try await requireRemoteURL(remote, forPushing: true, at: root)
         let (outcome, streamed) = try await pushing(
             arguments, destinationRef: "refs/heads/" + b, at: root, progress: { _ in })
         return result(outcome, streamed, upstream: .notRequested)

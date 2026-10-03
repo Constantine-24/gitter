@@ -30,12 +30,21 @@ extension CLIGitBackend: GitRemoteBackend {
             if let refspec = try await unsafeFetchRefspec(of: remote, at: root) {
                 throw RemoteOperationError.unsafeFetchRefspec(remote: remote, refspec: refspec)
             }
+            // After the refspec check: `remote -v` fails on a refspec git cannot parse, and that
+            // refspec's own refusal is the better answer.
+            try await requireRemoteURL(remote, forPushing: false, at: root)
             try await runFetch(Self.fetchVector(remote), at: root, progress: progress)
             return
         }
 
-        let (safe, skipped) = try await remotesForFetchAll(at: root)
+        let (safe, skipped, withoutURL) = try await remotesForFetchAll(at: root)
         guard let firstSkipped = skipped.first else {
+            // Fix round 1, I1: `--all` visits a remote with no fetch URL too and uses its name as
+            // a path, so with one configured the rest are fetched one by one and it is skipped.
+            if !withoutURL.isEmpty {
+                try await fetchEach(safe, at: root, progress: progress)
+                return
+            }
             try await runFetch(
                 ["fetch", "--progress", "--no-prune", "--all"], at: root, progress: progress)
             return
@@ -47,9 +56,20 @@ extension CLIGitBackend: GitRemoteBackend {
         // it, and git's own words for every failure are thrown instead of the skip — they are
         // what `--all` would have said, and the skip is still there to be reported by the next
         // fetch. A cancellation stops the loop at once.
+        try await fetchEach(safe, at: root, progress: progress)
+        throw RemoteOperationError.unsafeFetchRefspec(
+            remote: firstSkipped.remote, refspec: firstSkipped.refspec)
+    }
+
+    /// The one-by-one fallback of Fetch All: every remote in `names` with the single-remote
+    /// vector, in order; a failing one does not stop the rest, and git's words for every failure
+    /// are thrown at the end. A cancellation stops the loop at once.
+    private func fetchEach(
+        _ names: [String], at root: URL, progress: @escaping @Sendable (String) -> Void
+    ) async throws {
         var failures: [String] = []
         var lastCode: Int32 = 1
-        for name in safe {
+        for name in names {
             do {
                 _ = try await runStreaming(Self.fetchVector(name), cwd: root, progress: progress)
             } catch GitError.commandFailed(let code, let stderr) {
@@ -61,8 +81,6 @@ extension CLIGitBackend: GitRemoteBackend {
             throw GitError.commandFailed(
                 exitCode: lastCode, stderr: failures.joined(separator: "\n"))
         }
-        throw RemoteOperationError.unsafeFetchRefspec(
-            remote: firstSkipped.remote, refspec: firstSkipped.refspec)
     }
 
     /// The one-remote vector, a complete literal the scanner reads (see `fetch`).
@@ -127,17 +145,25 @@ extension CLIGitBackend: GitRemoteBackend {
     /// reason to leave `--all`, and a safe one must not be fetched by the one-by-one fallback
     /// either (re-review: it was, on every tick). With no unsafe remote left, the plain `--all`
     /// runs, and git itself honours the setting there.
+    ///
+    /// **And a remote with no fetch URL is in neither list but the third** (fix round 1, I1 —
+    /// a hazard older than B2): `--all` visits it and git uses its **name as a path**, which
+    /// fetched from a nested checkout of that name (measured). It is skipped, silently: nothing
+    /// can be fetched through it, and the sidebar says it has no URL.
     private func remotesForFetchAll(
         at root: URL
-    ) async throws -> (safe: [String], skipped: [(remote: String, refspec: String)]) {
+    ) async throws -> (safe: [String], skipped: [(remote: String, refspec: String)], withoutURL: [String]) {
         // Cut at the `\n` byte only: a remote's name may hold a `\r`, U+0085 or U+2028, and a
         // name cut in two is a remote whose refspecs are never read (see `GitLines`).
         var names: [String] = []
+        var withFetchURL: Set<String> = []
         for line in GitLines.split(try await run(["remote", "-v"], cwd: root)) {
             guard let tab = line.firstIndex(of: "\t") else { continue }
             let name = String(line[..<tab])
             if !name.isEmpty, !names.contains(name) { names.append(name) }
+            if line.hasSuffix(" (fetch)") { withFetchURL.insert(name) }
         }
+        var withoutURL: [String] = []
         var safe: [String] = []
         var skipped: [(remote: String, refspec: String)] = []
         for name in names {
@@ -149,13 +175,15 @@ extension CLIGitBackend: GitRemoteBackend {
             {
                 continue
             }
-            if let refspec = try await unsafeFetchRefspec(of: name, at: root) {
+            if !withFetchURL.contains(name) {
+                withoutURL.append(name)
+            } else if let refspec = try await unsafeFetchRefspec(of: name, at: root) {
                 skipped.append((name, refspec))
             } else {
                 safe.append(name)
             }
         }
-        return (safe, skipped)
+        return (safe, skipped, withoutURL)
     }
 
     public func commits(
@@ -357,6 +385,19 @@ extension CLIGitBackend: GitRemoteBackend {
     /// Internal rather than private because `CLIGitBackend+Push.swift` asks the same question of
     /// the same kind of name, and a second copy of a security check is a second thing to forget
     /// to fix: the leading-space hole above was in exactly one of two places for a while.
+    /// Refuses a **configured** remote git has no URL for — no URL at all, or, for a fetch or a
+    /// read of its refs (`pushing == false`), only a push URL: git would use the remote's name as
+    /// a path (fix round 1, I1, measured: `git fetch vendor` fetched a nested checkout called
+    /// `vendor`, and `git push vendor :refs/heads/topic` deleted its branch).
+    /// `RemoteOperationError.noURL`, after one read of `git remote -v` and before any fetch, push
+    /// or `ls-remote`. A name that is no configured remote at all is left to git's own diagnosis,
+    /// as before (`anUnknownRemoteIsGitsOwnDiagnosis`).
+    func requireRemoteURL(_ remote: String, forPushing pushing: Bool, at root: URL) async throws {
+        let listed = RemoteParser.parse(String(decoding: try await run(["remote", "-v"], cwd: root), as: UTF8.self))
+        guard let entry = listed.first(where: { $0.name == remote }) else { return }
+        guard (pushing ? entry.pushURL : entry.fetchURL) != nil else { throw RemoteOperationError.noURL(remote) }
+    }
+
     func requireRemoteName(_ name: String) throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !trimmed.hasPrefix("-"), trimmed != "." else {

@@ -131,16 +131,28 @@ public protocol GitTagBackend: Sendable {
     /// `refs/tags/<name>`'s id on `remote` — **unpeeled**: the tag object for an annotated tag,
     /// which is what a lease on it must name (B21) — or nil when the remote has no such tag.
     /// One `ls-remote`, a network round trip.
+    ///
+    /// A configured remote with no URL for this (`Remote.canFetch` / `canPush`) is
+    /// `RemoteOperationError.noURL`, before any fetch, push or `ls-remote` (B2 Task 3, fix round
+    /// 1, I1: git would use its name as a path).
     func remoteTagID(_ name: String, on remote: String, at root: URL) async throws -> String?
 
     /// Pushes exactly `refs/tags/<name>` to `remote` (B20): no other tag, whatever
     /// `push.followTags` says, and never forced.
+    ///
+    /// A configured remote with no URL for this (`Remote.canFetch` / `canPush`) is
+    /// `RemoteOperationError.noURL`, before any fetch, push or `ls-remote` (B2 Task 3, fix round
+    /// 1, I1: git would use its name as a path).
     func pushTag(_ name: String, to remote: String, at root: URL) async throws -> TagPushOutcome
 
     /// Deletes `refs/tags/<name>` on `remote` only while it still holds `id` (from
     /// `remoteTagID`): a lease (B21). `.remoteTagMoved` when it moved or is gone;
     /// `RemoteOperationError.invalidLease` for an id that is not full and non-zero, before git
     /// runs; a server refusing is git's words (`GitError.commandFailed`).
+    ///
+    /// A configured remote with no URL for this (`Remote.canFetch` / `canPush`) is
+    /// `RemoteOperationError.noURL`, before any fetch, push or `ls-remote` (B2 Task 3, fix round
+    /// 1, I1: git would use its name as a path).
     func deleteRemoteTag(_ name: String, on remote: String, expecting id: String, at root: URL) async throws
 
     /// The remotes whose `remote.<name>.tagOpt` is `--no-tags` (git's last value wins), sorted:

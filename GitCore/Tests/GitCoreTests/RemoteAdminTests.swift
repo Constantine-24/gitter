@@ -122,9 +122,9 @@ extension TestRepo {
         defer { git.cleanUp() }
 
         let add = await thrownError { try await git.backend.addRemote("second", url: url, at: repo.root) }
-        let fetch = await thrownError { try await git.backend.setURLs(of: "origin", fetch: url, push: nil, at: repo.root) }
+        let fetch = await thrownError { try await git.backend.setURLs(of: "origin", fetch: url, push: .unchanged, at: repo.root) }
         let push = await thrownError {
-            try await git.backend.setURLs(of: "origin", fetch: fixture.origin.path, push: url, at: repo.root)
+            try await git.backend.setURLs(of: "origin", fetch: fixture.origin.path, push: .set(url), at: repo.root)
         }
 
         #expect(add as? RemoteAdminRefusal == .unsafeURL)
@@ -167,7 +167,7 @@ extension TestRepo {
         let written = "https://example.invalid/o/r.git"
         try await repo.git(["config", "url.\(fixture.origin.path).insteadOf", written])
 
-        try await backend.setURLs(of: "origin", fetch: written, push: nil, at: repo.root)
+        try await backend.setURLs(of: "origin", fetch: written, push: .unchanged, at: repo.root)
         let urls = try await backend.remoteURLs("origin", at: repo.root)
 
         #expect(urls == RemoteURLs(fetch: [written], push: [], effectiveFetch: fixture.origin.path))
@@ -198,16 +198,16 @@ extension TestRepo {
         let second = try await repo.makeSecondServer(named: "second")
         defer { try? FileManager.default.removeItem(at: second) }
 
-        try await backend.setURLs(of: "origin", fetch: fixture.origin.path, push: second.path, at: repo.root)
+        try await backend.setURLs(of: "origin", fetch: fixture.origin.path, push: .set(second.path), at: repo.root)
         #expect(try await repo.configValues("remote.origin.url") == [fixture.origin.path])
         #expect(try await repo.configValues("remote.origin.pushurl") == [second.path])
         #expect(try await backend.remoteURLs("origin", at: repo.root).push == [second.path])
 
-        try await backend.setURLs(of: "origin", fetch: second.path, push: "/srv/third.git", at: repo.root)
+        try await backend.setURLs(of: "origin", fetch: second.path, push: .set("/srv/third.git"), at: repo.root)
         #expect(try await repo.configValues("remote.origin.url") == [second.path])
         #expect(try await repo.configValues("remote.origin.pushurl") == ["/srv/third.git"])
 
-        try await backend.setURLs(of: "origin", fetch: fixture.origin.path, push: nil, at: repo.root)
+        try await backend.setURLs(of: "origin", fetch: fixture.origin.path, push: .unchanged, at: repo.root)
         #expect(try await repo.configValues("remote.origin.url") == [fixture.origin.path])
         #expect(try await repo.configValues("remote.origin.pushurl") == ["/srv/third.git"])
     }
@@ -221,7 +221,7 @@ extension TestRepo {
         try await repo.git(["config", "--add", "remote.origin.url", "/srv/elsewhere.git"])
         let before = try await repo.localConfig()
 
-        let error = await thrownError { try await backend.setURLs(of: "origin", fetch: "/srv/new.git", push: nil, at: repo.root) }
+        let error = await thrownError { try await backend.setURLs(of: "origin", fetch: "/srv/new.git", push: .unchanged, at: repo.root) }
 
         #expect(error as? RemoteAdminRefusal == .severalURLs)
         try await assertConfigUnchanged(repo, since: before)
@@ -233,7 +233,7 @@ extension TestRepo {
         try await repo.git(["config", "--add", "remote.origin.pushurl", "/srv/p2.git"])
         let beforePush = try await repo.localConfig()
         let push = await thrownError {
-            try await backend.setURLs(of: "origin", fetch: "/srv/new.git", push: "/srv/p3.git", at: repo.root)
+            try await backend.setURLs(of: "origin", fetch: "/srv/new.git", push: .set("/srv/p3.git"), at: repo.root)
         }
         #expect(push as? RemoteAdminRefusal == .severalURLs)
         try await assertConfigUnchanged(repo, since: beforePush)
@@ -247,7 +247,7 @@ extension TestRepo {
         let root = fixture.repo.root
 
         #expect(await thrownError { _ = try await backend.remoteURLs("nosuch", at: root) } as? RemoteAdminRefusal == .noSuchRemote("nosuch"))
-        #expect(await thrownError { try await backend.setURLs(of: "nosuch", fetch: "/srv/x.git", push: nil, at: root) } as? RemoteAdminRefusal
+        #expect(await thrownError { try await backend.setURLs(of: "nosuch", fetch: "/srv/x.git", push: .unchanged, at: root) } as? RemoteAdminRefusal
             == .noSuchRemote("nosuch"))
         #expect(await thrownError { try await backend.renameRemote("nosuch", to: "other", at: root) } as? RemoteAdminRefusal
             == .noSuchRemote("nosuch"))
@@ -255,7 +255,7 @@ extension TestRepo {
         let git = try GitLaunchLog()
         defer { git.cleanUp() }
         #expect(await thrownError { _ = try await git.backend.remoteURLs("-x", at: root) } as? RemoteOperationError == .noRemote)
-        #expect(await thrownError { try await git.backend.setURLs(of: "-x", fetch: "/srv/x.git", push: nil, at: root) } as? RemoteOperationError == .noRemote)
+        #expect(await thrownError { try await git.backend.setURLs(of: "-x", fetch: "/srv/x.git", push: .unchanged, at: root) } as? RemoteOperationError == .noRemote)
         #expect(await thrownError { try await git.backend.renameRemote("-x", to: "other", at: root) } as? RemoteOperationError == .noRemote)
         git.assertNothingRan()
     }
@@ -273,7 +273,7 @@ extension TestRepo {
         #expect(try await repo.listedRemotes().contains(Remote(name: "nourl", fetchURL: nil, pushURL: nil)))
         #expect(try await backend.remoteURLs("nourl", at: repo.root) == RemoteURLs(fetch: [], push: [], effectiveFetch: nil))
 
-        try await backend.setURLs(of: "nourl", fetch: fixture.origin.path, push: nil, at: repo.root)
+        try await backend.setURLs(of: "nourl", fetch: fixture.origin.path, push: .unchanged, at: repo.root)
 
         #expect(try await repo.listedRemotes().contains(
             Remote(name: "nourl", fetchURL: fixture.origin.path, pushURL: fixture.origin.path)))
@@ -290,6 +290,95 @@ extension TestRepo {
 
         #expect(try await repo.listedRemotes().contains(Remote(name: "emp", fetchURL: nil, pushURL: nil)))
         #expect(try await backend.remoteURLs("emp", at: repo.root) == RemoteURLs(fetch: [""], push: [], effectiveFetch: nil))
+
+        // Fix round 1, m6: and Edit URL gives it one (`set-url` replaces the empty value).
+        try await backend.setURLs(of: "emp", fetch: fixture.origin.path, push: .unchanged, at: repo.root)
+        #expect(try await repo.configValues("remote.emp.url") == [fixture.origin.path])
+        #expect(try await repo.listedRemotes().contains(
+            Remote(name: "emp", fetchURL: fixture.origin.path, pushURL: fixture.origin.path)))
+    }
+
+    // MARK: - Clearing a push URL (fix round 1, I3)
+
+    /// `.clear` removes every `pushurl` — the remote pushes to its fetch URL again — and with
+    /// none configured it writes nothing.
+    @Test func clearsThePushURL() async throws {
+        let fixture = try await UpstreamFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        try await backend.setURLs(of: "origin", fetch: fixture.origin.path, push: .set("/srv/p.git"), at: repo.root)
+        #expect(try await repo.configValues("remote.origin.pushurl") == ["/srv/p.git"])
+
+        try await backend.setURLs(of: "origin", fetch: fixture.origin.path, push: .clear, at: repo.root)
+
+        #expect(try await repo.configValues("remote.origin.pushurl").isEmpty)
+        #expect(try await backend.remoteURLs("origin", at: repo.root).push == [])
+        #expect(try await repo.listedRemotes().contains(
+            Remote(name: "origin", fetchURL: fixture.origin.path, pushURL: fixture.origin.path)))
+
+        let before = try await repo.localConfig()
+        try await backend.setURLs(of: "origin", fetch: fixture.origin.path, push: .clear, at: repo.root)
+        try await assertConfigUnchanged(repo, since: before)
+    }
+
+    /// Several `pushurl` values are shown read-only, so clearing them is refused like setting
+    /// them; a clear git refuses (a held `config.lock`, measured exit 255, nothing written) is
+    /// read back and stays git's words.
+    @Test func aClearIsRefusedOnSeveralPushURLsAndReadBackWhenGitFails() async throws {
+        let fixture = try await UpstreamFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        try await repo.git(["config", "--add", "remote.origin.pushurl", "/srv/p1.git"])
+        try await repo.git(["config", "--add", "remote.origin.pushurl", "/srv/p2.git"])
+        let several = try await repo.localConfig()
+        let refused = await thrownError {
+            try await backend.setURLs(of: "origin", fetch: fixture.origin.path, push: .clear, at: repo.root)
+        }
+        #expect(refused as? RemoteAdminRefusal == .severalURLs)
+        try await assertConfigUnchanged(repo, since: several)
+
+        try await repo.git(["config", "--unset-all", "remote.origin.pushurl"])
+        try await repo.git(["config", "remote.origin.pushurl", "/srv/p1.git"])
+        let before = try await repo.localConfig()
+        let lock = repo.root.appendingPathComponent(".git/config.lock")
+        try Data().write(to: lock)
+        let error = await thrownError {
+            try await backend.setURLs(of: "origin", fetch: fixture.origin.path, push: .clear, at: repo.root)
+        }
+        try FileManager.default.removeItem(at: lock)
+        guard case .commandFailed(_, let stderr)? = error as? GitError else {
+            Issue.record("expected git's words, got \(String(describing: error))")
+            return
+        }
+        #expect(stderr.contains("could not lock config file"), "\(stderr)")
+        try await assertConfigUnchanged(repo, since: before)
+    }
+
+    // MARK: - A remote whose name extends another's (fix round 1, I2)
+
+    /// `origin.bak` is not `origin`: a key is `remote.<name>.<variable>`, and a variable holds no
+    /// dot. Measured: with both configured and `packed-refs.lock` held, the half-done rename of
+    /// `origin` named `origin` as still configured.
+    @Test func aRemoteNamedLikeAnotherWithASuffixIsNotTakenForIt() async throws {
+        let fixture = try await UpstreamFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        try await repo.git(["remote", "add", "origin.bak", fixture.origin.path])
+        try await repo.git(["pack-refs", "--all"])
+        let lock = repo.root.appendingPathComponent(".git/packed-refs.lock")
+        try Data().write(to: lock)
+
+        let error = await thrownError { try await backend.renameRemote("origin", to: "up", at: repo.root) }
+        try FileManager.default.removeItem(at: lock)
+
+        guard case .renameHalfDone(let left)? = error as? RemoteAdminPartial else {
+            Issue.record("expected .renameHalfDone, got \(String(describing: error))")
+            return
+        }
+        #expect(left.configured == ["up"])
+        let bak = [CLIGitBackend.ConfigEntry(key: "remote.origin.bak.url", value: "/srv/b.git")]
+        #expect(!CLIGitBackend.configures("origin", bak))
+        #expect(CLIGitBackend.configures("origin.bak", bak))
     }
 
     /// The app's pickers, gates and push target read only remotes with a URL: a no-URL remote
@@ -307,7 +396,10 @@ extension TestRepo {
         let branch = Branch(name: "topic", sha: "1111111111111111111111111111111111111111", isHead: true,
                             upstream: nil, tracking: .none, upstreamRemote: nil, upstreamRef: nil,
                             pushRemote: "nourl", pushRef: nil)
-        #expect(PushTarget.resolve(branch, remotes: refs.remotes) == .refused(.unknownRemote("nourl")))
+        #expect(PushTarget.resolve(branch, remotes: refs.remotes) == .refused(.noURL("nourl")))
+        #expect(!nourl.canFetch && !nourl.canPush)
+        #expect(!pushOnly.canFetch && pushOnly.canPush)
+        #expect(origin.canFetch && origin.canPush)
     }
 
     // MARK: - Rename (R21)
