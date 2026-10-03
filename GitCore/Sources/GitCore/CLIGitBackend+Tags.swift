@@ -292,6 +292,26 @@ extension CLIGitBackend: GitTagBackend {
         }
     }
 
+    public func remotesFetchingNoTags(at root: URL) async throws -> [String] {
+        // `-z`: each entry is `<key>\n<value>\0`. The key's section and variable come back
+        // lower-cased, its subsection — the remote's name, which may hold dots — as written.
+        // Exit 1 is "no such key". Entries come in file order, so a later value replaces an
+        // earlier one, as git reads it.
+        let data = try await run(["config", "-z", "--get-regexp", "^remote[.].*[.]tagopt$"], cwd: root, allowedExitCodes: [1])
+        var last: [String: String] = [:]
+        for entry in data.split(separator: 0) {
+            let text = String(decoding: entry, as: UTF8.self)
+            guard let newline = text.firstIndex(of: "\n") else { continue }
+            let key = text[..<newline]
+            let value = text[text.index(after: newline)...]
+            guard key.hasPrefix("remote."), key.hasSuffix(".tagopt") else { continue }
+            let name = String(key.dropFirst("remote.".count).dropLast(".tagopt".count))
+            guard !name.isEmpty else { continue }
+            last[name] = String(value)
+        }
+        return last.filter { $0.value == "--no-tags" }.keys.sorted()
+    }
+
     /// git's words, redacted (a remote URL can carry a credential): the lines given, in order,
     /// without blank ones and the askpass noise.
     private static func words(_ texts: String...) -> String {

@@ -193,18 +193,27 @@ enum TagWording {
     /// Restore Tag recreates the ref at the tag **object**, so an annotated tag comes back
     /// whole (B19).
     static func deleteRestore(_ tag: Tag) -> String {
-        tag.isAnnotated
-            ? "Restore Tag in the notice afterwards puts the identical tag back: its message, "
-                + "tagger and date too."
-            : "Restore Tag in the notice afterwards puts it back."
+        let way = "Restore Tag, in the notice afterwards or on its row under Tags while this "
+            + "repository is open, puts"
+        return tag.isAnnotated
+            ? "\(way) the identical tag back: its message, tagger and date too."
+            : "\(way) it back."
     }
 
     /// What a fetch does after the delete (B22). Opening the sheet reads no network, so
-    /// nothing is claimed about remotes — unless this session saw them with the tag (a push,
-    /// or the remote delete's read, `RemoteTagsSeen`): Ruling 2.
-    static func comesBack(from remotes: [String]) -> String {
+    /// nothing is claimed about remotes — unless this session saw them holding this very tag (a
+    /// push, or the remote delete's read, `RemoteTagsSeen`): Ruling 2. `noTags` are the remotes
+    /// set to fetch no tags (`remote.<r>.tagOpt=--no-tags`): a fetch from one never brings it
+    /// back, so the caller leaves them out of `remotes`, and the general sentence excepts them.
+    static func comesBack(from remotes: [String], noTags: [String]) -> String {
         guard !remotes.isEmpty else {
-            return "If a remote still has this tag, the next fetch brings it back."
+            let general = "If a remote still has this tag, the next fetch brings it back"
+            guard !noTags.isEmpty else { return general + "." }
+            let names = noTags.map(quoted)
+            let list = names.count == 1
+                ? names[0] : names.dropLast().joined(separator: ", ") + " or \(names[names.count - 1])"
+            return general + ", but not from \(list), which \(names.count == 1 ? "is" : "are") set to "
+                + "fetch no tags."
         }
         let names = remotes.map(quoted)
         let list: String
@@ -234,17 +243,62 @@ enum TagWording {
                 + "this and look again."
     }
 
-    /// The sticky notice after a delete — the only way back, tags keep no reflog — with Restore
-    /// Tag beside it and the same in a terminal, naming the tag **object** for an annotated tag.
-    static func deleted(_ receipt: TagReceipt) -> String {
-        "Deleted tag \(quoted(receipt.name)), which was on \(short(receipt.target)). Restore Tag "
-            + "puts it back; so does, in a terminal: git tag \(shellWord(receipt.name)) \(receipt.objectID)"
+    /// The sticky notice after a delete — the only way back, tags keep no reflog — naming every
+    /// tag still deleted (`DeletedTags`), with Restore Tag(s) beside it and the same in a
+    /// terminal: the tag **object** for an annotated tag, and `--no-sign`, without which
+    /// `tag.gpgSign=true` refuses even this ("fatal: no tag message?", measured).
+    static func deleted(_ receipts: [TagReceipt]) -> String {
+        let commands = receipts.map(restoreCommand).joined(separator: " && ")
+        guard receipts.count > 1 else {
+            let receipt = receipts.first ?? TagReceipt(name: "", objectID: "", target: "")
+            return "Deleted tag \(quoted(receipt.name)), which was on \(short(receipt.target)). "
+                + "Restore Tag puts it back; so does, in a terminal: \(commands)"
+        }
+        let names = receipts.map { "\(quoted($0.name)) (was on \(short($0.target)))" }
+        return "Deleted tags \(and(names)). Restore Tags puts them back; so does, in a terminal: "
+            + commands
     }
 
-    static let restoreButton = "Restore Tag"
+    /// The deleted-tags notice, with its one button for every receipt in it.
+    static func deletedNotice(_ receipts: [TagReceipt]) -> Notice {
+        Notice(text: deleted(receipts), actions: [.restoreTag(receipts)])
+    }
 
-    static func restored(_ receipt: TagReceipt) -> String {
-        "Restored tag \(quoted(receipt.name)) on \(short(receipt.target))."
+    static func restoreCommand(_ receipt: TagReceipt) -> String {
+        "git tag --no-sign \(shellWord(receipt.name)) \(receipt.objectID)"
+    }
+
+    static func restoreButton(count: Int) -> String {
+        count == 1 ? "Restore Tag" : "Restore Tags"
+    }
+
+    static func restored(_ receipts: [TagReceipt]) -> String {
+        guard receipts.count > 1 else {
+            let receipt = receipts.first ?? TagReceipt(name: "", objectID: "", target: "")
+            return "Restored tag \(quoted(receipt.name)) on \(short(receipt.target))."
+        }
+        return "Restored tags \(and(receipts.map { quoted($0.name) }))."
+    }
+
+    /// "a", "a and b", "a, b and c".
+    private static func and(_ items: [String]) -> String {
+        guard items.count > 1 else { return items.first ?? "" }
+        return items.dropLast().joined(separator: ", ") + " and \(items[items.count - 1])"
+    }
+
+    // MARK: - Deleted tags' rows
+
+    /// A deleted tag's row under Tags, dimmed: the way back once its notice is gone.
+    static let deletedRowIcon = "tag.slash"
+    static let restoreMenuTitle = "Restore Tag"
+
+    static func deletedRowAccessibility(_ receipt: TagReceipt) -> String {
+        "\(RemoteWording.plain(receipt.name)), deleted tag"
+    }
+
+    static func deletedRowHelp(_ receipt: TagReceipt) -> String {
+        "Deleted while this repository was open; it was on \(short(receipt.target)). Restore Tag "
+            + "in its menu puts it back; so does, in a terminal: \(restoreCommand(receipt))"
     }
 
     // MARK: - Push
@@ -311,9 +365,15 @@ enum TagWording {
     static let noRemoteTagBody = "There is nothing to delete there."
     static let closeButton = "Close"
 
-    static func deletedOnRemote(_ name: String, remote: String, id: String) -> String {
-        "Deleted tag \(quoted(name)) on \(quoted(remote)); the tag here is kept. Put it back there "
-            + "with: git push \(shellWord(remote)) \(id):refs/tags/\(shellWord(name))"
+    /// `objectIsHere`: a tag here holds `id` (as its tag object or its commit), so the push in
+    /// the hint has something to send. Otherwise there is no such command (Minor 4).
+    static func deletedOnRemote(_ name: String, remote: String, id: String, objectIsHere: Bool) -> String {
+        let done = "Deleted tag \(quoted(name)) on \(quoted(remote)); the tag here is kept."
+        guard objectIsHere else {
+            return done + " It held \(id), which no tag here holds, so there is no command here "
+                + "that puts it back."
+        }
+        return done + " Put it back there with: git push \(shellWord(remote)) \(id):refs/tags/\(shellWord(name))"
     }
 
     // MARK: - Refusals and failures
@@ -411,24 +471,48 @@ struct TagActionFailed: LocalizedError {
     var errorDescription: String? { sentence }
 }
 
-/// Which remotes this session has seen holding a tag, by name (Ruling 2): a push the remote
-/// took or already had, a push it refused because it has another tag of that name, and the
-/// remote delete's read say "has it"; a remote delete and a read that found none say "has not".
-/// Nothing else is known without the network, so the Delete Tag sheet names only these.
+/// Which object each remote's tag held when this session last saw it (Ruling 2, by id since
+/// fix round 1): a push the remote took or already had says it holds the tag pushed; the remote
+/// delete's read says what it holds (or nothing). A push refused for a different tag, a remote
+/// delete, and a read that found none forget the remote. Nothing else is known without the
+/// network, so the Delete Tag sheet names only remotes seen holding **that** tag's object.
 struct RemoteTagsSeen: Equatable {
-    private var byTag: [String: Set<String>] = [:]
+    private var byTag: [String: [String: String]] = [:]
 
-    mutating func note(_ name: String, on remote: String, present: Bool) {
-        if present {
-            byTag[name, default: []].insert(remote)
-        } else {
-            byTag[name]?.remove(remote)
-            if byTag[name]?.isEmpty == true { byTag[name] = nil }
-        }
+    /// `id` nil: the remote holds no such tag, or what it holds is not known.
+    mutating func note(_ name: String, on remote: String, id: String?) {
+        byTag[name, default: [:]][remote] = id
+        if byTag[name]?.isEmpty == true { byTag[name] = nil }
     }
 
-    /// Sorted, so the sentence reads the same every time.
-    func remotes(having name: String) -> [String] {
-        (byTag[name] ?? []).sorted()
+    /// The remotes seen holding `name` at `objectID`, sorted so the sentence reads the same
+    /// every time.
+    func remotes(having name: String, objectID: String) -> [String] {
+        (byTag[name] ?? [:]).filter { $0.value == objectID }.keys.sorted()
+    }
+}
+
+/// The tags deleted while this repository is open, in the order they went — their receipts are
+/// the only way back (tags keep no reflog), so they live in the store, apart from the one sticky
+/// notice slot any other notice can take (fix round 1, I1). A receipt ends when its tag is
+/// restored, or is back exactly as it was (a fetch brought it back).
+struct DeletedTags: Equatable {
+    private(set) var receipts: [TagReceipt] = []
+
+    mutating func add(_ receipt: TagReceipt) {
+        if !receipts.contains(receipt) { receipts.append(receipt) }
+    }
+
+    mutating func remove(_ gone: [TagReceipt]) {
+        receipts.removeAll { gone.contains($0) }
+    }
+
+    /// Drops the receipts whose tag is in `tags` again with the same object. Whether any was.
+    mutating func pruningTagsBack(_ tags: [Tag]) -> Bool {
+        let before = receipts.count
+        receipts.removeAll { receipt in
+            tags.contains { $0.name == receipt.name && $0.objectID == receipt.objectID }
+        }
+        return receipts.count != before
     }
 }

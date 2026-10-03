@@ -82,7 +82,7 @@ struct SidebarView: View {
                 }
             }
 
-            if !refs.tags.isEmpty {
+            if !refs.tags.isEmpty || !store.deletedTags.receipts.isEmpty {
                 Section("Tags") {
                     ForEach(refs.tags) { tag in
                         Button {
@@ -98,6 +98,26 @@ struct SidebarView: View {
                         .contextMenu { TagMenu(tag: tag) }
                         // No double-click action on purpose: checking out a tag detaches HEAD,
                         // and the design asks for that to be deliberate.
+                    }
+                    // The tags deleted while this repository is open, dimmed, each with its
+                    // Restore Tag: the way back once the delete notice is gone (another notice
+                    // took the slot, or ×). Here rather than in a menu because a row is seen
+                    // without looking for it, and it outlives every tag being deleted — the
+                    // section stays while any is.
+                    ForEach(store.deletedTags.receipts, id: \.self) { receipt in
+                        Button {
+                            store.select(.commit(receipt.target))
+                        } label: {
+                            Label(receipt.name, systemImage: TagWording.deletedRowIcon)
+                                .strikethrough()
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help(TagWording.deletedRowHelp(receipt))
+                        .accessibilityLabel(TagWording.deletedRowAccessibility(receipt))
+                        .contextMenu {
+                            Button(TagWording.restoreMenuTitle) { store.restoreTags([receipt]) }
+                        }
                     }
                 }
             }

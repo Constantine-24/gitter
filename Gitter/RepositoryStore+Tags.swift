@@ -7,6 +7,7 @@ import GitCore
 /// | action | runs | holds |
 /// |---|---|---|
 /// | create, delete, restore | through `mutate` | the mutation slot — local ref writes |
+/// | the remotes set to fetch no tags (before the Delete Tag sheet) | a task, no claim | nothing: a config read |
 /// | push a tag, delete one on a remote | on the network lane (`.pushTag`, `.deleteRemoteTag`) | the lane and the slot: both write on the server |
 /// | read a remote tag's id (before the remote delete's sheet) | on the lane, as a `.fetch` | the lane only: it writes nothing |
 ///
@@ -101,7 +102,9 @@ extension RepositoryStore {
     // MARK: - Delete and Restore
 
     /// Opens Delete Tag… for the tag of `tag`'s name as the list shows it now, with the remotes
-    /// this session saw holding it.
+    /// this session saw holding that very object, less the ones set to fetch no tags — read
+    /// first (`remotesFetchingNoTags`, a local config read), so the sheet opens a moment later.
+    /// A read that fails names no remote either way: the sheet then says only the general line.
     func requestDeleteTag(_ tag: Tag) {
         guard let current = self.tag(named: tag.name) else {
             showStickyError(TagWording.noSuchTag(tag.name))
@@ -111,13 +114,27 @@ extension RepositoryStore {
             showStickyError(reason)
             return
         }
-        activeSheet = .deleteTag(current, comesBackFrom: remoteTagsSeen.remotes(having: current.name))
+        guard let root else { return }
+        let seen = remoteTagsSeen.remotes(having: current.name, objectID: current.objectID)
+        let configured = Set(snapshot?.refs.remotes.map(\.name) ?? [])
+        let generation = self.generation
+        let backend = self.backend
+        Task { [self] in
+            let read = try? await backend.remotesFetchingNoTags(at: root)
+            // Another repository, or another sheet the user opened meanwhile: not over it.
+            guard self.generation == generation, activeSheet == nil else { return }
+            let noTags = (read ?? []).filter(configured.contains)
+            activeSheet = .deleteTag(
+                current, comesBackFrom: read == nil ? [] : seen.filter { !noTags.contains($0) },
+                noTagsFrom: noTags)
+        }
     }
 
     /// Deletes the tag the sheet shows, only if it still holds the sheet's `objectID` (GitCore's
-    /// compare-and-delete), and puts Restore Tag up in the sticky slot — the only way back.
+    /// compare-and-delete), and keeps its receipt — the only way back — in `deletedTags`, with the
+    /// notice naming every tag still deleted (`recordTagDeleted`).
     func confirmDeleteTag(_ tag: Tag) {
-        guard case .deleteTag(let shown, _) = activeSheet, shown == tag else { return }
+        guard case .deleteTag(let shown, _, _) = activeSheet, shown == tag else { return }
         guard !isMutating else {
             showStickyError(RemoteWording.mutationBusy)
             return
@@ -130,29 +147,53 @@ extension RepositoryStore {
                 throw TagActionFailed(sentence: TagWording.failure(error, .delete(tag.name)))
             }
         }, onSuccess: { [self] receipt in
-            showStickyNotice(Notice(text: TagWording.deleted(receipt), actions: [.restoreTag(receipt)]))
+            recordTagDeleted(receipt)
         })
     }
 
-    /// The notice's Restore Tag: recreates the tag at the receipt's id — the identical tag object
-    /// for an annotated tag (B19). Refused when a tag of that name exists again; the notice then
-    /// stays, so the tag can still come back once that one is out of the way.
-    func restoreTag(_ receipt: TagReceipt) {
+    /// Restore Tag(s), from the notice or a deleted tag's row: recreates each tag at its
+    /// receipt's id — the identical tag object for an annotated tag (B19) — one after the other.
+    /// Receipts no longer kept (restored meanwhile, or back as they were) are skipped. A refusal
+    /// — a tag of that name exists again — keeps that receipt, so the tag can still come back
+    /// once the other is out of the way.
+    func restoreTags(_ receipts: [TagReceipt]) {
+        let pending = receipts.filter(deletedTags.receipts.contains)
+        guard !pending.isEmpty else { return }
         // The notice's button is not disabled; a click that says nothing reads as broken.
         guard !isMutating else {
             showStickyError(RemoteWording.mutationBusy)
             return
         }
-        mutate({ backend, root in
-            do {
-                try await backend.restoreTag(receipt, at: root)
-            } catch {
-                throw TagActionFailed(sentence: TagWording.failure(error, .restore(receipt.name)))
+        mutate(result: { backend, root in
+            var results: [(TagReceipt, Result<Void, any Error>)] = []
+            for receipt in pending {
+                do {
+                    try await backend.restoreTag(receipt, at: root)
+                    results.append((receipt, .success(())))
+                } catch {
+                    results.append((receipt, .failure(error)))
+                }
             }
-        }, onSuccess: { [self] in
-            if stickyNotice?.actions.contains(.restoreTag(receipt)) == true { dismissStickyNotice() }
-            showNotice(TagWording.restored(receipt))
+            return results
+        }, onSuccess: { [self] results in
+            finishTagRestore(results)
         })
+    }
+
+    /// What the restores came to: the ones back end their receipts and say so; each refusal is
+    /// said in the banner and keeps its receipt.
+    func finishTagRestore(_ results: [(TagReceipt, Result<Void, any Error>)]) {
+        var back: [TagReceipt] = []
+        var failures: [String] = []
+        for (receipt, result) in results {
+            switch result {
+            case .success: back.append(receipt)
+            case .failure(let error): failures.append(TagWording.failure(error, .restore(receipt.name)))
+            }
+        }
+        forgetDeletedTags(back)
+        if !back.isEmpty { showNotice(TagWording.restored(back)) }
+        if !failures.isEmpty { showStickyError(failures.joined(separator: " ")) }
     }
 
     // MARK: - Push
@@ -169,6 +210,7 @@ extension RepositoryStore {
             return
         }
         let attempt = TagWording.Attempt.push(name, remote: remote)
+        let objectID = local.objectID
         runOnLane(.pushTag, remote: remote, holdingMutation: true) { [self] backend, root, lane, _ in
             let outcome: TagPushOutcome
             do {
@@ -179,8 +221,10 @@ extension RepositoryStore {
                 return LaneEnding(failure: TagWording.failure(error, attempt))
             }
             switch outcome {
-            // A tag of that name is there now — this one, or (refused) another.
-            case .pushed, .alreadyThere, .rejectedExists: note(name, on: remote, present: true, lane: lane)
+            // This tag is there now.
+            case .pushed, .alreadyThere: note(name, on: remote, id: objectID, lane: lane)
+            // Another tag of that name is: not this one, so never claimed for it (I2).
+            case .rejectedExists: note(name, on: remote, id: nil, lane: lane)
             case .failed: break
             }
             if let failure = TagWording.pushFailure(outcome, name, remote: remote) {
@@ -211,7 +255,7 @@ extension RepositoryStore {
             } catch {
                 return LaneEnding(failure: TagWording.failure(error, attempt))
             }
-            note(name, on: remote, present: id != nil, lane: lane)
+            note(name, on: remote, id: id, lane: lane)
             return LaneEnding(sheet: .deleteRemoteTag(name: name, remote: remote, id: id))
         }
     }
@@ -225,6 +269,8 @@ extension RepositoryStore {
         else { return }
         activeSheet = nil
         let attempt = TagWording.Attempt.deleteRemote(name, remote: remote)
+        // Whether the hint's `git push <id>:…` has an object here to send (Minor 4).
+        let objectIsHere = snapshot?.refs.tags.contains { $0.objectID == id || $0.sha == id } ?? false
         runOnLane(.deleteRemoteTag, remote: remote, holdingMutation: true) { [self] backend, root, lane, _ in
             do {
                 try await backend.deleteRemoteTag(name, on: remote, expecting: id, at: root)
@@ -233,18 +279,19 @@ extension RepositoryStore {
             } catch {
                 // Moved or gone there: what it holds now is not known, so it is not claimed.
                 if case TagOperationError.remoteTagMoved = error {
-                    note(name, on: remote, present: false, lane: lane)
+                    note(name, on: remote, id: nil, lane: lane)
                 }
                 return LaneEnding(failure: TagWording.failure(error, attempt))
             }
-            note(name, on: remote, present: false, lane: lane)
-            return LaneEnding(notice: TagWording.deletedOnRemote(name, remote: remote, id: id))
+            note(name, on: remote, id: nil, lane: lane)
+            return LaneEnding(
+                notice: TagWording.deletedOnRemote(name, remote: remote, id: id, objectIsHere: objectIsHere))
         }
     }
 
     /// What a remote answered about a tag, kept only for the repository the lane belongs to.
-    private func note(_ name: String, on remote: String, present: Bool, lane: RemoteLane) {
+    private func note(_ name: String, on remote: String, id: String?, lane: RemoteLane) {
         guard generation == lane.generation else { return }
-        noteRemoteTag(name, on: remote, present: present)
+        noteRemoteTag(name, on: remote, id: id)
     }
 }

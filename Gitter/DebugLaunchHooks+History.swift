@@ -33,13 +33,15 @@
     ///   deletetag:<name>       Delete Tag… on that tag as the list shows it: the sheet, or the
     ///                          refusal.
     ///   confirmdeletetag       the Delete Tag sheet's button, with the tag it shows.
-    ///   restoretag             the sticky notice's Restore Tag, through `RepositoryStore.perform`.
+    ///   restoretag[:<name>]    the sticky notice's Restore Tag(s), through `RepositoryStore
+    ///                          .perform`; with a name, that deleted tag's row's Restore Tag.
     ///   pushtag:<name>:<remote>         Push Tag to <remote>.
     ///   deleteremotetag:<name>:<remote> Delete from <remote>…: the read on the lane, then the
     ///                          sheet (leased on the id it logs, or saying there is none).
     ///   confirmdeleteremotetag the remote delete sheet's button, with the id it shows.
     ///   tags                   every tag row as the sidebar draws it (icon, tooltip, VoiceOver
-    ///                          label), its menu's items and reasons, and each listed commit's
+    ///                          label), its menu's items and reasons, the deleted tags' rows,
+    ///                          and each listed commit's
     ///                          pills — the sidebar cannot be snapshotted (vibrancy).
     ///
     /// Each goes through the store's own entry point; the result line after it shows the sheet
@@ -121,14 +123,31 @@
                     log("deletetag: no tag \(name) in the list")
                     return
                 }
+                // Cleared first, so the wait cannot be met by a sheet an earlier step left up;
+                // the sheet opens after a config read, so wait for it.
+                store.activeSheet = nil
+                let errorBefore = store.lastError
                 store.requestDeleteTag(tag)
+                // A refusal is said at once; otherwise the sheet comes.
+                if store.lastError == errorBefore {
+                    _ = await wait({ store.activeSheet != nil }, seconds: 10)
+                }
             case "confirmdeletetag":
-                guard case .deleteTag(let tag, _) = store.activeSheet else {
+                guard case .deleteTag(let tag, _, _) = store.activeSheet else {
                     log("confirmdeletetag: no delete tag sheet")
                     return
                 }
                 store.confirmDeleteTag(tag)
             case "restoretag":
+                // `restoretag:<name>`: that deleted tag's row, its Restore Tag.
+                if !name.isEmpty {
+                    guard let receipt = store.deletedTags.receipts.last(where: { $0.name == name }) else {
+                        log("restoretag: no deleted tag \(name) in the list")
+                        return
+                    }
+                    store.restoreTags([receipt])
+                    return
+                }
                 let restore = store.stickyNotice?.actions.first {
                     if case .restoreTag = $0 { true } else { false }
                 }
@@ -173,6 +192,11 @@
                 log("tagmenu \(tag.name): \(items) | delete: [\(delete ?? "enabled")] "
                     + "| remote: [\(remote ?? "enabled")]")
             }
+            for receipt in store.deletedTags.receipts {
+                log("deleted tag \(receipt.name): icon \(TagWording.deletedRowIcon) "
+                    + "| voiceover: \(TagWording.deletedRowAccessibility(receipt)) "
+                    + "| help: \(TagWording.deletedRowHelp(receipt)) | menu: [\(TagWording.restoreMenuTitle)]")
+            }
             let tags = TagWording.tagsByCommit(store.snapshot?.refs.tags ?? [])
             for commit in store.snapshot?.commits ?? [] {
                 let pills = TagWording.branchDecorations(commit.refs) + (tags[commit.sha] ?? []).map { "tag:\($0.name)" }
@@ -187,11 +211,13 @@
             case .newTag(let sha)?:
                 "newTag(sha: \(sha)) | title: \(TagWording.newTagSheetTitle) "
                     + "| \(TagWording.newTagOn(sha, subject: store.commitSubject(sha)))"
-            case .deleteTag(let tag, let comesBackFrom)?:
+            case .deleteTag(let tag, let comesBackFrom, let noTagsFrom)?:
                 "deleteTag(\(tag.name), objectID: \(tag.objectID), sha: \(tag.sha), "
-                    + "comesBackFrom: \(comesBackFrom)) | title: \(TagWording.deleteTitle(tag.name)) "
+                    + "comesBackFrom: \(comesBackFrom), noTagsFrom: \(noTagsFrom)) "
+                    + "| title: \(TagWording.deleteTitle(tag.name)) "
                     + "| \(TagWording.deleteTarget(tag, subject: store.commitSubject(tag.sha))) "
-                    + "| \(TagWording.deleteRestore(tag)) | \(TagWording.comesBack(from: comesBackFrom)) "
+                    + "| \(TagWording.deleteRestore(tag)) "
+                    + "| \(TagWording.comesBack(from: comesBackFrom, noTags: noTagsFrom)) "
                     + "| button: \(TagWording.deleteButton)"
             case .deleteRemoteTag(let name, let remote, let id?)?:
                 "deleteRemoteTag(\(name) on \(remote), id: \(id)) "

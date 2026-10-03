@@ -140,4 +140,9 @@ public protocol GitTagBackend: Sendable {
     /// `RemoteOperationError.invalidLease` for an id that is not full and non-zero, before git
     /// runs; a server refusing is git's words (`GitError.commandFailed`).
     func deleteRemoteTag(_ name: String, on remote: String, expecting id: String, at root: URL) async throws
+
+    /// The remotes whose `remote.<name>.tagOpt` is `--no-tags` (git's last value wins), sorted:
+    /// a fetch from one of them never brings a deleted tag back (B22, measured through
+    /// Gitter's own fetch in `TagFetchOptionTests`). One local config read, no network.
+    func remotesFetchingNoTags(at root: URL) async throws -> [String]
 }

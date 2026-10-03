@@ -177,11 +177,12 @@ import Testing
                 == "\"wip\" is a lightweight tag on 1a2b3c4.")
         #expect(
             TagWording.deleteRestore(Self.annotated)
-                == "Restore Tag in the notice afterwards puts the identical tag back: its "
-                + "message, tagger and date too.")
+                == "Restore Tag, in the notice afterwards or on its row under Tags while this "
+                + "repository is open, puts the identical tag back: its message, tagger and date too.")
         #expect(
             TagWording.deleteRestore(Self.lightweight)
-                == "Restore Tag in the notice afterwards puts it back.")
+                == "Restore Tag, in the notice afterwards or on its row under Tags while this "
+                + "repository is open, puts it back.")
         #expect(TagWording.deleteButton == "Delete Tag")
     }
 
@@ -189,20 +190,33 @@ import Testing
     /// session already saw a remote with it (a push, or the remote delete's read).
     @Test func theDeleteSheetSaysWhatAFetchDoes() {
         #expect(
-            TagWording.comesBack(from: [])
+            TagWording.comesBack(from: [], noTags: [])
                 == "If a remote still has this tag, the next fetch brings it back.")
         #expect(
-            TagWording.comesBack(from: ["origin"])
+            TagWording.comesBack(from: ["origin"], noTags: ["backup"])
                 == "\"origin\" had this tag when Gitter last looked, so the next fetch from it "
                 + "brings it back, unless it is deleted there too.")
         #expect(
-            TagWording.comesBack(from: ["origin", "backup"])
+            TagWording.comesBack(from: ["origin", "backup"], noTags: [])
                 == "\"origin\" and \"backup\" had this tag when Gitter last looked, so the next "
                 + "fetch from either brings it back, unless it is deleted there too.")
         #expect(
-            TagWording.comesBack(from: ["a", "b", "c"])
+            TagWording.comesBack(from: ["a", "b", "c"], noTags: [])
                 == "\"a\", \"b\" and \"c\" had this tag when Gitter last looked, so the next "
                 + "fetch from any of them brings it back, unless it is deleted there too.")
+    }
+
+    /// Minor 1: `remote.<r>.tagOpt=--no-tags` — a fetch from it never brings the tag back
+    /// (measured through Gitter's fetch, `TagFetchOptionTests`), so it is never claimed.
+    @Test func aRemoteThatFetchesNoTagsIsNotClaimed() {
+        #expect(
+            TagWording.comesBack(from: [], noTags: ["backup"])
+                == "If a remote still has this tag, the next fetch brings it back, but not from "
+                + "\"backup\", which is set to fetch no tags.")
+        #expect(
+            TagWording.comesBack(from: [], noTags: ["a", "b"])
+                == "If a remote still has this tag, the next fetch brings it back, but not from "
+                + "\"a\" or \"b\", which are set to fetch no tags.")
     }
 
     @Test func theDeleteSheetSaysWhenItIsOutOfDate() {
@@ -215,17 +229,51 @@ import Testing
                 + "this and look again.")
     }
 
+    static let r1 = TagReceipt(name: "v1.0", objectID: tagObject, target: commit)
+    static let r2 = TagReceipt(name: "wip", objectID: commit, target: commit)
+    static let r3 = TagReceipt(name: "old", objectID: other, target: other)
+
     /// Restore Tag is the only way back (tags keep no reflog): the notice holds the button and
-    /// the command, with the tag **object** for an annotated tag.
+    /// the command, with the tag **object** for an annotated tag — and `--no-sign`, without
+    /// which `tag.gpgSign=true` refuses it ("fatal: no tag message?", Minor 3).
     @Test func theDeletedNoticeCarriesTheWayBack() {
-        let receipt = TagReceipt(name: "v1.0", objectID: Self.tagObject, target: Self.commit)
         #expect(
-            TagWording.deleted(receipt)
+            TagWording.deleted([Self.r1])
                 == "Deleted tag \"v1.0\", which was on 1a2b3c4. Restore Tag puts it back; so does, "
-                + "in a terminal: git tag v1.0 \(Self.tagObject)")
-        #expect(TagWording.restoreButton == "Restore Tag")
-        #expect(NoticeWording.title(.restoreTag(receipt)) == "Restore Tag")
-        #expect(TagWording.restored(receipt) == "Restored tag \"v1.0\" on 1a2b3c4.")
+                + "in a terminal: git tag --no-sign v1.0 \(Self.tagObject)")
+        #expect(TagWording.restoreButton(count: 1) == "Restore Tag")
+        #expect(NoticeWording.title(.restoreTag([Self.r1])) == "Restore Tag")
+        #expect(TagWording.restored([Self.r1]) == "Restored tag \"v1.0\" on 1a2b3c4.")
+        #expect(
+            TagWording.deletedNotice([Self.r1])
+                == Notice(text: TagWording.deleted([Self.r1]), actions: [.restoreTag([Self.r1])]))
+    }
+
+    /// I1: deleting several tags in a row is ordinary clean-up — the notice names every one
+    /// still deleted, with one command line that puts them all back.
+    @Test func theDeletedNoticeAccumulates() {
+        #expect(
+            TagWording.deleted([Self.r1, Self.r2])
+                == "Deleted tags \"v1.0\" (was on 1a2b3c4) and \"wip\" (was on 1a2b3c4). Restore "
+                + "Tags puts them back; so does, in a terminal: git tag --no-sign v1.0 "
+                + "\(Self.tagObject) && git tag --no-sign wip \(Self.commit)")
+        #expect(
+            TagWording.deleted([Self.r1, Self.r2, Self.r3]).hasPrefix(
+                "Deleted tags \"v1.0\" (was on 1a2b3c4), \"wip\" (was on 1a2b3c4) and \"old\" "
+                    + "(was on 8e7d6c5). Restore Tags puts them back;"))
+        #expect(NoticeWording.title(.restoreTag([Self.r1, Self.r2])) == "Restore Tags")
+        #expect(TagWording.restored([Self.r1, Self.r2]) == "Restored tags \"v1.0\" and \"wip\".")
+    }
+
+    /// The way back once the notice is gone: a dimmed row under Tags for each deleted tag.
+    @Test func aDeletedTagsRowSaysHowToBringItBack() {
+        #expect(TagWording.deletedRowIcon == "tag.slash")
+        #expect(TagWording.deletedRowAccessibility(Self.r1) == "v1.0, deleted tag")
+        #expect(
+            TagWording.deletedRowHelp(Self.r1)
+                == "Deleted while this repository was open; it was on 1a2b3c4. Restore Tag in its "
+                + "menu puts it back; so does, in a terminal: git tag --no-sign v1.0 \(Self.tagObject)")
+        #expect(TagWording.restoreMenuTitle == "Restore Tag")
     }
 
     /// A name the shell would read otherwise is quoted in a command to paste.
@@ -235,7 +283,7 @@ import Testing
         #expect(TagWording.shellWord("a;rm") == "'a;rm'")
         #expect(TagWording.shellWord("it's") == "'it'\\''s'")
         let receipt = TagReceipt(name: "$x", objectID: Self.commit, target: Self.commit)
-        #expect(TagWording.deleted(receipt).hasSuffix("git tag '$x' \(Self.commit)"))
+        #expect(TagWording.deleted([receipt]).hasSuffix("git tag --no-sign '$x' \(Self.commit)"))
     }
 
     // MARK: - Push
@@ -311,9 +359,18 @@ import Testing
 
     @Test func theRemoteDeletedNoticeKeepsTheLocalTagAndTheWayBack() {
         #expect(
-            TagWording.deletedOnRemote("v1.0", remote: "origin", id: Self.tagObject)
+            TagWording.deletedOnRemote("v1.0", remote: "origin", id: Self.tagObject, objectIsHere: true)
                 == "Deleted tag \"v1.0\" on \"origin\"; the tag here is kept. Put it back there "
                 + "with: git push origin \(Self.tagObject):refs/tags/v1.0")
+    }
+
+    /// Minor 4: the push hint needs the object here; for a tag that was not the one here, and
+    /// whose object no tag here holds, there is no such command.
+    @Test func theRemoteDeletedNoticeOffersNoCommandForAnObjectNotHere() {
+        #expect(
+            TagWording.deletedOnRemote("v1.0", remote: "origin", id: Self.other, objectIsHere: false)
+                == "Deleted tag \"v1.0\" on \"origin\"; the tag here is kept. It held \(Self.other), "
+                + "which no tag here holds, so there is no command here that puts it back.")
     }
 
     // MARK: - Refusals and failures
@@ -408,17 +465,47 @@ import Testing
 
     // MARK: - What this session saw on remotes
 
-    /// Ruling 2's memory: a push or the remote delete's read says a remote has the tag; a
-    /// remote delete, or a read that found none, says it has not.
-    @Test func theRemotesSeenWithATagAreRemembered() {
+    /// Ruling 2's memory, by id (I2): a push or the remote delete's read says which object a
+    /// remote's tag holds; only a remote holding **this** tag's object is named — not one with a
+    /// different tag of that name, nor one seen before the tag here was made again elsewhere.
+    @Test func theRemotesSeenWithATagAreRememberedByID() {
         var seen = RemoteTagsSeen()
-        #expect(seen.remotes(having: "v1") == [])
-        seen.note("v1", on: "origin", present: true)
-        seen.note("v1", on: "backup", present: true)
-        #expect(seen.remotes(having: "v1") == ["backup", "origin"])
-        seen.note("v1", on: "origin", present: false)
-        #expect(seen.remotes(having: "v1") == ["backup"])
-        #expect(seen.remotes(having: "v2") == [])
+        #expect(seen.remotes(having: "v1", objectID: Self.tagObject) == [])
+        seen.note("v1", on: "origin", id: Self.tagObject)
+        seen.note("v1", on: "backup", id: Self.tagObject)
+        seen.note("v1", on: "mirror", id: Self.other)
+        #expect(seen.remotes(having: "v1", objectID: Self.tagObject) == ["backup", "origin"])
+        #expect(seen.remotes(having: "v1", objectID: Self.other) == ["mirror"])
+        seen.note("v1", on: "origin", id: nil)
+        #expect(seen.remotes(having: "v1", objectID: Self.tagObject) == ["backup"])
+        #expect(seen.remotes(having: "v2", objectID: Self.tagObject) == [])
+    }
+
+    // MARK: - Deleted tags
+
+    @Test func deletedTagsAccumulateAndGoOneByOne() {
+        var deleted = DeletedTags()
+        deleted.add(Self.r1)
+        deleted.add(Self.r2)
+        deleted.add(Self.r1)
+        #expect(deleted.receipts == [Self.r1, Self.r2])
+        deleted.remove([Self.r1])
+        #expect(deleted.receipts == [Self.r2])
+    }
+
+    /// A tag back exactly as it was — fetched, or made in a terminal — needs no restore; one of
+    /// that name holding another object leaves the receipt.
+    @Test func aTagBackAsItWasEndsItsReceipt() {
+        var deleted = DeletedTags()
+        deleted.add(Self.r1)
+        deleted.add(Self.r2)
+        let same = Tag(name: "v1.0", sha: Self.commit, isAnnotated: true, objectID: Self.tagObject)
+        let different = Tag(name: "wip", sha: Self.other, isAnnotated: false)
+        let pruned = deleted.pruningTagsBack([same, different])
+        #expect(pruned)
+        #expect(deleted.receipts == [Self.r2])
+        let prunedAgain = deleted.pruningTagsBack([different])
+        #expect(!prunedAgain)
     }
 
     // MARK: - The lane

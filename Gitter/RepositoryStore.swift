@@ -192,6 +192,16 @@ final class RepositoryStore {
     /// was open.
     private(set) var remoteTagsSeen = RemoteTagsSeen()
 
+    /// The tags deleted while this repository is open (`DeletedTags`): their receipts are the
+    /// only way back, so they are kept here — not in the one sticky slot, which any other notice
+    /// may take — until restored, back as they were, or `open()`. The sidebar draws each as a
+    /// dimmed row with Restore Tag; the delete notice names them all (`recordTagDeleted`).
+    private(set) var deletedTags = DeletedTags()
+
+    /// The deleted-tags notice while it may still be the one in the sticky slot: rebuilt as
+    /// receipts go (`refreshDeletedTagsNotice`), never brought back once replaced or dismissed.
+    private var deletedTagsNotice: Notice?
+
     #if DEBUG
         /// How many snapshot loads have run, for the harness's "exactly one refresh when the
         /// lane frees" check.
@@ -363,6 +373,8 @@ final class RepositoryStore {
         rejectedPush = nil
         clearStashAndContinueOffer()
         remoteTagsSeen = RemoteTagsSeen()
+        deletedTags = DeletedTags()
+        deletedTagsNotice = nil
         // The automatic fetch belongs to the repository it fetches: the old one's schedule
         // stops here, and its mark says nothing about this one. This one's starts once its first
         // snapshot is in (below), so the first tick can see whether it has a remote at all.
@@ -442,6 +454,8 @@ final class RepositoryStore {
     func setSnapshot(_ newSnapshot: RepoSnapshot?) {
         snapshot = newSnapshot
         endStagedRevertNoticeIfDone()
+        // A deleted tag back exactly as it was — a fetch brought it back — needs no restore.
+        if deletedTags.pruningTagsBack(newSnapshot?.refs.tags ?? []) { refreshDeletedTagsNotice() }
         // Here rather than in `+Refresh` because this is the one place the snapshot is written,
         // and "an operation has begun" is only ever learned from a new one. See
         // `reconcileAmendWithOperation` for why a ticked Amend cannot be left ticked.
@@ -769,8 +783,39 @@ final class RepositoryStore {
     }
 
     // internal (not private(set) write): used by +Tags.swift, once a remote has answered
-    func noteRemoteTag(_ name: String, on remote: String, present: Bool) {
-        remoteTagsSeen.note(name, on: remote, present: present)
+    func noteRemoteTag(_ name: String, on remote: String, id: String?) {
+        remoteTagsSeen.note(name, on: remote, id: id)
+    }
+
+    /// Keeps `receipt` and puts up the deleted-tags notice naming every tag still deleted —
+    /// over whatever sticky notice was there, as any new sticky notice does.
+    /// internal (not private(set) write): used by +Tags.swift's `confirmDeleteTag`
+    func recordTagDeleted(_ receipt: TagReceipt) {
+        deletedTags.add(receipt)
+        let notice = TagWording.deletedNotice(deletedTags.receipts)
+        stickyNotice = notice
+        deletedTagsNotice = notice
+    }
+
+    /// Ends these receipts: their tags were restored (or are back).
+    /// internal (not private(set) write): used by +Tags.swift's `finishTagRestore`
+    func forgetDeletedTags(_ receipts: [TagReceipt]) {
+        deletedTags.remove(receipts)
+        refreshDeletedTagsNotice()
+    }
+
+    /// The deleted-tags notice, rebuilt for the receipts left — or taken down with the last —
+    /// while it is still the one on screen. Replaced or dismissed, it stays gone: the rows
+    /// under Tags still offer every receipt.
+    private func refreshDeletedTagsNotice() {
+        guard let shown = deletedTagsNotice else { return }
+        guard stickyNotice == shown else {
+            deletedTagsNotice = nil
+            return
+        }
+        let next = deletedTags.receipts.isEmpty ? nil : TagWording.deletedNotice(deletedTags.receipts)
+        stickyNotice = next
+        deletedTagsNotice = next
     }
 
     // internal (not private(set) write): used by +Remotes.swift, right after the banner it

@@ -1655,6 +1655,8 @@ import Testing
         #"let result = try await runStreaming(["ls-remote", "--exit-code", "--end-of-options", remote, "refs/tags/\(n)"], cwd: root, allowedExitCodes: [2], progress: { _ in })"#,
         #"let check = try await runWithEnvironment(["check-ref-format", "refs/tags/\(name)"], cwd: root, extra: [:], allowedExitCodes: [1])"#,
         #"let data = try await run(["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes", "refs/tags"], cwd: root)"#,
+        // Task 4 fix round 1: which remotes fetch no tags — a config read.
+        #"let data = try await run(["config", "-z", "--get-regexp", "^remote[.].*[.]tagopt$"], cwd: root, allowedExitCodes: [1])"#,
     ])
     func allowsTheTagVectorsThisMilestoneNeeds(source: String) {
         #expect(ForceFlagScanner.findings(in: source).isEmpty,

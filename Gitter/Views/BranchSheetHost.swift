@@ -65,8 +65,8 @@ struct BranchSheetHost: View {
             RebaseOntoSheet(plan: plan)
         case .newTag(let sha):
             NewTagSheet(sha: sha)
-        case .deleteTag(let tag, let comesBackFrom):
-            DeleteTagSheet(tag: tag, comesBackFrom: comesBackFrom)
+        case .deleteTag(let tag, let comesBackFrom, let noTagsFrom):
+            DeleteTagSheet(tag: tag, comesBackFrom: comesBackFrom, noTagsFrom: noTagsFrom)
         case .deleteRemoteTag(let name, let remote, let id):
             DeleteRemoteTagSheet(name: name, remote: remote, id: id)
         }

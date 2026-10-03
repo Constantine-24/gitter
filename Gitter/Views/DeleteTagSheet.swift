@@ -2,9 +2,9 @@ import GitCore
 import SwiftUI
 
 /// Delete Tag…: names the tag and its commit, says how it comes back — Restore Tag in the
-/// notice afterwards (tags keep no reflog, so that is the way back) — and what a fetch does
-/// after it (Ruling 2: no network on open, so remotes are named only when this session saw them
-/// with the tag).
+/// notice afterwards or on its dimmed row under Tags (tags keep no reflog, so that is the way
+/// back) — and what a fetch does after it (Ruling 2: no network on open, so remotes are named
+/// only when this session saw them holding this tag; a remote set to fetch no tags never).
 ///
 /// The sheet is a snapshot of one tag: `confirmDeleteTag` hands its `objectID` to GitCore's
 /// compare-and-delete, which refuses a tag that moved. A live stale line says so before the
@@ -15,6 +15,7 @@ import SwiftUI
 struct DeleteTagSheet: View {
     let tag: Tag
     let comesBackFrom: [String]
+    let noTagsFrom: [String]
 
     @Environment(RepositoryStore.self) private var store
 
@@ -41,7 +42,7 @@ struct DeleteTagSheet: View {
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text(TagWording.comesBack(from: comesBackFrom))
+            Text(TagWording.comesBack(from: comesBackFrom, noTags: noTagsFrom))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

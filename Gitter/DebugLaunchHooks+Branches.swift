@@ -73,7 +73,7 @@
     ///   Tags (`RepositoryStore+Tags`, `DebugLaunchHooks+History`):
     ///
     ///     newtag:<name>:<rev>[:<msg>]  deletetag:<name>             confirmdeletetag
-    ///     restoretag                   pushtag:<name>:<remote>      deleteremotetag:<name>:<remote>
+    ///     restoretag[:<name>]          pushtag:<name>:<remote>      deleteremotetag:<name>:<remote>
     ///     confirmdeleteremotetag       tags
     ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a

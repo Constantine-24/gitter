@@ -86,10 +86,11 @@ enum BranchSheet: Identifiable, Hashable {
     /// as the target).
     case newTag(sha: String)
     /// Delete Tag…: the tag as the list showed it — `objectID` is what GitCore's
-    /// compare-and-delete names, so a tag that moved under the sheet is refused — and the
-    /// remotes this session saw holding it (`RemoteTagsSeen`, Ruling 2), for the sheet's "the
-    /// next fetch brings it back" line.
-    case deleteTag(Tag, comesBackFrom: [String])
+    /// compare-and-delete names, so a tag that moved under the sheet is refused — the remotes
+    /// this session saw holding that very tag (`RemoteTagsSeen`, Ruling 2), and the remotes set
+    /// to fetch no tags (`remotesFetchingNoTags`), for the sheet's "the next fetch brings it
+    /// back" line.
+    case deleteTag(Tag, comesBackFrom: [String], noTagsFrom: [String])
     /// Delete from <remote>…: `id` is the tag's **unpeeled** id on `remote`, read on the lane as
     /// the sheet opened (`remoteTagID`) — the lease `confirmDeleteRemoteTag` hands to git. Nil
     /// when the remote has no such tag: the sheet then says so and offers nothing.
