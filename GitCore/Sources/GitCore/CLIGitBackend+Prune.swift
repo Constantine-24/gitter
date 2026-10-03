@@ -74,8 +74,9 @@ extension CLIGitBackend: GitRemoteAdminBackend {
     }
 
     /// Every configured remote's name — one with no URL included, which `git remote -v` prints
-    /// as a name-only line (measured: `nourl\t`) and `RemoteParser` leaves out.
-    private func configuredRemoteNames(at root: URL) async throws -> Set<String> {
+    /// as a name-only line (measured: `nourl\t`) and `RemoteParser` leaves out. Internal since
+    /// Task 2: Set Upstream asks which remotes map a ref.
+    func configuredRemoteNames(at root: URL) async throws -> Set<String> {
         let data = try await run(["remote", "-v"], cwd: root)
         return Set(GitLines.split(data).compactMap { line in
             let name = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false).first
@@ -344,8 +345,9 @@ extension CLIGitBackend: GitRemoteAdminBackend {
         return String(describing: error)
     }
 
-    /// What `ref` holds now, or "" when it does not exist.
-    private func currentID(of ref: String, at root: URL) async throws -> String {
+    /// What `ref` holds now, or "" when it does not exist. Internal since Task 2: a refused
+    /// fast-forward asks the same of its branch.
+    func currentID(of ref: String, at root: URL) async throws -> String {
         let data = try await run(["rev-parse", "--verify", "-q", "--end-of-options", ref], cwd: root, allowedExitCodes: [1])
         return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }

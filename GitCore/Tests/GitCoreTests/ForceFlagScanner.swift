@@ -251,6 +251,11 @@ enum ForceFlagScanner {
                         "forbidden literal \(spelling.debugDescription) (offset \(token)): "
                             + restoreReason)
                 }
+                if spelling.hasPrefix(upstreamFlagPrefix), !isVouched {
+                    findings.append(
+                        "forbidden literal \(spelling.debugDescription) (offset \(token)): "
+                            + upstreamReason)
+                }
                 if recordOnlySubcommands.contains(spelling), !isRecordFile {
                     findings.append(
                         "forbidden literal \(spelling.debugDescription) (offset \(token)) outside "
@@ -623,9 +628,17 @@ enum ForceFlagScanner {
             "--ours": "resolves conflicts by discarding one side",
             "--theirs": "resolves conflicts by discarding one side",
         ],
+        // B2 Task 2: the upstream options, so that only `denyTableExceptionShapes`' two whole
+        // vectors can set or unset one. `-u` and the two-element `--set-upstream-to <ref>` take
+        // whatever name follows, and a short `<r>/<b>` is shadowed by a tag or a local branch
+        // of that name (R17). `--set-upstream-to=…` is one literal, which no table key can
+        // match: `upstreamFlagPrefix` is its sweep rule.
         "branch": [
             "-M": "force-renames over an existing branch", "-C": "force-copies over an existing branch",
             "--force": "force", "-f": "force",
+            "-u": "sets an upstream from a name a tag or branch can shadow (R17); Gitter writes `--set-upstream-to=refs/remotes/…`",
+            "--set-upstream-to": "sets an upstream from a name a tag or branch can shadow (R17); Gitter writes `--set-upstream-to=refs/remotes/…`",
+            "--unset-upstream": "rewrites the branch's configuration; permitted only as the whole unset vector",
         ],
         "reset": ["--keep": "can still discard local changes"],  // `--hard` is always forbidden
         "restore": [
@@ -1207,6 +1220,13 @@ enum ForceFlagScanner {
         // `refs/remotes/` name, the expected id one interpolation for the same reason (an empty
         // old value deleted unconditionally, R6), `--no-deref` so a symbolic
         // `refs/remotes/<r>/HEAD` is never followed onto the ref it names. Never `refs/heads/`.
+        //
+        // B2 Task 2: the fast-forward's compare-and-set (R15) — a full `refs/heads/` name, the new
+        // and the old id each one interpolation (the code checks both are full and non-zero: an
+        // empty old value makes it a plain move, R6), the reflog message an expression. And
+        // `--no-deref` (measured, B2 Task 2): without it `update-ref` follows a symbolic branch
+        // and moves the branch it names — perhaps the checked-out one, which no worktree check
+        // of the alias's name would have caught.
         "update-ref": [
             Shape(
                 .literal("--no-deref"), .literal("-d"), .literal("--end-of-options"),
@@ -1214,6 +1234,10 @@ enum ForceFlagScanner {
             Shape(
                 .literal("--no-deref"), .literal("-d"), .literal("--end-of-options"),
                 .interpolated(prefix: "refs/remotes/", suffix: ""), .interpolated(prefix: "", suffix: "")),
+            Shape(
+                .literal("--no-deref"), .literal("-m"), .expression, .literal("--end-of-options"),
+                .interpolated(prefix: "refs/heads/", suffix: ""), .interpolated(prefix: "", suffix: ""),
+                .interpolated(prefix: "", suffix: "")),
         ],
     ]
 
@@ -1256,12 +1280,25 @@ enum ForceFlagScanner {
     /// remote is an expression (a name the code checked), and nothing may follow or be
     /// concatenated: a refspec after it would change what is listed. What is deleted afterwards
     /// is `update-ref`'s remote-tracking shape, one ref at a time on the id the sheet showed.
+    ///
+    /// **`branch`'s two are B2 Task 2's upstream vectors** (R17): `--set-upstream-to=` with a
+    /// full `refs/remotes/` name — one interpolation after the prefix, so never a short `<r>/<b>`
+    /// a tag or a local branch of that name shadows — and `--unset-upstream`, each with the
+    /// branch an expression after `--end-of-options`, nothing appended. The table names `-u`,
+    /// `--set-upstream-to` and `--unset-upstream`; `upstreamFlagPrefix` makes every other
+    /// `--set-upstream-to=…` literal a finding.
     static let denyTableExceptionShapes: [String: [Shape]] = [
         "fetch": [
             Shape(
                 .literal("--prune"), .literal("--no-prune-tags"), .literal("--dry-run"),
                 .literal("--porcelain"), .literal("--no-progress"), .literal("--end-of-options"),
                 .expression),
+        ],
+        "branch": [
+            Shape(
+                .interpolated(prefix: "--set-upstream-to=refs/remotes/", suffix: ""),
+                .literal("--end-of-options"), .expression),
+            Shape(.literal("--unset-upstream"), .literal("--end-of-options"), .expression),
         ],
     ]
 
@@ -1373,10 +1410,10 @@ enum ForceFlagScanner {
             + "says; `-F` without `--cleanup=verbatim` strips the message's `#` lines (B17); and "
             + "`-f`, `-d`, `-s`, `-u` move, delete or sign tags with no confirmation",
         "update-ref":
-            "`update-ref` moves or deletes any ref; the two permitted forms delete a tag or a "
-            + "remote-tracking ref only while it holds the id the sheet showed, and an empty or "
-            + "all-zero expected value deletes with no check at all (B19, R6); without `--no-deref` a "
-            + "symbolic ref's target is deleted instead",
+            "`update-ref` moves or deletes any ref; the three permitted forms delete a tag or a "
+            + "remote-tracking ref, or move a local branch, only while it holds the id the sheet "
+            + "showed, and an empty or all-zero expected value deletes or moves with no check at all "
+            + "(B19, R6); without `--no-deref` a symbolic ref's target is deleted or moved instead",
     ]
 
     static let shapeConcatenationNote =
@@ -1490,6 +1527,15 @@ enum ForceFlagScanner {
 
     /// `restore`'s prefix that overwrites from another commit, vouched for only by a shape.
     static let restoreSourcePrefix = "--source="
+
+    /// `branch`'s upstream option with its value in the same literal, vouched for only by the
+    /// one shape that spells a full `refs/remotes/` name (`denyTableExceptionShapes`, B2 Task 2).
+    static let upstreamFlagPrefix = "--set-upstream-to="
+
+    static let upstreamReason =
+        "an upstream is set only by the whole vector `[\"branch\", \"--set-upstream-to=refs/remotes/\\(…)\", "
+            + "\"--end-of-options\", <branch>]`: a short `<remote>/<branch>` is shadowed by a tag or a "
+            + "local branch of that name (R17), and anything appended changes what is written"
 
     static let restoreReason =
         "`restore` overwrites files on disk through `--worktree` and `--source=…`, and without "
