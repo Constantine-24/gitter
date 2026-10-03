@@ -163,6 +163,11 @@ public enum RemoteAdminPartial: Error, Sendable, Hashable {
     /// Set or Unset Upstream was cancelled while git was writing `branch.<b>.*`, or while the
     /// write was being read back: what the configuration holds now is **not known**.
     case upstreamOutcomeUnknown(branch: String)
+    /// Set or Unset Upstream failed (git's words, `gitsWords`) **after** changing the
+    /// configuration: git writes `branch.<b>.remote` and `.merge` one at a time, so a failure
+    /// between them leaves half. Read back: `remote` and `merge` are what the keys hold now
+    /// (nil = not set; several values joined with ", ").
+    case upstreamChangedThenFailed(branch: String, remote: String?, merge: String?, gitsWords: String)
 }
 
 // MARK: - Fast-forward and upstream (B2 Task 2)
@@ -178,11 +183,12 @@ public enum FastForwardOutcome: Sendable, Hashable {
 
 /// Why a fast-forward was refused. Every case is a refusal: **nothing was written**.
 public enum FastForwardRefusal: Error, Sendable, Hashable {
-    /// The branch is in use by a worktree — this one or another — at `path`: checked out there
-    /// (`%(worktreepath)`), or being rebased or bisected there, which is how git itself counts
-    /// it (`branch -f` refuses the same branches). `update-ref` refuses none of them (R15), and
-    /// moving one leaves that worktree showing a staged reversal. The checked-out branch keeps
-    /// today's Pull.
+    /// The branch is in use by a worktree — this one or another, a prunable one included — at
+    /// `path`, as git itself counts it (`branch -f` refuses the same branches): checked out
+    /// there, being rebased or bisected there, or due to be moved by a `rebase --update-refs`
+    /// running there (fix round 1). `update-ref` refuses none of them (R15): moving one leaves
+    /// that worktree showing a staged reversal, or that rebase unable to finish. The
+    /// checked-out branch keeps today's Pull.
     case checkedOut(path: String)
     /// The branch has no upstream, or one that does not resolve: none configured, a
     /// `branch.<b>.remote` naming a remote that does not exist, a fetch refspec that does not
@@ -218,6 +224,9 @@ public enum UpstreamRefusal: Error, Sendable, Hashable {
     /// saying the write is not what was asked for. When the remote written differs too (never
     /// measured), both values are spelled `<remote> <merge>`.
     case mergeMismatch(expected: String, written: String)
+    /// The upstream asked for is the branch itself (`refs/heads/<branch>`): git only warns
+    /// ("not setting branch '<b>' as its own upstream"), exits 0 and writes nothing (measured).
+    case ownUpstream(String)
 }
 
 /// What Set Upstream wrote beyond the upstream itself.

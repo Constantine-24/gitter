@@ -263,6 +263,15 @@ enum ForceFlagScanner {
                 }
                 // Wherever it sits: a vector, a fragment, an append, a `let`. No rule has to
                 // read the vector, because no vector may carry it.
+                // Fix round 1, M1: git takes a unique prefix of a long option, so an abbreviated
+                // upstream option is the option itself under a spelling no table names. Bare
+                // `--unset` is `config --unset` as well, so it is a finding only where a `branch`
+                // vector or a fragment holds it (below and in `fragmentFindings`).
+                if isUpstreamAbbreviation(spelling), spelling != "--unset" {
+                    findings.append(
+                        "forbidden literal \(spelling.debugDescription) (offset \(token)): "
+                            + upstreamAbbreviationReason)
+                }
                 if isUnidiffZero(spelling) {
                     findings.append(
                         "forbidden literal \(spelling.debugDescription) (offset \(token)): "
@@ -384,6 +393,9 @@ enum ForceFlagScanner {
             let carriesLease = arguments.contains(where: vouchingLease)
             for (index, element) in arguments.enumerated().dropFirst() {
                 for flag in element.literals.flatMap(spellings(of:)) {
+                    if subcommand == "branch", flag == "--unset" {
+                        findings.append("forbidden `git branch \(flag)`: \(upstreamAbbreviationReason)")
+                    }
                     if let reason = (forbiddenFlags[subcommand] ?? [:])[flag] {
                         findings.append("forbidden `git \(subcommand) \(flag)`: \(reason)")
                     } else if let rule = flagsAllowedOnlyAfter[flag] {
@@ -500,6 +512,11 @@ enum ForceFlagScanner {
             guard prefixRule(matching: literal) != nil else { return nil }
             return "forbidden flag \(literal.debugDescription) in an argument fragment: "
                 + leaseReason
+        }
+        // An abbreviated upstream option, bare `--unset` included: a fragment cannot say it is
+        // not `branch`'s (fix round 1, M1).
+        result += literals.filter(isUpstreamAbbreviation).map {
+            "forbidden flag \($0.debugDescription) in an argument fragment: \(upstreamAbbreviationReason)"
         }
         // A fragment has no vector, so it can never carry the lease that would excuse a delete
         // refspec; the narrowing to `:refs/` is the same one the sweep uses.
@@ -1281,12 +1298,13 @@ enum ForceFlagScanner {
     /// concatenated: a refspec after it would change what is listed. What is deleted afterwards
     /// is `update-ref`'s remote-tracking shape, one ref at a time on the id the sheet showed.
     ///
-    /// **`branch`'s two are B2 Task 2's upstream vectors** (R17): `--set-upstream-to=` with a
-    /// full `refs/remotes/` name — one interpolation after the prefix, so never a short `<r>/<b>`
-    /// a tag or a local branch of that name shadows — and `--unset-upstream`, each with the
-    /// branch an expression after `--end-of-options`, nothing appended. The table names `-u`,
-    /// `--set-upstream-to` and `--unset-upstream`; `upstreamFlagPrefix` makes every other
-    /// `--set-upstream-to=…` literal a finding.
+    /// **`branch`'s three are B2 Task 2's upstream vectors** (R17): `--set-upstream-to=` with a
+    /// full `refs/remotes/` name or (fix round 1) a full `refs/heads/` one — one interpolation
+    /// after the prefix, so never a short `<r>/<b>` a tag or a local branch of that name
+    /// shadows — and `--unset-upstream`, each with the branch an expression after
+    /// `--end-of-options`, nothing appended. The table names `-u`, `--set-upstream-to` and
+    /// `--unset-upstream`; `upstreamFlagPrefix` makes every other `--set-upstream-to=…` literal a
+    /// finding, and `isUpstreamAbbreviation` every abbreviation git would accept.
     static let denyTableExceptionShapes: [String: [Shape]] = [
         "fetch": [
             Shape(
@@ -1297,6 +1315,9 @@ enum ForceFlagScanner {
         "branch": [
             Shape(
                 .interpolated(prefix: "--set-upstream-to=refs/remotes/", suffix: ""),
+                .literal("--end-of-options"), .expression),
+            Shape(
+                .interpolated(prefix: "--set-upstream-to=refs/heads/", suffix: ""),
                 .literal("--end-of-options"), .expression),
             Shape(.literal("--unset-upstream"), .literal("--end-of-options"), .expression),
         ],
@@ -1532,9 +1553,29 @@ enum ForceFlagScanner {
     /// one shape that spells a full `refs/remotes/` name (`denyTableExceptionShapes`, B2 Task 2).
     static let upstreamFlagPrefix = "--set-upstream-to="
 
+    /// Whether `literal` (or its part before `=`) is an abbreviation git's option parser accepts
+    /// for `--set-upstream-to` (from `--set-upstream-`: shorter is ambiguous with the removed
+    /// `--set-upstream`) or `--unset-upstream` (from `--uns`) — measured on git 2.54,
+    /// `--set-upstream-t=…` and `--unset-up` exit 0 (fix round 1, M1). The full spellings are not
+    /// abbreviations: the table and `upstreamFlagPrefix` govern those.
+    static func isUpstreamAbbreviation(_ literal: String) -> Bool {
+        let option = literal.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            .first.map(String.init) ?? literal
+        for (full, shortest) in [("--set-upstream-to", "--set-upstream-"), ("--unset-upstream", "--uns")]
+        where option.count >= shortest.count && option.count < full.count && full.hasPrefix(option) {
+            return true
+        }
+        return false
+    }
+
+    static let upstreamAbbreviationReason =
+        "git accepts any unique prefix of a long option, so this is `--set-upstream-to` or "
+            + "`--unset-upstream` under a spelling no rule names; write the option in full, in its "
+            + "one permitted vector"
+
     static let upstreamReason =
         "an upstream is set only by the whole vector `[\"branch\", \"--set-upstream-to=refs/remotes/\\(…)\", "
-            + "\"--end-of-options\", <branch>]`: a short `<remote>/<branch>` is shadowed by a tag or a "
+            + "\"--end-of-options\", <branch>]` (or its `refs/heads/` twin): a short `<remote>/<branch>` is shadowed by a tag or a "
             + "local branch of that name (R17), and anything appended changes what is written"
 
     static let restoreReason =

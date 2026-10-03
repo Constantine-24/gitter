@@ -1866,7 +1866,7 @@ import Testing
     /// compare-and-deletes (and, since Task 2, the fast-forward's compare-and-set).
     @Test func thePruneShapesAreExactlyTheListingAndTheDelete() {
         let exceptions = ForceFlagScanner.denyTableExceptionShapes
-        #expect(Set(exceptions.keys) == ["fetch", "branch"], "Task 2 added `branch`'s two upstream vectors")
+        #expect(Set(exceptions.keys) == ["fetch", "branch"], "Task 2 added `branch`'s three upstream vectors")
         #expect(ForceFlagScanner.spelling(of: "fetch", exceptions["fetch"] ?? [])
             == #"["fetch", "--prune", "--no-prune-tags", "--dry-run", "--porcelain", "--no-progress", "--end-of-options", <expression>]"#)
         #expect(ForceFlagScanner.forbiddenFlags["fetch"]?["--prune"] != nil, "still forbidden everywhere else")
@@ -1900,16 +1900,18 @@ import Testing
     /// A **contract**: every vector `CLIGitBackend+Upstream.swift` runs, spelled as it writes
     /// them. The fast-forward is `update-ref`'s third shape — a compare-and-set under
     /// `refs/heads/`, `--no-deref`, both ids interpolated (an empty old value makes it a plain
-    /// move, R6) — and the two upstream vectors are `branch`'s only exceptions to its upstream
+    /// move, R6) — and the three upstream vectors (remote, local, unset) are `branch`'s only exceptions to its upstream
     /// options: the full `refs/remotes/` name (a short one is shadowed by a tag or branch of
     /// that name, R17) and the unset, each with the branch after `--end-of-options`.
     @Test(arguments: [
         #"result = try await runWithEnvironment(["update-ref", "--no-deref", "-m", message, "--end-of-options", "refs/heads/\(name)", "\(new)", "\(old)"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
         #"result = try await runWithEnvironment(["branch", "--set-upstream-to=refs/remotes/\(rest)", "--end-of-options", branch], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"result = try await runWithEnvironment(["branch", "--set-upstream-to=refs/heads/\(local)", "--end-of-options", branch], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
         #"result = try await runWithEnvironment(["branch", "--unset-upstream", "--end-of-options", branch], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
         #"let data = try await run(["for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)%00%(upstream)%00%(upstream:short)%00%(worktreepath)%00", "--end-of-options", "refs/heads/\(branch)"], cwd: root)"#,
         #"let data = try await run(["rev-parse", "--verify", "-q", "--end-of-options", "\(upstream)^{commit}"], cwd: root, allowedExitCodes: [1])"#,
-        #"let data = try await run(["rev-parse", "--path-format=absolute", "--git-path", "rebase-merge/head-name", "--git-path", "rebase-apply/head-name", "--git-path", "rebase-apply/applying", "--git-path", "BISECT_START"], cwd: worktree)"#,
+        #"let data = try await run(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd: root)"#,
+        #"let data = try await run(["worktree", "list", "--porcelain", "-z"], cwd: root)"#,
         #"let data = try await run(["for-each-ref", "--format=%(refname)%00%(symref)", "--end-of-options", ref], cwd: root)"#,
         #"let data = try await run(["config", "--get-all", "--end-of-options", key], cwd: root, allowedExitCodes: [1])"#,
     ])
@@ -1943,7 +1945,7 @@ import Testing
         #"_ = try await run(["branch", "--set-upstream-to", ref, "--end-of-options", branch], cwd: root)"#,
         #"_ = try await run(["branch", "--set-upstream-to=\(remote)/\(name)", "--end-of-options", branch], cwd: root)"#,
         #"_ = try await run(["branch", "--set-upstream-to=origin/keep", "--end-of-options", branch], cwd: root)"#,
-        #"_ = try await run(["branch", "--set-upstream-to=refs/heads/\(name)", "--end-of-options", branch], cwd: root)"#,
+        #"_ = try await run(["branch", "--set-upstream-to=refs/tags/\(name)", "--end-of-options", branch], cwd: root)"#,
         #"_ = try await run(["branch", "--set-upstream-to=\(ref)", "--end-of-options", branch], cwd: root)"#,
         #"_ = try await run(["branch", "--set-upstream-to=refs/remotes/\(rest)", branch], cwd: root)"#,
         #"_ = try await run(["branch", "--set-upstream-to=refs/remotes/\(rest)", "--end-of-options", branch] + more, cwd: root)"#,
@@ -1952,6 +1954,16 @@ import Testing
         #"_ = try await run(["branch", "--unset-upstream", branch], cwd: root)"#,
         #"_ = try await run(["branch", "--unset-upstream", "--end-of-options", "main"], cwd: root)"#,
         #"_ = try await run(["branch", "--unset-upstream", "--end-of-options", branch] + more, cwd: root)"#,
+        // Fix round 1, M1: git takes any unique prefix of a long option (measured:
+        // `--set-upstream-t=…` and `--unset-up` exit 0; `--uns` is `--unset-upstream`).
+        #"_ = try await run(["branch", "--set-upstream-t=origin/keep", "--end-of-options", branch], cwd: root)"#,
+        #"_ = try await run(["branch", "--set-upstream-t=\(remote)/\(name)", "--end-of-options", branch], cwd: root)"#,
+        #"_ = try await run(["branch", "--set-upstream-t", ref, "--end-of-options", branch], cwd: root)"#,
+        #"_ = try await run(["branch", "--set-upstream-=refs/remotes/\(rest)", "--end-of-options", branch], cwd: root)"#,
+        #"_ = try await run(["branch", "--unset-up", "--end-of-options", branch], cwd: root)"#,
+        #"_ = try await run(["branch", "--uns", "--end-of-options", branch], cwd: root)"#,
+        #"_ = try await run(["branch", "--unset-upstrea", branch], cwd: root)"#,
+        #"let flag = "--unset-ups"; _ = try await run(["branch", flag, "--end-of-options", branch], cwd: root)"#,
         // Hidden from the shapes: a fragment, a binding, an append.
         #"_ = try await run([repoFlag, "branch", "--set-upstream-to=refs/remotes/\(rest)", "--end-of-options", branch], cwd: root)"#,
         #"let flag = "--set-upstream-to=refs/remotes/\(rest)"; _ = try await run(["branch", flag, "--end-of-options", branch], cwd: root)"#,
@@ -1962,17 +1974,35 @@ import Testing
     }
 
     /// `update-ref` has exactly the two compare-and-deletes and the one compare-and-set, and
-    /// `branch` exactly the two upstream vectors as exceptions to its table — which now names
-    /// the upstream options, so every other spelling of them is a finding.
-    @Test func theUpstreamShapesAreExactlyTheCompareAndSetAndTheTwoBranchVectors() {
+    /// `branch` exactly the three upstream vectors as exceptions to its table — which now names
+    /// the upstream options; with `upstreamFlagPrefix` and `isUpstreamAbbreviation` (fix round
+    /// 1) every other spelling of them is a finding.
+    @Test func theUpstreamShapesAreExactlyTheCompareAndSetAndTheBranchVectors() {
         #expect(ForceFlagScanner.spelling(of: "update-ref", ForceFlagScanner.allowedShapes["update-ref"] ?? [])
             == #"["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(…)", "\(…)"] or ["update-ref", "--no-deref", "-d", "--end-of-options", "refs/remotes/\(…)", "\(…)"] or ["update-ref", "--no-deref", "-m", <expression>, "--end-of-options", "refs/heads/\(…)", "\(…)", "\(…)"]"#)
         let exceptions = ForceFlagScanner.denyTableExceptionShapes
         #expect(Set(exceptions.keys) == ["fetch", "branch"])
         #expect(ForceFlagScanner.spelling(of: "branch", exceptions["branch"] ?? [])
-            == #"["branch", "--set-upstream-to=refs/remotes/\(…)", "--end-of-options", <expression>] or ["branch", "--unset-upstream", "--end-of-options", <expression>]"#)
+            == #"["branch", "--set-upstream-to=refs/remotes/\(…)", "--end-of-options", <expression>] or ["branch", "--set-upstream-to=refs/heads/\(…)", "--end-of-options", <expression>] or ["branch", "--unset-upstream", "--end-of-options", <expression>]"#)
         #expect(Set((ForceFlagScanner.forbiddenFlags["branch"] ?? [:]).keys)
             == ["-M", "-C", "--force", "-f", "-u", "--set-upstream-to", "--unset-upstream"])
+    }
+
+    /// Fix round 1, M1: the abbreviations git accepts are findings wherever they are written;
+    /// shorter spellings that are not (or not only) these options' are not.
+    @Test func theUpstreamOptionsAbbreviationsAreRecognised() {
+        for literal in ["--set-upstream-", "--set-upstream-t", "--set-upstream-t=x", "--uns", "--unset-u", "--unset-upstrea"] {
+            let source = "let flag = \"\(literal)\""
+            #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+        }
+        // Bare `--unset` is `config --unset` too: clean in a binding, a finding in a `branch` vector.
+        #expect(!ForceFlagScanner.findings(in: #"_ = try await run(["branch", "--unset", "--end-of-options", branch], cwd: root)"#).isEmpty)
+        #expect(!ForceFlagScanner.findings(in: #"_ = try await run([flag, "--unset", "--end-of-options", branch], cwd: root)"#).isEmpty)
+        #expect(ForceFlagScanner.findings(in: #"_ = try await run(["config", "--unset", key], cwd: root)"#).isEmpty)
+        for literal in ["--set-upstream", "--un", "--unshallow", "--set", "--unset"] {
+            let source = "let flag = \"\(literal)\""
+            #expect(ForceFlagScanner.findings(in: source).isEmpty, "false positive: \(source)")
+        }
     }
 
     /// Not vacuous: the upstream file is clean, and each of its vectors, changed in memory
@@ -1985,6 +2015,8 @@ import Testing
         (#"["branch", "--set-upstream-to=refs/remotes/\(rest)", "--end-of-options", branch]"#, #"["branch", "--set-upstream-to=\(ref)", "--end-of-options", branch]"#),
         (#"["branch", "--set-upstream-to=refs/remotes/\(rest)", "--end-of-options", branch]"#, #"["branch", "-u", ref, "--end-of-options", branch]"#),
         (#"["branch", "--unset-upstream", "--end-of-options", branch]"#, #"["branch", "--unset-upstream", branch]"#),
+        (#"["branch", "--unset-upstream", "--end-of-options", branch]"#, #"["branch", "--unset-up", "--end-of-options", branch]"#),
+        (#"["branch", "--set-upstream-to=refs/heads/\(local)", "--end-of-options", branch]"#, #"["branch", "--set-upstream-t=refs/heads/\(local)", "--end-of-options", branch]"#),
     ])
     func theUpstreamFilesVectorsAreChecked(original: String, mutated: String) throws {
         let file = "CLIGitBackend+Upstream.swift"

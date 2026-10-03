@@ -6,9 +6,9 @@ import Foundation
 ///
 /// Every vector is pinned in `ForceFlagScannerTests.allowsTheUpstreamVectorsThisMilestoneNeeds`,
 /// and the bindings are named as they are there (`message`, `name`, `new`, `old`, `rest`,
-/// `branch`, `worktree`, `key`, `ref`): the contract is the text. Three are shapes the scanner
+/// `branch`, `local`, `key`, `ref`): the contract is the text. Four are shapes the scanner
 /// grants whole — `update-ref`'s `refs/heads/` compare-and-set (`allowedShapes`) and `branch`'s
-/// two upstream vectors (`denyTableExceptionShapes`).
+/// three upstream vectors (`denyTableExceptionShapes`).
 ///
 /// **Measured for this task (git 2.54, `LC_ALL=C`, local bare remotes, scratch repositories):**
 /// - `update-ref --no-deref -m <msg> --end-of-options refs/heads/<b> <new> <old>` moves a plain
@@ -26,6 +26,16 @@ import Foundation
 ///   `refs/heads/<b>`) has an empty `%(worktreepath)`, and `git branch -f <b>` refuses it
 ///   ("cannot force update the branch '<b>' used by worktree at '…'"): git counts it as checked
 ///   out, and so does this file — and a bisect started from it (`BISECT_START` = `<b>`) the same.
+/// - Fix round 1: a branch a `rebase --update-refs` will move is in use too — its worktree's
+///   `rebase-merge/update-refs` holds `<ref>\n<id>\n<forty zeros>\n` per ref, and `branch -f`
+///   refuses it; moving it left that rebase's last step failing ("is at X but expected Y"). A
+///   worktree whose directory is moved away is `prunable` in `worktree list`, its state still in
+///   `.git/worktrees/<id>/` (whose `gitdir` names the old path), and `branch -f` still refuses
+///   its branches — so every administrative directory is read, not only reachable worktrees.
+/// - Fix round 1: `--set-upstream-to=refs/heads/<x>` writes `branch.<b>.remote=.` and
+///   `.merge=refs/heads/<x>`; naming the branch itself warns "not setting branch '<b>' as its
+///   own upstream" and exits 0 with nothing written. A `config.lock` held from the start makes
+///   `--unset-upstream` fail with `fatal: could not unset 'branch.<b>.remote'` and write nothing.
 /// - `branch --set-upstream-to=<full ref> --end-of-options <b>` (R17, R24): its refusals are
 ///   `fatal: the requested upstream branch '<ref>' does not exist`, `fatal: cannot set up
 ///   tracking information; starting point '<ref>' is not a branch` and `fatal: not tracking:
@@ -47,10 +57,6 @@ extension CLIGitBackend {
         guard let state = try await branchState(branch, at: root) else { throw FastForwardRefusal.moved }
         // Moving an alias would move the branch it names: refused, whatever `--no-deref` does.
         guard state.symref.isEmpty else { throw BranchOperationError.invalidName(branch) }
-        if let path = state.worktreePath { throw FastForwardRefusal.checkedOut(path: path) }
-        if let path = try await worktreeRebasingOrBisecting(branch, at: root) {
-            throw FastForwardRefusal.checkedOut(path: path)
-        }
         guard state.tip == tip else { throw FastForwardRefusal.moved }
         guard !state.upstream.isEmpty, let upstreamTip = try await commitID(of: state.upstream, at: root) else {
             throw FastForwardRefusal.noUpstream
@@ -64,6 +70,10 @@ extension CLIGitBackend {
             let behind = try await commitCount(in: upstreamTip, notIn: tip, at: root)
             throw behind == 0 ? FastForwardRefusal.ahead(ahead) : FastForwardRefusal.diverged(ahead: ahead, behind: behind)
         }
+        // Last, immediately before the write: the window in which a worktree can start using
+        // the branch unseen (R15) is as narrow as it can be (fix round 1, M4).
+        if let path = state.worktreePath { throw FastForwardRefusal.checkedOut(path: path) }
+        if let path = try await worktreeUsing(branch, at: root) { throw FastForwardRefusal.checkedOut(path: path) }
         return try await compareAndSet(branch, from: tip, to: upstreamTip, upstreamName: state.upstreamShort, at: root)
     }
 
@@ -131,105 +141,156 @@ extension CLIGitBackend {
         return id
     }
 
-    /// The worktree in which `branch` is being rebased or bisected, or nil. Asked only of the
-    /// worktrees whose HEAD is detached — a branch checked out anywhere else is
-    /// `%(worktreepath)`'s — as git's own `is_worktree_being_rebased` / `…_bisected` ask: the
-    /// worktree's `rebase-merge/head-name`, or `rebase-apply/head-name` when it is not an
-    /// `am` (`rebase-apply/applying`), is `refs/heads/<branch>`; or its `BISECT_START` is the
-    /// branch's short name. A worktree whose directory is gone (prunable) cannot be asked and
-    /// is passed over; every other failure to ask is thrown, not read as "not in use".
-    private func worktreeRebasingOrBisecting(_ branch: String, at root: URL) async throws -> String? {
+    /// The worktree that uses `branch` the way git counts it (`branch.c`,
+    /// `prepare_checked_out_branches`), or nil: its HEAD is the branch, a rebase started from it
+    /// (`rebase-merge/head-name`, or `rebase-apply/head-name` when it is not an `am`), a rebase
+    /// that will move it at the end (`rebase-merge/update-refs`, fix round 1, I1), or a bisect
+    /// started from it (`BISECT_START`). Asked of **every** worktree — attached or detached, and
+    /// one whose directory is gone (prunable), whose state is still in its administrative
+    /// directory — as git asks: the main one's is the common directory (none for a bare
+    /// repository), a linked one's `<common>/worktrees/<id>/`, read straight from the files.
+    private func worktreeUsing(_ branch: String, at root: URL) async throws -> String? {
         let ref = "refs/heads/\(branch)"
-        for path in try await detachedWorktreePaths(at: root) {
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
-                continue
-            }
-            let worktree = URL(fileURLWithPath: path, isDirectory: true)
-            let data = try await run(["rev-parse", "--path-format=absolute", "--git-path", "rebase-merge/head-name", "--git-path", "rebase-apply/head-name", "--git-path", "rebase-apply/applying", "--git-path", "BISECT_START"], cwd: worktree)
-            let files = GitLines.split(data).map { URL(fileURLWithPath: $0) }
-            guard files.count == 4 else {
-                throw GitError.commandFailed(exitCode: -1, stderr: "unexpected rev-parse --git-path output in \(path)")
-            }
-            let applying = FileManager.default.fileExists(atPath: files[2].path)
-            if Self.contents(of: files[0]) == ref
-                || (!applying && Self.contents(of: files[1]) == ref)
-                || Self.contents(of: files[3]) == branch
+        for worktree in try await worktreeAdministrativeDirectories(at: root) {
+            let dir = worktree.directory
+            let file = { (name: String) in Self.contents(of: dir.appendingPathComponent(name)) }
+            let applying = FileManager.default.fileExists(atPath: dir.appendingPathComponent("rebase-apply/applying").path)
+            if file("HEAD") == "ref: \(ref)" || file("rebase-merge/head-name") == ref
+                || (!applying && file("rebase-apply/head-name") == ref) || file("BISECT_START") == branch
+                || Self.refsAnUpdateRefsRebaseWillMove(file("rebase-merge/update-refs")).contains(ref)
             {
-                return path
+                return worktree.path
             }
         }
         return nil
     }
 
-    /// Every worktree whose HEAD is detached, by path (`worktree list --porcelain -z`: a record
-    /// is NUL-separated fields ending in an empty one; `worktree <path>` first, `detached` for a
-    /// detached HEAD).
-    private func detachedWorktreePaths(at root: URL) async throws -> [String] {
+    /// The refs a `rebase --update-refs` will move when it finishes: `rebase-merge/update-refs`
+    /// holds three lines per ref — the ref, then two ids (measured: `refs/heads/s1`, its id, and
+    /// forty zeros) — so the first line and every third after it.
+    static func refsAnUpdateRefsRebaseWillMove(_ contents: String?) -> [String] {
+        guard let contents else { return [] }
+        let lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        return stride(from: 0, to: lines.count, by: 3).map { lines[$0] }.filter { $0.hasPrefix("refs/") }
+    }
+
+    /// Every worktree's administrative directory and the path git names it by: the main
+    /// worktree's (the common directory, unless the main one is bare) first, then each
+    /// `<common>/worktrees/<id>/`, its path read from its `gitdir` file (`<path>/.git`, relative
+    /// to the directory under `worktree.useRelativePaths`) — present for a prunable one too.
+    private func worktreeAdministrativeDirectories(at root: URL) async throws -> [(directory: URL, path: String)] {
+        let common = try await commonDirectory(at: root)
+        var result: [(directory: URL, path: String)] = []
+        if let main = try await mainWorktree(at: root), !main.bare {
+            result.append((common, main.path))
+        }
+        let linked = common.appendingPathComponent("worktrees", isDirectory: true)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: linked.path)) ?? []
+        for name in names.sorted() {
+            let directory = linked.appendingPathComponent(name, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                continue
+            }
+            let path: String
+            if let gitdir = Self.contents(of: directory.appendingPathComponent("gitdir")), !gitdir.isEmpty {
+                let dotGit = gitdir.hasPrefix("/")
+                    ? URL(fileURLWithPath: gitdir) : directory.appendingPathComponent(gitdir).standardizedFileURL
+                path = dotGit.deletingLastPathComponent().path
+            } else {
+                path = directory.path
+            }
+            result.append((directory, path))
+        }
+        return result
+    }
+
+    /// `rev-parse --git-common-dir`, absolute.
+    private func commonDirectory(at root: URL) async throws -> URL {
+        let data = try await run(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd: root)
+        let path = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .newlines)
+        guard path.hasPrefix("/") else {
+            throw GitError.commandFailed(exitCode: -1, stderr: "unexpected rev-parse --git-common-dir output: \(path)")
+        }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    /// The main worktree's path and whether it is bare: `worktree list --porcelain -z`'s first
+    /// record (NUL-separated fields ending in an empty one; `worktree <path>`, `bare`).
+    private func mainWorktree(at root: URL) async throws -> (path: String, bare: Bool)? {
         let data = try await run(["worktree", "list", "--porcelain", "-z"], cwd: root)
-        var paths: [String] = []
         var path: String?
-        var detached = false
+        var bare = false
         for field in data.split(separator: 0, omittingEmptySubsequences: false) {
             let text = String(decoding: field, as: UTF8.self)
-            if text.isEmpty {
-                if let path, detached { paths.append(path) }
-                path = nil
-                detached = false
-            } else if text.hasPrefix("worktree ") {
-                path = String(text.dropFirst("worktree ".count))
-            } else if text == "detached" {
-                detached = true
-            }
+            if text.isEmpty { break }
+            if text.hasPrefix("worktree ") { path = String(text.dropFirst("worktree ".count)) }
+            if text == "bare" { bare = true }
         }
-        if let path, detached { paths.append(path) }
-        return paths
+        return path.map { ($0, bare) }
     }
 
     // MARK: - Upstream
 
     public func setUpstream(of branch: String, to ref: String, at root: URL) async throws -> SetUpstreamResult {
-        // Before any process: only a full remote-tracking name, never a short one a tag or a
-        // local branch can shadow (R17), and never revision syntax.
+        // Before any process: only a full name — a remote-tracking ref, or (fix round 1) a local
+        // branch — never a short one a tag or a branch can shadow (R17), never revision syntax.
         try requireName(branch)
-        guard ref.hasPrefix("refs/remotes/") else { throw UpstreamRefusal.notABranch(ref) }
-        try requireRemoteTrackingRef(ref)
-
-        let expected = try await expectedUpstream(of: ref, at: root)
-        switch try await remoteTrackingRefKind(ref, at: root) {
-        case .missing: throw UpstreamRefusal.notFetched(ref)
+        let target: UpstreamTarget
+        let expected: (remote: String, merge: String)
+        if ref.hasPrefix("refs/heads/") {
+            try requirePlainRef(ref, under: "refs/heads/")
+            let local = String(ref.dropFirst("refs/heads/".count))
+            // git only warns about this one and exits 0 with nothing written (measured).
+            guard local != branch else { throw UpstreamRefusal.ownUpstream(branch) }
+            target = .local(local)
+            expected = (".", ref)
+        } else if ref.hasPrefix("refs/remotes/") {
+            try requireRemoteTrackingRef(ref)
+            target = .remote(String(ref.dropFirst("refs/remotes/".count)))
+            expected = try await expectedUpstream(of: ref, at: root)
+        } else {
+            throw UpstreamRefusal.notABranch(ref)
+        }
+        switch try await refKind(ref, at: root) {
+        case .missing:
+            if case .local(let local) = target { throw BranchOperationError.noSuchBranch(local) }
+            throw UpstreamRefusal.notFetched(ref)
         case .symbolic: throw UpstreamRefusal.notABranch(ref)
         case .plain: break
         }
+        let before = try await upstreamConfig(of: branch, at: root)
         let rebaseBefore = try await configValues("branch.\(branch).rebase", at: root)
 
-        let rest = String(ref.dropFirst("refs/remotes/".count))
         try Task.checkCancellation()
         let result: ProcessRunner.StreamedResult
         do {
-            result = try await runWithEnvironment(["branch", "--set-upstream-to=refs/remotes/\(rest)", "--end-of-options", branch], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
+            switch target {
+            case .remote(let rest):
+                result = try await runWithEnvironment(["branch", "--set-upstream-to=refs/remotes/\(rest)", "--end-of-options", branch], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
+            case .local(let local):
+                result = try await runWithEnvironment(["branch", "--set-upstream-to=refs/heads/\(local)", "--end-of-options", branch], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
+            }
         } catch is CancellationError {
             throw RemoteAdminPartial.upstreamOutcomeUnknown(branch: branch)
         }
         guard result.exitCode == 0 else {
+            let words = try await readBackAfterFailure(of: branch, before: before, stderr: result.stderr, at: root)
             if let refusal = Self.upstreamRefusal(stderr: result.stderr, ref: ref) { throw refusal }
-            throw GitError.commandFailed(
-                exitCode: result.exitCode,
-                stderr: RemoteFailureParser.gitsOwnWords(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)))
+            throw GitError.commandFailed(exitCode: result.exitCode, stderr: words)
         }
 
         // Read back, never assumed: overlapping refspecs make git write a server branch nobody
         // chose (R18). git has written by now, so a cancellation here leaves it unknown too.
         do {
-            let remote = try await configValues("branch.\(branch).remote", at: root)
-            let merge = try await configValues("branch.\(branch).merge", at: root)
-            if remote != [expected.remote] {
+            let now = try await upstreamConfig(of: branch, at: root)
+            if now.remote != [expected.remote] {
                 throw UpstreamRefusal.mergeMismatch(
                     expected: "\(expected.remote) \(expected.merge)",
-                    written: "\(remote.joined(separator: ", ")) \(merge.joined(separator: ", "))")
+                    written: "\(now.remote.joined(separator: ", ")) \(now.merge.joined(separator: ", "))")
             }
-            if merge != [expected.merge] {
-                throw UpstreamRefusal.mergeMismatch(expected: expected.merge, written: merge.joined(separator: ", "))
+            if now.merge != [expected.merge] {
+                throw UpstreamRefusal.mergeMismatch(expected: expected.merge, written: now.merge.joined(separator: ", "))
             }
             let rebaseAfter = try await configValues("branch.\(branch).rebase", at: root)
             let wasTrue = rebaseBefore.last.map(Self.isConfigTrue) ?? false
@@ -241,6 +302,7 @@ extension CLIGitBackend {
 
     public func unsetUpstream(of branch: String, at root: URL) async throws {
         try requireName(branch)
+        let before = try await upstreamConfig(of: branch, at: root)
         try Task.checkCancellation()
         let result: ProcessRunner.StreamedResult
         do {
@@ -249,10 +311,59 @@ extension CLIGitBackend {
             throw RemoteAdminPartial.upstreamOutcomeUnknown(branch: branch)
         }
         guard result.exitCode == 0 else {
-            throw GitError.commandFailed(
-                exitCode: result.exitCode,
-                stderr: RemoteFailureParser.gitsOwnWords(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)))
+            let words = try await readBackAfterFailure(of: branch, before: before, stderr: result.stderr, at: root)
+            throw GitError.commandFailed(exitCode: result.exitCode, stderr: words)
         }
+    }
+
+    /// Where Set Upstream points: a remote-tracking ref (the part after `refs/remotes/`) or a
+    /// local branch (its short name). Each has its own whole vector in the scanner.
+    private enum UpstreamTarget {
+        case remote(String)
+        case local(String)
+    }
+
+    /// `branch.<b>.remote` and `.merge`, every value of each.
+    private func upstreamConfig(of branch: String, at root: URL) async throws -> (remote: [String], merge: [String]) {
+        (try await configValues("branch.\(branch).remote", at: root), try await configValues("branch.\(branch).merge", at: root))
+    }
+
+    /// A failed set or unset is **not** assumed to have changed nothing (fix round 1, M3): git
+    /// writes `branch.<b>.remote` and `.merge` one at a time, so a failure between the two
+    /// leaves half. Both are read back: changed since `before` is
+    /// `RemoteAdminPartial.upstreamChangedThenFailed` with what they hold now; unchanged returns
+    /// git's (redacted) words for the caller's own refusal. A read-back that cannot be made
+    /// leaves the outcome unknown. Measured: a `config.lock` held from the start writes nothing
+    /// (`fatal: could not unset 'branch.<b>.remote'`, exit 128, both keys as they were).
+    private func readBackAfterFailure(
+        of branch: String, before: (remote: [String], merge: [String]), stderr: String, at root: URL
+    ) async throws -> String {
+        let words = RemoteFailureParser.gitsOwnWords(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        let now: (remote: [String], merge: [String])
+        do {
+            now = try await upstreamConfig(of: branch, at: root)
+        } catch {
+            throw RemoteAdminPartial.upstreamOutcomeUnknown(branch: branch)
+        }
+        guard now.remote == before.remote, now.merge == before.merge else {
+            let joined = { (values: [String]) in values.isEmpty ? nil : values.joined(separator: ", ") }
+            throw RemoteAdminPartial.upstreamChangedThenFailed(
+                branch: branch, remote: joined(now.remote), merge: joined(now.merge), gitsWords: words)
+        }
+        return words
+    }
+
+    /// Refuses a ref that is not a plain full name under `prefix`, before git runs: it is
+    /// written into an option's value and read back as a config value, so no revision syntax
+    /// (`requireRefNameOrObjectName`), no glob character, no whitespace or backslash — all of
+    /// which git's own ref-name rules forbid, so no real ref is refused.
+    private func requirePlainRef(_ ref: String, under prefix: String) throws {
+        guard ref.hasPrefix(prefix), ref.count > prefix.count, !ref.hasSuffix("/"),
+            !ref.contains(where: { "*?[\\".contains($0) || $0.isWhitespace })
+        else {
+            throw BranchOperationError.invalidName(ref)
+        }
+        try requireRefNameOrObjectName(ref)
     }
 
     /// git's three measured refusals of `--set-upstream-to` (R17), or nil for anything else.
@@ -341,9 +452,9 @@ extension CLIGitBackend {
 
     private enum RefKind { case missing, symbolic, plain }
 
-    /// Whether `ref` exists, and whether it is a symbolic ref (`refs/remotes/<r>/HEAD`), which
-    /// `--set-upstream-to` would follow to the branch it names.
-    private func remoteTrackingRefKind(_ ref: String, at root: URL) async throws -> RefKind {
+    /// Whether `ref` exists, and whether it is a symbolic ref (`refs/remotes/<r>/HEAD`, a
+    /// branch alias), which `--set-upstream-to` would follow to the branch it names.
+    private func refKind(_ ref: String, at root: URL) async throws -> RefKind {
         let data = try await run(["for-each-ref", "--format=%(refname)%00%(symref)", "--end-of-options", ref], cwd: root)
         for line in GitLines.split(data) {
             let fields = line.split(separator: "\u{0}", maxSplits: 1, omittingEmptySubsequences: false)

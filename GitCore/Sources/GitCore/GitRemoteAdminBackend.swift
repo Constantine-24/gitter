@@ -23,7 +23,7 @@ import Foundation
 /// the dry-run listing shape, `update-ref -d` only on a full `refs/remotes/` (or B1's
 /// `refs/tags/`) name with an interpolated expected id, `update-ref -m` only as the
 /// fast-forward's `refs/heads/` compare-and-set with both ids interpolated, and `branch`'s
-/// upstream options only as the two upstream vectors.
+/// upstream options only as the three upstream vectors (set to a remote or a local branch, unset).
 public protocol GitRemoteAdminBackend: Sendable {
     /// Every remote-tracking ref of `remote` the server no longer has, with the id each holds,
     /// and what deleting them all would strand.
@@ -90,49 +90,60 @@ public protocol GitRemoteAdminBackend: Sendable {
     /// lane); it contacts nothing itself.
     ///
     /// Not git's `fetch <r> refs/heads/<up>:refs/heads/<b>`, which auto-follows tags, reports a
-    /// branch that is only ahead as rejected and mis-reports its exit code (R14). Refused up
-    /// front, in this order, with nothing written:
+    /// branch that is only ahead as rejected and mis-reports its exit code (R14). Refused, in
+    /// this order, with nothing written:
     /// - `branch` empty or beginning with `-` (`BranchOperationError.invalidName`), `tip` not a
     ///   full non-zero id (`RemoteAdminRefusal.invalidObjectID`), before any process runs;
     ///   a symbolic branch (an alias of another) is `.invalidName` too — moving it would move
     ///   the branch it names;
-    /// - `FastForwardRefusal.checkedOut(path:)`: checked out in any worktree, this one included,
-    ///   or being rebased or bisected in one — `update-ref` refuses neither (R15);
     /// - `.moved`: the branch does not hold `tip` (or no longer exists);
     /// - `.noUpstream`; `.ahead(n)`; `.diverged(ahead:behind:)` — decided by `merge-base
-    ///   --is-ancestor` between the two fixed ids, which cannot change under it (R15).
+    ///   --is-ancestor` between the two fixed ids, which cannot change under it (R15);
+    /// - **last, immediately before the write** (the narrowest window, fix round 1):
+    ///   `FastForwardRefusal.checkedOut(path:)` when any worktree uses the branch as git counts
+    ///   it — its HEAD, a rebase or a bisect started from it, or a `rebase --update-refs` that
+    ///   will move it — every worktree asked, a prunable one included. `update-ref` refuses
+    ///   none of them (R15).
     ///
     /// Then one compare-and-set: `update-ref --no-deref -m "Gitter: fast-forward <b> to
     /// <upstream>" --end-of-options refs/heads/<b> <new> <tip>`. It runs the
     /// `reference-transaction` hook; a hook's refusal is git's own words (`GitError`), with the
     /// branch where it was. A branch moved since the check is `.moved` (git: "is at X but
     /// expected Y"). Cancelled while it runs: `RemoteAdminPartial.fastForwardOutcomeUnknown` —
-    /// never "nothing changed".
+    /// never "nothing changed". A worktree that starts using the branch after the last check
+    /// and before the write is not seen (R15's residual race).
     func fastForward(_ branch: String, expecting tip: String, at root: URL) async throws -> FastForwardOutcome
 
-    /// Makes `branch` track the remote branch `ref`, a **full** remote-tracking name
-    /// (`refs/remotes/<r>/<b>`): the short form fails "ambiguous object name" when a tag or a
-    /// local branch is called `<r>/<b>` (R17). Local config only, contacts nothing.
+    /// Makes `branch` track `ref`, a **full** name: a remote branch (`refs/remotes/<r>/<b>`) or
+    /// a local one (`refs/heads/<x>`, which git records as remote `.`). The short form fails
+    /// "ambiguous object name" when a tag or a local branch is called `<r>/<b>` (R17). Local
+    /// config only, contacts nothing.
     ///
-    /// Refused before git runs (nothing written): `.notABranch` for a ref outside
-    /// `refs/remotes/`, a symbolic one or one no remote's fetch refspec maps (the "Other"
-    /// group); `.ambiguousNamespace` when two remotes map it; `.notFetched` when it does not
-    /// exist. git's own refusals of the same three are read into the same cases; anything else
-    /// (a held `config.lock`, R27) is git's words. `BranchOperationError.invalidName` for a
-    /// branch name that is empty or begins with `-`, or a ref that is not a plain ref name.
+    /// Refused before git runs (nothing written): `.notABranch` for a ref under neither prefix,
+    /// a symbolic one, or a remote-tracking one no remote's fetch refspec maps (the "Other"
+    /// group); `.ambiguousNamespace` when two remotes map it; `.notFetched` when a
+    /// remote-tracking ref does not exist, `BranchOperationError.noSuchBranch` when a local one
+    /// does not; `.ownUpstream` for the branch itself (git only warns and writes nothing).
+    /// git's own refusals of the first three are read into the same cases; anything else (a
+    /// held `config.lock`, R27) is git's words. `BranchOperationError.invalidName` for a branch
+    /// name that is empty or begins with `-`, or a ref that is not a plain ref name.
     ///
-    /// Runs `branch --set-upstream-to=refs/remotes/<r>/<b> --end-of-options <branch>`, then
-    /// reads `branch.<b>.remote` and `branch.<b>.merge` back: overlapping fetch refspecs make git
+    /// Runs `branch --set-upstream-to=<ref> --end-of-options <branch>`, then reads
+    /// `branch.<b>.remote` and `branch.<b>.merge` back: overlapping fetch refspecs make git
     /// write a server branch nobody chose (R18), thrown as `.mergeMismatch` with both values —
-    /// git **has written** it. `SetUpstreamResult.wroteRebase` reports the
+    /// git **has written** it. A failed run is read back too: git writes the two keys one at a
+    /// time, so a failure that changed them is `RemoteAdminPartial.upstreamChangedThenFailed`
+    /// with what they hold now. `SetUpstreamResult.wroteRebase` reports the
     /// `branch.<b>.rebase=true` that `branch.autoSetupRebase` adds (R17). Cancelled while git
     /// runs or while the write is read back: `RemoteAdminPartial.upstreamOutcomeUnknown`.
     func setUpstream(of branch: String, to ref: String, at root: URL) async throws -> SetUpstreamResult
 
     /// Removes `branch`'s upstream: `branch --unset-upstream --end-of-options <branch>`, which
     /// unsets `branch.<b>.remote` and `.merge` and leaves `branch.<b>.rebase` and
-    /// `.pushRemote` as they are (R17). A branch with no upstream is git's own words ("has no
-    /// upstream information"), as is a held `config.lock` (R27). Cancelled while git runs:
+    /// `.pushRemote` as they are (R17). A failure is read back as Set Upstream's is: changed
+    /// keys are `RemoteAdminPartial.upstreamChangedThenFailed`; unchanged ones leave git's own
+    /// words — a branch with no upstream ("has no upstream information"), a `config.lock` held
+    /// from the start (R27, measured: nothing written). Cancelled while git runs:
     /// `RemoteAdminPartial.upstreamOutcomeUnknown`.
     func unsetUpstream(of branch: String, at root: URL) async throws
 }

@@ -157,8 +157,9 @@ func assertConfigUnchanged(
         try await assertConfigUnchanged(repo, since: before)
     }
 
-    /// A tag or a local branch is never an upstream here: refused before git runs.
-    @Test(arguments: ["refs/tags/v1", "refs/heads/main", "origin/keep"])
+    /// A tag, a short name or any other ref outside `refs/remotes/` and `refs/heads/` is never an
+    /// upstream here: refused before git runs.
+    @Test(arguments: ["refs/tags/v1", "origin/keep", "refs/notes/commits", "main"])
     func aRefOutsideRemoteTrackingIsRefusedBeforeGitRuns(ref: String) async throws {
         let fixture = try await UpstreamFixture.make()
         defer { fixture.cleanUp() }
@@ -323,6 +324,115 @@ func assertConfigUnchanged(
         #expect(try await repo.configValues("branch.b1.merge") == ["refs/heads/keep"])
     }
 
+    // MARK: - A local branch as the upstream (fix round 1)
+
+    /// The picker offers local branches too (spec): git writes `remote = .` and the full
+    /// `merge` (R17), and that is what is read back.
+    @Test func setsALocalBranchAsTheUpstream() async throws {
+        let fixture = try await UpstreamFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        try await repo.git(["tag", "feature", "main"])  // a tag of the same name shadows nothing here
+
+        let result = try await backend.setUpstream(of: "b1", to: "refs/heads/feature", at: repo.root)
+
+        #expect(result == SetUpstreamResult(wroteRebase: false))
+        #expect(try await repo.configValues("branch.b1.remote") == ["."])
+        #expect(try await repo.configValues("branch.b1.merge") == ["refs/heads/feature"])
+    }
+
+    /// The branch itself: git only warns ("not setting branch 'b1' as its own upstream") and
+    /// exits 0 with nothing written. Refused before git runs.
+    @Test func aBranchIsNotItsOwnUpstream() async throws {
+        let fixture = try await UpstreamFixture.make()
+        defer { fixture.cleanUp() }
+        let git = try GitLaunchLog()
+        defer { git.cleanUp() }
+
+        let error = await thrownError { _ = try await git.backend.setUpstream(of: "b1", to: "refs/heads/b1", at: fixture.repo.root) }
+
+        #expect(error as? UpstreamRefusal == .ownUpstream("b1"))
+        git.assertNothingRan()
+    }
+
+    /// A local branch that does not exist, and a symbolic one: refused, nothing written.
+    @Test func aMissingOrSymbolicLocalBranchIsRefused() async throws {
+        let fixture = try await UpstreamFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        try await repo.git(["symbolic-ref", "refs/heads/alias", "refs/heads/main"])
+        let before = try await repo.localConfig()
+
+        let missing = await thrownError { _ = try await backend.setUpstream(of: "b1", to: "refs/heads/nosuch", at: repo.root) }
+        let symbolic = await thrownError { _ = try await backend.setUpstream(of: "b1", to: "refs/heads/alias", at: repo.root) }
+
+        #expect(missing as? BranchOperationError == .noSuchBranch("nosuch"))
+        #expect(symbolic as? UpstreamRefusal == .notABranch("refs/heads/alias"))
+        try await assertConfigUnchanged(repo, since: before)
+    }
+
+    // MARK: - A failed write is read back (fix round 1, M3)
+
+    /// git writes `branch.<b>.remote` and `.merge` one after the other; a failure between them
+    /// leaves half. Staged with a wrapper that lets the real git write, takes `merge` away again
+    /// and exits 1: the failure is read back and reported as what is there now.
+    @Test func aSetThatFailedAfterWritingIsReportedAsWhatItLeft() async throws {
+        let fixture = try await UpstreamFixture.make()
+        defer { fixture.cleanUp() }
+        let git = try FailingAfterGit(after: "branch", runs: "config --unset branch.b1.merge")
+        defer { git.cleanUp() }
+
+        let error = await thrownError {
+            _ = try await git.backend.setUpstream(of: "b1", to: "refs/remotes/origin/keep", at: fixture.repo.root)
+        }
+
+        guard case .upstreamChangedThenFailed(let branch, let remote, let merge, let words)? = error as? RemoteAdminPartial else {
+            Issue.record("expected .upstreamChangedThenFailed, got \(String(describing: error))")
+            return
+        }
+        #expect(branch == "b1")
+        #expect(remote == "origin")
+        #expect(merge == nil)
+        #expect(words.contains("staged failure"), "\(words)")
+    }
+
+    /// The same for an unset that removed `remote` and not `merge`.
+    @Test func anUnsetThatFailedAfterWritingIsReportedAsWhatItLeft() async throws {
+        let fixture = try await UpstreamFixture.make()
+        defer { fixture.cleanUp() }
+        try await fixture.repo.git(["branch", "-q", "--set-upstream-to=refs/remotes/origin/keep", "b1"])
+        let git = try FailingAfterGit(after: "branch", runs: "config branch.b1.merge refs/heads/keep")
+        defer { git.cleanUp() }
+
+        let error = await thrownError { try await git.backend.unsetUpstream(of: "b1", at: fixture.repo.root) }
+
+        #expect(error as? RemoteAdminPartial == .upstreamChangedThenFailed(
+            branch: "b1", remote: nil, merge: "refs/heads/keep", gitsWords: "error: staged failure"))
+    }
+
+    /// A failure that changed nothing (a lock held from the start — measured, nothing is written)
+    /// stays git's words: the read-back finds the configuration as it was.
+    @Test func anUnsetRefusedUnderAHeldLockIsGitsWords() async throws {
+        let fixture = try await UpstreamFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        try await repo.git(["branch", "-q", "--set-upstream-to=refs/remotes/origin/keep", "b1"])
+        let before = try await repo.localConfig()
+        let lock = repo.root.appendingPathComponent(".git/config.lock")
+        try Data().write(to: lock)
+        defer { try? FileManager.default.removeItem(at: lock) }
+
+        let error = await thrownError { try await backend.unsetUpstream(of: "b1", at: repo.root) }
+
+        guard case .commandFailed(_, let stderr)? = error as? GitError else {
+            Issue.record("expected git's words, got \(String(describing: error))")
+            return
+        }
+        #expect(stderr.contains("could not unset"), "\(stderr)")
+        try FileManager.default.removeItem(at: lock)
+        try await assertConfigUnchanged(repo, since: before)
+    }
+
     // MARK: - git's own refusals, read
 
     /// When git refuses what Gitter's own check let through, its measured words (R17) are read
@@ -391,4 +501,32 @@ func assertConfigUnchanged(
         #expect(TestRepo.changedRefNames(before.refs, after.refs)
             == ["refs/heads/b1", "refs/heads/new", "refs/remotes/origin/keep"])
     }
+}
+
+/// A shell script standing in for `/usr/bin/git` that, the first time it is launched with the
+/// subcommand `after`, runs the real command, then `runs` (a real git command in the same
+/// directory), and exits 1 with `error: staged failure` — a git that failed after writing part
+/// of what it was asked to. The fix round's M3 is staged with it.
+struct FailingAfterGit {
+    let directory: URL
+    var wrapper: URL { directory.appendingPathComponent("git") }
+
+    init(after subcommand: String, runs command: String) throws {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitter-failing-git-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let marker = directory.appendingPathComponent("ran").path
+        let script = "#!/bin/sh\n"
+            + "if [ \"$1\" = '\(subcommand)' ] && [ ! -e '\(marker)' ]; then\n"
+            + "  : > '\(marker)'\n  /usr/bin/git \"$@\" >/dev/null 2>&1\n"
+            + "  /usr/bin/git \(command) || exit 97\n"
+            + "  echo 'error: staged failure' >&2\n  exit 1\nfi\n"
+            + "exec /usr/bin/git \"$@\"\n"
+        try script.write(to: wrapper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapper.path)
+    }
+
+    var backend: CLIGitBackend { CLIGitBackend(gitPath: wrapper.path) }
+
+    func cleanUp() { try? FileManager.default.removeItem(at: directory) }
 }

@@ -242,6 +242,89 @@ private func samePath(_ path: String, _ url: URL) -> Bool {
         #expect(TestRepo.changedRefNames(before.refs, try await RepoState.capture(repo).refs).isEmpty)
     }
 
+    /// Fix round 1, I1: a stacked branch that another worktree's `rebase --update-refs` will
+    /// move when it finishes is in use there (`rebase-merge/update-refs` lists it; git's
+    /// `branch -f` refuses it). Moving it would make that rebase's last step fail ("is at X but
+    /// expected Y") and leave the rebase stuck. Refused, naming the worktree.
+    @Test func aBranchAnotherWorktreesRebaseWillUpdateIsRefused() async throws {
+        let fixture = try await FastForwardFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        let top = try await repo.commitTree(on: fixture.old, "T1")
+        try await repo.git(["branch", "top", top])
+        let other = repo.root.deletingLastPathComponent()
+            .appendingPathComponent("\(repo.root.lastPathComponent)-wt", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: other) }
+        try await repo.git(["worktree", "add", "-q", other.path, "top"])
+        let otherRepo = TestRepo(root: other)
+        // Rewrites K1…K3 and T1 onto `feature`; `keep` (at K3) is listed to be moved at the end.
+        try await otherRepo.git(["rebase", "-q", "--update-refs", "-x", "false", "feature"], allowedExitCodes: [1])
+        let updateRefs = try String(
+            contentsOf: repo.root.appendingPathComponent(".git/worktrees/\(other.lastPathComponent)/rebase-merge/update-refs"),
+            encoding: .utf8)
+        #expect(updateRefs.hasPrefix("refs/heads/keep\n"), "\(updateRefs)")
+
+        let error = await thrownError { _ = try await backend.fastForward("keep", expecting: fixture.old, at: repo.root) }
+
+        guard case .checkedOut(let path) = error as? FastForwardRefusal else {
+            Issue.record("expected .checkedOut, got \(String(describing: error))")
+            return
+        }
+        #expect(samePath(path, other))
+        #expect(try await repo.revParse("refs/heads/keep") == fixture.old)
+    }
+
+    /// Fix round 1, I1: a worktree whose directory is gone (prunable) still holds its rebase in
+    /// `.git/worktrees/<id>/`, and git still counts the branch as in use there. Refused.
+    @Test func aBranchBeingRebasedInAWorktreeWhoseDirectoryIsGoneIsRefused() async throws {
+        let fixture = try await FastForwardFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        let other = repo.root.deletingLastPathComponent()
+            .appendingPathComponent("\(repo.root.lastPathComponent)-wt", isDirectory: true)
+        let moved = repo.root.deletingLastPathComponent()
+            .appendingPathComponent("\(repo.root.lastPathComponent)-wt-moved", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: other)
+            try? FileManager.default.removeItem(at: moved)
+        }
+        try await repo.git(["worktree", "add", "-q", other.path, "keep"])
+        try await TestRepo(root: other).git(["rebase", "-q", "-x", "false", "keep~1"], allowedExitCodes: [1])
+        try FileManager.default.moveItem(at: other, to: moved)
+
+        let error = await thrownError { _ = try await backend.fastForward("keep", expecting: fixture.old, at: repo.root) }
+
+        guard case .checkedOut(let path) = error as? FastForwardRefusal else {
+            Issue.record("expected .checkedOut, got \(String(describing: error))")
+            return
+        }
+        // The directory is gone, so symlinks resolve only up to its parent (`/var` → `/private/var`).
+        #expect(samePath(URL(fileURLWithPath: path).deletingLastPathComponent().path, other.deletingLastPathComponent()))
+        #expect(URL(fileURLWithPath: path).lastPathComponent == other.lastPathComponent, "\(path)")
+        #expect(try await repo.revParse("refs/heads/keep") == fixture.old)
+    }
+
+    /// Fix round 1, M4: the worktree checks run last, just before the compare-and-set (the
+    /// narrowest window, R15) — so a branch both diverged and checked out elsewhere is told as
+    /// diverged, and nothing is written either way.
+    @Test func theWorktreeChecksRunLastJustBeforeTheWrite() async throws {
+        let fixture = try await FastForwardFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        let local = try await repo.commitTree(on: fixture.old, "L1")
+        try await repo.git(["update-ref", "refs/heads/keep", local])
+        let other = repo.root.deletingLastPathComponent()
+            .appendingPathComponent("\(repo.root.lastPathComponent)-wt", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: other) }
+        try await repo.git(["worktree", "add", "-q", other.path, "keep"])
+        let before = try await RepoState.capture(repo)
+
+        let error = await thrownError { _ = try await backend.fastForward("keep", expecting: local, at: repo.root) }
+
+        #expect(error as? FastForwardRefusal == .diverged(ahead: 1, behind: 1))
+        #expect(try await RepoState.capture(repo) == before)
+    }
+
     // MARK: - Refused: no upstream
 
     /// No upstream configured, or one that is gone: refused, nothing changes.
