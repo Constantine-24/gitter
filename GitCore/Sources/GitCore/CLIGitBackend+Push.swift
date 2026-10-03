@@ -267,13 +267,21 @@ extension CLIGitBackend {
     /// which is true for the full-width forms (`\u{FF10}`…) as well: a name that is "hex" by
     /// that test and not by git's would have passed a check whose whole job is to make sure the
     /// string reaching git is the sha the sheet showed.
-    private func requireFullObjectName(_ tip: String) throws {
-        guard tip.count == 40 || tip.count == 64,
-            tip.allSatisfy(Self.lowercaseHexDigits.contains),
-            !tip.allSatisfy({ $0 == "0" })
-        else {
+    ///
+    /// Internal rather than private since B1 Task 2: `deleteRemoteTag` leases with it too.
+    func requireFullObjectName(_ tip: String) throws {
+        guard Self.isFullNonZeroObjectName(tip) else {
             throw RemoteOperationError.invalidLease(tip)
         }
+    }
+
+    /// `requireFullObjectName`'s test, for the callers whose refusal is not a lease's: the tag
+    /// backend's compare-and-delete (an all-zero or empty expected value makes `update-ref -d`
+    /// delete unconditionally, B19), its restore and its create (B1 Task 2).
+    static func isFullNonZeroObjectName(_ id: String) -> Bool {
+        (id.count == 40 || id.count == 64)
+            && id.allSatisfy(lowercaseHexDigits.contains)
+            && !id.allSatisfy({ $0 == "0" })
     }
 
     private static let lowercaseHexDigits: Set<Character> = Set("0123456789abcdef")
@@ -331,7 +339,10 @@ extension CLIGitBackend {
     ///
     /// Unlike `fetch`, there is no partial-success case to guard against: one push is one
     /// operation against one remote, so a single diagnosed cause is always the whole truth.
-    private func diagnosed(exitCode: Int32, stderr: String) -> Error {
+    ///
+    /// Internal rather than private since B1 Task 2: the tag backend's remote half reads its
+    /// failures the same way.
+    func diagnosed(exitCode: Int32, stderr: String) -> Error {
         RemoteFailureParser.parse(stderr: stderr)
             ?? GitError.commandFailed(
                 exitCode: exitCode, stderr: RemoteFailureParser.gitsOwnWords(stderr))

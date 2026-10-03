@@ -93,6 +93,16 @@ public enum PushPorcelainParser {
     /// a parser that claims to be total should not need its caller to have been careful. The
     /// prefix is `refs/` rather than `refs/heads/` because a tag's line is read the same way.
     public static func parse(stdout: String, destinationRef: String) -> PushOutcome? {
+        resultLine(stdout: stdout, destinationRef: destinationRef).map {
+            outcome(flag: $0.flag, summary: $0.summary, line: $0.line)
+        }
+    }
+
+    /// The result line for `destinationRef`, as its flag, its summary and the whole line
+    /// (unredacted), or nil — the reading `parse` makes, for a caller whose outcomes are not
+    /// `PushOutcome`'s: a tag push's `[rejected] (already exists)` (B20) is `.rejected(.other)`
+    /// there, and the tag backend tells it apart by its summary (B1 Task 2).
+    static func resultLine(stdout: String, destinationRef: String) -> (flag: String, summary: String, line: String)? {
         guard destinationRef.hasPrefix("refs/") else { return nil }
         for line in lines(of: stdout) {
             let fields = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
@@ -106,7 +116,7 @@ public enum PushPorcelainParser {
             // one (`:refs/heads/topic`) and the literal `(delete)`.
             guard let colon = fields[1].firstIndex(of: ":") else { continue }
             guard fields[1][fields[1].index(after: colon)...] == destinationRef else { continue }
-            return outcome(flag: flag, summary: String(fields[2]), line: String(line))
+            return (flag, String(fields[2]), String(line))
         }
         return nil
     }

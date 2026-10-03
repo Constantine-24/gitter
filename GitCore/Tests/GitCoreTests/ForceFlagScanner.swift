@@ -356,10 +356,10 @@ enum ForceFlagScanner {
                     }
                 }
                 // A matched shape is complete. A mismatched vector of a subcommand that also
-                // keeps its deny table (`sequencerSubcommands`) goes on to the per-element
+                // keeps its deny table (`shapedSubcommandsWithDenyTables`) goes on to the per-element
                 // rules, so the finding names the offending flag (`rebase --autostash`,
                 // `cherry-pick --merge`) as well as the shape it missed.
-                if matchedShapes[arrayIndex] != nil || !sequencerSubcommands.contains(subcommand) { continue }
+                if matchedShapes[arrayIndex] != nil || !shapedSubcommandsWithDenyTables.contains(subcommand) { continue }
             }
             // One of `skipShapes`: every element is a pinned literal, vouched for above.
             if matchedShapes[arrayIndex] != nil { continue }
@@ -393,6 +393,12 @@ enum ForceFlagScanner {
                     // completes — is `push --delete` written as data. It is permitted only when
                     // the same array carries a lease naming the sha the sheet showed, which is
                     // what makes the deletion conditional on the branch not having moved.
+                    // `push … tag <name>` is git's keyword form for
+                    // `refs/tags/<name>:refs/tags/<name>` (B20): a short name, and a shape no
+                    // measurement covered. Gitter spells a tag's refspec in full.
+                    if subcommand == "push", flag == "tag" {
+                        findings.append("forbidden `git push … \(flag) <name>`: \(pushTagKeywordReason)")
+                    }
                     if subcommand == "push", flag.hasPrefix(":"), !carriesLease {
                         findings.append(
                             "forbidden delete refspec \(flag.debugDescription) in a `git push` "
@@ -510,6 +516,12 @@ enum ForceFlagScanner {
         result += literals.filter(stashWordsForbiddenInFragments.contains).map {
             "forbidden literal \($0.debugDescription) in an argument fragment: "
                 + stashFragmentReason
+        }
+        // And `tag` (B1 Task 2): its shapes are the whole rule too, and in a `push` it is the
+        // keyword form. `[flag, "tag", "-m", m, n, sha]` is a `tag -m` that signs under
+        // `tag.forceSignAnnotated` and that no shape or table could read.
+        result += literals.filter { $0 == "tag" }.map {
+            "forbidden literal \($0.debugDescription) in an argument fragment: \(tagFragmentReason)"
         }
         // Within one vector a fragment can still speak for itself: `[flag, "read-tree", "-m",
         // t]` is a `read-tree -m`. The append pool is not one vector, so this is not asked of it.
@@ -655,6 +667,19 @@ enum ForceFlagScanner {
             "-p": "deletes remote-tracking refs behind the user's back",
             "--prune-tags": "deletes local tags",
             "--tags": "fetches refs the user never asked for, and can clobber local tags",
+        ],
+        // B1 Task 2. `tag` is shape-governed (`allowedShapes`); this table names the flag in a
+        // finding for a vector that misses, and feeds `fragmentForbidden`. `-s` and `-u` are
+        // `ls-files`' and `push`'s too, so the sweep skips them (`sweepExempt`).
+        "tag": [
+            "-f": "moves an existing tag to another commit with no confirmation",
+            "--force": "moves an existing tag to another commit with no confirmation",
+            "-s": "signs the tag with a key the user never chose here; no signed tags (B1)",
+            "--sign": "signs the tag with a key the user never chose here; no signed tags (B1)",
+            "-u": "signs the tag with a key the user never chose here; no signed tags (B1)",
+            "--local-user": "signs the tag with a key the user never chose here; no signed tags (B1)",
+            "-d": "deletes a tag with no expected value; Gitter deletes one with `update-ref -d` on the id the sheet showed",
+            "--delete": "deletes a tag with no expected value; Gitter deletes one with `update-ref -d` on the id the sheet showed",
         ],
         "rebase": [
             "--autostash": "moves the user's changes somewhere they did not ask for",
@@ -1055,7 +1080,7 @@ enum ForceFlagScanner {
     /// vector that starts each action must carry the flag that keeps the user's config from
     /// rewriting it, and a deny table cannot see a flag left out. Their shas follow a trailing
     /// `"--end-of-options"`, the second place concatenation is allowed (revisions, never
-    /// options). They keep their deny tables for a vector that misses (`sequencerSubcommands`).
+    /// options). They keep their deny tables for a vector that misses (`shapedSubcommandsWithDenyTables`).
     static let allowedShapes: [String: [Shape]] = [
         "remote": [Shape(.literal("-v"))],
         "stash": [
@@ -1153,13 +1178,37 @@ enum ForceFlagScanner {
                 .literal("--no-autostash"), .literal("--no-update-refs"), .literal("--no-rebase-merges"),
                 .literal("--end-of-options"), .data),
         ],
+        // B1 Task 2: the two creates — the restore is the lightweight one, naming the tag
+        // object — each with the pins that keep config from rewriting it: `--no-sign`
+        // (`tag.gpgSign=true` signs even a lightweight tag), an explicit `-a`
+        // (`tag.forceSignAnnotated=true` beats `--no-sign` without it) and
+        // `--cleanup=verbatim` (`-F` strips `#` lines) (B17). The name, the target and the
+        // message file are expressions — values the code checked — never literals: a literal
+        // target would be a short name (`HEAD`, `main`) where RF2 wants a full id.
+        "tag": [
+            Shape(.literal("--no-sign"), .literal("--end-of-options"), .expression, .expression),
+            Shape(
+                .literal("--no-sign"), .literal("-a"), .literal("-F"), .expression,
+                .literal("--cleanup=verbatim"), .literal("--end-of-options"), .expression, .expression),
+        ],
+        // B1 Task 2: the compare-and-delete, and nothing else `update-ref` can do — move a
+        // branch, delete with no check, read a transaction from stdin. The ref is a full
+        // `refs/tags/` name, and the expected value one interpolation: an empty or all-zero
+        // literal deletes **unconditionally** (B19), and the code checks the value it
+        // interpolates is a full, non-zero id before it builds the vector.
+        "update-ref": [
+            Shape(
+                .literal("-d"), .literal("--end-of-options"),
+                .interpolated(prefix: "refs/tags/", suffix: ""), .interpolated(prefix: "", suffix: "")),
+        ],
     ]
 
     /// The shape-governed subcommands that also keep a deny table (`forbiddenFlags`) and the
     /// positional rules (`--abort`, `--merge`): a vector of theirs that misses every shape is
     /// also read flag by flag, so its finding names the flag. Their tables still feed
-    /// `fragmentForbidden` either way.
-    static let sequencerSubcommands: Set<String> = ["cherry-pick", "revert", "rebase"]
+    /// `fragmentForbidden` either way. The three sequencer commands since B1 Task 1, `tag` since
+    /// Task 2.
+    static let shapedSubcommandsWithDenyTables: Set<String> = ["cherry-pick", "revert", "rebase", "tag"]
 
     /// The only three vectors that may carry `--skip` (A2 Task 3's Skip), each whole and with
     /// nothing concatenated: `["rebase", "--skip"]`, `["cherry-pick", "--skip"]` and
@@ -1171,7 +1220,7 @@ enum ForceFlagScanner {
     /// three subcommands are shape-governed as well (`allowedShapes`: `--abort`, `--continue`
     /// and the vector that starts each action), and they keep their deny tables and positional
     /// rules (`rebase --autostash`, `cherry-pick --merge`) for a vector that misses every shape
-    /// (`sequencerSubcommands`), which is what names the offending flag in their findings. What makes the flag safe is not the vector but what
+    /// (`shapedSubcommandsWithDenyTables`), which is what names the offending flag in their findings. What makes the flag safe is not the vector but what
     /// runs before it: `skip(_:stoppedAt:at:)` refuses unless every change is the stopped
     /// commit's and files them first (M 17, M 31, M 32).
     static let skipShapes: [String: [Shape]] = [
@@ -1196,9 +1245,15 @@ enum ForceFlagScanner {
         case data
         /// One literal: `prefix`, then exactly one interpolation, then `suffix`.
         case interpolated(prefix: String, suffix: String)
+        /// An element with no string literal in it at all — a name or an id the code computed
+        /// and checked (`name`, `receipt.objectID`, `file.path`). Stricter than `.data`, which
+        /// lets a hard-coded value through.
+        case expression
 
         func matches(_ element: ArrayElement) -> Bool {
             switch self {
+            case .expression:
+                return element.literals.isEmpty
             case .literal(let text):
                 return element.value.map(ForceFlagScanner.decoded) == text
             case .data:
@@ -1275,6 +1330,15 @@ enum ForceFlagScanner {
             "a rebase without `--no-rebase-merges` recreates merges under `rebase.rebaseMerges=true` "
             + "(B13), and the autostash and update-refs pins keep config from moving work and branches "
             + "the sheet never named",
+        "tag":
+            "a tag without `--no-sign` is signed under `tag.gpgSign=true` — a lightweight one too — "
+            + "and `-m` or `-F` without `-a` under `tag.forceSignAnnotated=true` whatever `--no-sign` "
+            + "says; `-F` without `--cleanup=verbatim` strips the message's `#` lines (B17); and "
+            + "`-f`, `-d`, `-s`, `-u` move, delete or sign tags with no confirmation",
+        "update-ref":
+            "`update-ref` moves or deletes any ref; the one permitted form deletes a tag only while it "
+            + "holds the id the sheet showed, and an empty or all-zero expected value deletes with no "
+            + "check at all (B19)",
     ]
 
     static let shapeConcatenationNote =
@@ -1552,6 +1616,15 @@ enum ForceFlagScanner {
         + "or delete the user's remote configuration, and not one of them is a flag any table "
         + "can see. The only `remote` vector Gitter runs is [\"remote\", \"-v\"]"
 
+    static let pushTagKeywordReason =
+        "the keyword form names the tag by its short name; write the refspec in full, "
+        + "\"refs/tags/<name>:refs/tags/<name>\" (B20)"
+
+    static let tagFragmentReason =
+        "a fragment cannot prove its shape, and `tag`'s two permitted shapes are the whole rule "
+        + "(see `allowedShapes`); in a `push` it is the keyword form. Spell the vector as one array "
+        + "literal beginning with its subcommand"
+
     static let remoteFragmentReason =
         "a fragment cannot prove its shape, and `remote`'s permitted shape — [\"remote\", "
         + "\"-v\"] and nothing else — is the whole rule. Spell the vector as one array literal "
@@ -1563,6 +1636,7 @@ enum ForceFlagScanner {
                 switch slot {
                 case .literal(let text): return text.debugDescription
                 case .data: return "<data>"
+                case .expression: return "<expression>"
                 case .interpolated(let prefix, let suffix): return "\"\(prefix)\\(…)\(suffix)\""
                 }
             }
@@ -1604,6 +1678,11 @@ enum ForceFlagScanner {
     /// - **`--abort` and `--merge`** are exactly what `CLIGitBackend+Abort.swift` runs. They
     ///   stay dangerous everywhere the *positional* rule can see them, which is the whole
     ///   point of `flagsAllowedOnlyAfter`; a sweep over them would fail on correct code.
+    /// - **`-s` and `-u`** joined with B1 Task 2's `tag` table (sign; sign with a key): they are
+    ///   `ls-files -s`/`-u` (the index and unmerged-entry reads in six files) and `push -u` (set
+    ///   the upstream), checked with `git grep '"-s"\|"-u"' -- GitCore/Sources`. `tag` is
+    ///   shape-governed, so a `tag` vector carrying either misses its shapes; a fragment carrying
+    ///   either is still a finding.
     /// - **`-M`, `-p`, `-d`, `--all` and `--tags`** each mean something harmless under a
     ///   subcommand `GitCore/Sources` really uses, and the sweep cannot see the subcommand:
     ///   `-M`/`-p` are `diff`'s and `diff-tree`'s rename detection and patch output
@@ -1652,7 +1731,7 @@ enum ForceFlagScanner {
     /// Tokens the sweep must skip because `GitCore/Sources` uses each of them legitimately,
     /// under a subcommand the sweep cannot see. Every entry is a fact about this codebase,
     /// checked with `git grep`, not a softening of the rule — see `fileWideForbidden`.
-    static let sweepExempt: Set<String> = ["-M", "-p", "-d", "--all", "--tags"]
+    static let sweepExempt: Set<String> = ["-M", "-p", "-d", "--all", "--tags", "-s", "-u"]
 
     // MARK: - A patch read pins its format
 

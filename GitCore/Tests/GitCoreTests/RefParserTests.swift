@@ -100,6 +100,57 @@ import Testing
         #expect(v3?.isAnnotated == false)
     }
 
+    // MARK: - Tag fields (13–15, B1 Task 2)
+
+    /// Fields 13–15 are `%(taggername)`, `%(taggerdate:iso-strict)` and `%(contents:subject)`.
+    /// The ref holds the tag object (`objectID`); `sha` is the commit it peels to.
+    @Test func anAnnotatedTagReadsTaggerDateAndSubject() throws {
+        let line = "refs/tags/v2\0aaaaaaa1\0\0\0tag\0bbbbbbb2\0\0\0\0\0\0\0"
+            + "Tagger T\02023-11-16T06:00:00+04:00\0Release two\n"
+        let v2 = try #require(RefParser.parse(Data(line.utf8)).tags.first)
+        #expect(v2.name == "v2")
+        #expect(v2.sha == "bbbbbbb2")
+        #expect(v2.objectID == "aaaaaaa1")
+        #expect(v2.isAnnotated)
+        #expect(v2.tagger == "Tagger T")
+        #expect(v2.date == Date(timeIntervalSince1970: 1_700_100_000))
+        #expect(v2.subject == "Release two")
+    }
+
+    /// A lightweight tag has no tagger, no date and no message of its own: `%(contents:subject)`
+    /// reports the **commit's** subject for it (B18), and that is not the tag's.
+    @Test func aLightweightTagHasNoTaggerDateOrSubject() throws {
+        let line = "refs/tags/v3\0ccccccc3\0\0\0commit\0\0\0\0\0\0\0\0\0\0The commit's subject\n"
+        let v3 = try #require(RefParser.parse(Data(line.utf8)).tags.first)
+        #expect(v3.sha == "ccccccc3")
+        #expect(v3.objectID == "ccccccc3")
+        #expect(!v3.isAnnotated)
+        #expect(v3.tagger == nil)
+        #expect(v3.date == nil)
+        #expect(v3.subject == nil)
+    }
+
+    /// An annotated tag with an empty message has an empty subject, and one written without a
+    /// tagger line has neither tagger nor date.
+    @Test func anAnnotatedTagWithoutTaggerOrMessage() throws {
+        let line = "refs/tags/bare\0ddddddd4\0\0\0tag\0eeeeeee5\0\0\0\0\0\0\0\0\0\n"
+        let bare = try #require(RefParser.parse(Data(line.utf8)).tags.first)
+        #expect(bare.objectID == "ddddddd4")
+        #expect(bare.tagger == nil)
+        #expect(bare.date == nil)
+        #expect(bare.subject == "")
+    }
+
+    /// Output recorded before fields 13–15 existed still parses: the tag object is still the
+    /// ref's own id, and what was not read is nil rather than empty.
+    @Test func aSixFieldAnnotatedTagStillHasItsObjectID() throws {
+        let line = "refs/tags/v2\0aaaaaaa1\0\0\0tag\0bbbbbbb2\n"
+        let v2 = try #require(RefParser.parse(Data(line.utf8)).tags.first)
+        #expect(v2.objectID == "aaaaaaa1")
+        #expect(v2.tagger == nil)
+        #expect(v2.subject == nil)
+    }
+
     @Test func branchWithEmptyPeeledFieldKeepsObjectname() {
         let line = "refs/heads/main\0ddddddd4\0*\0\0commit\0\n"
         let collection = RefParser.parse(Data(line.utf8))

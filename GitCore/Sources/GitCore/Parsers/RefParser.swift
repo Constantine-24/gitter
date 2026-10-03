@@ -1,18 +1,22 @@
 import Foundation
 
-/// Parses the output of `git for-each-ref` with the twelve-field format
+/// Parses the output of `git for-each-ref` with the fifteen-field format
 /// `%(refname) %(objectname) %(HEAD) %(upstream:short) %(objecttype) %(*objectname)`
 /// `%(upstream:track) %(upstream:remotename) %(upstream:remoteref)`
-/// `%(symref) %(push:remotename) %(push:remoteref)`, NUL-separated, into a `RefCollection`.
+/// `%(symref) %(push:remotename) %(push:remoteref)`
+/// `%(taggername) %(taggerdate:iso-strict) %(contents:subject)`, NUL-separated, into a
+/// `RefCollection`.
 ///
 /// The sixth `%(*objectname)` field is the *peeled* object: for an annotated tag it is the
-/// commit the tag object points at, and it is empty for everything else. Fields 7–9 say where
-/// the branch fetches from, 11–12 where it pushes to — two different things (see
-/// `Branch.pushRemote`) — and field 10 is `%(symref)`, which is non-empty exactly for a
-/// symbolic ref.
+/// commit the tag object points at — through a tag of a tag, all the way (B18) — and it is
+/// empty for everything else. Fields 7–9 say where the branch fetches from, 11–12 where it
+/// pushes to — two different things (see `Branch.pushRemote`) — and field 10 is `%(symref)`,
+/// which is non-empty exactly for a symbolic ref. Fields 13–15 are read for an annotated tag
+/// only: a lightweight tag has no tagger, and its `%(contents:subject)` is the commit's
+/// subject, not the tag's (B18).
 ///
-/// Every field after the fifth is optional: a line with only the first five, six, nine or
-/// eleven is still accepted, so output captured before a field was added (and the test
+/// Every field after the fifth is optional: a line with only the first five, six, nine, eleven
+/// or twelve is still accepted, so output captured before a field was added (and the test
 /// fixtures recorded from it) keeps parsing, with the missing fields simply unset.
 ///
 /// `RefParser` knows nothing about which remotes are *configured* — that is `git remote -v`
@@ -45,6 +49,9 @@ public enum RefParser {
             let symrefField = fields.count >= 10 ? String(fields[9]) : nil
             let pushRemoteField = fields.count >= 11 ? String(fields[10]) : ""
             let pushRefField = fields.count >= 12 ? String(fields[11]) : ""
+            let taggerField = fields.count >= 13 ? String(fields[12]) : ""
+            let taggerDateField = fields.count >= 14 ? String(fields[13]) : ""
+            let subjectField = fields.count >= 15 ? String(fields[14]) : nil
 
             if refname.hasPrefix(localBranchPrefix) {
                 let name = String(refname.dropFirst(localBranchPrefix.count))
@@ -89,9 +96,16 @@ public enum RefParser {
                 let name = String(refname.dropFirst(tagPrefix.count))
                 guard !name.isEmpty else { continue }
                 // An annotated tag's own `objectname` is the tag object, which is no use for
-                // pointing at a row in the graph; prefer the commit it peels to.
+                // pointing at a row in the graph; prefer the commit it peels to. The tag object
+                // is kept as `objectID`: it is what the ref holds, and what a compare-and-delete
+                // names (B19).
+                let isAnnotated = objectType == "tag"
                 tags.append(
-                    Tag(name: name, sha: peeled.isEmpty ? sha : peeled, isAnnotated: objectType == "tag")
+                    Tag(name: name, sha: peeled.isEmpty ? sha : peeled, isAnnotated: isAnnotated,
+                        objectID: sha,
+                        tagger: isAnnotated && !taggerField.isEmpty ? taggerField : nil,
+                        date: isAnnotated ? Self.date(taggerDateField) : nil,
+                        subject: isAnnotated ? subjectField : nil)
                 )
             }
             // Other refs (refs/stash, refs/notes/...) are intentionally skipped.
@@ -102,5 +116,14 @@ public enum RefParser {
         tags.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
         return RefCollection(localBranches: localBranches, remoteBranches: remoteBranches, tags: tags)
+    }
+
+    /// `%(taggerdate:iso-strict)` — `2023-11-16T02:00:00Z` or `…+04:00` — or nil when empty
+    /// (a tag object written without a tagger line) or unreadable.
+    private static func date(_ field: String) -> Date? {
+        guard !field.isEmpty else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: field)
     }
 }

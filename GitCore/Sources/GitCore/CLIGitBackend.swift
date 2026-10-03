@@ -26,10 +26,18 @@ public struct CLIGitBackend: GitBackend {
 
     // The tracking fields go at the END so that any output recorded from the shorter format
     // still parses: `RefParser` treats every field after the fifth as optional.
+    //
+    // B1 Task 2 grew it by the three tag fields (13–15) rather than adding a second
+    // `for-each-ref refs/tags` read: one process, one parser, one place the list comes from, and
+    // the parser already takes trailing fields as optional. What it costs was measured (git
+    // 2.54): for a branch the fields are empty or the commit's subject, which `RefParser`
+    // ignores, and `%(contents:subject)` is always one line — git joins the first paragraph
+    // with spaces, CR LF included — so the line-per-ref split stays sound.
     private static let refFormat =
         "%(refname)%00%(objectname)%00%(HEAD)%00%(upstream:short)%00%(objecttype)%00%(*objectname)"
         + "%00%(upstream:track)%00%(upstream:remotename)%00%(upstream:remoteref)"
         + "%00%(symref)%00%(push:remotename)%00%(push:remoteref)"
+        + "%00%(taggername)%00%(taggerdate:iso-strict)%00%(contents:subject)"
     // Internal, not private: `CLIGitBackend+Remotes.swift`'s `commits(in:notIn:limit:)` reads a
     // second log through the same `LogParser`, and two format strings that must match one
     // parser's doc comment verbatim are one too many.

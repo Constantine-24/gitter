@@ -1638,6 +1638,150 @@ import Testing
         #expect(!ForceFlagScanner.findings(in: changed, fileName: file).isEmpty)
     }
 
+    // MARK: - Tags (B1 Task 2)
+
+    /// A **contract**: every vector `CLIGitBackend+Tags.swift` runs, spelled as it writes them.
+    /// `tag` and `update-ref` are shape-governed: the two creates (the restore is the
+    /// lightweight one) and the one compare-and-delete are their only permitted forms.
+    @Test(arguments: [
+        #"_ = try await run(["tag", "--no-sign", "--end-of-options", name, sha], cwd: root)"#,
+        #"_ = try await run(["tag", "--no-sign", "-a", "-F", file.path, "--cleanup=verbatim", "--end-of-options", name, sha], cwd: root)"#,
+        #"_ = try await run(["tag", "--no-sign", "--end-of-options", receipt.name, receipt.objectID], cwd: root)"#,
+        #"let result = try await runWithEnvironment(["update-ref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"let arguments = ["push", "--porcelain", "--no-follow-tags", "--no-recurse-submodules", "--end-of-options", remote, "refs/tags/\(n):refs/tags/\(n)"]"#,
+        #"let arguments = ["push", "--porcelain", "--no-follow-tags", "--no-recurse-submodules", "--force-with-lease=refs/tags/\(n):\(id)", "--end-of-options", remote, ":refs/tags/\(n)"]"#,
+        #"let result = try await runStreaming(["ls-remote", "--exit-code", "--end-of-options", remote, "refs/tags/\(n)"], cwd: root, allowedExitCodes: [2], progress: { _ in })"#,
+        #"let check = try await runWithEnvironment(["check-ref-format", "refs/tags/\(name)"], cwd: root, extra: [:], allowedExitCodes: [1])"#,
+        #"let data = try await run(["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes", "refs/tags"], cwd: root)"#,
+    ])
+    func allowsTheTagVectorsThisMilestoneNeeds(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
+    /// Each pin left out, a flag that signs, forces, deletes or opens an editor, the arguments
+    /// before `--end-of-options`, or the vector hidden from its shape: a finding. Built in test
+    /// strings only, never in a source.
+    @Test(arguments: [
+        // `--no-sign` left out: `tag.gpgSign=true` turns even a lightweight tag into a signed
+        // annotated one (B17).
+        #"_ = try await run(["tag", "--end-of-options", name, sha], cwd: root)"#,
+        #"_ = try await run(["tag", "-a", "-F", f, "--cleanup=verbatim", "--end-of-options", name, sha], cwd: root)"#,
+        // `-a` left out: `tag.forceSignAnnotated=true` beats `--no-sign` (B17).
+        #"_ = try await run(["tag", "--no-sign", "-F", f, "--cleanup=verbatim", "--end-of-options", name, sha], cwd: root)"#,
+        #"_ = try await run(["tag", "--no-sign", "-m", message, "--end-of-options", name, sha], cwd: root)"#,
+        // `--cleanup=verbatim` left out: `-F` strips the `#` lines (B17).
+        #"_ = try await run(["tag", "--no-sign", "-a", "-F", f, "--end-of-options", name, sha], cwd: root)"#,
+        #"_ = try await run(["tag", "--no-sign", "-a", "-F", f, "--cleanup=strip", "--end-of-options", name, sha], cwd: root)"#,
+        // Forcing, signing, deleting, listing, an editor.
+        #"_ = try await run(["tag", "-f", "--no-sign", "--end-of-options", name, sha], cwd: root)"#,
+        #"_ = try await run(["tag", "--force", name, sha], cwd: root)"#,
+        #"_ = try await run(["tag", "-s", "-m", m, name, sha], cwd: root)"#,
+        #"_ = try await run(["tag", "--sign", "-m", m, name, sha], cwd: root)"#,
+        #"_ = try await run(["tag", "-u", key, "-m", m, name, sha], cwd: root)"#,
+        #"_ = try await run(["tag", "--local-user=\(key)", name, sha], cwd: root)"#,
+        #"_ = try await run(["tag", "--local-user", key, name, sha], cwd: root)"#,
+        #"_ = try await run(["tag", "-d", name], cwd: root)"#,
+        #"_ = try await run(["tag", "--delete", name], cwd: root)"#,
+        #"_ = try await run(["tag", "-d", "--end-of-options", name], cwd: root)"#,
+        #"_ = try await run(["tag", "-l"], cwd: root)"#,
+        #"_ = try await run(["tag", "--no-sign", "-a", "-e", "-F", f, "--cleanup=verbatim", "--end-of-options", name, sha], cwd: root)"#,
+        // The name and the target before `--end-of-options`, inline, or with more after.
+        #"_ = try await run(["tag", "--no-sign", name, sha], cwd: root)"#,
+        #"_ = try await run(["tag", "--no-sign", "--end-of-options", "v1", sha], cwd: root)"#,
+        #"_ = try await run(["tag", "--no-sign", "--end-of-options", name, sha] + more, cwd: root)"#,
+        #"_ = try await run(["tag", "--no-sign", "--end-of-options", name, sha, "-f"], cwd: root)"#,
+        // Hidden from the shape: a fragment, an append.
+        #"_ = try await run([repoFlag, "tag", "-m", m, name, sha], cwd: root)"#,
+        #"var a = [String](); a.append("tag"); a += [name, sha]"#,
+    ])
+    func catchesATagVectorOutsideItsShapes(source: String) {
+        #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// `update-ref` is shape-governed: the one compare-and-delete, with the tag's full ref name
+    /// and the expected id an interpolation. A literal old value — empty, forty zeros — deletes
+    /// with no check at all (B19); a short ref name is refused by git, a branch is not a tag,
+    /// and every other form of `update-ref` moves or deletes refs the sheet never named.
+    @Test(arguments: [
+        #"_ = try await run(["update-ref", "-d", "--end-of-options", "refs/tags/\(name)", ""], cwd: root)"#,
+        #"_ = try await run(["update-ref", "-d", "--end-of-options", "refs/tags/\(name)", "0000000000000000000000000000000000000000"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "-d", "--end-of-options", "refs/tags/\(name)"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "-d", "--end-of-options", "refs/tags/\(name)", expected], cwd: root)"#,
+        #"_ = try await run(["update-ref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)^0"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "-d", "--end-of-options", name, "\(expected)"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "-d", "--end-of-options", "refs/heads/\(name)", "\(expected)"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "-d", "refs/tags/\(name)", "\(expected)"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)"] + more, cwd: root)"#,
+        #"_ = try await run(["update-ref", "refs/heads/main", sha], cwd: root)"#,
+        #"_ = try await run(["update-ref", "--stdin"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "-m", why, "refs/tags/\(name)", sha], cwd: root)"#,
+        #"_ = try await run([repoFlag, "update-ref", "-d", ref], cwd: root)"#,
+    ])
+    func catchesAnUpdateRefOutsideTheCompareAndDelete(source: String) {
+        #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// `push … tag <name>` is git's keyword form for `refs/tags/<name>:refs/tags/<name>` — a
+    /// short name the scanner never saw a shape for (B20). Gitter spells the refspec in full.
+    @Test(arguments: [
+        #"let arguments = ["push", "--porcelain", "--no-follow-tags", "--no-recurse-submodules", "--end-of-options", remote, "tag", n]"#,
+        #"_ = try await run(["push", remote, "tag", name], cwd: root)"#,
+        #"_ = try await run(["push", remote, cond ? "tag" : "refs/tags/x", name], cwd: root)"#,
+    ])
+    func catchesThePushKeywordFormForATag(source: String) {
+        let findings = ForceFlagScanner.findings(in: source)
+        #expect(findings.contains { $0.contains("tag") }, "missed: \(source) → \(findings)")
+    }
+
+    /// The pushes Gitter makes that the push rules already cover, written for a tag: no force,
+    /// no unleased delete, no `--tags`, `--follow-tags`, `--mirror` or `--all`.
+    @Test(arguments: [
+        #"let arguments = ["push", "--porcelain", "--no-follow-tags", "--no-recurse-submodules", "--end-of-options", remote, "+refs/tags/\(n):refs/tags/\(n)"]"#,
+        #"let arguments = ["push", "--porcelain", "--no-follow-tags", "--no-recurse-submodules", "--end-of-options", remote, ":refs/tags/\(n)"]"#,
+        #"let arguments = ["push", "--porcelain", "--no-follow-tags", "--no-recurse-submodules", "--force-with-lease=refs/tags/\(n)", "--end-of-options", remote, ":refs/tags/\(n)"]"#,
+        #"let arguments = ["push", "--porcelain", "--tags", "--end-of-options", remote]"#,
+        #"let arguments = ["push", "--porcelain", "--follow-tags", "--end-of-options", remote, "refs/tags/\(n):refs/tags/\(n)"]"#,
+        #"let arguments = ["push", "--porcelain", "--mirror", "--end-of-options", remote]"#,
+        #"let arguments = ["push", "--porcelain", "--delete", "--end-of-options", remote, "refs/tags/\(n)"]"#,
+        #"let arguments = ["push", "--porcelain", "-f", "--end-of-options", remote, "refs/tags/\(n):refs/tags/\(n)"]"#,
+    ])
+    func catchesATagPushThePushRulesAlreadyForbid(source: String) {
+        #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// The two subcommands are shape-governed, and their shapes are exactly these.
+    @Test func theTagAndUpdateRefSubcommandsAreShapeGoverned() {
+        #expect(ForceFlagScanner.spelling(of: "tag", ForceFlagScanner.allowedShapes["tag"] ?? [])
+            == #"["tag", "--no-sign", "--end-of-options", <expression>, <expression>] or ["tag", "--no-sign", "-a", "-F", <expression>, "--cleanup=verbatim", "--end-of-options", <expression>, <expression>]"#)
+        #expect(ForceFlagScanner.spelling(of: "update-ref", ForceFlagScanner.allowedShapes["update-ref"] ?? [])
+            == #"["update-ref", "-d", "--end-of-options", "refs/tags/\(…)", "\(…)"]"#)
+        #expect(Set((ForceFlagScanner.forbiddenFlags["tag"] ?? [:]).keys)
+            == ["-f", "--force", "-s", "--sign", "-u", "--local-user", "-d", "--delete"])
+    }
+
+    /// Not vacuous: the tags file is clean, and each of its vectors, changed in memory only,
+    /// becomes a finding.
+    @Test(arguments: [
+        (#"["tag", "--no-sign", "--end-of-options", name, sha]"#, #"["tag", "--end-of-options", name, sha]"#),
+        (#"["tag", "--no-sign", "-a", "-F", file.path, "--cleanup=verbatim", "--end-of-options", name, sha]"#, #"["tag", "--no-sign", "-a", "-F", file.path, "--end-of-options", name, sha]"#),
+        (#"["tag", "--no-sign", "--end-of-options", receipt.name, receipt.objectID]"#, #"["tag", "-f", "--no-sign", "--end-of-options", receipt.name, receipt.objectID]"#),
+        (#""refs/tags/\(name)", "\(expected)"]"#, #""refs/tags/\(name)", ""]"#),
+        (#""--end-of-options", remote, "refs/tags/\(n):refs/tags/\(n)"]"#, #""--end-of-options", remote, "tag", n]"#),
+        (#""--force-with-lease=refs/tags/\(n):\(id)", "#, #""--force-with-lease=refs/tags/\(n)", "#),
+    ])
+    func theTagFilesVectorsAreChecked(original: String, mutated: String) throws {
+        let file = "CLIGitBackend+Tags.swift"
+        let source = try String(contentsOf: Self.sourcesRoot.appendingPathComponent(file), encoding: .utf8)
+        #expect(ForceFlagScanner.findings(in: source, fileName: file).isEmpty)
+        #expect(source.contains(original), "\(file) no longer spells \(original)")
+        let changed = source.replacingOccurrences(of: original, with: mutated)
+        #expect(changed != source)
+
+        #expect(!ForceFlagScanner.findings(in: changed, fileName: file).isEmpty)
+    }
+
     /// Not vacuous: the real sources hold exactly the five parsed reads, and the rule read them.
     @Test func everyParsedDiffReadInTheSourcesIsChecked() throws {
         let sources = try ForceFlagScanner.gitCoreSources(root: Self.sourcesRoot)

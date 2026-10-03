@@ -69,15 +69,41 @@ public struct Branch: Sendable, Hashable, Identifiable {
 
 public struct Tag: Sendable, Hashable, Identifiable {
     public let name: String
+    /// What the tag points at in the history: the commit (or tree, or blob) an annotated tag
+    /// peels to — all the way, through a tag of a tag (B18) — and the object itself for a
+    /// lightweight one. This is the row a tag pill belongs to.
     public let sha: String
     public let isAnnotated: Bool
+    /// What `refs/tags/<name>` holds: the **tag object** for an annotated tag, the commit for a
+    /// lightweight one. The id a compare-and-delete must name (B19) and the one a restore
+    /// recreates the identical tag from.
+    public let objectID: String
+    /// The tag object's tagger name; nil for a lightweight tag, which has no tagger (and for an
+    /// annotated tag written without one).
+    public let tagger: String?
+    /// The tag object's date (`%(taggerdate)`); nil for a lightweight tag — never the commit's
+    /// date, which `%(creatordate)` would report in its place (B18).
+    public let date: Date?
+    /// The tag message's subject (its first paragraph on one line); nil for a lightweight tag —
+    /// never the commit's subject, which `%(contents:subject)` reports for one (B18). Empty for
+    /// an annotated tag with an empty message.
+    public let subject: String?
 
     public var id: String { name }
 
-    public init(name: String, sha: String, isAnnotated: Bool) {
+    /// `objectID` defaults to `sha`, which is right for a lightweight tag only; the parser
+    /// always passes it.
+    public init(
+        name: String, sha: String, isAnnotated: Bool, objectID: String? = nil,
+        tagger: String? = nil, date: Date? = nil, subject: String? = nil
+    ) {
         self.name = name
         self.sha = sha
         self.isAnnotated = isAnnotated
+        self.objectID = objectID ?? sha
+        self.tagger = tagger
+        self.date = date
+        self.subject = subject
     }
 }
 
