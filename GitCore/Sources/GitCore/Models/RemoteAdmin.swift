@@ -53,9 +53,10 @@ public struct PrunePlan: Sendable, Hashable {
     }
 }
 
-/// One ref a prune could not delete, for a reason that is not "it moved": git's own (redacted)
-/// words — a lock another git process holds, a `reference-transaction` hook. The ref is still
-/// there, at the id the sheet showed.
+/// One ref a prune did not delete, for a reason that is not "it moved": git refused the
+/// compare-and-delete — a lock another git process holds, a `reference-transaction` hook — or
+/// the delete could not be started at all. `gitsWords` is git's own (redacted) words, or the
+/// launch failure's. A refused compare-and-delete changes nothing, so the ref is where it was.
 public struct RefFailure: Sendable, Hashable {
     public let tip: RefTip
     public let gitsWords: String
@@ -78,14 +79,22 @@ public struct PruneResult: Sendable, Hashable {
     /// Left alone because git refused the delete for a reason of its own; every ref after one
     /// of these was still tried.
     public let failed: [RefFailure]
+    /// The prune was cancelled while this ref's delete was running: git was stopped part-way, so
+    /// whether the ref is gone is **not known** — read it back. At most one.
+    public let outcomeUnknown: [RefTip]
+    /// Not tried, because the prune was cancelled first: each is exactly where it was.
+    public let notTried: [RefTip]
 
     public init(
-        deleted: [RefTip], skippedMoved: [RefTip], keptBranches: [String], failed: [RefFailure] = []
+        deleted: [RefTip], skippedMoved: [RefTip], keptBranches: [String], failed: [RefFailure] = [],
+        outcomeUnknown: [RefTip] = [], notTried: [RefTip] = []
     ) {
         self.deleted = deleted
         self.skippedMoved = skippedMoved
         self.keptBranches = keptBranches
         self.failed = failed
+        self.outcomeUnknown = outcomeUnknown
+        self.notTried = notTried
     }
 }
 
@@ -137,4 +146,14 @@ public enum RemoteAdminRefusal: Error, Sendable, Hashable {
     /// one New Branch refuses (`refs/…`, `heads/…`, `@`, `@{…}`), or a root-ref name
     /// (`HEAD`, `MERGE_HEAD`, …) that would shadow git's own (Ruling 1).
     case invalidBranchName(String)
+}
+
+/// A remote-administration action that stopped part-way and left something behind — not a
+/// refusal: what it names is in the repository now. Task 3 adds rename's and remove's half-done
+/// states here.
+public enum RemoteAdminPartial: Error, Sendable, Hashable {
+    /// A prune created the kept branches `kept` (in the plan's order), then could not create
+    /// `failedName` — git's (redacted) words, or `.branchExists` for a name taken since the
+    /// check — and stopped: **nothing was deleted**, and the branches in `kept` stay.
+    case keptBranchesThenStopped(kept: [String], failedName: String, gitsWords: String)
 }

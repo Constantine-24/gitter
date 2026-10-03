@@ -74,6 +74,15 @@ enum TestGitEnvironment {
         setenv("GIT_SSH", "/usr/bin/false", 1)
         setenv("GIT_TERMINAL_PROMPT", "0", 1)
         unsetenv("SSH_AUTH_SOCK")
+        // Fix round 1 (I3): everything that beats `GIT_SSH` when inherited from the shell that
+        // started `swift test` — `GIT_SSH_COMMAND`, and a `core.sshCommand` passed through the
+        // environment (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT` with its `KEY_n`/`VALUE_n`).
+        // A repository's own `core.sshCommand` — the fetch test's fake — still wins, as it should.
+        for name in ["GIT_SSH_COMMAND", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"] { unsetenv(name) }
+        for name in ProcessInfo.processInfo.environment.keys
+        where name.hasPrefix("GIT_CONFIG_KEY_") || name.hasPrefix("GIT_CONFIG_VALUE_") {
+            unsetenv(name)
+        }
         return true
     }()
 }
@@ -121,19 +130,26 @@ func isolatedRunner() -> ProcessRunner {
         let environment = ProcessInfo.processInfo.environment
         try #require(environment["GIT_ALLOW_PROTOCOL"] == "file:ssh")
         try #require(environment["GIT_SSH"] == "/usr/bin/false")
+        // Fix round 1 (I3): each of these beats `GIT_SSH` — measured, a fake named by any of them
+        // ran — so one inherited from the shell that started `swift test` would run its ssh.
+        try #require(environment["GIT_SSH_COMMAND"] == nil)
+        try #require(environment["GIT_CONFIG_PARAMETERS"] == nil)
+        try #require(environment["GIT_CONFIG_COUNT"] == nil)
+        try #require(environment.keys.filter { $0.hasPrefix("GIT_CONFIG_KEY_") || $0.hasPrefix("GIT_CONFIG_VALUE_") }.isEmpty)
         #expect(environment["SSH_AUTH_SOCK"] == nil)
         #expect(environment["GIT_TERMINAL_PROMPT"] == "0")
 
         let anyExit = Set((1...255).map { Int32($0) })
         let http = try await CLIGitBackend().runWithEnvironment(
-            ["ls-remote", "http://127.0.0.1/x.git"], cwd: repo.root, extra: [:], allowedExitCodes: anyExit)
+            ["ls-remote", "http://fake.invalid/x.git"], cwd: repo.root, extra: [:], allowedExitCodes: anyExit)
         #expect(http.exitCode != 0)
         #expect(http.stderr.contains("transport 'http' not allowed"), "\(http.stderr)")
 
         let ssh = try await CLIGitBackend().runWithEnvironment(
-            ["ls-remote", "ssh://git@127.0.0.1/x.git"], cwd: repo.root, extra: [:], allowedExitCodes: anyExit)
+            ["ls-remote", "ssh://git@fake.invalid/x.git"], cwd: repo.root, extra: [:], allowedExitCodes: anyExit)
         #expect(ssh.exitCode != 0)
         #expect(ssh.stderr.contains("Could not read from remote repository"), "\(ssh.stderr)")
         #expect(!ssh.stderr.contains("ssh:"), "a real ssh ran: \(ssh.stderr)")
+        #expect(!ssh.stderr.contains("FAKE-SSH"), "an inherited ssh command ran: \(ssh.stderr)")
     }
 }

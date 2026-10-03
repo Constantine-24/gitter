@@ -13,13 +13,16 @@ import Foundation
 /// **Measured for this task (git 2.54, `LC_ALL=C`, local bare remotes, scratch repositories):**
 /// - The listing's porcelain line is `- <old> 0000… refs/remotes/<r>/<b>`, on stdout, exit 0;
 ///   a symbolic `refs/remotes/<r>/HEAD` left dangling is a stderr notice and is never listed.
-/// - `rev-list --count --not --branches --tags --exclude=<r>/<b>… --remotes <ids…> --not
-///   --end-of-options <refs…>` gives the same union as the spec's `<refs…> --not …` spelling (2
-///   on R5's fixture) while keeping `--branches`/`--tags` in one array literal that begins with
-///   `rev-list` — the scanner reads `--tags` (and `--all`) in a fragment as `push`'s and
-///   `fetch`'s — and lets the refs follow `--end-of-options`.
+/// - `rev-list --count --not --exclude=<alias>… --branches --exclude=refs/tags/<alias>…
+///   --glob=refs/tags --exclude=<r>/<b>… --remotes <HEAD ids…> --not --end-of-options <refs…>`
+///   gives the same union as the spec's `<refs…> --not …` spelling (2 on R5's fixture), every
+///   selector after its own excludes; `--glob=refs/tags` lists nested tags as `--tags` does and,
+///   unlike `--tags`, can be appended (the scanner reads `--tags` in a fragment as `push`'s).
+///   An exclude before `--glob` is a full name (a short one excluded nothing); before
+///   `--branches`/`--remotes` a short one (fix round 1).
 /// - `git worktree list --porcelain -z` gives every worktree's HEAD as a `HEAD <id>` field; a
-///   commit held by another worktree's detached HEAD, or by a stash entry, is held (count 0).
+///   commit held by another worktree's detached HEAD is held (count 0). A stash entry is not a
+///   holder (fix round 1, I1).
 /// - `update-ref --no-deref -d --end-of-options <ref> <id>` deletes a packed ref; on a moved one
 ///   it is `error: cannot lock ref '…': is at <x> but expected <y>`, exit 1, nothing changed.
 /// - `branch --no-track --end-of-options <name> <id>` creates the branch with no `branch.<name>.*`
@@ -84,61 +87,105 @@ extension CLIGitBackend: GitRemoteAdminBackend {
     // MARK: - Stranded commits
 
     public func stranded(by refs: [String], at root: URL) async throws -> StrandedCommits {
-        for ref in refs { try requireRemoteTrackingRef(ref) }
-        var unique: [String] = []
-        for ref in refs where !unique.contains(ref) { unique.append(ref) }
+        let unique = try Self.uniqueRemoteTrackingRefs(refs, check: requireRemoteTrackingRef)
         guard !unique.isEmpty else { return .none }
+        let holders = try await StrandedHolders.read(for: unique, by: self, at: root)
 
-        // Every holder `--branches --tags --remotes` leaves out (R5): each worktree's HEAD and
-        // each stash entry, by id.
-        let heldElsewhere = try await worktreeHeadsAndStashEntries(at: root)
-        // Short names in the `--remotes` namespace (a full name excludes nothing there, R5), and
-        // every symbolic remote-tracking ref (`origin/HEAD` would otherwise hold its target).
-        let excludes = unique.map { String($0.dropFirst(Self.remoteTrackingPrefix.count)) }
-            + (try await symbolicRemoteRefs(at: root))
-
-        var arguments = ["rev-list", "--count", "--not", "--branches", "--tags"]
-        Self.completeStrandedVector(&arguments, excluding: excludes, heldElsewhere: heldElsewhere, from: unique)
-        let count = try await revListCount(arguments, at: root)
+        let count = try await strandedCount(of: unique, holders, at: root)
         guard count > 0 else { return .none }
+        let commits = try await strandedCommits(of: unique, holders, at: root)
 
-        var listing = ["rev-list", "--max-count=\(StrandedCommits.displayLimit)", "--format=%H%x00%s", "--no-commit-header", "--not", "--branches", "--tags"]
-        Self.completeStrandedVector(&listing, excluding: excludes, heldElsewhere: heldElsewhere, from: unique)
-        let commits = GitLines.split(try await run(listing, cwd: root)).compactMap { line -> CommitRef? in
+        // A holder reaches at least one of them: the same question, asked of one ref, with every
+        // ref of the set still excluded.
+        var reaching: [String] = []
+        for ref in unique where try await strandedCount(of: [ref], holders, at: root) > 0 {
+            reaching.append(ref)
+        }
+        return StrandedCommits(count: count, commits: commits, holders: reaching)
+    }
+
+    /// `refs`, each checked, without repeats, in order.
+    private static func uniqueRemoteTrackingRefs(
+        _ refs: [String], check: (String) throws -> Void
+    ) throws -> [String] {
+        var unique: [String] = []
+        for ref in refs {
+            try check(ref)
+            if !unique.contains(ref) { unique.append(ref) }
+        }
+        return unique
+    }
+
+    /// What a stranded count excludes from the refs that hold commits, and what it adds.
+    ///
+    /// - **Symbolic refs hold nothing of their own** — delete the ref one names and it dangles —
+    ///   but `--branches`, `--tags` and `--remotes` resolve each to its target's commit, so one
+    ///   naming a pruned ref made the union 0 (R5 for `refs/remotes/<r>/HEAD`; fix round 1, Minor
+    ///   3, measured for `refs/heads/alias` and `refs/tags/alias`). Every symref is excluded, by
+    ///   the spelling each selector reads: short before `--branches` and `--remotes`, **full**
+    ///   before `--glob=refs/tags` (measured: a short one there excludes nothing). A symref whose
+    ///   target is an ordinary ref loses nothing by it — the target is listed itself.
+    /// - **Every worktree's HEAD** (this one's included), by id: `--branches --tags --remotes`
+    ///   leave a detached HEAD out (R5). An unborn HEAD has no id and holds nothing.
+    /// - **Not the stash** (fix round 1, I1, Ruling 5): a stash entry is not a place a commit is
+    ///   kept — `GitBranchBackend.commitsOnlyOn`'s rule — and a later drop would lose it.
+    struct StrandedHolders {
+        let branchSymrefs: [String]
+        let tagSymrefs: [String]
+        let remoteExcludes: [String]
+        let heads: [String]
+
+        static func read(for refs: [String], by backend: CLIGitBackend, at root: URL) async throws -> StrandedHolders {
+            let local = try await backend.symbolicBranchAndTagRefs(at: root)
+            // The refs being asked about are excluded from `--remotes` too, in its short spelling
+            // (a full name excludes nothing there, R5).
+            let remote = refs.map { String($0.dropFirst(remoteTrackingPrefix.count)) }
+                + (try await backend.symbolicRemoteRefs(at: root))
+            return StrandedHolders(
+                branchSymrefs: local.branches, tagSymrefs: local.tags, remoteExcludes: remote,
+                heads: try await backend.worktreeHeads(at: root))
+        }
+
+        /// The rest of a stranded vector after `["rev-list", <mode…>, "--not"]`: each selector
+        /// after its `--exclude=`s (an exclude applies to the next selector only), the HEADs
+        /// (still negative), then `--not` again and the refs asked about, after
+        /// `--end-of-options` — which `rev-list` accepts here because no option follows it.
+        /// `--glob=refs/tags` is `--tags` (nested tags included, measured) spelled so that it can
+        /// be appended: the scanner reads a `--tags` outside a classified literal as `push`'s.
+        func complete(_ arguments: inout [String], asking refs: [String]) {
+            for name in branchSymrefs { arguments.append("--exclude=" + name) }
+            arguments.append("--branches")
+            for name in tagSymrefs { arguments.append("--exclude=" + name) }
+            arguments.append("--glob=refs/tags")
+            for name in remoteExcludes { arguments.append("--exclude=" + name) }
+            arguments.append("--remotes")
+            arguments += heads
+            arguments.append("--not")
+            arguments.append("--end-of-options")
+            arguments += refs
+        }
+    }
+
+    /// One `rev-list --count`: how many commits only `refs` hold.
+    private func strandedCount(of refs: [String], _ holders: StrandedHolders, at root: URL) async throws -> Int {
+        var arguments = ["rev-list", "--count", "--not"]
+        holders.complete(&arguments, asking: refs)
+        return try await revListCount(arguments, at: root)
+    }
+
+    /// The newest `StrandedCommits.displayLimit` of them.
+    private func strandedCommits(of refs: [String], _ holders: StrandedHolders, at root: URL) async throws -> [CommitRef] {
+        var listing = ["rev-list", "--max-count=\(StrandedCommits.displayLimit)", "--format=%H%x00%s", "--no-commit-header", "--not"]
+        holders.complete(&listing, asking: refs)
+        return GitLines.split(try await run(listing, cwd: root)).compactMap { line -> CommitRef? in
             let fields = line.split(separator: "\u{0}", maxSplits: 1, omittingEmptySubsequences: false)
             guard fields.count == 2, Self.isFullNonZeroObjectName(String(fields[0])) else { return nil }
             return CommitRef(sha: String(fields[0]), subject: String(fields[1]))
         }
-
-        // A holder reaches at least one of them: the same question, asked of one ref, with every
-        // ref of the set still excluded.
-        var holders: [String] = []
-        for ref in unique {
-            var one = ["rev-list", "--count", "--not", "--branches", "--tags"]
-            Self.completeStrandedVector(&one, excluding: excludes, heldElsewhere: heldElsewhere, from: [ref])
-            if try await revListCount(one, at: root) > 0 { holders.append(ref) }
-        }
-        return StrandedCommits(count: count, commits: commits, holders: holders)
     }
 
-    /// The rest of a stranded vector after `["rev-list", <mode>, "--not", "--branches",
-    /// "--tags"]`: each `--exclude=` before the `--remotes` it applies to, the other holders' ids
-    /// (still negative), then `--not` again and the refs being asked about, after
-    /// `--end-of-options` — which `rev-list` accepts here because no option follows it.
-    private static func completeStrandedVector(
-        _ arguments: inout [String], excluding excludes: [String], heldElsewhere: [String], from refs: [String]
-    ) {
-        for pattern in excludes { arguments.append("--exclude=" + pattern) }
-        arguments.append("--remotes")
-        arguments += heldElsewhere
-        arguments.append("--not")
-        arguments.append("--end-of-options")
-        arguments += refs
-    }
-
-    /// Every worktree's HEAD (this one's included) and every stash entry, as full ids. A HEAD
-    /// that is unborn has no id and holds nothing.
-    private func worktreeHeadsAndStashEntries(at root: URL) async throws -> [String] {
+    /// Every worktree's HEAD, as full ids.
+    func worktreeHeads(at root: URL) async throws -> [String] {
         let data = try await run(["worktree", "list", "--porcelain", "-z"], cwd: root)
         var ids: [String] = []
         for field in data.split(separator: 0, omittingEmptySubsequences: true) {
@@ -147,10 +194,26 @@ extension CLIGitBackend: GitRemoteAdminBackend {
             let id = String(text.dropFirst("HEAD ".count))
             if Self.isFullNonZeroObjectName(id), !ids.contains(id) { ids.append(id) }
         }
-        for entry in try await stashes(at: root) where Self.isFullNonZeroObjectName(entry.sha) {
-            if !ids.contains(entry.sha) { ids.append(entry.sha) }
-        }
         return ids
+    }
+
+    /// Every symbolic ref under `refs/heads/` (short, as `--branches` reads an exclude) and under
+    /// `refs/tags/` (full, as `--glob=refs/tags` reads one). A dangling one is not listed by
+    /// `for-each-ref`, and holds nothing.
+    func symbolicBranchAndTagRefs(at root: URL) async throws -> (branches: [String], tags: [String]) {
+        let data = try await run(["for-each-ref", "--format=%(refname)%00%(symref)", "--end-of-options", "refs/heads", "refs/tags"], cwd: root)
+        var branches: [String] = []
+        var tags: [String] = []
+        for line in GitLines.split(data) {
+            let fields = line.split(separator: "\u{0}", maxSplits: 1, omittingEmptySubsequences: false)
+            guard fields.count == 2, !fields[1].isEmpty else { continue }
+            if fields[0].hasPrefix("refs/heads/") {
+                branches.append(String(fields[0].dropFirst("refs/heads/".count)))
+            } else if fields[0].hasPrefix("refs/tags/") {
+                tags.append(String(fields[0]))
+            }
+        }
+        return (branches, tags)
     }
 
     private static let remoteTrackingPrefix = "refs/remotes/"
@@ -184,11 +247,7 @@ extension CLIGitBackend: GitRemoteAdminBackend {
 
         // 2. What deleting the refs that still hold their listed ids would strand now. A ref that
         // moved or is gone will not be deleted, so it is a holder like any other.
-        let tips = try await remoteTrackingTips(at: root)
-        let stillListed = plan.refs.filter { tips[$0.ref] == $0.id }.map(\.ref)
-        guard try await stranded(by: stillListed, at: root).count <= plan.stranded.count else {
-            throw RemoteAdminRefusal.strandedGrew
-        }
+        try await refuseUnlessStrandedIsWhatTheSheetShowed(plan, at: root)
 
         // 3. Every kept branch's name, then every kept branch, at the id the sheet showed —
         // all before the first delete.
@@ -202,41 +261,87 @@ extension CLIGitBackend: GitRemoteAdminBackend {
         }
         var keptBranches: [String] = []
         for branch in kept {
-            try await createKeptBranch(branch.name, at: branch.tip.id, in: root)
+            do {
+                try await createKeptBranch(branch.name, at: branch.tip.id, in: root)
+            } catch {
+                // Nothing created yet: a plain failure, and the repository is as it was. Otherwise
+                // the branches already created stay, and the error says which (fix round 1, I2).
+                guard !keptBranches.isEmpty else { throw error }
+                throw RemoteAdminPartial.keptBranchesThenStopped(
+                    kept: keptBranches, failedName: branch.name, gitsWords: Self.words(of: error))
+            }
             keptBranches.append(branch.name)
         }
 
-        // 4. One compare-and-delete per ref; every ref is tried.
+        // 4. One compare-and-delete per ref; every ref is tried, until a cancellation.
         var deleted: [RefTip] = []
         var skippedMoved: [RefTip] = []
         var failed: [RefFailure] = []
-        for tip in plan.refs {
+        var outcomeUnknown: [RefTip] = []
+        var notTried: [RefTip] = []
+        for (index, tip) in plan.refs.enumerated() {
+            // Cancelled between two deletes: the rest are exactly where they were.
+            if Task.isCancelled {
+                notTried = Array(plan.refs[index...])
+                break
+            }
+            let rest = String(tip.ref.dropFirst(Self.remoteTrackingPrefix.count))
+            let expected = tip.id
+            let result: ProcessRunner.StreamedResult
             do {
-                switch try await deleteRemoteTrackingRef(tip, at: root) {
-                case nil: deleted.append(tip)
-                case .some(let words?): failed.append(RefFailure(tip: tip, gitsWords: words))
-                case .some(nil): skippedMoved.append(tip)
-                }
+                // `--no-deref`: a symbolic ref is deleted itself, never followed onto its target.
+                result = try await runWithEnvironment(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/remotes/\(rest)", "\(expected)"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
+            } catch is CancellationError {
+                // git was stopped part-way (or never started — the runner cannot say which), so
+                // whether this ref is gone is not known (fix round 1, Minor 1).
+                outcomeUnknown.append(tip)
+                notTried = Array(plan.refs[(index + 1)...])
+                break
             } catch {
-                // A launch failure or a cancellation: not known to be deleted, and the refs after
-                // it are still tried (each fails the same way at once if the task is cancelled).
-                failed.append(RefFailure(tip: tip, gitsWords: String(describing: error)))
+                // It could not be started (a launch failure): nothing ran.
+                failed.append(RefFailure(tip: tip, gitsWords: Self.words(of: error)))
+                continue
+            }
+            if result.exitCode == 0 {
+                deleted.append(tip)
+                continue
+            }
+            // git refused, and a refused compare-and-delete changes nothing: the ref either moved
+            // (or went) since the list, or git refused for a reason of its own.
+            let words = RemoteFailureParser.gitsOwnWords(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+            if let now = try? await currentID(of: tip.ref, at: root), now != expected {
+                skippedMoved.append(tip)
+            } else {
+                failed.append(RefFailure(tip: tip, gitsWords: words))
             }
         }
-        return PruneResult(deleted: deleted, skippedMoved: skippedMoved, keptBranches: keptBranches, failed: failed)
+        return PruneResult(
+            deleted: deleted, skippedMoved: skippedMoved, keptBranches: keptBranches, failed: failed,
+            outcomeUnknown: outcomeUnknown, notTried: notTried)
     }
 
-    /// Deletes `tip.ref` only while it holds `tip.id`: nil when it did; `.some(nil)` when the ref
-    /// no longer held that id (moved or gone, RF1); `.some(words)` when git refused for a reason
-    /// of its own — a held lock, a `reference-transaction` hook — and the ref still holds it.
-    private func deleteRemoteTrackingRef(_ tip: RefTip, at root: URL) async throws -> String?? {
-        let rest = String(tip.ref.dropFirst(Self.remoteTrackingPrefix.count))
-        let expected = tip.id
-        // `--no-deref`: a symbolic ref is deleted itself, never followed onto the ref it names.
-        let result = try await runWithEnvironment(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/remotes/\(rest)", "\(expected)"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
-        guard result.exitCode != 0 else { return nil }
-        guard try await currentID(of: tip.ref, at: root) == expected else { return .some(nil) }
-        return .some(RemoteFailureParser.gitsOwnWords(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)))
+    /// `.strandedGrew` unless deleting the refs that still hold their listed ids would strand
+    /// only commits the sheet showed (fix round 1, Minor 2). The count alone is not enough: one
+    /// commit losing its holder while another gains one keeps it equal and strands a commit
+    /// nobody was shown. So when the sheet listed every stranded commit (`count ≤ displayLimit`),
+    /// the commits now stranded must be among them; past that only the count can be compared.
+    private func refuseUnlessStrandedIsWhatTheSheetShowed(_ plan: PrunePlan, at root: URL) async throws {
+        let tips = try await remoteTrackingTips(at: root)
+        let stillListed = plan.refs.filter { tips[$0.ref] == $0.id }.map(\.ref)
+        guard !stillListed.isEmpty else { return }
+        let holders = try await StrandedHolders.read(for: stillListed, by: self, at: root)
+        let count = try await strandedCount(of: stillListed, holders, at: root)
+        guard count <= plan.stranded.count else { throw RemoteAdminRefusal.strandedGrew }
+        guard count > 0, plan.stranded.count <= StrandedCommits.displayLimit else { return }
+        let shown = Set(plan.stranded.commits.map(\.sha))
+        let now = try await strandedCommits(of: stillListed, holders, at: root)
+        guard now.allSatisfy({ shown.contains($0.sha) }) else { throw RemoteAdminRefusal.strandedGrew }
+    }
+
+    /// An error in words for a notice: git's own (redacted) for a git failure.
+    private static func words(of error: Error) -> String {
+        if case GitError.commandFailed(_, let stderr) = error { return RemoteFailureParser.gitsOwnWords(stderr) }
+        return String(describing: error)
     }
 
     /// What `ref` holds now, or "" when it does not exist.

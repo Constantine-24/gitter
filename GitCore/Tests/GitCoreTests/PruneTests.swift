@@ -183,10 +183,10 @@ func thrownError(
         #expect(gone1Alone == .none)
     }
 
-    /// A commit is not stranded while anything else holds it: a tag, a local branch, the stash,
-    /// another worktree's HEAD, or this worktree's detached HEAD. Each holder sits on `gone2`'s
-    /// tip, which reaches both commits.
-    @Test(arguments: ["tag", "branch", "stash", "worktree", "detached"])
+    /// A commit is not stranded while anything else holds it: a tag, a local branch, another
+    /// worktree's HEAD, or this worktree's detached HEAD. Each holder sits on `gone2`'s tip, which
+    /// reaches both commits.
+    @Test(arguments: ["tag", "branch", "worktree", "detached"])
     func aCommitHeldElsewhereIsNotStranded(holder: String) async throws {
         let fixture = try await PruneFixture.make()
         defer { fixture.cleanUp() }
@@ -197,11 +197,6 @@ func thrownError(
         switch holder {
         case "tag": try await repo.git(["tag", "holder", fixture.gone2])
         case "branch": try await repo.git(["branch", "holder", fixture.gone2])
-        case "stash":
-            try await repo.git(["switch", "-q", "--detach", fixture.gone2])
-            try repo.write("g2.txt", "changed\n")
-            try await repo.git(["stash", "-q"])
-            try await repo.git(["switch", "-q", "main"])
         case "worktree": try await repo.git(["worktree", "add", "-q", "--detach", worktree.path, fixture.gone2])
         default: try await repo.git(["switch", "-q", "--detach", fixture.gone2])
         }
@@ -210,6 +205,41 @@ func thrownError(
             by: [PruneFixture.gone1Ref, PruneFixture.gone2Ref], at: repo.root)
 
         #expect(stranded == .none)
+    }
+
+    /// Fix round 1 (I1, Ruling 5): **a stash entry is not a place a commit is kept** (the branch
+    /// delete's own rule, `GitBranchBackend.commitsOnlyOn`) — a stash built on `gone2` leaves both
+    /// commits stranded, so the sheet still offers to keep them; a later drop would lose them.
+    @Test func aStashEntryDoesNotHoldACommit() async throws {
+        let fixture = try await PruneFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        try await repo.git(["switch", "-q", "--detach", fixture.gone2])
+        try repo.write("g2.txt", "changed\n")
+        try await repo.git(["stash", "-q"])
+        try await repo.git(["switch", "-q", "main"])
+        #expect(try await repo.gitRefExists("refs/stash"))
+
+        let stranded = try await backend.stranded(
+            by: [PruneFixture.gone1Ref, PruneFixture.gone2Ref], at: repo.root)
+
+        #expect(stranded.count == 2)
+        #expect(stranded.holders == [PruneFixture.gone1Ref, PruneFixture.gone2Ref])
+    }
+
+    /// Fix round 1 (Minor 3): a symbolic ref under `refs/heads/` or `refs/tags/` that names a
+    /// pruned ref holds nothing of its own — `--branches` / `--tags` would resolve it to the
+    /// pruned ref's commit and count 0.
+    @Test(arguments: ["refs/heads/alias", "refs/tags/alias", "refs/heads/deep/alias", "refs/tags/deep/alias"])
+    func aSymrefOutsideRefsRemotesToAPrunedRefDoesNotHoldItsCommits(symref: String) async throws {
+        let fixture = try await PruneFixture.make()
+        defer { fixture.cleanUp() }
+        try await fixture.repo.git(["symbolic-ref", symref, PruneFixture.gone2Ref])
+
+        let stranded = try await backend.stranded(
+            by: [PruneFixture.gone1Ref, PruneFixture.gone2Ref], at: fixture.repo.root)
+
+        #expect(stranded.count == 2)
     }
 
     /// A symbolic `refs/remotes/origin/HEAD` pointing at a pruned ref holds nothing of its own:
@@ -481,6 +511,119 @@ func thrownError(
         let error = await thrownError {
             _ = try await backend.prune(plan, keeping: [PruneFixture.gone2Ref: "rescued"], at: repo.root)
         }
+
+        #expect(error as? RemoteAdminRefusal == .strandedGrew)
+        #expect(try await RepoState.capture(repo) == before)
+    }
+
+    /// Fix round 1 (I2): the second kept branch cannot be created (another process holds its
+    /// lock). Nothing is deleted, and the error names the first, which was created and stays.
+    @Test func aKeptBranchThatCannotBeCreatedReportsTheOnesAlreadyCreated() async throws {
+        let fixture = try await PruneFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        let plan = try await backend.prunePlan("origin", at: repo.root)
+        let lock = repo.root.appendingPathComponent(".git/refs/heads/second.lock")
+        try Data().write(to: lock)
+        defer { try? FileManager.default.removeItem(at: lock) }
+        let before = try await RepoState.capture(repo)
+
+        let error = await thrownError {
+            _ = try await backend.prune(
+                plan, keeping: [PruneFixture.gone1Ref: "first", PruneFixture.gone2Ref: "second"], at: repo.root)
+        }
+
+        guard case .keptBranchesThenStopped(let kept, let failedName, let words)? = error as? RemoteAdminPartial else {
+            Issue.record("expected RemoteAdminPartial.keptBranchesThenStopped, got \(String(describing: error))")
+            return
+        }
+        #expect(kept == ["first"])
+        #expect(failedName == "second")
+        #expect(words.contains("second.lock"), "\(words)")
+        #expect(try await repo.revParse("refs/heads/first") == fixture.gone1)
+        // Everything else is as it was: both remote-tracking refs are still there.
+        let added = try await RepoState.capture(repo).refs.split(separator: "\n").map(String.init)
+        #expect(added.filter { !$0.hasSuffix("\trefs/heads/first") } == before.refs.split(separator: "\n").map(String.init))
+        #expect(try await repo.gitRefExists(PruneFixture.gone1Ref))
+        #expect(try await repo.gitRefExists(PruneFixture.gone2Ref))
+    }
+
+    /// The first kept branch failing leaves nothing behind: git's own failure, no partial state.
+    @Test func theFirstKeptBranchFailingIsAPlainFailure() async throws {
+        let fixture = try await PruneFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        let plan = try await backend.prunePlan("origin", at: repo.root)
+        let lock = repo.root.appendingPathComponent(".git/refs/heads/first.lock")
+        try Data().write(to: lock)
+        defer { try? FileManager.default.removeItem(at: lock) }
+        let before = try await RepoState.capture(repo)
+
+        let error = await thrownError {
+            _ = try await backend.prune(plan, keeping: [PruneFixture.gone1Ref: "first"], at: repo.root)
+        }
+
+        #expect(error is GitError, "\(String(describing: error))")
+        #expect(try await RepoState.capture(repo) == before)
+    }
+
+    /// Fix round 1 (Minor 1): cancelled while a delete is running — git was stopped part-way, so
+    /// that ref's outcome is unknown (never "unchanged, in git's words"), and the refs after it
+    /// were not tried. A `reference-transaction` hook holds the first delete open.
+    @Test func aCancelledDeleteIsOutcomeUnknownAndTheRestNotTried() async throws {
+        let fixture = try await PruneFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        let plan = try await backend.prunePlan("origin", at: repo.root)
+        let marker = repo.root.appendingPathComponent("hook-started")
+        // A duration nothing else on the machine sleeps for, so `pgrep -f` finds only this hook.
+        let sleep = "sleep 47.\(Int.random(in: 100_000...999_999))"
+        try repo.writeExecutable(".git/hooks/reference-transaction", """
+            #!/bin/sh
+            [ "$1" = prepared ] || exit 0
+            grep -q 'refs/remotes/origin/gone1$' || exit 0
+            touch '\(marker.path)'
+            exec \(sleep)
+            """)
+        let backend = self.backend
+        let root = repo.root
+        let task = Task { try await backend.prune(plan, keeping: [:], at: root) }
+        for _ in 0..<200 where !FileManager.default.fileExists(atPath: marker.path) {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        try #require(FileManager.default.fileExists(atPath: marker.path), "the hook never ran")
+        task.cancel()
+
+        let result = try await task.value
+
+        #expect(result.outcomeUnknown == [RefTip(ref: PruneFixture.gone1Ref, id: fixture.gone1)])
+        #expect(result.notTried == [RefTip(ref: PruneFixture.gone2Ref, id: fixture.gone2)])
+        #expect(result.deleted.isEmpty)
+        #expect(result.failed.isEmpty, "\(result.failed)")
+        #expect(try await repo.revParse(PruneFixture.gone2Ref) == fixture.gone2)
+        // The runner stopped git's whole process group: the hook is not left sleeping.
+        #expect(try await processesMatching(sleep).isEmpty)
+    }
+
+    /// Fix round 1 (Minor 2): one commit loses its holder while another gains one — the count is
+    /// the same, but a commit the sheet never showed would now be stranded. Refused.
+    @Test func aDifferentStrandedSetOfTheSameSizeIsRefused() async throws {
+        let fixture = try await PruneFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        // `keep` (= main + K) goes from the server too; `K` is held by a local branch at first.
+        try await bareGit(fixture.origin, ["branch", "-q", "-D", "keep"])
+        let k = try await repo.revParse("refs/remotes/origin/keep")
+        try await repo.git(["branch", "holdk", k])
+        let plan = try await backend.prunePlan("origin", at: repo.root)
+        #expect(plan.stranded.count == 2)
+        #expect(Set(plan.stranded.commits.map(\.subject)) == ["G1only", "G2only"])
+        // Now `K` loses its holder and `G1only` gains one: still two stranded, not the same two.
+        try await repo.git(["branch", "-q", "-D", "holdk"])
+        try await repo.git(["branch", "holdg1", fixture.gone1])
+        let before = try await RepoState.capture(repo)
+
+        let error = await thrownError { _ = try await backend.prune(plan, keeping: [:], at: repo.root) }
 
         #expect(error as? RemoteAdminRefusal == .strandedGrew)
         #expect(try await RepoState.capture(repo) == before)
