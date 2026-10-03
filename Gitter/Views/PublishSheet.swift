@@ -1,9 +1,10 @@
 import GitCore
 import SwiftUI
 
-/// Where to publish a branch that has no push remote, when there is more than one remote to
-/// choose from. With a single remote `push()` publishes straight away and this never opens; if
-/// it is ever shown with one, it names that remote instead of offering a one-item choice.
+/// Where to publish a branch that has no push remote. The toolbar opens it when there is more
+/// than one remote to choose from (with a single remote `push()` publishes straight away); a
+/// branch's own "Publish <b>…" (B2 Task 4) always opens it, and with one remote it names that
+/// remote instead of offering a one-item choice.
 ///
 /// Publishing loses nothing — a remote that already has a branch of this name only takes it as
 /// a fast-forward — but it does write to a server, so it follows the other remote sheets:
@@ -41,8 +42,12 @@ struct PublishSheet: View {
         return remotes.contains { $0.name == pick } ? pick : defaultRemote
     }
 
+    /// The branch is gone, or has a push remote now: `confirmPublish` would refuse.
     private var staleReason: String? {
-        store.currentBranch == branch ? nil : RemoteWording.publishSheetNoLongerApplies(branch)
+        guard let ref = store.localBranches.first(where: { $0.name == branch }),
+            PushTarget.resolve(ref, remotes: store.snapshot?.refs.remotes ?? []) == .unpublished
+        else { return RemoteWording.publishSheetNoLongerApplies(branch) }
+        return nil
     }
 
     var body: some View {
@@ -116,7 +121,7 @@ struct PublishSheet: View {
 
     private func confirm() {
         guard let remote, store.sheetBusyReason == nil else { return }
-        // `confirmPublish` checks this sheet's branch against HEAD and clears it itself.
+        // `confirmPublish` checks this sheet's branch is still unpublished and clears it itself.
         store.confirmPublish(to: remote)
     }
 }

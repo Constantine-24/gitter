@@ -38,7 +38,10 @@ enum Clipboard {
     }
 }
 
-/// A local branch: switch to it, merge it in, branch from it, rename it, delete it, copy it.
+/// A local branch: switch to it, merge it in, branch from it, rename it, delete it, copy it —
+/// and (B2 Task 4) push or publish it, fast-forward it, and set, change or unset its upstream,
+/// whether or not it is checked out. Push and Fast-Forward act at once; Publish… and Set /
+/// Change Upstream… open their sheet. Unset Upstream is only there for a branch with one.
 struct LocalBranchMenu: View {
     let branch: String
 
@@ -49,8 +52,16 @@ struct LocalBranchMenu: View {
         let mergeReason = store.mergeBlockedReason(for: branch)
         let rebaseReason = store.rebaseOntoBranchBlockedReason(branch)
         let deleteReason = store.deleteBlockedReason(for: branch)
+        let ref = store.localBranch(branch)
+        let pushReason = store.pushBranchBlockedReason(branch)
+        let fastForwardReason = store.fastForwardBlockedReason(branch)
+        let upstreamReason = store.upstreamBlockedReason
+        let unsetReason = ref?.upstream == nil ? nil : store.unsetUpstreamBlockedReason(branch)
 
-        MenuReasons(reasons: [switchReason, mergeReason, rebaseReason, deleteReason])
+        MenuReasons(reasons: [
+            switchReason, mergeReason, rebaseReason, deleteReason, pushReason, fastForwardReason,
+            upstreamReason, unsetReason,
+        ])
 
         Button("Switch") { store.switchTo(branch: branch) }
             .disabled(switchReason != nil)
@@ -74,6 +85,23 @@ struct LocalBranchMenu: View {
         // only git's "not fully merged" refusal — which changes nothing — opens a sheet.
         Button("Delete…") { store.requestDelete(branch) }
             .disabled(deleteReason != nil)
+
+        if let ref {
+            Divider()
+
+            Button(RemoteAdminWording.pushBranchTitle(ref, remotes: store.snapshot?.refs.remotes ?? [])) {
+                store.pushBranch(branch)
+            }
+            .disabled(pushReason != nil)
+            Button(RemoteAdminWording.fastForwardTitle(branch)) { store.fastForwardBranch(branch) }
+                .disabled(fastForwardReason != nil)
+            Button(RemoteAdminWording.upstreamTitle(ref)) { store.requestSetUpstream(branch) }
+                .disabled(upstreamReason != nil)
+            if ref.upstream != nil {
+                Button(RemoteAdminWording.unsetUpstreamTitle) { store.unsetUpstream(branch) }
+                    .disabled(unsetReason != nil)
+            }
+        }
 
         Divider()
 
@@ -138,7 +166,8 @@ struct RemoteBranchMenu: View {
     }
 }
 
-/// A configured remote's row: fetch just that remote, copy its address.
+/// A configured remote's row: fetch just that remote, prune it (B2 Task 4: lists on the lane,
+/// then its sheet), copy its address.
 ///
 /// "Copy URL" copies the fetch URL. A remote with only a push URL gets "Copy Push URL" in its
 /// place, so the title says which address is on the pasteboard; one whose push URL differs from
@@ -180,11 +209,15 @@ struct RemoteMenu: View {
         let fetchReason = store.fetchBlockedReason
         // git would fetch from the remote's name as a path (fix round 1, I1).
         let urlReason = RemoteWording.fetchURLBlocked(remote)
+        // Its list is a dry-run fetch: the same URL reason, so `MenuReasons` says it once.
+        let pruneReason = store.pruneBlockedReason(remote)
 
-        MenuReasons(reasons: [fetchReason, urlReason])
+        MenuReasons(reasons: [fetchReason, urlReason, pruneReason])
 
         Button(RemoteWording.fetchRemoteTitle(remote.name)) { store.fetch(remote: remote.name) }
             .disabled(fetchReason != nil || urlReason != nil)
+        Button(RemoteAdminWording.pruneTitle(remote.name)) { store.requestPrune(remote.name) }
+            .disabled(pruneReason != nil)
 
         Divider()
 
@@ -299,5 +332,37 @@ struct CommitMenu: View {
 
             Button("Copy SHA") { Clipboard.copy(sha) }
         }
+    }
+}
+
+/// The menu bar's Remotes menu (B2 Task 4): Prune <remote>… — one item with a single remote to
+/// fetch from, a submenu with several — and Clean Up Gone Branches…. Off while a sheet is up,
+/// as the Repository menu's items are: a sheet is a question the user has not answered yet.
+struct RemotesMenuContent: View {
+    let store: RepositoryStore
+
+    var body: some View {
+        let sheetUp = store.activeSheet != nil
+        let pruneReason = store.pruneMenuBlockedReason
+        let cleanUpReason = store.cleanUpBlockedReason
+        let remotes = RemoteAdminWording.prunableRemotes(store.snapshot?.refs.remotes ?? [])
+
+        MenuReasons(reasons: [pruneReason, cleanUpReason])
+
+        if remotes.count > 1 {
+            Menu("Prune") {
+                ForEach(remotes, id: \.self) { remote in
+                    Button(RemoteAdminWording.pruneTitle(remote)) { store.requestPrune(remote) }
+                }
+            }
+            .disabled(sheetUp || pruneReason != nil)
+        } else {
+            Button(remotes.first.map(RemoteAdminWording.pruneTitle) ?? "Prune…") {
+                remotes.first.map { store.requestPrune($0) }
+            }
+            .disabled(sheetUp || pruneReason != nil || remotes.isEmpty)
+        }
+        Button(RemoteAdminWording.cleanUpTitle) { store.requestCleanUpGoneBranches() }
+            .disabled(sheetUp || cleanUpReason != nil)
     }
 }

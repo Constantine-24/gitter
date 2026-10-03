@@ -28,16 +28,25 @@ struct RemoteActivity: Equatable {
         /// One tag deleted on a remote, leased on the id its sheet showed
         /// (`GitTagBackend.deleteRemoteTag`).
         case deleteRemoteTag
+        /// B2 Task 4: "Prune <remote>…" — its list (a dry-run fetch, which contacts the remote)
+        /// and then its local compare-and-deletes, which also hold the mutation slot. Not a
+        /// write to the server.
+        case prune
+        /// B2 Task 4: "Fast-Forward <branch>" of a branch that is not checked out — a fetch from
+        /// its upstream's remote, then a local compare-and-set, holding the mutation slot
+        /// throughout. Not a write to the server.
+        case fastForward
     }
 
     let kind: Kind
 
-    /// Whether this operation writes on the server — the six that hold the mutation slot too,
-    /// and whose cancellation leaves the remote in an unknown state.
+    /// Whether this operation writes on the server — six of the eight that hold the mutation
+    /// slot too, and whose cancellation leaves the remote in an unknown state. A prune's
+    /// deletes and a fast-forward hold the slot as well, but write only here (B2 Task 4).
     var isWrite: Bool {
         switch kind {
         case .push, .publish, .forcePush, .deleteRemoteBranch, .pushTag, .deleteRemoteTag: true
-        case .fetch, .autoFetch, .pull: false
+        case .fetch, .autoFetch, .pull, .prune, .fastForward: false
         }
     }
 
@@ -60,8 +69,8 @@ struct RemoteActivity: Equatable {
 struct RemoteLane: Sendable {
     let token: Int
     let generation: Int
-    /// Set when the lane also holds the mutation slot (push, publish, force push, delete, and a
-    /// tag's push or remote delete).
+    /// Set when the lane also holds the mutation slot (push, publish, force push, delete, a
+    /// tag's push or remote delete, a prune's deletes and a fast-forward).
     let mutationGeneration: Int?
 }
 

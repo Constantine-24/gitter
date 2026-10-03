@@ -89,20 +89,27 @@ extension RepositoryStore {
 
     // MARK: - Publish
 
-    /// Publishes the current branch to `remote` from the publish sheet: `push -u`, onto the
-    /// branch's own name there.
+    /// Publishes the sheet's branch to `remote`: `push -u`, onto the branch's own name there.
+    /// The branch HEAD is on (the toolbar's Publish) or, since B2 Task 4, any other local branch
+    /// (its menu's "Publish <b>…"; R13: `-u` writes the right upstream for a branch that is not
+    /// checked out). Refused when the branch is gone or has a push remote now.
     func confirmPublish(to remote: String) {
         guard case .publish(let name) = activeSheet else { return }
         activeSheet = nil
-        guard let branch = currentBranchRef, branch.name == name else {
+        let remotes = snapshot?.refs.remotes ?? []
+        guard let branch = localBranches.first(where: { $0.name == name }),
+            PushTarget.resolve(branch, remotes: remotes) == .unpublished
+        else {
             showStickyError(RemoteWording.publishSheetStale)
             return
         }
-        guard snapshot?.refs.remotes.contains(where: { $0.name == remote && $0.canPush }) == true else {
+        guard remotes.contains(where: { $0.name == remote && $0.canPush }) else {
             showStickyError(RemoteWording.noSuchRemote(remote))
             return
         }
-        send(branch, to: remote, remoteRef: "refs/heads/" + branch.name, publishing: true)
+        send(
+            branch, to: remote, remoteRef: "refs/heads/" + branch.name, publishing: true,
+            checkedOut: name == currentBranch)
     }
 
     // MARK: - Force push

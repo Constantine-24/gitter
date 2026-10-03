@@ -569,9 +569,10 @@ import Testing
 
     // MARK: - Failures that are not rejections
 
-    /// A remote git can read but that names nothing: no porcelain line at all, so the outcome
-    /// cannot come from stdout and git's own diagnosis is thrown instead.
-    @Test func aRemoteThatNamesNothingThrowsGitsDiagnosis() async throws {
+    /// A name that is no configured remote: refused before git runs (Ruling 11, B2 Task 4) —
+    /// git would read it as a path. It used to reach git, print no porcelain line and come back
+    /// as git's own diagnosis (`.repositoryNotFound`).
+    @Test func aRemoteThatIsNotConfiguredIsRefusedBeforeGitRuns() async throws {
         let repo = try await TestRepo.makeBranched()
         defer { repo.cleanUp() }
         let origin = try await repo.addOriginWithFeatureBranch()
@@ -582,7 +583,7 @@ import Testing
                 "main", to: "nosuch", remoteRef: "refs/heads/main", setUpstream: false,
                 at: repo.root, progress: { _ in })
         }
-        #expect(error == .repositoryNotFound)
+        #expect(error == .noSuchRemote("nosuch"))
     }
 
     /// A local branch that is not there: git exits 1 with `error: src refspec … does not match

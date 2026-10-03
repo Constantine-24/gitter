@@ -128,6 +128,10 @@ struct GitterApp: App {
                             store.autoFetchSettingChanged(enabled: enabled)
                         }))
             }
+            // B2: housekeeping of the remotes. Each item says why it is off (`MenuReasons`).
+            CommandMenu("Remotes") {
+                RemotesMenuContent(store: store)
+            }
         }
     }
 }

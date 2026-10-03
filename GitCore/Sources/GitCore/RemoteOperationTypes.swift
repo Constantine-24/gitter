@@ -67,6 +67,12 @@ public enum RemoteOperationError: Error, Equatable, Sendable {
     /// from, and a branch in it deleted by a push). Thrown before any fetch, push or `ls-remote`
     /// runs; the payload is the remote's name.
     case noURL(String)
+    /// The name is not a configured remote (`git remote -v` does not list it) — removed or
+    /// renamed since the caller read the remotes. git would read it as a **path** (Ruling 11,
+    /// measured: a tag push to an unconfigured `vendor` beside a nested repository `vendor/`
+    /// returned `.pushed` and changed that repository). Thrown before any fetch, push or
+    /// `ls-remote` runs; the payload is the name.
+    case noSuchRemote(String)
     /// An expected tip handed to `forcePush` or `deleteRemoteBranch` — the lease, or
     /// `forcePush`'s `expectedLocalTip`, the refspec's source side — is not a full object
     /// name — 40 or 64 **lower-case** hexadecimal characters, and not all zeros. Thrown

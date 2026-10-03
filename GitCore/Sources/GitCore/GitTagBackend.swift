@@ -134,7 +134,8 @@ public protocol GitTagBackend: Sendable {
     ///
     /// A configured remote with no URL for this (`Remote.canFetch` / `canPush`) is
     /// `RemoteOperationError.noURL`, before any fetch, push or `ls-remote` (B2 Task 3, fix round
-    /// 1, I1: git would use its name as a path).
+    /// 1, I1: git would use its name as a path), and a name that is no configured remote is
+    /// `.noSuchRemote` (Ruling 11: the same path hazard).
     func remoteTagID(_ name: String, on remote: String, at root: URL) async throws -> String?
 
     /// Pushes exactly `refs/tags/<name>` to `remote` (B20): no other tag, whatever
@@ -142,7 +143,8 @@ public protocol GitTagBackend: Sendable {
     ///
     /// A configured remote with no URL for this (`Remote.canFetch` / `canPush`) is
     /// `RemoteOperationError.noURL`, before any fetch, push or `ls-remote` (B2 Task 3, fix round
-    /// 1, I1: git would use its name as a path).
+    /// 1, I1: git would use its name as a path), and a name that is no configured remote is
+    /// `.noSuchRemote` (Ruling 11: the same path hazard).
     func pushTag(_ name: String, to remote: String, at root: URL) async throws -> TagPushOutcome
 
     /// Deletes `refs/tags/<name>` on `remote` only while it still holds `id` (from
@@ -152,7 +154,8 @@ public protocol GitTagBackend: Sendable {
     ///
     /// A configured remote with no URL for this (`Remote.canFetch` / `canPush`) is
     /// `RemoteOperationError.noURL`, before any fetch, push or `ls-remote` (B2 Task 3, fix round
-    /// 1, I1: git would use its name as a path).
+    /// 1, I1: git would use its name as a path), and a name that is no configured remote is
+    /// `.noSuchRemote` (Ruling 11: the same path hazard).
     func deleteRemoteTag(_ name: String, on remote: String, expecting id: String, at root: URL) async throws
 
     /// The remotes whose `remote.<name>.tagOpt` is `--no-tags` (git's last value wins), sorted:

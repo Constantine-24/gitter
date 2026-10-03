@@ -43,7 +43,7 @@ extension RepositoryStore {
     /// |---|---|
     /// | every kind | `FETCH_HEAD`, `refs/remotes/…`, `logs/refs/remotes/…`, `refs/tags/…` |
     /// | publish | and `config` (`push -u` writes `branch.<b>.remote`/`.merge`) |
-    /// | delete on a remote | and `packed-refs` (deleting a packed tracking ref rewrites it) |
+    /// | delete on a remote, prune | and `packed-refs` (deleting a packed tracking ref rewrites it) |
     ///
     /// Why the first row is every kind's: each of them can fetch on the lane — a fetch and a
     /// pull outright (the force push and delete warnings are fetch lanes too), and a push,
@@ -73,10 +73,13 @@ extension RepositoryStore {
         }
         switch kind {
         case .publish: return inGit == "config"
-        case .deleteRemoteBranch: return inGit == "packed-refs"
+        // A prune's compare-and-deletes rewrite `packed-refs` for a packed tracking ref. Its kept
+        // branches (`refs/heads/…`) are left to cost one more reload, like a fast-forward's move.
+        case .deleteRemoteBranch, .prune: return inGit == "packed-refs"
         // A tag's push or remote delete writes nothing here: `refs/tags/…` is already in the
         // first row, and neither updates a remote-tracking ref.
-        case .fetch, .autoFetch, .pull, .push, .forcePush, .pushTag, .deleteRemoteTag: return false
+        case .fetch, .autoFetch, .pull, .push, .forcePush, .pushTag, .deleteRemoteTag, .fastForward:
+            return false
         }
     }
 

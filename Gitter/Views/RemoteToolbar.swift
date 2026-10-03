@@ -111,8 +111,9 @@ struct RemoteToolbarItem: View {
     /// fetch shows on Fetch.
     static func owner(of kind: RemoteActivity.Kind) -> Action {
         switch kind {
-        case .fetch, .autoFetch: .fetch
-        case .pull: .pull
+        // A prune lists with a fetch; a fast-forward fetches and then moves a branch, as a pull.
+        case .fetch, .autoFetch, .prune: .fetch
+        case .pull, .fastForward: .pull
         case .push, .publish, .forcePush, .deleteRemoteBranch, .pushTag, .deleteRemoteTag: .push
         }
     }

@@ -411,6 +411,39 @@ extension CLIGitBackend: GitRemoteAdminBackend {
         return nil
     }
 
+    // MARK: - Reads for the sheets (B2 Task 4)
+
+    public func remoteHEADTarget(of remote: String, at root: URL) async throws -> String? {
+        try requireRemoteName(remote)
+        // A `for-each-ref` pattern matches by whole path components, so refs *beneath*
+        // `<remote>/HEAD/` are listed too; only the exact name counts. `%00` for `symbolicRemoteRefs`'
+        // reason: a NUL cannot be passed in an argument. A dangling symref is not listed.
+        let head = "refs/remotes/" + remote + "/HEAD"
+        let data = try await run(
+            ["for-each-ref", "--format=%(refname)%00%(symref)", "--end-of-options", head], cwd: root)
+        for line in GitLines.split(data) {
+            let fields = line.split(separator: "\u{0}", maxSplits: 1, omittingEmptySubsequences: false)
+            if fields.count == 2, fields[0] == head, !fields[1].isEmpty { return String(fields[1]) }
+        }
+        return nil
+    }
+
+    public func branchConfigKeys(of branch: String, at root: URL) async throws -> [String] {
+        try requireName(branch)
+        // Names only, NUL-separated: a key cannot hold a NUL. git lower-cases the section and the
+        // variable and keeps the subsection (the branch name) as written, so the prefix is
+        // compared as it is and the rest must be one variable — a dot in it would make the
+        // subsection longer, another branch's.
+        let data = try await run(["config", "--local", "--name-only", "-z", "--list"], cwd: root)
+        let prefix = "branch." + branch + "."
+        return String(decoding: data, as: UTF8.self).split(separator: "\u{0}").compactMap { key in
+            let key = key.trimmingCharacters(in: .newlines)
+            guard key.hasPrefix(prefix) else { return nil }
+            let variable = key.dropFirst(prefix.count)
+            return variable.isEmpty || variable.contains(".") ? nil : key
+        }
+    }
+
     // MARK: - Gone branches
 
     public func goneBranches(at root: URL) async throws -> [GoneBranch] {

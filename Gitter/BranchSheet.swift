@@ -95,6 +95,16 @@ enum BranchSheet: Identifiable, Hashable {
     /// the sheet opened (`remoteTagID`) — the lease `confirmDeleteRemoteTag` hands to git. Nil
     /// when the remote has no such tag: the sheet then says so and offers nothing.
     case deleteRemoteTag(name: String, remote: String, id: String?)
+    /// Prune <remote>…: GitCore's plan (`prunePlan`, read on the lane) — the refs with the ids
+    /// the compare-and-deletes name, and what deleting them strands — which `confirmPrune`
+    /// hands back to `prune` as it is.
+    case prune(PrunePlan)
+    /// Clean Up Gone Branches…: every local branch whose upstream is gone, as `goneBranches`
+    /// read it — tips and unique-commit counts are what `confirmCleanUp` deletes against.
+    case cleanUpGone([GoneBranch])
+    /// Set / Change Upstream… of `branch`, which tracks `current` (git's short spelling) or
+    /// nothing.
+    case upstream(branch: String, current: String?)
 
     var id: Self { self }
 
@@ -115,6 +125,7 @@ enum BranchSheet: Identifiable, Hashable {
             r == s && a == b
         case (.deleteRemoteTag(let a, let r, _), .deleteRemoteTag(let b, let s, _)):
             a == b && r == s
+        case (.prune(let a), .prune(let b)): a.remote == b.remote
         default: false
         }
     }

@@ -14,10 +14,14 @@ struct NoURLFixture {
     let nested: URL
     var repo: TestRepo { upstream.repo }
 
-    static func make() async throws -> NoURLFixture {
+    /// `configured: false` leaves `vendor` out of the configuration altogether (Ruling 11): a
+    /// name that is no remote at all, beside the same nested repository.
+    static func make(configured: Bool = true) async throws -> NoURLFixture {
         let upstream = try await UpstreamFixture.make()
         let repo = upstream.repo
-        try await repo.git(["config", "remote.vendor.fetch", "+refs/heads/*:refs/remotes/vendor/*"])
+        if configured {
+            try await repo.git(["config", "remote.vendor.fetch", "+refs/heads/*:refs/remotes/vendor/*"])
+        }
         try await repo.git(["config", "remote.po.pushurl", upstream.origin.path])
         let nested = repo.root.appendingPathComponent("vendor", isDirectory: true)
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
@@ -110,5 +114,65 @@ struct NoURLFixture {
         #expect(try await repo.gitRefExists("refs/remotes/origin/fresh"))
         #expect(try await repo.refTips(under: "refs/remotes/vendor").isEmpty)
         try await assertRemoteUnchanged(fixture.nested, since: nested)
+    }
+}
+
+/// Ruling 11 (B2 Task 4, step 0): a name that is **not a configured remote** is refused before
+/// git runs, exactly as a remote with no URL is. git reads such a name as a path, so a stale
+/// remote list (a remote removed or renamed since the last refresh) beside a directory of that
+/// name pushed into it: measured, `pushTag("v1", to: "vendor")` returned `.pushed` and changed
+/// the nested repository. The only process is the read of `git remote -v` (and, for a prune,
+/// of the configuration) that answers the question.
+@Suite struct UnconfiguredRemoteTests {
+    let tip = "1111111111111111111111111111111111111111"
+
+    @Test(arguments: ["fetch", "push", "forcePush", "deleteRemoteBranch", "pushTag", "deleteRemoteTag", "remoteTagID", "prunePlan"])
+    func aNameThatIsNoRemoteIsRefusedBeforeGitUsesItAsAPath(operation: String) async throws {
+        let fixture = try await NoURLFixture.make(configured: false)
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        let nested = try await RemoteState.capture(fixture.nested)
+        let before = try await RepoState.capture(repo)
+        let git = try GitLaunchLog()
+        defer { git.cleanUp() }
+        let backend = git.backend
+        let root = repo.root
+
+        let error = await thrownError {
+            switch operation {
+            case "fetch": try await backend.fetch(remote: "vendor", at: root, progress: { _ in })
+            case "push": _ = try await backend.push("main", to: "vendor", remoteRef: "refs/heads/main", setUpstream: true, at: root, progress: { _ in })
+            case "forcePush": _ = try await backend.forcePush("main", to: "vendor", remoteRef: "refs/heads/topic", expectedRemoteTip: tip, expectedLocalTip: tip, at: root, progress: { _ in })
+            case "deleteRemoteBranch": _ = try await backend.deleteRemoteBranch("topic", on: "vendor", expectedTip: tip, at: root)
+            case "pushTag": _ = try await backend.pushTag("v1", to: "vendor", at: root)
+            case "deleteRemoteTag": try await backend.deleteRemoteTag("v9", on: "vendor", expecting: tip, at: root)
+            case "remoteTagID": _ = try await backend.remoteTagID("v9", on: "vendor", at: root)
+            default: _ = try await backend.prunePlan("vendor", at: root)
+            }
+        }
+
+        if operation == "prunePlan" {
+            #expect(error as? RemoteAdminRefusal == .noSuchRemote("vendor"), "\(String(describing: error))")
+        } else {
+            #expect(error as? RemoteOperationError == .noSuchRemote("vendor"), "\(operation): \(String(describing: error))")
+        }
+        #expect(git.launches.allSatisfy { ["remote", "config"].contains($0) }, "\(operation): \(git.launches)")
+        #expect(!git.launches.isEmpty)
+        #expect(try await RepoState.capture(repo) == before)
+        try await assertRemoteUnchanged(fixture.nested, since: nested)
+    }
+
+    /// The negative control: the fixture really is the hazard. git itself, handed the same
+    /// unconfigured name, pushes into the nested repository — and the assertion above sees it.
+    @Test func gitItselfUsesTheNameAsAPath() async throws {
+        let fixture = try await NoURLFixture.make(configured: false)
+        defer { fixture.cleanUp() }
+        let nested = try await RemoteState.capture(fixture.nested)
+
+        try await fixture.repo.git(["push", "-q", "vendor", "refs/heads/main:refs/heads/from-outside"])
+
+        await withKnownIssue("git pushed into the directory called vendor") {
+            try await assertRemoteUnchanged(fixture.nested, since: nested)
+        }
     }
 }

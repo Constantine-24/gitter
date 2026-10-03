@@ -4,10 +4,11 @@ import SwiftUI
 /// which question is on screen.
 ///
 /// The switch is exhaustive on purpose: every question the store can ask has a view here, and
-/// thirteen of the twenty-five are confirmations for actions that can replace or lose work — ten
-/// here (Drop Stash…, Discard…, replacing a hand-edited conflict, Reopen Conflict…, Skip This
-/// Commit…, Rebase onto… and Delete Tag… among them), three on the server (Delete from
-/// <remote>… for a tag the third). New Tag… is a form, like New Branch. Cherry-Pick / Revert N Commits…
+/// fifteen of the twenty-eight are confirmations for actions that can replace or lose work —
+/// twelve here (Drop Stash…, Discard…, replacing a hand-edited conflict, Reopen Conflict…, Skip
+/// This Commit…, Rebase onto…, Delete Tag…, Prune <remote>… and Clean Up Gone Branches… among
+/// them), three on the server (Delete from <remote>… for a tag the third). New Tag… and Set
+/// Upstream… are forms, like New Branch. Cherry-Pick / Revert N Commits…
 /// only adds commits, and still asks: it says which, in which order. Mark Resolved with markers left loses nothing, and
 /// still asks; so do Continue over an empty result or other staged files, and Stage All during
 /// an operation, which decide what a commit holds.
@@ -69,6 +70,12 @@ struct BranchSheetHost: View {
             DeleteTagSheet(tag: tag, comesBackFrom: comesBackFrom, noTagsFrom: noTagsFrom)
         case .deleteRemoteTag(let name, let remote, let id):
             DeleteRemoteTagSheet(name: name, remote: remote, id: id)
+        case .prune(let plan):
+            PruneSheet(plan: plan)
+        case .cleanUpGone(let branches):
+            GoneBranchesSheet(branches: branches)
+        case .upstream(let branch, let current):
+            UpstreamSheet(branch: branch, current: current)
         }
     }
 }

@@ -141,8 +141,12 @@ enum RemoteWording {
         case .unknownRemote(let name):
             "\"\(branch)\" is set to push to \"\(name)\", which is not a configured remote. Fix "
                 + "branch.\(branch).pushRemote or remote.pushDefault in a terminal."
+        // N2 (Task 4): with the next step — a URL for the remote (B2's Edit URL…), or another
+        // push remote for the branch.
         case .noURL(let name):
-            "\"\(branch)\" is set to push to \"\(plain(name))\", which has no URL configured."
+            "\"\(branch)\" is set to push to \"\(plain(name))\", which has no URL configured. Give "
+                + "\"\(plain(name))\" a URL (Edit the remote's URLs), or set branch.\(branch).pushRemote to "
+                + "another remote in a terminal."
         case .upstreamNameDiffers(let upstream):
             "\"\(branch)\" tracks \"\(upstream)\", a branch with a different name, so Gitter "
                 + "can't tell which one a push should update. Push it once from a terminal with "
@@ -196,6 +200,8 @@ enum RemoteWording {
         case .deleteRemoteBranch: "the deletion on\(remote)"
         case .pushTag: "the tag push to\(remote)"
         case .deleteRemoteTag: "the tag deletion on\(remote)"
+        case .prune: "the prune of\(remote)"
+        case .fastForward: "the fast-forward"
         }
     }
 
@@ -215,6 +221,8 @@ enum RemoteWording {
         case .deleteRemoteBranch: "Deleting on\(remote)…"
         case .pushTag: "Pushing a tag to\(remote)…"
         case .deleteRemoteTag: "Deleting a tag on\(remote)…"
+        case .prune: "Pruning\(remote)…"
+        case .fastForward: "Fast-forwarding…"
         }
     }
 
@@ -259,6 +267,8 @@ enum RemoteWording {
         case .publish: "Publishing"
         case .forcePush: "Force pushing"
         case .deleteRemoteBranch, .deleteRemoteTag: "Deleting"
+        case .prune: "Pruning"
+        case .fastForward: "Fast-forwarding"
         }
     }
 
@@ -793,8 +803,8 @@ enum RemoteWording {
     }
 
     static func publishSheetNoLongerApplies(_ branch: String) -> String {
-        "You are no longer on \"\(branch)\", so publishing would be refused. Close this and "
-            + "push again."
+        "\"\(branch)\" is no longer a branch here, or has somewhere to push to now, so publishing "
+            + "would be refused. Close this and push again."
     }
 
     static func forcePushTitle(branch: String, remote: String, remoteRef: String) -> String {
@@ -1011,6 +1021,9 @@ enum RemoteWording {
         case .noURL(let remote):
             "Couldn't \(attempt): \"\(plain(remote))\" has no URL for that, so nothing was run — git "
                 + "would have used the name as a path."
+        case .noSuchRemote(let remote):
+            "Couldn't \(attempt): \"\(plain(remote))\" is no longer a configured remote — it was "
+                + "removed or renamed since the last refresh — so nothing was run."
         case .invalidLease(let value):
             "Couldn't \(attempt): \"\(plain(value))\" is not a full commit id, so nothing was sent."
         case .unsafeFetchRefspec(let remote, let refspec):

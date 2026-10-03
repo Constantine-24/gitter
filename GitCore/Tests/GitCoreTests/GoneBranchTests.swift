@@ -99,3 +99,75 @@ import Testing
         URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
     }
 }
+
+/// `remoteHEADTarget` and `branchConfigKeys` (B2 Task 4): the two reads the app's prune and
+/// clean-up sheets need to say what git leaves behind.
+@Suite struct LeftBehindReadTests {
+    let backend = CLIGitBackend()
+
+    /// `<remote>/HEAD`'s target, in full; nil once it is gone, and nil while it dangles.
+    @Test func theRemoteHEADTargetIsReadInFull() async throws {
+        let fixture = try await PruneFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        try await repo.git(["symbolic-ref", "refs/remotes/origin/HEAD", PruneFixture.gone1Ref])
+
+        #expect(try await backend.remoteHEADTarget(of: "origin", at: repo.root) == PruneFixture.gone1Ref)
+
+        try await repo.git(["update-ref", "--no-deref", "-d", PruneFixture.gone1Ref])
+        #expect(try await backend.remoteHEADTarget(of: "origin", at: repo.root) == nil, "dangling")
+
+        try await repo.git(["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"])
+        #expect(try await backend.remoteHEADTarget(of: "origin", at: repo.root) == nil, "none")
+    }
+
+    /// Only `refs/remotes/<remote>/HEAD` itself: a ref beneath it, or another remote's HEAD, is
+    /// not the answer; a name git would read as an option is refused before git runs.
+    @Test func onlyThatRemotesOwnHEADCounts() async throws {
+        let fixture = try await PruneFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        try? await repo.git(["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"], allowedExitCodes: [1])
+        try await repo.git(["symbolic-ref", "refs/remotes/other/HEAD", PruneFixture.gone2Ref])
+
+        #expect(try await backend.remoteHEADTarget(of: "origin", at: repo.root) == nil)
+        #expect(try await backend.remoteHEADTarget(of: "other", at: repo.root) == PruneFixture.gone2Ref)
+        let refused = await thrownError { _ = try await backend.remoteHEADTarget(of: "-x", at: repo.root) }
+        #expect(refused as? RemoteOperationError == .noRemote)
+    }
+
+    /// Ruling 2, R27: `branch -D` under a `config.lock` another process holds deletes the branch,
+    /// exits 0 and leaves its section — read back here, exactly; without the lock nothing is left.
+    @Test func aDeleteUnderAHeldConfigLockLeavesTheSectionAndItIsRead() async throws {
+        let (fixture, extra) = try await GoneBranchTests.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        #expect(try await backend.branchConfigKeys(of: "gone1", at: repo.root) == ["branch.gone1.remote", "branch.gone1.merge"])
+
+        let lock = repo.root.appendingPathComponent(".git/config.lock")
+        try Data().write(to: lock)
+        try await backend.forceDeleteBranch("gone1", expectedTip: extra, at: repo.root)
+        try FileManager.default.removeItem(at: lock)
+
+        #expect(try await repo.gitRefExists("refs/heads/gone1") == false)
+        #expect(try await backend.branchConfigKeys(of: "gone1", at: repo.root) == ["branch.gone1.remote", "branch.gone1.merge"])
+
+        let main = try await repo.revParse("onlocal")
+        try await backend.forceDeleteBranch("onlocal", expectedTip: main, at: repo.root)
+        #expect(try await backend.branchConfigKeys(of: "onlocal", at: repo.root) == [])
+    }
+
+    /// A dotted branch name is its own section: `x` does not own `branch.x.y.remote`.
+    @Test func aDottedNameIsItsOwnSection() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        try await repo.git(["config", "branch.x.remote", "origin"])
+        try await repo.git(["config", "branch.x.pushRemote", "fork"])
+        try await repo.git(["config", "branch.x.y.remote", "o2"])
+
+        #expect(try await backend.branchConfigKeys(of: "x", at: repo.root) == ["branch.x.remote", "branch.x.pushremote"])
+        #expect(try await backend.branchConfigKeys(of: "x.y", at: repo.root) == ["branch.x.y.remote"])
+        let refused = await thrownError { _ = try await backend.branchConfigKeys(of: "-x", at: repo.root) }
+        #expect(refused as? BranchOperationError == .invalidName("-x"))
+    }
+}

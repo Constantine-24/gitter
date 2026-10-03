@@ -390,11 +390,15 @@ extension CLIGitBackend: GitRemoteBackend {
     /// a path (fix round 1, I1, measured: `git fetch vendor` fetched a nested checkout called
     /// `vendor`, and `git push vendor :refs/heads/topic` deleted its branch).
     /// `RemoteOperationError.noURL`, after one read of `git remote -v` and before any fetch, push
-    /// or `ls-remote`. A name that is no configured remote at all is left to git's own diagnosis,
-    /// as before (`anUnknownRemoteIsGitsOwnDiagnosis`).
+    /// or `ls-remote`. **A name that is no configured remote at all is refused too**
+    /// (`.noSuchRemote`, Ruling 11): git reads it as a path just the same — measured, a tag push
+    /// to an unconfigured `vendor` beside a nested repository `vendor/` changed that repository.
+    /// No caller passes a path or a URL; a stale remote list is how such a name arrives.
     func requireRemoteURL(_ remote: String, forPushing pushing: Bool, at root: URL) async throws {
         let listed = RemoteParser.parse(String(decoding: try await run(["remote", "-v"], cwd: root), as: UTF8.self))
-        guard let entry = listed.first(where: { $0.name == remote }) else { return }
+        guard let entry = listed.first(where: { $0.name == remote }) else {
+            throw RemoteOperationError.noSuchRemote(remote)
+        }
         guard (pushing ? entry.pushURL : entry.fetchURL) != nil else { throw RemoteOperationError.noURL(remote) }
     }
 

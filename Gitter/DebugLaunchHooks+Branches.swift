@@ -76,6 +76,14 @@
     ///     restoretag[:<name>]          pushtag:<name>:<remote>      deleteremotetag:<name>:<remote>
     ///     confirmdeleteremotetag       tags
     ///
+    ///   Remotes housekeeping (`RepositoryStore+RemoteAdmin`, `DebugLaunchHooks+RemoteAdmin`):
+    ///
+    ///     prune:<remote>               confirmprune[:none|:<ref>=<name>,…]
+    ///     cleanup                      confirmcleanup[:<b,…>]       pushbranch:<b>
+    ///     confirmpublish:<remote>      ffbranch:<b>                 upstream:<b>
+    ///     setupstream:<b>:<ref>
+    ///     unsetupstream:<b>            adminmenu
+    ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
     /// `start:<step>` runs a step **without** waiting for its lane, which is how the steps after
@@ -366,6 +374,8 @@
                 await continueStep(command, step: step, store: store)
             case let history where historyCommands.contains(history):
                 await historyStep(command, step: step, store: store)
+            case let admin where remoteAdminCommands.contains(admin):
+                await remoteAdminStep(command, step: step, store: store)
             case "stashcontinue":
                 guard store.offeredStashAndContinue != nil else {
                     log("stashcontinue: not offered")
@@ -688,6 +698,8 @@
                 describeHistorySheet(sheet) ?? "?"
             case .newTag, .deleteTag, .deleteRemoteTag:
                 describeTagSheet(sheet, store) ?? "?"
+            case .prune, .cleanUpGone, .upstream:
+                describeRemoteAdminSheet(sheet) ?? "?"
             }
         }
 

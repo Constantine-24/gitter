@@ -251,9 +251,15 @@ extension RepositoryStore {
     }
 
     /// One push, holding the lane and the mutation slot. `publishing` passes `-u` and reads
-    /// the upstream back.
-    // internal (not private): used by +RemoteSheets.swift's `confirmPublish`
-    func send(_ branch: Branch, to remote: String, remoteRef: String, publishing: Bool) {
+    /// the upstream back. `checkedOut` false is a branch HEAD is not on (B2 Task 4, R11): a
+    /// refusal for commits it lacks is worded for it (`RemoteAdminWording.pushRejected`) and
+    /// offers no Force Push, which is for the branch HEAD is on.
+    // internal (not private): used by +RemoteSheets.swift's `confirmPublish` and
+    // +RemoteAdmin.swift's `pushBranch`
+    func send(
+        _ branch: Branch, to remote: String, remoteRef: String, publishing: Bool,
+        checkedOut: Bool = true
+    ) {
         let name = branch.name
         let wasGone = branch.tracking == .gone
         let previousUpstream = branch.upstream
@@ -270,10 +276,15 @@ extension RepositoryStore {
                     attempt: "push \"\(name)\" to \"\(remote)\"")
             }
 
-            if let banner = RemoteWording.rejected(
-                result.outcome, branch: name, remote: remote,
-                remoteMessages: result.remoteMessages)
-            {
+            let banner =
+                checkedOut
+                ? RemoteWording.rejected(
+                    result.outcome, branch: name, remote: remote,
+                    remoteMessages: result.remoteMessages)
+                : RemoteAdminWording.pushRejected(
+                    result.outcome, branch: name, remote: remote,
+                    remoteMessages: result.remoteMessages)
+            if let banner {
                 guard case .rejected(let rejection) = result.outcome,
                     rejection == .fetchFirst || rejection == .nonFastForward
                 else { return LaneEnding(failure: banner) }
@@ -281,6 +292,8 @@ extension RepositoryStore {
                 // badge shows the behind count and "Force Push…" has something to count. A
                 // failure here changes nothing about the rejection.
                 try? await backend.fetch(remote: remote, at: root, progress: progress)
+                // Another branch's refusal offers no Force Push: that is for the branch HEAD is on.
+                guard checkedOut else { return LaneEnding(failure: banner) }
                 return LaneEnding(
                     failure: banner,
                     rejected: RejectedPush(
@@ -517,8 +530,9 @@ extension RepositoryStore {
             if missedWatcherEvent { scheduleRefresh() }
             if let rejected = ending.rejected { setRejectedPush(rejected) }
             if let notice = ending.notice {
-                // A link must outlive the four-second fade; everything else fades as before.
-                if !notice.links.isEmpty {
+                // A link must outlive the four-second fade, and so must a notice that is the only
+                // record of what was deleted (a prune's); everything else fades as before.
+                if !notice.links.isEmpty || ending.stickyNotice {
                     showStickyNotice(notice)
                 } else if !notice.text.isEmpty {
                     showNotice(notice.text)
@@ -587,6 +601,9 @@ struct LaneEnding {
     /// set"): like a banner, something a held quit is called off for (`QuitGuard`). A plain
     /// "it worked" is not.
     var mustBeRead = false
+    /// The notice goes in the sticky slot although it carries no link: it is the only record of
+    /// what was deleted (a prune names every ref with the id it held, promise 3).
+    var stickyNotice = false
     /// Runs on the main actor straight after the lane is freed, with no suspension in between:
     /// a pull's merge claims the mutation slot here, and a write's follow-up fetch claims the
     /// lane again.
@@ -606,10 +623,12 @@ struct LaneEnding {
         self.then = then
     }
 
-    /// A push's success, whose notice may carry links (`Notice.linked`).
-    init(notice: Notice, mustBeRead: Bool = false) {
+    /// A push's success, whose notice may carry links (`Notice.linked`) — or, `sticky`, a notice
+    /// that must stay until dismissed.
+    init(notice: Notice, mustBeRead: Bool = false, sticky: Bool = false) {
         self.init(mustBeRead: mustBeRead)
         self.notice = notice
+        self.stickyNotice = sticky
     }
 }
 

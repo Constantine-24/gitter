@@ -86,6 +86,24 @@ public protocol GitRemoteAdminBackend: Sendable {
     /// only — correct with `config.lock` held by another process (Ruling 2).
     func goneBranches(at root: URL) async throws -> [GoneBranch]
 
+    /// The ref `refs/remotes/<remote>/HEAD` points at, a full name (`refs/remotes/origin/main`),
+    /// or nil when there is no such symbolic ref or it dangles (`for-each-ref` does not list a
+    /// dangling one). B2 Task 4: a prune that deletes this target leaves `<remote>/HEAD`
+    /// dangling, and a later fetch does **not** repair it (measured in Task 1) — the sheet says
+    /// so. Read it after `prunePlan`, whose listing re-creates a missing `<remote>/HEAD` (R26).
+    /// `RemoteOperationError.noRemote` for a name that is empty, `.` or begins with `-`. Reads
+    /// only.
+    func remoteHEADTarget(of remote: String, at root: URL) async throws -> String?
+
+    /// Every key of the repository's own configuration (`config --local`) in the section
+    /// `branch.<branch>`, as git spells keys (`branch.topic.remote`, `branch.topic.pushremote`):
+    /// nothing else — `branch.<branch>.<sub>.<key>` belongs to a branch named `<branch>.<sub>`.
+    /// B2 Task 4 (Ruling 2): `git branch -d`/`-D` under a `config.lock` another process holds
+    /// deletes the branch, exits 0 and leaves this section behind (R27, measured for `-D` too),
+    /// so a clean-up reads it back after each delete. `BranchOperationError.invalidName` for a
+    /// name that is empty or begins with `-`. Reads only.
+    func branchConfigKeys(of branch: String, at root: URL) async throws -> [String]
+
     // MARK: - Fast-forward and upstream (B2 Task 2)
 
     /// Moves `branch` — one that is not checked out — to its upstream's commit, only while it

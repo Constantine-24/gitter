@@ -237,15 +237,16 @@ import Testing
         try await assertRepoUnchanged(repo, since: before, worktree: worktreeBefore)
     }
 
-    /// A name git *can* read but that names nothing: git's own diagnosis comes back, not a
-    /// Gitter invention.
+    /// A name git *can* read but that is no configured remote: refused before git runs
+    /// (Ruling 11, B2 Task 4), with the name.
     ///
-    /// Measured on git 2.54: `git fetch nosuch` and a configured remote whose path holds no
-    /// repository print **the same sentence** — `fatal: '<name-or-path>' does not appear to be a
-    /// git repository`. The wording therefore cannot tell them apart, so this is *not* mapped to
-    /// `.noRemote`; it is `.repositoryNotFound`, which is what both cases really are. `.noRemote`
-    /// is reserved for the names refused above, where Gitter knows the answer without asking.
-    @Test func anUnknownRemoteIsGitsOwnDiagnosis() async throws {
+    /// It used to be git's own diagnosis (`.repositoryNotFound`, git's `fatal: '<name>' does not
+    /// appear to be a git repository`). But git reads such a name as a **path**, so a stale
+    /// remote list beside a directory of that name fetched from — or pushed into — that
+    /// directory (measured). No caller passes a path or a URL here, so nothing is lost by
+    /// refusing; `.noSuchRemote` is what the app words as "removed or renamed since the last
+    /// refresh". `.noRemote` stays reserved for the names refused above.
+    @Test func anUnknownRemoteIsRefusedBeforeGitRuns() async throws {
         let repo = try await TestRepo.makeBranched()
         defer { repo.cleanUp() }
         let origin = try await repo.addOriginWithFeatureBranch()
@@ -255,7 +256,7 @@ import Testing
         let error = await remoteError {
             try await CLIGitBackend().fetch(remote: "nosuch", at: repo.root, progress: { _ in })
         }
-        #expect(error == .repositoryNotFound)
+        #expect(error == .noSuchRemote("nosuch"))
         #expect(error != .noRemote)
         #expect(try await RepoState.capture(repo) == before)
     }
@@ -278,8 +279,8 @@ import Testing
     /// and it drops the one fact only git has, which is *which* remote failed. A sentence built
     /// from it ("the repository could not be found") is wrong in a way the user cannot see
     /// through. Git's own stderr names the loser and shows the successes, so that is what comes
-    /// back. A single-remote fetch is still diagnosed — see
-    /// `anUnknownRemoteIsGitsOwnDiagnosis`, where there is only one operation to speak about.
+    /// back. A single-remote fetch is still diagnosed (a configured remote whose path holds no
+    /// repository is `.repositoryNotFound`): there, there is only one operation to speak about.
     @Test func aPartialFetchOfEveryRemoteThrowsAlthoughSomeRefsMoved() async throws {
         let repo = try await TestRepo.makeBranched()
         defer { repo.cleanUp() }
