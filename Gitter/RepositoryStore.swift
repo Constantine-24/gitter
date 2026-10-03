@@ -18,7 +18,23 @@ final class RepositoryStore {
     private(set) var isLoading = false
     private(set) var lastError: String?
     private(set) var gitMissing = false
-    var selection: Selection = .workingCopy
+    var selection: Selection = .workingCopy {
+        // Whoever writes it — a click, a sidebar row, a fallback, `open()` — the commit set
+        // follows: it is the selection's own commit and nothing else unless `selectRows` /
+        // `selectCommits` made it a set whose first is this commit.
+        didSet {
+            guard case .commit(let sha) = selection else {
+                if !selectedCommits.isEmpty { selectedCommits = [] }
+                return
+            }
+            if selectedCommits.first != sha { selectedCommits = [sha] }
+        }
+    }
+    /// The commits selected in the list, in the order it shows them (`CommitSelection`): the
+    /// selection's own commit first — the one the detail pane shows — then the rest of a ⌘- or
+    /// ⇧-click set. Empty while the working copy or a stash is selected. What Cherry-Pick and
+    /// Revert act on.
+    private(set) var selectedCommits: [String] = []
     var selectedPath: String?
     private(set) var detailFiles: [FileStatus] = []
     /// The selected stash entry's files and diffs, both parts; nil unless a stash is selected
@@ -90,6 +106,12 @@ final class RepositoryStore {
     /// it. Also ends when another repository is opened, and — for one with links — when the
     /// next push or publish starts. See `RepositoryStore+Notices`.
     private(set) var stickyNotice: Notice?
+
+    /// The sticky notice of a revert git could not commit (`HistoryOutcome
+    /// .unsignedRevertLeftStaged`), while it may still be the one on screen: it says the revert's
+    /// changes are staged, so the first snapshot with nothing staged — committed or discarded —
+    /// takes it down (`setSnapshot`).
+    private var stagedRevertNotice: Notice?
 
     /// The auto-clear for `notice`. Bookkeeping only; views must not touch it.
     // internal (not private): used by +Notices.swift's `showNotice(_:)`
@@ -205,10 +227,11 @@ final class RepositoryStore {
     private var errorIsSticky = false
 
     /// Everything the store can ask git to do: reads, index and commit writes, branch,
-    /// checkout and merge writes, the network, the stash, conflicts and the operation in
-    /// progress. Seven protocols so a fake can implement any one on its own.
+    /// checkout and merge writes, the network, the stash, conflicts, the operation in progress
+    /// and the history actions (cherry-pick, revert, rebase onto). Eight protocols so a fake can
+    /// implement any one on its own.
     typealias Backend = any GitBackend & GitWorkingCopyBackend & GitBranchBackend & GitRemoteBackend
-        & GitStashBackend & GitConflictBackend & GitOperationBackend
+        & GitStashBackend & GitConflictBackend & GitOperationBackend & GitHistoryBackend
 
     let backend: Backend
     // internal (not private): used by +Opening.swift's `checkGitAvailability()`
@@ -367,6 +390,32 @@ final class RepositoryStore {
         loadDetail()
     }
 
+    /// The commit list's selection changed to `rows` (`CommitSelection.resolve`): the detail
+    /// pane moves to the first selected commit — or to the working copy — and the set is kept in
+    /// the order `shown`. An empty set changes nothing.
+    func selectRows(_ rows: Set<Selection>, shown: [Selection]) {
+        let previous = CommitSelection.table(selection: selection, commits: selectedCommits)
+        guard let resolved = CommitSelection.resolve(rows, previous: previous, shown: shown) else {
+            return
+        }
+        apply(resolved)
+    }
+
+    /// Selects `shas` as a set, ordered as `shown` (the log's order; nil reads it from the
+    /// snapshot). The debug harness's `selectcommits:` step.
+    func selectCommits(_ shas: [String], shown: [String]? = nil) {
+        let order = (shown ?? snapshot?.commits.map(\.sha) ?? []).map(Selection.commit)
+        guard let resolved = CommitSelection.resolve(Set(shas.map(Selection.commit)), previous: [], shown: order)
+        else { return }
+        apply(resolved)
+    }
+
+    private func apply(_ resolved: CommitSelection.Resolved) {
+        // The set first, so `selection`'s `didSet` finds its commit at the front and keeps it.
+        selectedCommits = resolved.commits
+        if resolved.detail != selection { select(resolved.detail) }
+    }
+
     func selectPath(_ path: String?) {
         selectedPath = path
         loadDiff()
@@ -384,10 +433,32 @@ final class RepositoryStore {
     /// internal (not private(set) write): used by +Refresh.swift
     func setSnapshot(_ newSnapshot: RepoSnapshot?) {
         snapshot = newSnapshot
+        endStagedRevertNoticeIfDone()
         // Here rather than in `+Refresh` because this is the one place the snapshot is written,
         // and "an operation has begun" is only ever learned from a new one. See
         // `reconcileAmendWithOperation` for why a ticked Amend cannot be left ticked.
         reconcileAmendWithOperation()
+    }
+
+    /// Shows `notice` in the sticky slot as the staged revert's (`stagedRevertNotice`).
+    /// internal (not private(set) write): used by +History.swift's `confirmHistoryAction`
+    func showStagedRevertNotice(_ notice: Notice) {
+        stickyNotice = notice
+        stagedRevertNotice = notice
+    }
+
+    private func endStagedRevertNoticeIfDone() {
+        guard let shown = stagedRevertNotice else { return }
+        // Dismissed or replaced since: no longer this notice's slot to clear.
+        guard stickyNotice == shown else {
+            stagedRevertNotice = nil
+            return
+        }
+        guard let files = snapshot?.status.files, !files.contains(where: { $0.staged != nil }) else {
+            return
+        }
+        stickyNotice = nil
+        stagedRevertNotice = nil
     }
 
     /// internal (not private(set) write): used by +Refresh.swift

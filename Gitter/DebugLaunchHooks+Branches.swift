@@ -64,6 +64,12 @@
     ///     confirmskip                  stageall                     confirmstageall
     ///     commitdraft                  usemessage                   keepmessage
     ///
+    ///   The history actions (`RepositoryStore+History`, `DebugLaunchHooks+History`):
+    ///
+    ///     selectcommits:<rev,…>        historymenu                  pick
+    ///     revert                       rebaseonto:<rev>             confirmhistory
+    ///     confirmrebase
+    ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
     /// `start:<step>` runs a step **without** waiting for its lane, which is how the steps after
@@ -352,6 +358,8 @@
                 await conflictStep(command, step: step, store: store)
             case let bar where continueCommands.contains(bar):
                 await continueStep(command, step: step, store: store)
+            case let history where historyCommands.contains(history):
+                await historyStep(command, step: step, store: store)
             case "stashcontinue":
                 guard store.offeredStashAndContinue != nil else {
                     log("stashcontinue: not offered")
@@ -670,6 +678,8 @@
                 describeConflictSheet(sheet) ?? "?"
             case .continueEmpty, .continueOthers, .skip, .stageAll:
                 describeContinueSheet(sheet) ?? "?"
+            case .historyAction, .rebaseOnto:
+                describeHistorySheet(sheet) ?? "?"
             }
         }
 

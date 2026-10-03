@@ -85,9 +85,12 @@ struct BranchActionFailure: LocalizedError {
     let verb: BranchVerb
     let target: String
     let refusal: BranchOperationError
+    /// What was being attempted, when `verb` and a quoted `target` cannot say it: a history
+    /// action's "cherry-pick 3 commits" (`HistoryWording.error(_:for:)`). Nil for the rest.
+    var attempt: String? = nil
 
     var errorDescription: String? {
-        refusal.sentence(refusing: "\(verb.rawValue) \"\(target)\"")
+        refusal.sentence(refusing: attempt ?? "\(verb.rawValue) \"\(target)\"")
     }
 }
 

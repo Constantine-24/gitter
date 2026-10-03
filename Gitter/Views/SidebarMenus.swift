@@ -47,9 +47,10 @@ struct LocalBranchMenu: View {
     var body: some View {
         let switchReason = store.switchBlockedReason(for: branch)
         let mergeReason = store.mergeBlockedReason(for: branch)
+        let rebaseReason = store.rebaseOntoBranchBlockedReason(branch)
         let deleteReason = store.deleteBlockedReason(for: branch)
 
-        MenuReasons(reasons: [switchReason, mergeReason, deleteReason])
+        MenuReasons(reasons: [switchReason, mergeReason, rebaseReason, deleteReason])
 
         Button("Switch") { store.switchTo(branch: branch) }
             .disabled(switchReason != nil)
@@ -58,6 +59,11 @@ struct LocalBranchMenu: View {
         // was the two of them disagreeing.
         Button("Merge into \(store.headPhrase)…") { store.requestMerge(branch) }
             .disabled(mergeReason != nil)
+        // The full ref name: a tag spelled like the branch must not take it over (B17).
+        Button(HistoryWording.rebaseMenuTitle(current: store.currentBranch, onto: branch)) {
+            store.requestRebaseOnto("refs/heads/" + branch)
+        }
+        .disabled(rebaseReason != nil)
 
         Divider()
 
@@ -103,6 +109,11 @@ struct RemoteBranchMenu: View {
 
         Button("Check Out as Local Branch") { store.track(remoteBranch: branch) }
             .disabled(reason != nil)
+        // The full ref name, as for a local branch (B17).
+        Button(HistoryWording.rebaseMenuTitle(current: store.currentBranch, onto: branch)) {
+            store.requestRebaseOnto("refs/remotes/" + branch)
+        }
+        .disabled(reason != nil)
 
         Divider()
 
@@ -205,27 +216,51 @@ struct TagMenu: View {
     }
 }
 
-/// A commit in the list: branch from it, check it out detached, copy its sha.
+/// One commit in the list, or several selected together: cherry-pick or revert them, rebase onto
+/// one; and for a single commit branch from it, check it out detached, copy its sha.
+///
+/// `shas` are in the order the list shows them. The history items only open their sheet — the
+/// plan is GitCore's, and nothing runs before its confirmation.
 struct CommitMenu: View {
-    let sha: String
+    let shas: [String]
 
     @Environment(RepositoryStore.self) private var store
 
-    private var shortSha: String { String(sha.prefix(7)) }
-
     var body: some View {
         let reason = store.branchSwitchingBlockedReason
+        let historyReason = store.historyBlockedReason(for: shas)
+        let rebaseReason = store.rebaseOntoCommitBlockedReason(shas)
+        let single = shas.count == 1 ? shas.first : nil
 
-        MenuReasons(reasons: [reason])
+        MenuReasons(reasons: [reason, historyReason, rebaseReason])
 
-        // The full sha is the start point git is given; the short one is what the sheet shows,
-        // since a 40-character revision is not what the user clicked on.
-        Button("New Branch from Here…") { store.requestNewBranch(from: sha, labelled: shortSha) }
-        Button("Check Out (detached)") { store.detach(at: sha) }
-            .disabled(reason != nil)
+        Button(HistoryWording.menuTitle(.cherryPick, count: shas.count)) {
+            store.requestHistoryAction(.cherryPick, shas: shas)
+        }
+        .disabled(historyReason != nil)
+        Button(HistoryWording.menuTitle(.revert, count: shas.count)) {
+            store.requestHistoryAction(.revert, shas: shas)
+        }
+        .disabled(historyReason != nil)
+        Button(HistoryWording.rebaseMenuTitle(current: store.currentBranch, onto: nil)) {
+            single.map { store.requestRebaseOnto($0) }
+        }
+        .disabled(rebaseReason != nil)
 
-        Divider()
+        if let sha = single {
+            Divider()
 
-        Button("Copy SHA") { Clipboard.copy(sha) }
+            // The full sha is the start point git is given; the short one is what the sheet
+            // shows, since a 40-character revision is not what the user clicked on.
+            Button("New Branch from Here…") {
+                store.requestNewBranch(from: sha, labelled: String(sha.prefix(7)))
+            }
+            Button("Check Out (detached)") { store.detach(at: sha) }
+                .disabled(reason != nil)
+
+            Divider()
+
+            Button("Copy SHA") { Clipboard.copy(sha) }
+        }
     }
 }

@@ -75,6 +75,13 @@ enum BranchSheet: Identifiable, Hashable {
     /// operation's own — every file it would add when `known` is false (the operation's paths
     /// could not be read).
     case stageAll(RepositoryOperation, sweep: [String], known: Bool)
+    /// Cherry-Pick / Revert N Commits…: the plan GitCore made (`historyPlan`), which
+    /// `confirmHistoryAction` hands back to `run` as it is — GitCore makes it again and refuses
+    /// on any difference, so what the sheet shows is what runs.
+    case historyAction(HistoryPlan)
+    /// Rebase onto…: the plan GitCore made (`rebasePlan`), handed back to `rebase(_:at:)` as it
+    /// is, with the same promise.
+    case rebaseOnto(RebasePlan)
 
     var id: Self { self }
 
@@ -116,6 +123,13 @@ enum PendingBranchAction: Hashable {
     /// change what the merge sheet comes up on. Never parked behind the detached-HEAD
     /// confirmation (a pull needs a branch), and like a merge it only moves HEAD forward.
     case pull(upstream: String, mode: MergeMode)
+    /// Cherry-pick or revert of these commits (full object ids, as selected): never parked
+    /// behind the detached-HEAD confirmation — both only add commits on top of HEAD. Here for
+    /// Stash and Continue, whose `retry` plans it again and puts its sheet back up.
+    case history(HistoryAction, [String])
+    /// Rebase onto `target` (a full object id or a branch's full ref name), for Stash and
+    /// Continue like `.history`. A detached HEAD stays detached, so nothing is left behind.
+    case rebaseOnto(String)
 
     /// Whether leaving a detached HEAD for this action could strand commits.
     ///
@@ -128,6 +142,10 @@ enum PendingBranchAction: Hashable {
         case .switchTo, .track, .detach: true
         // A merge only ever moves HEAD forward, so whatever HEAD reaches now it still reaches.
         case .merge, .pull: false
+        // Never run through `perform`: they plan, ask and run on their own path, and neither
+        // moves HEAD away from what it holds — a pick or revert adds commits on top, a rebase
+        // of a detached HEAD leaves it detached (the old tip in ORIG_HEAD and the reflog).
+        case .history, .rebaseOnto: false
         // `switch -c <new>` with no start point creates the branch where HEAD already is, which
         // is the *cure* for a detached HEAD, not a way to lose it. With a start point it moves
         // HEAD somewhere else like any switch — **unless** that start point is the very commit
@@ -150,6 +168,8 @@ enum PendingBranchAction: Hashable {
         case .merge(let branch, _): "merge \"\(branch)\""
         case .createAndSwitch(let name, _): "create \"\(name)\" and switch to it"
         case .pull(let upstream, _): "pull from \"\(upstream)\""
+        case .history(let action, let shas): HistoryWording.attempt(action, count: shas.count)
+        case .rebaseOnto(let target): HistoryWording.rebaseAttempt(target)
         }
     }
 }

@@ -4,9 +4,10 @@ import SwiftUI
 /// which question is on screen.
 ///
 /// The switch is exhaustive on purpose: every question the store can ask has a view here, and
-/// ten of the twenty are confirmations for actions that can replace or lose work — eight here
-/// (Drop Stash…, Discard…, replacing a hand-edited conflict, Reopen Conflict… and Skip This
-/// Commit… among them), two on the server. Mark Resolved with markers left loses nothing, and
+/// eleven of the twenty-two are confirmations for actions that can replace or lose work — nine
+/// here (Drop Stash…, Discard…, replacing a hand-edited conflict, Reopen Conflict…, Skip This
+/// Commit… and Rebase onto… among them), two on the server. Cherry-Pick / Revert N Commits…
+/// only adds commits, and still asks: it says which, in which order. Mark Resolved with markers left loses nothing, and
 /// still asks; so do Continue over an empty result or other staged files, and Stage All during
 /// an operation, which decide what a commit holds.
 struct BranchSheetHost: View {
@@ -57,6 +58,10 @@ struct BranchSheetHost: View {
             SkipSheet(operation: operation, current: current, paths: paths)
         case .stageAll(let operation, let sweep, let known):
             StageAllSheet(operation: operation, sweep: sweep, known: known)
+        case .historyAction(let plan):
+            HistoryActionSheet(plan: plan)
+        case .rebaseOnto(let plan):
+            RebaseOntoSheet(plan: plan)
         }
     }
 }

@@ -50,6 +50,13 @@ struct DetailView: View {
             .frame(minHeight: 280, maxHeight: 460)
         case .commit(let sha):
             VStack(alignment: .leading, spacing: 0) {
+                if let line = HistoryWording.selectionLine(store.selectedCommits.count) {
+                    Text(line)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.top, 6)
+                }
                 commitHeader(sha)
                 Divider()
                 commitFileList

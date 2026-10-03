@@ -305,6 +305,10 @@ enum StashWording {
         case .detach(let revision): "Gitter: before checking out \(revision)"
         case .merge(let branch, _): "Gitter: before merging \(branch)"
         case .pull: "Gitter: before pulling"
+        case .history(.cherryPick, let shas):
+            "Gitter: before cherry-picking \(HistoryWording.count(shas.count))"
+        case .history(.revert, let shas): "Gitter: before reverting \(HistoryWording.count(shas.count))"
+        case .rebaseOnto(let target): "Gitter: before rebasing onto \(HistoryWording.bareTarget(target))"
         }
     }
 

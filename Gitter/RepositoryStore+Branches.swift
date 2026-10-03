@@ -77,9 +77,17 @@ extension RepositoryStore {
     /// may since have changed; if it ends in the Merge-or-Rebase sheet, the user answers it again.
     // internal (not private): used by +StashAndContinue.swift
     func retry(_ action: PendingBranchAction) {
-        if case .pull = action {
+        switch action {
+        case .pull:
             pull()
-        } else {
+        // Planned again and put back on screen: a stash never runs a history action without
+        // its confirmation (the plan may differ now — the stash itself changed nothing it
+        // reads, but a terminal may have).
+        case .history(let kind, let shas):
+            requestHistoryAction(kind, shas: shas)
+        case .rebaseOnto(let target):
+            requestRebaseOnto(target)
+        case .switchTo, .track, .detach, .merge, .createAndSwitch:
             perform(action)
         }
     }
@@ -264,6 +272,11 @@ extension RepositoryStore {
             // means the merge ran.
             if mode == .alwaysMergeCommit { rememberPullMode(.merge) }
             return notice(for: outcome, branch: upstream)
+        case .history, .rebaseOnto:
+            // Never performed here: `retry` sends both to their own request (`+History`), which
+            // plans and asks before anything runs.
+            assertionFailure("\(action) reached perform")
+            return nil
         }
     }
 

@@ -52,6 +52,18 @@ enum StashAndContinue {
             message: StashWording.continueMessage(for: action), refusal: refusal)
     }
 
+    /// The offer for a history action's refusal (`HistoryRefusal`), or nil: only
+    /// `.trackedChanges` — GitCore refuses every tracked change, staged or not, before git runs,
+    /// and never an untracked file — so it is offered as a pull's rebase is (`.treeNotClean`,
+    /// no `-u`). `action` is a `.history` or `.rebaseOnto`, which `retry` plans again and puts
+    /// back on screen as a sheet: a stash never runs the action without its confirmation.
+    static func offer(forHistory refusal: HistoryRefusal, action: PendingBranchAction)
+        -> StashAndContinueOffer?
+    {
+        guard case .trackedChanges = refusal else { return nil }
+        return offer(for: .treeNotClean, action: action)
+    }
+
     /// `error` as the action that met it throws it on: a `BranchActionFailure` a stash answers
     /// comes back carrying the offer, with its sentence unchanged; anything else — another
     /// refusal, git's own words — is returned as it is.
@@ -65,9 +77,10 @@ enum StashAndContinue {
 
 /// A refusal Stash and Continue answers: the refusal's own sentence, carrying the offer to
 /// `finishMutation`, which puts both up together — and only for the generation the refusal
-/// belongs to.
+/// belongs to. `failure` is a `BranchActionFailure`, or a history action's refusal
+/// (`HistoryActionRefused`, `HistoryWording.error(_:for:)`).
 struct RefusalWithStashOffer: LocalizedError {
-    let failure: BranchActionFailure
+    let failure: any LocalizedError
     let offer: StashAndContinueOffer
 
     var errorDescription: String? { failure.errorDescription }

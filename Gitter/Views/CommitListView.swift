@@ -60,7 +60,7 @@ struct CommitListView: View {
 
     @ViewBuilder
     private func table(_ rows: [CommitRow]) -> some View {
-        Table(rows, selection: selectionBinding) {
+        Table(rows, selection: selectionBinding(rows)) {
             TableColumn("") { row in
                 switch row {
                 case .workingCopy:
@@ -132,9 +132,16 @@ struct CommitListView: View {
         // form `Table` knows about, and it is what makes a right-click select the row it lands
         // on before building the menu. The working-copy row and a right-click on empty space
         // both arrive here with nothing to offer a menu about, and get none.
+        //
+        // `ids` is the whole selection when the click lands inside it and the clicked row
+        // alone when it does not; the commits among them go to the menu in the order shown.
         .contextMenu(forSelectionType: CommitRow.ID.self) { ids in
-            if case .commit(let sha) = ids.first {
-                CommitMenu(sha: sha)
+            let shas = rows.compactMap { row -> String? in
+                guard case .commit(let commit, _, _) = row, ids.contains(row.id) else { return nil }
+                return commit.sha
+            }
+            if !shas.isEmpty {
+                CommitMenu(shas: shas)
             }
         }
     }
@@ -143,13 +150,16 @@ struct CommitListView: View {
         CommitGraphCell.contentWidth(for: store.snapshot?.graph ?? [])
     }
 
-    private var selectionBinding: Binding<Selection?> {
+    /// Commits as a set (⌘-click, ⇧-click), the working copy alone — `CommitSelection` decides,
+    /// through the store. The table is handed the set the store keeps, so it can never draw a
+    /// selection the detail pane is not about.
+    private func selectionBinding(_ rows: [CommitRow]) -> Binding<Set<Selection>> {
         Binding(
-            get: { store.selection },
+            get: { CommitSelection.table(selection: store.selection, commits: store.selectedCommits) },
             set: { newValue in
-                guard let newValue, newValue != store.selection else { return }
-                selectedInTable = newValue
-                store.select(newValue)
+                let before = store.selection
+                store.selectRows(newValue, shown: rows.map(\.id))
+                if store.selection != before { selectedInTable = store.selection }
             }
         )
     }
