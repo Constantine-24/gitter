@@ -1778,8 +1778,9 @@ import Testing
     @Test func theTagAndUpdateRefSubcommandsAreShapeGoverned() {
         #expect(ForceFlagScanner.spelling(of: "tag", ForceFlagScanner.allowedShapes["tag"] ?? [])
             == #"["tag", "--no-sign", "--end-of-options", <expression>, <expression>] or ["tag", "--no-sign", "-a", "-F", <expression>, "--cleanup=verbatim", "--end-of-options", <expression>, <expression>]"#)
+        // B2 Task 1 added the remote-tracking twin (`thePruneShapesAreExactlyTheListingAndTheDelete`).
         #expect(ForceFlagScanner.spelling(of: "update-ref", ForceFlagScanner.allowedShapes["update-ref"] ?? [])
-            == #"["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(…)", "\(…)"]"#)
+            == #"["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(…)", "\(…)"] or ["update-ref", "--no-deref", "-d", "--end-of-options", "refs/remotes/\(…)", "\(…)"]"#)
         #expect(Set((ForceFlagScanner.forbiddenFlags["tag"] ?? [:]).keys)
             == ["-f", "--force", "-s", "--sign", "-u", "--local-user", "-d", "--delete"])
     }
@@ -1797,6 +1798,93 @@ import Testing
     ])
     func theTagFilesVectorsAreChecked(original: String, mutated: String) throws {
         let file = "CLIGitBackend+Tags.swift"
+        let source = try String(contentsOf: Self.sourcesRoot.appendingPathComponent(file), encoding: .utf8)
+        #expect(ForceFlagScanner.findings(in: source, fileName: file).isEmpty)
+        #expect(source.contains(original), "\(file) no longer spells \(original)")
+        let changed = source.replacingOccurrences(of: original, with: mutated)
+        #expect(changed != source)
+
+        #expect(!ForceFlagScanner.findings(in: changed, fileName: file).isEmpty)
+    }
+
+    // MARK: - Prune and gone branches (B2 Task 1)
+
+    /// A **contract**: every vector `CLIGitBackend+Prune.swift` runs, spelled as it writes them.
+    /// The dry-run listing is the one place `fetch --prune` is permitted (always with
+    /// `--dry-run --no-prune-tags`, R2/R8); the delete is `update-ref`'s second shape, a full
+    /// `refs/remotes/` name and an interpolated expected id (R6); the kept branch is
+    /// `branch --no-track`, which no upstream config can turn into a tracking branch.
+    @Test(arguments: [
+        #"let listed = try await runStreaming(["fetch", "--prune", "--no-prune-tags", "--dry-run", "--porcelain", "--no-progress", "--end-of-options", remote], cwd: root, progress: { _ in })"#,
+        #"let result = try await runWithEnvironment(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/remotes/\(rest)", "\(expected)"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"let result = try await runWithEnvironment(["branch", "--no-track", "--end-of-options", name, id], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"var arguments = ["rev-list", "--count", "--not", "--branches", "--tags"]"#,
+        #"var listing = ["rev-list", "--max-count=\(StrandedCommits.displayLimit)", "--format=%H%x00%s", "--no-commit-header", "--not", "--branches", "--tags"]"#,
+        #"var one = ["rev-list", "--count", "--not", "--branches", "--tags"]"#,
+        #"arguments.append("--remotes"); arguments.append("--not"); arguments.append("--end-of-options")"#,
+        #"let data = try await run(["worktree", "list", "--porcelain", "-z"], cwd: root)"#,
+        #"let data = try await run(["for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:track)%00%(worktreepath)%00", "--end-of-options", "refs/heads"], cwd: root)"#,
+        #"let data = try await run(["for-each-ref", "--format=%(refname)%00%(objectname)", "--end-of-options", "refs/remotes"], cwd: root)"#,
+        #"let data = try await run(["remote", "-v"], cwd: root)"#,
+        #"let data = try await run(["rev-parse", "--verify", "-q", "--end-of-options", ref], cwd: root, allowedExitCodes: [1])"#,
+    ])
+    func allowsThePruneVectorsThisMilestoneNeeds(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
+    /// `fetch --prune` anywhere but the exact listing shape is a finding: without `--dry-run` it
+    /// deletes whatever the server lacks at that moment (R6), without `--no-prune-tags` the
+    /// user's `fetch.pruneTags` makes it list and delete local tags (R8). And `update-ref -d`
+    /// through the remote-tracking shape is still only that: never `refs/heads/`, never a
+    /// literal or empty old value, never without `--no-deref`. Built in test strings only.
+    @Test(arguments: [
+        #"_ = try await run(["fetch", "--prune", "--no-prune-tags", "--porcelain", "--no-progress", "--end-of-options", remote], cwd: root)"#,
+        #"_ = try await run(["fetch", "--prune", "--dry-run", "--porcelain", "--no-progress", "--end-of-options", remote], cwd: root)"#,
+        #"_ = try await run(["fetch", "--prune", "--no-prune-tags", "--dry-run", "--porcelain", "--no-progress", "--end-of-options", "origin"], cwd: root)"#,
+        #"_ = try await run(["fetch", "--prune", "--no-prune-tags", "--dry-run", "--porcelain", "--no-progress", "--end-of-options", remote] + more, cwd: root)"#,
+        #"_ = try await run(["fetch", "--prune", "--no-prune-tags", "--dry-run", "--porcelain", "--no-progress", "--end-of-options", remote, "+refs/heads/*:refs/heads/*"], cwd: root)"#,
+        #"_ = try await run(["fetch", "--prune", "--prune-tags", "--dry-run", "--porcelain", "--no-progress", "--end-of-options", remote], cwd: root)"#,
+        #"_ = try await run(["fetch", "--dry-run", "--prune", "--no-prune-tags", "--porcelain", "--no-progress", "--end-of-options", remote], cwd: root)"#,
+        #"_ = try await run([repoFlag, "fetch", "--prune", "--no-prune-tags", "--dry-run", "--porcelain", "--no-progress", "--end-of-options", remote], cwd: root)"#,
+        #"_ = try await run(["fetch", "-p", "--end-of-options", remote], cwd: root)"#,
+        #"_ = try await run(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/heads/\(rest)", "\(expected)"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/remotes/\(rest)", ""], cwd: root)"#,
+        #"_ = try await run(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/remotes/\(rest)", "0000000000000000000000000000000000000000"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/remotes/\(rest)"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "-d", "--end-of-options", "refs/remotes/\(rest)", "\(expected)"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/remotes/origin/gone", "\(expected)"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "--no-deref", "-d", "--end-of-options", ref, "\(expected)"], cwd: root)"#,
+        #"_ = try await run(["branch", "--no-track", "-f", "--end-of-options", name, id], cwd: root)"#,
+    ])
+    func catchesAPruneVectorOutsideItsShapes(source: String) {
+        #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// The listing is the one exception to `fetch`'s deny table, and `update-ref` has exactly
+    /// the two compare-and-deletes.
+    @Test func thePruneShapesAreExactlyTheListingAndTheDelete() {
+        let exceptions = ForceFlagScanner.denyTableExceptionShapes
+        #expect(Set(exceptions.keys) == ["fetch"])
+        #expect(ForceFlagScanner.spelling(of: "fetch", exceptions["fetch"] ?? [])
+            == #"["fetch", "--prune", "--no-prune-tags", "--dry-run", "--porcelain", "--no-progress", "--end-of-options", <expression>]"#)
+        #expect(ForceFlagScanner.forbiddenFlags["fetch"]?["--prune"] != nil, "still forbidden everywhere else")
+        #expect(ForceFlagScanner.spelling(of: "update-ref", ForceFlagScanner.allowedShapes["update-ref"] ?? [])
+            == #"["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(…)", "\(…)"] or ["update-ref", "--no-deref", "-d", "--end-of-options", "refs/remotes/\(…)", "\(…)"]"#)
+    }
+
+    /// Not vacuous: the prune file is clean, and each of its vectors, changed in memory only,
+    /// becomes a finding.
+    @Test(arguments: [
+        (#"["fetch", "--prune", "--no-prune-tags", "--dry-run", "#, #"["fetch", "--prune", "--no-prune-tags", "#),
+        (#"["fetch", "--prune", "--no-prune-tags", "--dry-run", "#, #"["fetch", "--prune", "--dry-run", "#),
+        (#""refs/remotes/\(rest)", "\(expected)"]"#, #""refs/remotes/\(rest)", ""]"#),
+        (#""refs/remotes/\(rest)", "\(expected)"]"#, #""refs/heads/\(rest)", "\(expected)"]"#),
+        (#"["update-ref", "--no-deref", "-d", "#, #"["update-ref", "-d", "#),
+        (#"["branch", "--no-track", "--end-of-options", name, id]"#, #"["branch", "-f", "--no-track", "--end-of-options", name, id]"#),
+    ])
+    func thePruneFilesVectorsAreChecked(original: String, mutated: String) throws {
+        let file = "CLIGitBackend+Prune.swift"
         let source = try String(contentsOf: Self.sourcesRoot.appendingPathComponent(file), encoding: .utf8)
         #expect(ForceFlagScanner.findings(in: source, fileName: file).isEmpty)
         #expect(source.contains(original), "\(file) no longer spells \(original)")

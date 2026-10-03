@@ -63,6 +63,17 @@ enum TestGitEnvironment {
         setenv("GIT_CONFIG_GLOBAL", "/dev/null", 1)
         setenv("GIT_CONFIG_SYSTEM", "/dev/null", 1)
         setenv("GIT_CONFIG_NOSYSTEM", "1", 1)
+        // B2's mechanical network guard (incident R0: a probe reached the user's real origin).
+        // Local transports only: `file` for every bare remote here, and `ssh` solely for the one
+        // fetch test that names a fake ssh script with `core.sshCommand`
+        // (`gitsOwnWordsForAPartialFetchLeaveTheAskpassLineOut`). Any other ssh runs
+        // `/usr/bin/false`: `GIT_SSH` is what git uses when no `core.sshCommand` is set, and
+        // `core.sshCommand` beats it (measured, git 2.54) — `GIT_SSH_COMMAND` would beat the
+        // fake too. No agent socket, no prompt. `noGitTheSuiteStartsCanReachTheNetwork` checks it.
+        setenv("GIT_ALLOW_PROTOCOL", "file:ssh", 1)
+        setenv("GIT_SSH", "/usr/bin/false", 1)
+        setenv("GIT_TERMINAL_PROMPT", "0", 1)
+        unsetenv("SSH_AUTH_SOCK")
         return true
     }()
 }
@@ -97,5 +108,32 @@ func isolatedRunner() -> ProcessRunner {
         for origin in Set(origins) {
             #expect(origin == "file:.git/config", "configuration reached the suite from \(origin)")
         }
+    }
+
+    /// B2's mechanical network guard (global constraints, after incident R0): no git this suite
+    /// starts can reach a network host. Only local transports are allowed, and an ssh URL runs
+    /// `/usr/bin/false` instead of ssh — unless a test names a fake ssh of its own with
+    /// `core.sshCommand`, which beats `GIT_SSH` (measured, git 2.54). The environment is checked
+    /// first, so the behavioural half never runs unguarded.
+    @Test func noGitTheSuiteStartsCanReachTheNetwork() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        let environment = ProcessInfo.processInfo.environment
+        try #require(environment["GIT_ALLOW_PROTOCOL"] == "file:ssh")
+        try #require(environment["GIT_SSH"] == "/usr/bin/false")
+        #expect(environment["SSH_AUTH_SOCK"] == nil)
+        #expect(environment["GIT_TERMINAL_PROMPT"] == "0")
+
+        let anyExit = Set((1...255).map { Int32($0) })
+        let http = try await CLIGitBackend().runWithEnvironment(
+            ["ls-remote", "http://127.0.0.1/x.git"], cwd: repo.root, extra: [:], allowedExitCodes: anyExit)
+        #expect(http.exitCode != 0)
+        #expect(http.stderr.contains("transport 'http' not allowed"), "\(http.stderr)")
+
+        let ssh = try await CLIGitBackend().runWithEnvironment(
+            ["ls-remote", "ssh://git@127.0.0.1/x.git"], cwd: repo.root, extra: [:], allowedExitCodes: anyExit)
+        #expect(ssh.exitCode != 0)
+        #expect(ssh.stderr.contains("Could not read from remote repository"), "\(ssh.stderr)")
+        #expect(!ssh.stderr.contains("ssh:"), "a real ssh ran: \(ssh.stderr)")
     }
 }

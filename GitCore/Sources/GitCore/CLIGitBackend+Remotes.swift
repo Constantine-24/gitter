@@ -104,7 +104,10 @@ extension CLIGitBackend: GitRemoteBackend {
     /// `refs/remotes/`, or nil. Read with `git config --get-all remote.<name>.fetch`, which
     /// exits 1 when the key is not set — a remote with no refspec fetches into `FETCH_HEAD`
     /// only. Any other failure is thrown: a fetch whose refspecs could not be read is not run.
-    private func unsafeFetchRefspec(of remote: String, at root: URL) async throws -> String? {
+    ///
+    /// Internal rather than private since B2 Task 1: a prune's dry-run listing is refused under
+    /// the same refspecs, for the same reason (a mirror remote lists local branches, R3).
+    func unsafeFetchRefspec(of remote: String, at root: URL) async throws -> String? {
         let data = try await run(
             ["config", "--get-all", "remote." + remote + ".fetch"], cwd: root,
             allowedExitCodes: [1])
@@ -269,7 +272,10 @@ extension CLIGitBackend: GitRemoteBackend {
     /// (measured), which is the right answer: it holds nothing, so there is nothing to exclude.
     /// A ref name cannot contain `*`, `?` or `[` (git's own `check-ref-format` forbids them), so
     /// a name read back from here is always a literal pattern and never a glob of its own.
-    private func symbolicRemoteRefs(at root: URL) async throws -> [String] {
+    ///
+    /// Internal rather than private since B2 Task 1: the prune's stranded union excludes them
+    /// the same way (R5).
+    func symbolicRemoteRefs(at root: URL) async throws -> [String] {
         // `%(symref)` is empty for an ordinary ref and holds the target for a symbolic one. The
         // two fields are separated by a NUL because a ref name may contain neither that nor a
         // newline, so both splits below are exact.

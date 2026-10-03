@@ -361,7 +361,8 @@ enum ForceFlagScanner {
                 // `cherry-pick --merge`) as well as the shape it missed.
                 if matchedShapes[arrayIndex] != nil || !shapedSubcommandsWithDenyTables.contains(subcommand) { continue }
             }
-            // One of `skipShapes`: every element is a pinned literal, vouched for above.
+            // One of `skipShapes` or `denyTableExceptionShapes`: every element is a pinned
+            // literal or an expression, vouched for above.
             if matchedShapes[arrayIndex] != nil { continue }
             if subcommand == "read-tree" {
                 for flag in literals.dropFirst().flatMap(spellings(of:)) {
@@ -1201,10 +1202,18 @@ enum ForceFlagScanner {
         // interpolates is a full, non-zero id before it builds the vector. `--no-deref` (fix
         // round 1): without it a symbolic ref under `refs/tags/` is followed, and the branch it
         // names is deleted instead.
+        //
+        // B2 Task 1: its twin for a remote-tracking ref, the prune's per-ref delete (R6) — a full
+        // `refs/remotes/` name, the expected id one interpolation for the same reason (an empty
+        // old value deleted unconditionally, R6), `--no-deref` so a symbolic
+        // `refs/remotes/<r>/HEAD` is never followed onto the ref it names. Never `refs/heads/`.
         "update-ref": [
             Shape(
                 .literal("--no-deref"), .literal("-d"), .literal("--end-of-options"),
                 .interpolated(prefix: "refs/tags/", suffix: ""), .interpolated(prefix: "", suffix: "")),
+            Shape(
+                .literal("--no-deref"), .literal("-d"), .literal("--end-of-options"),
+                .interpolated(prefix: "refs/remotes/", suffix: ""), .interpolated(prefix: "", suffix: "")),
         ],
     ]
 
@@ -1233,6 +1242,27 @@ enum ForceFlagScanner {
         "rebase": [Shape(.literal("--skip"))],
         "cherry-pick": [Shape(.literal("--skip"))],
         "revert": [Shape(.literal("--skip"), .literal("--no-reference"))],
+    ]
+
+    /// Whole vectors a subcommand's **deny table** stands down for — and nothing else does. A
+    /// subcommand listed here is not shape-governed: a vector that misses these shapes is read
+    /// against its table exactly as before, so the flag the shape pins stays a finding everywhere
+    /// else, and a fragment or an append carrying it is still one.
+    ///
+    /// **`fetch`'s one entry is B2's prune listing** (R2, R8): `--prune` with `--dry-run`, so
+    /// nothing is deleted — a plain `fetch --prune` deletes whatever the server lacks at that
+    /// moment, a branch it lost after the sheet was drawn included (R6) — and `--no-prune-tags`,
+    /// without which `fetch.pruneTags` lists local tags that were never on the server. The
+    /// remote is an expression (a name the code checked), and nothing may follow or be
+    /// concatenated: a refspec after it would change what is listed. What is deleted afterwards
+    /// is `update-ref`'s remote-tracking shape, one ref at a time on the id the sheet showed.
+    static let denyTableExceptionShapes: [String: [Shape]] = [
+        "fetch": [
+            Shape(
+                .literal("--prune"), .literal("--no-prune-tags"), .literal("--dry-run"),
+                .literal("--porcelain"), .literal("--no-progress"), .literal("--end-of-options"),
+                .expression),
+        ],
     ]
 
     /// The two slots that end a vector whose paths are in a pathspec file (Ruling 26):
@@ -1303,6 +1333,7 @@ enum ForceFlagScanner {
     static func matchesAllowedShape(_ array: ArrayLiteral) -> Shape? {
         guard let subcommand = array.elements.first?.value.map(decoded) else { return nil }
         let shapes = (allowedShapes[subcommand] ?? []) + (skipShapes[subcommand] ?? [])
+            + (denyTableExceptionShapes[subcommand] ?? [])
         return shapes.first { $0.matches(array) }
     }
 
@@ -1342,9 +1373,10 @@ enum ForceFlagScanner {
             + "says; `-F` without `--cleanup=verbatim` strips the message's `#` lines (B17); and "
             + "`-f`, `-d`, `-s`, `-u` move, delete or sign tags with no confirmation",
         "update-ref":
-            "`update-ref` moves or deletes any ref; the one permitted form deletes a tag only while it "
-            + "holds the id the sheet showed, and an empty or all-zero expected value deletes with no "
-            + "check at all (B19); without `--no-deref` a symbolic tag's branch is deleted instead",
+            "`update-ref` moves or deletes any ref; the two permitted forms delete a tag or a "
+            + "remote-tracking ref only while it holds the id the sheet showed, and an empty or "
+            + "all-zero expected value deletes with no check at all (B19, R6); without `--no-deref` a "
+            + "symbolic ref's target is deleted instead",
     ]
 
     static let shapeConcatenationNote =

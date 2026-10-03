@@ -104,7 +104,8 @@ extension CLIGitBackend: GitTagBackend {
 
     /// The short names of every local and remote-tracking branch, and every tag's, folded to
     /// lower case — the way the file system compares them (see this file's doc comment).
-    private func refNames(at root: URL) async throws -> (branches: Set<String>, tags: [String]) {
+    /// Internal since B2 Task 1: a kept branch's name is checked against the same three sets.
+    func refNames(at root: URL) async throws -> (branches: Set<String>, tags: [String]) {
         let data = try await run(["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes", "refs/tags"], cwd: root)
         var branches = Set<String>()
         var tags: [String] = []
