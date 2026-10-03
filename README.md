@@ -13,7 +13,9 @@ your changes and bring them back, and discard a file, a hunk or a single line �
 discard leaves a copy, and a notice offers **Undo Discard**. When a merge, rebase, cherry-pick
 or revert stops on a conflict, it resolves it in the app — block by block, or a whole file at
 a time — and then continues, skips the commit or commits, with the stopped commit's message in
-the composer.
+the composer. It also starts those operations: select commits and cherry-pick or revert them,
+rebase the current branch onto a commit or a branch — each behind a sheet that lists exactly what
+will run — and create, delete (with **Restore Tag**), push and remotely delete tags.
 
 ![Gitter's main window: the branch button, the sidebar, the lane graph and a diff](docs/screenshots/branches.png)
 
@@ -37,6 +39,14 @@ the composer.
   to keep or edit, or **Skip This Commit…**; commit a merge or a squash with git's prepared
   message; or end any of them: abort a merge, cherry-pick, revert, rebase or `git am`, and undo
   a pending squash
+- **Cherry-pick** or **revert** one or several selected commits (⌘-click, ⇧-click) as one git
+  sequence, in the order git needs — the sheet lists them, and the ones left out or likely skipped
+  as already applied; **rebase** the current branch onto a commit or a branch, with the commits it
+  replays, the merges it flattens and a warning when some are already pushed (see "History actions
+  and tags" below)
+- **Tags**: create one, annotated or lightweight, on any commit; delete it behind a confirmation,
+  with **Restore Tag** afterwards; push one tag to a remote, or delete one there, leased on the id
+  the sheet showed; tag pills on the commit rows and a tooltip with the tagger, date and message
 - Hooks and commit signing apply as configured, because every commit runs through
   your own `git`, not a reimplementation of it
 - Fetch, Pull and Push from the toolbar (Repository menu: ⇧⌘F, ⇧⌘L, ⇧⌘P). The running one
@@ -93,6 +103,10 @@ the composer.
 ![A conflicted file during a merge: conflict 1 of 3, ours and theirs side by side, "Both (ours first)" chosen and its result below, Resolve File waiting for the other two](docs/screenshots/conflict.png)
 
 ![A rebase stopped at commit 1 of 3 with its conflict resolved: the operation bar with Skip This Commit…, Continue Rebase and Abort Rebase…, the stopped commit's message in the composer, and Reopen Conflict… above the resolved file's diff](docs/screenshots/operation-bar.png)
+
+![Three commits of a feature branch selected in the commit list and the sheet asking to cherry-pick them onto main, oldest first](docs/screenshots/cherry-pick.png)
+
+![Deleting a tag just pushed to origin: the sheet says Restore Tag puts the identical tag back and that a fetch from origin would bring it back; the tag pill on its commit row](docs/screenshots/tags.png)
 
 ## Safety
 
@@ -393,6 +407,78 @@ list and its `--abort` rewind past it — and the bar gives the safe way out ins
 commit you concluded with `git commit` in a terminal shows as waiting, with the `git
 cherry-pick --continue` that applies the rest.
 
+### History actions and tags
+
+**Cherry-pick and revert.** Select one or several commits in the list (⌘-click, ⇧-click — the
+detail pane shows the first, under "3 commits selected. Showing the first.") and right-click:
+**Cherry-Pick 3 Commits…** or **Revert 3 Commits…**. The sheet lists the commits in the order git
+will get them — a cherry-pick oldest first by the graph, never by date (a skewed clock would get
+that wrong), a revert newest first — and runs them as one git sequence. Commits the branch already
+contains are left out and named; a commit whose change the branch already has as an identical
+patch "may be skipped as already applied", and the notice afterwards names the ones git skipped.
+A merge commit is refused with the reason (there is no mainline picker), and so is a revert of a
+commit the branch does not contain. When git stops on a conflict, the operation bar of "Conflicts:
+resolve, continue, skip" takes over. A revert's message is always git's `Revert "<subject>"`,
+whatever `revert.reference` says.
+
+**Rebase onto a commit or a branch.** **Rebase "main" onto Here…** on a commit row, **Rebase
+"main" onto "feature"…** on a branch or remote branch. The sheet lists the commits that will be
+replayed, oldest first — or says that nothing is rewritten ("already contains", "moves straight
+forward") — and how many merge commits are flattened into a line (always: `--no-rebase-merges`,
+whatever `rebase.rebaseMerges` says), how many are skipped because the target already has them,
+and, in orange, how many are already on a remote (pushing afterwards then needs a force push).
+The target goes to git as a full commit id, so a tag named like the branch cannot redirect it.
+
+**Before any of them runs.** All three are refused while an operation is in progress or any
+tracked file has changes, staged or not (untracked files are fine): a sequence that starts clean
+cannot halt half-way on one of your files. The banner offers **Stash and Continue**, which stashes
+and then asks again — the sheet comes back; nothing runs unasked. The sheet is a snapshot: if the
+branch moved, you switched to another branch (even at the same commit), the target moved or the
+commits changed while it was open, nothing runs and the banner says "The branch changed while this
+was open … Ask again to see what it would do now."
+
+**The way back.** The notice after a cherry-pick or revert says the reflog keeps where the branch
+was, with the command: `git reset --keep <full sha>`; after a rebase, that the old tip is
+`ORIG_HEAD` for now (the next reset, merge or rebase overwrites it), with the same command. A
+single revert that git could not commit — a signing failure, or a `prepare-commit-msg` hook
+saying no — leaves the revert staged with no operation git can show; a notice says so in git's
+words and stays, and git's revert message waits in the composer: Commit it, or Discard it.
+
+**Tags.** **New Tag…** on a commit's menu: annotated, with a message stored exactly as typed (`#`
+lines and blank lines kept), or lightweight; never signed, whatever `tag.gpgSign` says. The name is
+checked as you type, and refused where git would later read it as something else: a branch's or a
+remote's name (`main`, `origin`, `origin/x` — git takes the tag first in every command that names
+it), git's own names (`HEAD`, `@`, `MERGE_HEAD`, `ORIG_HEAD` and the like, which would make a clean
+repository look mid-merge), seven or more hex digits (an abbreviated commit id), and an existing
+tag in any case (`V1` beside `v1`; the file system cannot tell them apart). The sidebar's Tags
+rows show the kind by their icon and the tagger, date and message as the tooltip, and the commit
+list's tag pills come from the tag list itself, so `log.decorate` settings cannot hide or rename
+them.
+
+**Delete Tag…** deletes only if the tag still holds what the sheet showed (one compare-and-delete;
+otherwise nothing is deleted and the banner says so). The sheet says whether a fetch would bring
+it back — a remote this session saw holding this very tag does, a remote set to fetch no tags
+does not. Tags have no reflog, so Gitter keeps the way back itself: the notice offers **Restore
+Tag** (one **Restore Tags** for several), and once the notice is gone each deleted tag stays as a
+dimmed, struck-through row under Tags with Restore Tag in its menu — for as long as the repository
+stays open. A restore brings back the identical tag, message, tagger and date included; the
+terminal command, `git tag --no-sign <name> <id>`, is in the notice and the row's tooltip.
+
+**Push Tag to "origin"** sends exactly that one tag (`--no-follow-tags`, so `push.followTags`
+cannot add others); one already there says so, and when the remote has a different tag of that
+name nothing is pushed: Gitter never replaces a tag on a remote. **Delete from "origin"…** reads
+the remote's tag, shows its id and whether it is the tag you have here, and deletes it only while
+the remote still holds that id (a lease; if it moved meanwhile, nothing is deleted). Your local tag
+is kept, and when a tag here holds the same object the notice gives the `git push` command that
+puts the remote one back. A plain git server's `receive.denyDeletes` protects branches only, not tags — only a
+server hook or a hosting service's tag protection can stop this delete.
+
+**What stays a terminal job.** Interactive rebase (reorder, squash, fixup, drop, reword);
+cherry-pick `-x`, `--no-commit` and `-m` (a merge commit); signed tags; pushing all tags at once
+(`--tags`); moving a tag (`tag -f`, or replacing one on a remote); and symbolic refs under
+`refs/tags/`, which Gitter lists but neither deletes, pushes nor restores — deleting one would
+delete the branch it names.
+
 ## Design decisions
 
 | Area | Decision | Rationale |
@@ -405,9 +491,10 @@ cherry-pick --continue` that applies the rest.
 | Dirty switch | git's default — carry non-conflicting changes, refuse otherwise. No force; the refusal offers Stash and Continue, never an automatic stash | A refusal that changes nothing is a better answer than a stash the user did not ask for |
 | Discard | Record first (a stash entry built from plumbing in a temporary index), then `git restore` or a reverse `git apply`; untracked items to the Trash | Every discard can be undone, and the copy is in a place git and the user already know |
 | Delete | `git branch -d` first, then `-D` only from the warning its refusal opened, and only if the tip is still the one that warning named | `-d` is git's own authority on "is this merged", and it changes nothing when it refuses |
-| Remotes | git's own transports and credentials; `fetch`, then merge or rebase, instead of `git pull`; an explicit-sha lease on every force; no prune, no tags | Nothing to store or ask for; every step of a pull is one Gitter can explain and stop; the lease the automatic fetch cannot arm |
+| Remotes | git's own transports and credentials; `fetch`, then merge or rebase, instead of `git pull`; an explicit-sha lease on every force; no prune; one tag at a time, never forced | Nothing to store or ask for; every step of a pull is one Gitter can explain and stop; the lease the automatic fetch cannot arm |
 | Conflicts | Blocks rebuilt from the index stages with `git merge-file`, choices composed in memory and written once; git's own `--continue` / `--skip` with the message file written back, behind readiness checks of Gitter's own | The worktree file can hold anything (rerere, hand edits, marker-like code); git keeps the author, the date and the sequence, and Gitter refuses before git runs where git would lose something silently |
-| Scope | Browsing, diffs, staging, commit, branch and remote operations, stash and discard, conflict resolution and continuing an operation are done | Each milestone keeps the promise before it adds the next way to lose work |
+| History actions | A plan read first (order, left out, may be skipped, replayed, already pushed), shown on a sheet, made again by the run and refused on any difference; full commit ids and `refs/…` names in every vector; tags deleted by compare-and-delete with the receipt kept in the app | A sheet is a promise only if the run checks it; a short name can mean a tag; tags have no reflog |
+| Scope | Browsing, diffs, staging, commit, branch and remote operations, stash and discard, conflict resolution and continuing an operation, cherry-pick, revert, rebase onto a commit and tags are done | Each milestone keeps the promise before it adds the next way to lose work |
 
 ## Build & run
 
@@ -435,9 +522,10 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (249 tests in 17 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (356 tests in 21 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
-`DiscardWording`, `ConflictWording`, `ContinueWording`, the pull-request link extraction and
+`DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`, the
+commit list's set selection, the deleted tags' receipts in the store, the pull-request link extraction and
 the notices' lifetime, which files a discard is offered for and when its sheet reads git again,
 which refusals Stash and Continue answers, when the toolbar reveals a lane's activity, the
 resolver's choices and previews (the same composition GitCore writes), and every state of the
@@ -445,14 +533,14 @@ operation bar and the composer's prefill. Under a test host the app reopens no r
 automatic fetch (`TestHost`), and no test opens a repository or touches the app's defaults,
 so a run never touches the repository you last had open.
 
-`GitCoreTests` has 1 224 tests in 109 suites. Most of them run real `git` against a temporary
+`GitCoreTests` has 1 364 tests in 122 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
 for a server, with a second clone as "the colleague" who pushes in between — including one
 that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
 your git configuration (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`) and never
 touches the network.
 
-The run also reports **19 known issues, and they are meant to be there** — please do not
+The run also reports **21 known issues, and they are meant to be there** — please do not
 "fix" them. They are deliberate negative controls: tests that make an assertion helper fail
 on purpose, inside `withKnownIssue`, to prove it *can* fail.
 
@@ -484,15 +572,20 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   `MERGE_MSG`.
 - One comes from `UntouchedTests`: the `Untouched` capture the continue and skip tests use for
   "the stop is intact".
+- One comes from `HistorySnapshotTests`: `HistorySnapshot.assertUnchanged` (the repository's
+  state and the worktree's bytes), which every refused cherry-pick, revert, rebase and tag write is
+  checked with, made to fail by a new branch.
+- One comes from `GitLaunchLogTests`: `GitLaunchLog`, the git wrapper that proves a refusal
+  launched no process at all (`assertNothingRan`), made to fail by a real `rev-parse`.
 
 Deleting any of them would take the proof away and the suite would go on looking green.
 
 ## Project layout
 
-Every `.swift` file in the two product targets — 141 of them, which is what `find
+Every `.swift` file in the two product targets — 156 of them, which is what `find
 GitCore/Sources Gitter -name '*.swift' | wc -l` prints — with the ones inside `Models/`,
-`Parsers/` and `Views/` named in prose rather than one per line. The 122 test files (106 in
-`GitCore/Tests`, 16 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
+`Parsers/` and `Views/` named in prose rather than one per line. The 136 test files (116 in
+`GitCore/Tests`, 20 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
 listed, which is also why the check is that command and not a bare `find . -name '*.swift'`:
 that one reaches them too, and the generated sources under `.build` as well.
 
@@ -508,6 +601,9 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
                                 ConflictError, ConflictReceipt, ReopenedFile
     GitOperationBackend.swift   Progress, the pending message, the operation's paths, Continue,
                                 Skip and their readiness, halted and stale ranges
+    GitHistoryBackend.swift     Cherry-pick, revert and rebase onto a target: plan, then run
+    GitTagBackend.swift         Tag names, create, compare-and-delete and restore, push one,
+                                leased remote delete; TagNameProblem, TagReceipt, TagOperationError
     DiscardTypes.swift          DiscardRequest, DiscardReceipt, the refusals and undo outcomes
     Trasher.swift               Moving an untracked item to the Trash and back
     GitError.swift              commandFailed, launchFailed, and the two pre-flight refusals
@@ -535,19 +631,23 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
       +Operation.swift            which of the six operations is part-way through
       +Remotes.swift              fetch, commit lists, the "held only there" count
       +Push.swift                 push, publish, the leased force push and delete
-      +Rebase.swift               the pull's rebase, and what a stopped one means
+      +Rebase.swift               the pull's rebase, the rebase-onto plan and run, and what a
+                                  stopped one means
+      +History.swift              the cherry-pick and revert plans, the run and its read-back
+      +Tags.swift                 tag names, create, delete, restore, the remote read, push and
+                                  leased delete, the remotes that fetch no tags
     ProcessRunner.swift         Process spawning with LC_ALL=C and captured stderr
       +Streaming.swift            the cancellable runner: progress, SIGTERM then SIGKILL
     GraphLayout.swift           gitk-style commit lane assignment
     PatchBuilder.swift          Builds a hunk- or line-level patch from a parsed diff, with
       +Markers.swift / +Paths.swift
-    Models/                     RepoSnapshot, Commit, FileStatus, Diff, Branch, Graph, Remote,
-                                Stash, Conflict, OperationProgress
+    Models/                     RepoSnapshot, Commit, FileStatus, Diff, Branch (and Tag), Graph,
+                                Remote, Stash, Conflict, OperationProgress, History
     Parsers/                    Status, Log, Ref, Diff (+Paths), BranchRefusal, Remote,
                                 PushPorcelain, RemoteFailure, StashList, StashFailure and
                                 Conflict parsers, and GitLines (git's output split at the
                                 newline byte)
-  Tests/GitCoreTests/           109 suites; ForceFlagScanner(+Lexing) is the force-flag grep
+  Tests/GitCoreTests/           122 suites; ForceFlagScanner(+Lexing) is the force-flag grep
 
 Gitter/                   macOS app (SwiftUI)
   GitterApp.swift            App entry point, the one store (`AppModel`), the Repository
@@ -572,6 +672,10 @@ Gitter/                   macOS app (SwiftUI)
   RepositoryStore+Conflicts.swift The resolver: its document, choices, writes, Reopen
   RepositoryStore+Continue.swift  The operation bar, Continue, Skip, Stage All's question,
                                   the composer's prefill
+  RepositoryStore+History.swift   The commit set, cherry-pick, revert, rebase onto: plan, sheet,
+                                  run, notices
+  RepositoryStore+Tags.swift      New, delete, restore, push and remote-delete a tag; the
+                                  deleted tags' receipts
   AutoFetchScheduler.swift   When the quiet automatic fetch runs (the store decides what it does)
   QuitGuard.swift            Quitting while the network lane is busy: stop, or ask first
   RemoteActivity.swift       What the lane is running, a refused push, the progress relay
@@ -581,6 +685,10 @@ Gitter/                   macOS app (SwiftUI)
   ConflictWording.swift      Every sentence of the resolver and its sheets; side labels
   ContinueWording.swift      Every sentence of the operation bar, Continue, Skip and the
                               halted and stale ranges
+  HistoryWording.swift       Every sentence of the cherry-pick, revert and rebase sheets,
+                              refusals and notices
+  TagWording.swift           Every sentence about a tag; the rows, the pills, the receipts
+                              (DeletedTags) and the remotes seen holding a tag (RemoteTagsSeen)
   Notice.swift               A notice's text, links and buttons, and the link extraction
   BranchSheet.swift          Which confirmation or form the store wants on screen
   CommitDraft.swift          The commit message + amend toggle being edited
@@ -594,30 +702,33 @@ Gitter/                   macOS app (SwiftUI)
     +Discard.swift             its discard steps
     +Conflicts.swift           its resolver steps
     +Continue.swift            its operation bar and composer steps
+    +History.swift             its history and tag steps
   Views/                     MainWindow, SidebarView, SidebarMenus, StashesSection,
                               CommitListView, CommitGraphCell, DetailView, StashDetailView,
                               WorkingCopyFileList, CommitComposerView, DiffView, DiffHunkView,
                               DiffLineSelection, Banners, BranchToolbar, BranchNameValidator,
                               BranchSheetHost, RemoteToolbar, TrackingBadge,
                               ConflictResolverView, ConflictBlockView, OperationBar (with the
-                              halted bar) and the nineteen sheets (NewBranch, Rename, Merge,
+                              halted bar) and the twenty-four sheets (NewBranch, Rename, Merge,
                               DeleteBranch, Abort, LeaveDetached, Pull, Publish, ForcePush,
                               DeleteRemoteBranch, Stash, DropStash, Discard, ReplaceHandEdited,
-                              MarkResolved, ReopenConflict, ContinueEmpty, Skip, StageAll)
+                              MarkResolved, ReopenConflict, ContinueEmpty, Skip, StageAll,
+                              HistoryAction, RebaseOnto, NewTag, DeleteTag, DeleteRemoteTag)
 
 GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app): wording,
                           notices and links, the discard (and its sheet's stale check) and
                           Stash and Continue decisions, the toolbar's activity reveal, the
                           resolver's choices, the operation bar's states and the prefill,
-                          and the test-host check
+                          the history and tag wording, the commit set and the deleted tags'
+                          receipts, and the test-host check
 ```
 
 ## Debug launch hooks
 
 `Gitter/DebugLaunchHooks.swift`, `DebugLaunchHooks+Events.swift`,
 `DebugLaunchHooks+Branches.swift`, `DebugLaunchHooks+Stash.swift`,
-`DebugLaunchHooks+Discard.swift`, `DebugLaunchHooks+Conflicts.swift` and
-`DebugLaunchHooks+Continue.swift` exist only in Debug builds (`#if DEBUG`, compiled out of
+`DebugLaunchHooks+Discard.swift`, `DebugLaunchHooks+Conflicts.swift`,
+`DebugLaunchHooks+Continue.swift` and `DebugLaunchHooks+History.swift` exist only in Debug builds (`#if DEBUG`, compiled out of
 Release) and drive the UI from environment variables, read once at startup. They exist because the verification environment has Screen Recording
 but not Accessibility, so nothing outside the process can click — without these, a diff can
 never be put on screen from a script, and a focus bug can never be reproduced.
@@ -700,6 +811,15 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `skip` / `confirmskip` | open Skip This Commit…, and answer it for the commit it names |
 | `confirmstageall` | answer Stage All's question |
 | `commitdraft` / `usemessage` / `keepmessage` | commit the draft as it is (a merge's or squash's prefill); the composer note's "Use <sha>'s Message" and "Keep This Message" |
+| `selectcommits:<rev,…>` | select those commits as a set, as ⌘-clicks would — each `HEAD` or a prefix of exactly one listed commit (`select:` is the resolver's file step); logs the set, in the order shown, and the detail pane's "N commits selected" line |
+| `historymenu` | log the commit menu's history items for the selection, and each branch's "Rebase … onto …", with the reasons the disabled ones show |
+| `pick` / `revert` / `rebaseonto:<rev>` | Cherry-Pick / Revert N Commits… on the selection, or Rebase … onto… a full ref name (`refs/heads/x`), `HEAD` or a listed commit: the plan, then the sheet (every line it draws) or the refusal |
+| `confirmhistory` / `confirmrebase` | **act**: the history or rebase sheet's button, with the plan it shows |
+| `newtag:<name>:<rev>[:<msg>]` | New Tag… on that commit, the field's live verdict logged, then Create Tag — annotated with a message (`\n` for a line break), lightweight without; `newtag::<rev>` only opens the sheet |
+| `deletetag:<n>` / `confirmdeletetag` | open Delete Tag… for that tag (it opens after a config read, and the step waits for it), and **act**: its Delete Tag |
+| `restoretag[:<n>]` | **acts**: the sticky notice's Restore Tag(s), or with a name that deleted tag's row's Restore Tag |
+| `pushtag:<n>:<r>` / `deleteremotetag:<n>:<r>` / `confirmdeleteremotetag` | **act**: Push Tag to <r>; Delete from <r>…'s read, then its sheet (the id it is leased on, or "no such tag"), and its button |
+| `tags` | log every tag row as the sidebar draws it (icon, tooltip, VoiceOver), its menu with the reasons, the deleted tags' rows, and each commit's pills beside `%D` — the snapshot cannot draw the sidebar |
 
 A step that starts network work waits for the lane to free as well, for up to 120 seconds; a
 step taken while the lane is already busy waits only for the mutation slot, so a second
@@ -758,9 +878,15 @@ and then Mark Resolved, with Reopen Conflict… while the operation lasts — an
 stopped rebase, cherry-pick or revert with the stopped commit's message, skips a commit with
 its changes recorded first, and commits a merge or squash with git's prepared message.
 
-Next up: prune with a confirmation plus cleaning up "gone" branches, and tags (creating them,
-then pushing one by name). Everything wanted and deliberately deferred is kept
+Cherry-picks and reverts one or several selected commits as one git sequence and rebases the
+current branch onto a commit or a branch (milestone B1), each behind a sheet the run checks
+again; creates, deletes (with Restore Tag), pushes and remotely deletes tags, one at a time.
+
+Next up (milestone B2): remotes housekeeping — prune with a confirmation plus cleaning up "gone"
+branches, setting or changing an upstream, push and pull of another branch, and adding, removing
+and renaming remotes. Everything wanted and deliberately deferred is kept
 in [`docs/BACKLOG.md`](docs/BACKLOG.md), with what is already known about each item —
 including what only a person at the keyboard can still check (real HTTPS and ssh credentials,
 the menus, tooltips, VoiceOver, the Trash's Put Back in Finder, the resolver in both
-appearances and a real rebase of a branch of yours).
+appearances, a real rebase of a branch of yours, and a tag pushed to and deleted from your own
+remote).
