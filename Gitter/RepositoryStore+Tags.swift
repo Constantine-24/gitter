@@ -267,6 +267,13 @@ extension RepositoryStore {
         guard case .deleteRemoteTag(let shownName, let shownRemote, let shownID?) = activeSheet,
             shownName == name, shownRemote == remote, shownID == id
         else { return }
+        // Asked before the sheet closes, as Confirm on New Tag and Delete Tag asks: a lane or
+        // slot already taken (or a quit under way) is said with the sheet still up to answer
+        // again, never after it went (final fix wave, Minor 3).
+        if let refusal = laneClaimRefusal(.deleteRemoteTag, holdingMutation: true) {
+            showStickyError(refusal)
+            return
+        }
         activeSheet = nil
         let attempt = TagWording.Attempt.deleteRemote(name, remote: remote)
         // Whether the hint's `git push <id>:…` has an object here to send (Minor 4).

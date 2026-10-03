@@ -657,6 +657,29 @@ final class RepositoryStore {
     /// the banner — a click that does nothing and says nothing reads as a broken button; the
     /// quiet ones (the automatic fetch, a write's follow-up fetch) say nothing. That banner is
     /// not a lane's ending, so it does not call a held quit off (`laneMessagesToRead`).
+    /// The banner `beginRemote` would show refusing this claim now, or nil — asked without
+    /// claiming anything, so a sheet's Confirm can refuse while the sheet is still up. The same
+    /// three refusals, in its order: quitting, the lane taken by anything but an automatic
+    /// fetch (which a user's claim stops instead), the mutation slot held.
+    // internal (not private): used by +Tags.swift's `confirmDeleteRemoteTag`
+    func laneClaimRefusal(_ kind: RemoteActivity.Kind, holdingMutation: Bool) -> String? {
+        Self.laneClaimRefusal(
+            kind, holdingMutation: holdingMutation, isTerminating: isTerminating,
+            remoteActivity: remoteActivity, isMutating: isMutating)
+    }
+
+    static func laneClaimRefusal(
+        _ kind: RemoteActivity.Kind, holdingMutation: Bool, isTerminating: Bool,
+        remoteActivity: RemoteActivity?, isMutating: Bool
+    ) -> String? {
+        if isTerminating { return RemoteWording.refusedWhileQuitting }
+        if let remoteActivity, !(remoteActivity.kind == .autoFetch && kind != .autoFetch) {
+            return RemoteWording.laneBusy(remoteActivity)
+        }
+        if holdingMutation, isMutating { return RemoteWording.mutationBusy }
+        return nil
+    }
+
     // internal (not private): used by +Remotes.swift's `runOnLane`
     func beginRemote(
         _ kind: RemoteActivity.Kind, remote: String?, holdingMutation: Bool, quiet: Bool = false

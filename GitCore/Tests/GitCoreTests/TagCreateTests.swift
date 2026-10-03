@@ -154,6 +154,9 @@ import Testing
         ("head", .reserved), ("MY-HEAD", .reserved), ("AUTO_MERGE", .reserved), ("Auto_Merge", .reserved),
         ("BISECT_EXPECTED_REV", .reserved), ("NOTES_MERGE_PARTIAL", .reserved),
         ("NOTES_MERGE_REF", .reserved), ("MERGE_AUTOSTASH", .reserved),
+        // Final fix wave I2: `stash` — `git stash drop stash@{N}` reads `stash` as the tag
+        // (`aStashTagIsRefusedBecauseItBreaksEveryStashDrop`). Folded, as APFS compares names.
+        ("stash", .reserved), ("Stash", .reserved), ("STASH", .reserved),
         (String(repeating: "z", count: 251), .tooLong),
         ("a..b", .invalid), ("x.lock", .invalid), ("a b", .invalid), ("a~1", .invalid),
         ("v1.0^{}", .invalid), ("x/", .invalid), (".x", .invalid), ("a//b", .invalid), ("a@{b", .invalid),
@@ -169,6 +172,7 @@ import Testing
         // Read as files through `--git-path`, never as refs: a tag of that name changes
         // nothing Gitter reads (`aTagNamedLikeAStateFileIsHarmless`).
         ("SQUASH_MSG", nil), ("MERGE_MSG", nil), ("HEADS", nil), ("V1_HEAD", nil),
+        ("stashes", nil), ("stash/x", nil), ("my-stash", nil),
         (String(repeating: "z", count: 250), nil),
     ]
 
@@ -217,6 +221,33 @@ import Testing
         // The baseline that can fail: the same tag made by git itself.
         try await repo.git(["tag", "MERGE_HEAD", root])
         #expect(try await CLIGitBackend().snapshot(at: repo.root).status.operationInProgress == .merge)
+    }
+
+    /// Final fix wave I2: the reason `stash` is reserved. A tag of that name (made in a terminal,
+    /// either case: APFS folds it) is what `git stash drop -q stash@{N}` resolves `stash` to —
+    /// "error: 'stash@{0}' is not a stash reference", exit 1 — so A1's Drop, Pop's drop and the
+    /// empty-stash cleanup fail for every entry of the repository. Through Gitter the name is
+    /// refused, and a drop works; the baseline that can fail is the same tag made by git itself.
+    @Test(arguments: ["stash", "Stash"])
+    func aStashTagIsRefusedBecauseItBreaksEveryStashDrop(name: String) async throws {
+        let (repo, root, _) = try await Self.makeRepo()
+        defer { repo.cleanUp() }
+        let backend = CLIGitBackend()
+
+        await #expect(throws: TagOperationError.nameProblem(.reserved)) {
+            try await backend.createTag(name, at: root, message: nil, at: repo.root)
+        }
+        try repo.write("b.txt", "one\n")
+        try await repo.git(["stash", "-q"])
+        try await backend.drop(try #require(try await backend.stashes(at: repo.root).first), at: repo.root)
+        #expect(try await backend.stashes(at: repo.root).isEmpty)
+
+        try await repo.git(["tag", name, root])
+        try repo.write("b.txt", "three\n")
+        try await repo.git(["stash", "-q"])
+        let entry = try #require(try await backend.stashes(at: repo.root).first)
+        await #expect(throws: (any Error).self) { try await backend.drop(entry, at: repo.root) }
+        #expect(try await backend.stashes(at: repo.root).count == 1)
     }
 
     /// `SQUASH_MSG` and `MERGE_MSG` are files Gitter reads through `--git-path`: a tag of either

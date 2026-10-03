@@ -39,8 +39,15 @@ extension CLIGitBackend: GitTagBackend {
         // resolves to the tag whenever the real one is absent: fix round 1 measured a tag
         // `MERGE_HEAD` making Gitter report a merge in a clean repository
         // (`operationInProgress` asks `rev-parse -q --verify MERGE_HEAD`), and a tag
-        // `ORIG_HEAD` breaking `git reset`.
-        if name == "@" || name.hasPrefix("-") || Self.isRootRefName(name) { return .reserved }
+        // `ORIG_HEAD` breaking `git reset`. And `stash`, folded (final fix wave I2, measured):
+        // `git stash drop -q stash@{N}` resolves `stash` to the tag — "error: 'stash@{0}' is not
+        // a stash reference", exit 1 — so A1's Drop, Pop's drop and the empty-stash cleanup fail
+        // for every entry in the repository.
+        if name == "@" || name.hasPrefix("-") || Self.isRootRefName(name)
+            || Self.otherReservedNames.contains(name.uppercased())
+        {
+            return .reserved
+        }
         // The lock file `<name>.lock` must fit in a file name (B17: 250 created, 251 "File name
         // too long").
         if name.utf8.count > 250 { return .tooLong }
@@ -83,6 +90,13 @@ extension CLIGitBackend: GitTagBackend {
         let upper = name.uppercased()
         return upper.hasSuffix("HEAD") || irregularRootRefs.contains(upper)
     }
+
+    /// Names git gives a meaning of their own that are not root refs, upper-cased as
+    /// `isRootRefName` compares them: `STASH` (final review I2), which `stash@{N}` resolves to a
+    /// tag before `refs/stash`. Spelled upper case on purpose: the scanner keeps the lower-case
+    /// literal for A1's stash vectors, and git's subcommands are case-sensitive, so this one can
+    /// never run as one.
+    private static let otherReservedNames: Set<String> = ["STASH"]
 
     private static let irregularRootRefs: Set<String> = [
         "AUTO_MERGE", "BISECT_EXPECTED_REV", "NOTES_MERGE_PARTIAL", "NOTES_MERGE_REF", "MERGE_AUTOSTASH",

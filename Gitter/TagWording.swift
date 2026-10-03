@@ -24,10 +24,12 @@ enum TagWording {
     /// `name` as one word for a command to paste into a shell: as it is when it holds only
     /// characters no shell reads specially, single-quoted otherwise. A ref name may hold `$`,
     /// `;`, `&`, `'`, `(`… — git refuses only controls, space, `~^:?*[\` and a few sequences.
+    /// `=` is plain except first: zsh reads a word that begins with it as a command's path
+    /// (`=v1` → "zsh: v1 not found", measured in the final fix wave).
     static func shellWord(_ name: String) -> String {
         let safe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/-+@,=")
         let plain = RemoteWording.plain(name)
-        if !plain.isEmpty, plain.unicodeScalars.allSatisfy(safe.contains) { return plain }
+        if !plain.isEmpty, !plain.hasPrefix("="), plain.unicodeScalars.allSatisfy(safe.contains) { return plain }
         return "'" + plain.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
@@ -47,7 +49,8 @@ enum TagWording {
                 + "command that names it."
         case .looksLikeObjectID: "That name looks like a commit id, and git would read it as one."
         case .reserved:
-            "git keeps that name for itself (HEAD, ORIG_HEAD and the like), or it starts with \"-\"."
+            "git keeps that name for itself (HEAD, ORIG_HEAD, stash and the like), or it starts "
+                + "with \"-\"."
         case .tooLong: "That name is too long for git to store."
         }
     }

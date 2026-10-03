@@ -106,4 +106,45 @@ import Testing
         #expect(store.deletedTags.receipts == [])
         #expect(store.stickyNotice == nil)
     }
+
+    // MARK: - Delete on a remote (final fix wave, Minor 3)
+
+    /// Confirm on Delete from <remote>… that the lane refuses — quitting here; a lane or a slot
+    /// already taken alike — says so with the sheet still up, as New Tag and Delete Tag do, so
+    /// the answer can be given again. It used to close the sheet first, and the refusal (or,
+    /// with no lane to ask, nothing at all) came after.
+    @Test func aRefusedRemoteDeleteKeepsItsSheet() {
+        let store = RepositoryStore()
+        let sheet = BranchSheet.deleteRemoteTag(name: "v1", remote: "origin", id: Self.object)
+        store.activeSheet = sheet
+        store.beginTerminating()
+
+        store.confirmDeleteRemoteTag("v1", on: "origin", expecting: Self.object)
+
+        #expect(store.activeSheet == sheet)
+        #expect(store.lastError == RemoteWording.refusedWhileQuitting)
+        #expect(store.remoteActivity == nil)
+    }
+
+    /// The question Confirm asks before the sheet closes refuses exactly what `beginRemote`
+    /// refuses: quitting, a lane taken by anything but the automatic fetch (which the claim
+    /// stops), the mutation slot held — and nothing otherwise.
+    @Test func theClaimIsRefusedAsTheLaneRefusesIt() {
+        let push = RemoteActivity(kind: .pushTag, remote: "origin", progress: nil)
+        let auto = RemoteActivity(kind: .autoFetch, remote: nil, progress: nil)
+        func refusal(terminating: Bool = false, lane: RemoteActivity? = nil, mutating: Bool = false) -> String? {
+            RepositoryStore.laneClaimRefusal(
+                .deleteRemoteTag, holdingMutation: true, isTerminating: terminating,
+                remoteActivity: lane, isMutating: mutating)
+        }
+        #expect(refusal() == nil)
+        #expect(refusal(terminating: true) == RemoteWording.refusedWhileQuitting)
+        #expect(refusal(lane: push) == RemoteWording.laneBusy(push))
+        #expect(refusal(lane: auto) == nil)
+        #expect(refusal(mutating: true) == RemoteWording.mutationBusy)
+        #expect(
+            RepositoryStore.laneClaimRefusal(
+                .fetch, holdingMutation: false, isTerminating: false, remoteActivity: nil, isMutating: true)
+                == nil)
+    }
 }

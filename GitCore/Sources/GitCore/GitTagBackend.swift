@@ -29,7 +29,9 @@ public enum TagNameProblem: Sendable, Hashable {
     /// or `AUTO_MERGE`, `BISECT_EXPECTED_REV`, `NOTES_MERGE_PARTIAL`, `NOTES_MERGE_REF`,
     /// `MERGE_AUTOSTASH`. `HEAD` and `-x` pass `check-ref-format` and `git tag` refuses them
     /// (B17); the rest git takes, and then the name means the tag: a tag `MERGE_HEAD` made
-    /// Gitter report a merge in a clean repository (fix round 1).
+    /// Gitter report a merge in a clean repository (fix round 1). And `stash`, ignoring case:
+    /// `git stash drop stash@{N}` reads it as the tag, and every stash drop fails (final review
+    /// I2).
     case reserved
     /// Over 250 bytes: git cannot create the lock file beside it ("File name too long", B17).
     case tooLong

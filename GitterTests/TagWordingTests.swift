@@ -40,8 +40,8 @@ import Testing
                 == "That name looks like a commit id, and git would read it as one.")
         #expect(
             TagWording.problem(.reserved)
-                == "git keeps that name for itself (HEAD, ORIG_HEAD and the like), or it starts "
-                + "with \"-\".")
+                == "git keeps that name for itself (HEAD, ORIG_HEAD, stash and the like), or it "
+                + "starts with \"-\".")
         #expect(TagWording.problem(.tooLong) == "That name is too long for git to store.")
     }
 
@@ -282,6 +282,11 @@ import Testing
         #expect(TagWording.shellWord("rel/2026-10") == "rel/2026-10")
         #expect(TagWording.shellWord("a;rm") == "'a;rm'")
         #expect(TagWording.shellWord("it's") == "'it'\\''s'")
+        // Final fix wave: zsh expands a word that begins with `=` to a command's path (`=v1` →
+        // "zsh: v1 not found", measured); bash leaves it. An `=` further in is plain to both.
+        #expect(TagWording.shellWord("=v1") == "'=v1'")
+        #expect(TagWording.shellWord("a=b") == "a=b")
+        #expect(TagWording.shellWord("x/=y") == "x/=y")
         let receipt = TagReceipt(name: "$x", objectID: Self.commit, target: Self.commit)
         #expect(TagWording.deleted([receipt]).hasSuffix("git tag --no-sign '$x' \(Self.commit)"))
     }
