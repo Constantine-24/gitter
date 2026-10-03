@@ -71,16 +71,28 @@ import Testing
     }
 
     /// Measured: a remote configured without any `url` (only a fetch refspec) prints one
-    /// name-only line. It has no URL of either kind, so nothing can be fetched or pushed
-    /// through it; it is left out, and the remotes around it are unaffected.
-    @Test func aRemoteWithNoURLAtAllIsLeftOut() {
+    /// name-only line — and so does one whose `url` is empty (R20). It is listed with no URL of
+    /// either kind (B2 Task 3: it has to be visible to be given one, R22), in git's order, and
+    /// the remotes around it are unaffected.
+    @Test func aRemoteWithNoURLAtAllIsListedWithNoURL() {
         let output = """
             nourl\t
             origin\t/tmp/o.git (fetch)
             origin\t/tmp/o.git (push)
+            zz\t
 
             """
-        #expect(RemoteParser.parse(output).map(\.name) == ["origin"])
+        #expect(RemoteParser.parse(output) == [
+            Remote(name: "nourl", fetchURL: nil, pushURL: nil),
+            Remote(name: "origin", fetchURL: "/tmp/o.git", pushURL: "/tmp/o.git"),
+            Remote(name: "zz", fetchURL: nil, pushURL: nil),
+        ])
+    }
+
+    /// A line that is neither a name-only line nor a `(fetch)`/`(push)` line is still not a
+    /// remote: no tab, an empty name, or text after the tab with no suffix.
+    @Test func aLineThatIsNoRemoteLineIsStillIgnored() {
+        #expect(RemoteParser.parse("garbage\n\t/tmp/o.git (fetch)\nx\t/tmp/o.git\n") == [])
     }
 
     /// A stray carriage return before the newline must not end up inside the URL — or, on a

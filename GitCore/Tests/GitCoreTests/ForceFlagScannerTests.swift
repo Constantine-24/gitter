@@ -2029,6 +2029,113 @@ import Testing
         #expect(!ForceFlagScanner.findings(in: changed, fileName: file).isEmpty)
     }
 
+    // MARK: - Remote management (B2 Task 3)
+
+    /// A **contract**: every vector `CLIGitBackend+RemoteAdmin.swift` runs, spelled as it writes
+    /// them. The four writes are `remote`'s new shapes — each whole, the names and URLs
+    /// expressions after `--end-of-options` (R24): `add` with no `-f` (a plain fetch with none of
+    /// Gitter's guards, R19), `set-url` and its `--push` twin with no `--add`/`--delete` (R22),
+    /// `rename --no-progress`, `remove`. The URL reads are config reads and `ls-remote
+    /// --get-url`, which contacts nothing.
+    @Test(arguments: [
+        #"result = try await runWithEnvironment(["remote", "add", "--end-of-options", name, url], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"result = try await runWithEnvironment(["remote", "set-url", "--end-of-options", remote, url], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"result = try await runWithEnvironment(["remote", "set-url", "--push", "--end-of-options", remote, url], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"result = try await runWithEnvironment(["remote", "rename", "--no-progress", "--end-of-options", old, new], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"result = try await runWithEnvironment(["remote", "remove", "--end-of-options", remote], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"let data = try await run(["ls-remote", "--get-url", "--end-of-options", remote], cwd: root)"#,
+        #"let result = try await runWithEnvironment(["check-ref-format", "refs/remotes/\(name)/test"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"let data = try await run(["config", "--null", "--get-all", "--end-of-options", key], cwd: root, allowedExitCodes: [1])"#,
+        #"Self.configEntries(try await run(["config", "--local", "--null", "--list"], cwd: root, allowedExitCodes: [1]))"#,
+        #"let data = try await run(["config", "--null", "--show-scope", "--list"], cwd: root, allowedExitCodes: [1])"#,
+        #"let data = try await run(["for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", "--end-of-options", "refs/remotes"], cwd: root)"#,
+        #"let data = try await run(["for-each-ref", "--format=%(refname)%00%(symref)", "--end-of-options", "refs/heads"], cwd: root)"#,
+        #"let data = try await run(["remote", "-v"], cwd: root)"#,
+    ])
+    func allowsTheRemoteManagementVectorsThisMilestoneNeeds(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
+    /// Outside those shapes each is a finding: `remote add -f` (and every spelling of it git
+    /// accepts — `--fetch`, its abbreviations), `--mirror`, `-t`, `--tags`; `set-url
+    /// --add`/`--delete` (and their abbreviations) or an `<oldurl>` operand; `rename` with
+    /// progress; the `rm` alias; a name that is a literal, a missing `--end-of-options`, anything
+    /// appended; and the old forms the `-v`-only rule refused. Built in test strings only.
+    @Test(arguments: [
+        #"_ = try await run(["remote", "add", "-f", "--end-of-options", name, url], cwd: root)"#,
+        #"_ = try await run(["remote", "add", "--fetch", "--end-of-options", name, url], cwd: root)"#,
+        #"_ = try await run(["remote", "add", "--fe", "--end-of-options", name, url], cwd: root)"#,
+        #"_ = try await run(["remote", "add", "-f", "--no-tags", "--end-of-options", name, url], cwd: root)"#,
+        #"_ = try await run(["remote", "add", "--mirror=fetch", "--end-of-options", name, url], cwd: root)"#,
+        #"_ = try await run(["remote", "add", "-t", "main", "--end-of-options", name, url], cwd: root)"#,
+        #"_ = try await run(["remote", "add", "--tags", "--end-of-options", name, url], cwd: root)"#,
+        #"_ = try await run(["remote", "add", name, url], cwd: root)"#,
+        #"_ = try await run(["remote", "add", "--end-of-options", "origin", url], cwd: root)"#,
+        #"_ = try await run(["remote", "add", "--end-of-options", name, url] + more, cwd: root)"#,
+        #"_ = try await run(["remote", "add", "--end-of-options", name, url, "-f"], cwd: root)"#,
+        #"_ = try await run(["remote", "set-url", "--delete", "--end-of-options", remote, url], cwd: root)"#,
+        #"_ = try await run(["remote", "set-url", "--del", "--end-of-options", remote, url], cwd: root)"#,
+        #"_ = try await run(["remote", "set-url", "--add", "--end-of-options", remote, url], cwd: root)"#,
+        #"_ = try await run(["remote", "set-url", "--ad", "--end-of-options", remote, url], cwd: root)"#,
+        #"_ = try await run(["remote", "set-url", "--push", "--delete", "--end-of-options", remote, url], cwd: root)"#,
+        #"_ = try await run(["remote", "set-url", "--push", "--add", "--end-of-options", remote, url], cwd: root)"#,
+        #"_ = try await run(["remote", "set-url", "--end-of-options", remote, url, oldURL], cwd: root)"#,
+        #"_ = try await run(["remote", "set-url", "--end-of-options", remote, ".*"], cwd: root)"#,
+        #"_ = try await run(["remote", "set-url", remote, url], cwd: root)"#,
+        #"_ = try await run(["remote", "set-url", "--pu", "--end-of-options", remote, url], cwd: root)"#,
+        #"_ = try await run(["remote", "rename", "--end-of-options", old, new], cwd: root)"#,
+        #"_ = try await run(["remote", "rename", "--progress", "--end-of-options", old, new], cwd: root)"#,
+        #"_ = try await run(["remote", "rename", "--no-progress", old, new], cwd: root)"#,
+        #"_ = try await run(["remote", "remove", remote], cwd: root)"#,
+        #"_ = try await run(["remote", "rm", "--end-of-options", remote], cwd: root)"#,
+        #"_ = try await run(["remote", "remove", "--end-of-options", "origin"], cwd: root)"#,
+        #"_ = try await run(["remote", "remove", "--end-of-options", remote] + more, cwd: root)"#,
+        #"_ = try await run(["remote", "prune", "--end-of-options", remote], cwd: root)"#,
+        #"_ = try await run(["remote", "set-head", "--end-of-options", remote, b], cwd: root)"#,
+        // Hidden from the shapes: a fragment, a binding, an append.
+        #"_ = try await run([repoFlag, "remote", "remove", "--end-of-options", remote], cwd: root)"#,
+        #"let verb = "remove"; _ = try await run(["remote", verb, "--end-of-options", remote], cwd: root)"#,
+        #"var a = ["remote", "-v"]; a.append("set-url")"#,
+        #"var a = ["remote"]; a += ["rename", "--no-progress", "--end-of-options", old, new]"#,
+    ])
+    func catchesARemoteManagementVectorOutsideItsShapes(source: String) {
+        #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// `remote` has exactly `-v` and the five management vectors; `remove`, `set-url` and
+    /// `rename` are still findings file-wide everywhere but as the pinned word of a matched
+    /// shape (a `let`, a fragment, an append, an unmatched vector).
+    @Test func theRemoteShapesAreExactlyTheManagementVectors() {
+        #expect(ForceFlagScanner.spelling(of: "remote", ForceFlagScanner.allowedShapes["remote"] ?? [])
+            == #"["remote", "-v"] or ["remote", "add", "--end-of-options", <expression>, <expression>] or ["remote", "set-url", "--end-of-options", <expression>, <expression>] or ["remote", "set-url", "--push", "--end-of-options", <expression>, <expression>] or ["remote", "rename", "--no-progress", "--end-of-options", <expression>, <expression>] or ["remote", "remove", "--end-of-options", <expression>]"#)
+        for word in ["remove", "set-url", "rename"] {
+            #expect(!ForceFlagScanner.findings(in: "let word = \"\(word)\"").isEmpty, "\(word) is no longer a finding outside a shape")
+        }
+    }
+
+    /// Not vacuous: the remote management file is clean, and each of its vectors, changed in
+    /// memory only, becomes a finding.
+    @Test(arguments: [
+        (#"["remote", "add", "--end-of-options", name, url]"#, #"["remote", "add", "-f", "--end-of-options", name, url]"#),
+        (#"["remote", "add", "--end-of-options", name, url]"#, #"["remote", "add", name, url]"#),
+        (#"["remote", "set-url", "--end-of-options", remote, url]"#, #"["remote", "set-url", "--add", "--end-of-options", remote, url]"#),
+        (#"["remote", "set-url", "--push", "--end-of-options", remote, url]"#, #"["remote", "set-url", "--push", "--delete", "--end-of-options", remote, url]"#),
+        (#"["remote", "rename", "--no-progress", "--end-of-options", old, new]"#, #"["remote", "rename", "--end-of-options", old, new]"#),
+        (#"["remote", "remove", "--end-of-options", remote]"#, #"["remote", "rm", "--end-of-options", remote]"#),
+        (#"["remote", "remove", "--end-of-options", remote]"#, #"["remote", "remove", remote]"#),
+    ])
+    func theRemoteAdminFilesVectorsAreChecked(original: String, mutated: String) throws {
+        let file = "CLIGitBackend+RemoteAdmin.swift"
+        let source = try String(contentsOf: Self.sourcesRoot.appendingPathComponent(file), encoding: .utf8)
+        #expect(ForceFlagScanner.findings(in: source, fileName: file).isEmpty)
+        #expect(source.contains(original), "\(file) no longer spells \(original)")
+        let changed = source.replacingOccurrences(of: original, with: mutated)
+        #expect(changed != source)
+
+        #expect(!ForceFlagScanner.findings(in: changed, fileName: file).isEmpty)
+    }
+
     /// Not vacuous: the real sources hold exactly the five parsed reads, and the rule read them.
     @Test func everyParsedDiffReadInTheSourcesIsChecked() throws {
         let sources = try ForceFlagScanner.gitCoreSources(root: Self.sourcesRoot)

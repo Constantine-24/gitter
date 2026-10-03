@@ -121,7 +121,7 @@ extension CLIGitBackend: GitRemoteBackend {
     ///
     /// **Every name `git remote -v` prints**, the name-only line of a remote with no URL
     /// included: measured on git 2.54, `--all` visits such a remote too (and tries the name as
-    /// a path). `RemoteParser` leaves those out, so the names are read here. A remote with
+    /// a path). The names are read here, from the same lines `RemoteParser` reads. A remote with
     /// `remote.<name>.skipFetchAll=true` is one `--all` never fetches, so it is dropped from
     /// **both** lists, safe or not, before its refspecs are looked at: an unsafe one is no
     /// reason to leave `--all`, and a safe one must not be fetched by the one-by-one fallback

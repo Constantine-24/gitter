@@ -207,7 +207,7 @@ struct TagMenu: View {
     var body: some View {
         let reason = store.branchSwitchingBlockedReason
         let deleteReason = store.deleteTagBlockedReason(tag)
-        let remotes = store.snapshot?.refs.remotes ?? []
+        let remotes = store.snapshot?.refs.remotesWithURL ?? []
         let remoteReason = remotes.isEmpty ? nil : store.remoteTagBlockedReason(tag)
 
         MenuReasons(reasons: [reason, deleteReason, remoteReason])

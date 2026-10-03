@@ -1112,8 +1112,25 @@ enum ForceFlagScanner {
     /// rewriting it, and a deny table cannot see a flag left out. Their shas follow a trailing
     /// `"--end-of-options"`, the second place concatenation is allowed (revisions, never
     /// options). They keep their deny tables for a vector that misses (`shapedSubcommandsWithDenyTables`).
+    ///
+    /// **B2 Task 3 gave `remote` its four management vectors** (R19–R24), each whole, every name
+    /// and URL an expression after `--end-of-options`: `add` (never `-f`/`--fetch`, a plain
+    /// fetch with none of Gitter's guards; never `--mirror`, `-t`, `--tags`), `set-url` and its
+    /// `--push` twin (never `--add`/`--delete` or an `<oldurl>` operand, R22), `rename
+    /// --no-progress`, `remove` (never the `rm` alias). Their words stay findings everywhere
+    /// else (`remoteWordsForbiddenEverywhere`): a matched shape vouches for its own literal and
+    /// for nothing else.
     static let allowedShapes: [String: [Shape]] = [
-        "remote": [Shape(.literal("-v"))],
+        "remote": [
+            Shape(.literal("-v")),
+            Shape(.literal("add"), .literal("--end-of-options"), .expression, .expression),
+            Shape(.literal("set-url"), .literal("--end-of-options"), .expression, .expression),
+            Shape(.literal("set-url"), .literal("--push"), .literal("--end-of-options"), .expression, .expression),
+            Shape(
+                .literal("rename"), .literal("--no-progress"), .literal("--end-of-options"), .expression,
+                .expression),
+            Shape(.literal("remove"), .literal("--end-of-options"), .expression),
+        ],
         "stash": [
             Shape(.literal("list"), .literal("-z"), .literal(stashListFormat)),
             Shape(.literal("push"), .literal("-q"), .literal("--message"), .data),
@@ -1398,7 +1415,9 @@ enum ForceFlagScanner {
     /// Why each subcommand in `allowedShapes` is a shape rule rather than a deny table.
     static let shapeReasons: [String: String] = [
         "remote":
-            "remote's other forms are words rather than flags and no flag table can see them",
+            "remote's other forms are words rather than flags and no flag table can see them: `add -f` "
+            + "fetches with none of Gitter's guards (R19), `set-url --add`/`--delete` leave or remove URLs "
+            + "the sheet did not show (R22), and every name and URL must follow `--end-of-options`",
         "stash":
             "stash's other forms move or delete the user's changes: `pop` drops an entry after "
             + "any apply, `clear` and `drop` without a verified position delete entries, "
@@ -1715,6 +1734,15 @@ enum ForceFlagScanner {
     /// The future false positive is `update` (or `rename` in a rename-detection parser), and it
     /// resolves the way `--skip`'s does: move the word into the fragment list, with the grep
     /// that made it necessary written down.
+    ///
+    /// **B2 Task 3 kept `remove`, `set-url` and `rename` here**, where the plan had them leave
+    /// the list for a shape-only rule. Since the remote-management shapes exist, each word is
+    /// written in `GitCore/Sources` once, as the pinned literal of its matched shape — which
+    /// vouches for exactly that literal (`vouched` in `findings`) — so staying costs nothing,
+    /// and leaving would reopen what this list closes: `let word = "set-url"`,
+    /// `var a = ["remote"]; a += ["rename", old, new]` (a vector classified `rename`, which no
+    /// fragment rule reads) and `a.append("remove")`, each pinned in
+    /// `catchesARemoteVectorThatHidesItsShape`.
     static let remoteWordsForbiddenEverywhere: Set<String> = [
         "prune", "remove", "set-url", "rename", "set-head", "set-branches", "update",
     ]
@@ -1739,7 +1767,8 @@ enum ForceFlagScanner {
     static let remoteWordReason =
         "`git remote prune|remove|rm|set-url|rename|set-head|set-branches|update` each rewrite "
         + "or delete the user's remote configuration, and not one of them is a flag any table "
-        + "can see. The only `remote` vector Gitter runs is [\"remote\", \"-v\"]"
+        + "can see. The `remote` vectors Gitter runs are listed whole in `allowedShapes`, and a "
+        + "word is permitted only as the pinned literal of a vector that matches one"
 
     static let pushTagKeywordReason =
         "the keyword form names the tag by its short name; write the refspec in full, "
@@ -1751,9 +1780,9 @@ enum ForceFlagScanner {
         + "literal beginning with its subcommand"
 
     static let remoteFragmentReason =
-        "a fragment cannot prove its shape, and `remote`'s permitted shape — [\"remote\", "
-        + "\"-v\"] and nothing else — is the whole rule. Spell the vector as one array literal "
-        + "beginning with its subcommand, so the shape can be read"
+        "a fragment cannot prove its shape, and `remote`'s permitted shapes — [\"remote\", "
+        + "\"-v\"] and the four management vectors — are the whole rule. Spell the vector as one "
+        + "array literal beginning with its subcommand, so the shape can be read"
 
     static func spelling(of subcommand: String, _ shapes: [Shape]) -> String {
         shapes.map { shape in

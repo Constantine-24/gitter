@@ -260,7 +260,8 @@ public enum PushTargetRefusal: Equatable, Sendable {
 ///    branch publishes to `origin`), and Gitter deliberately does not follow that fallback:
 ///    Publish names the remote out loud instead. A branch whose upstream is another *local*
 ///    branch lands here too, because git reports `.` as its push remote and `.` is not a remote.
-/// 2. A `pushRemote` that is not in `remotes` → `.refused(.unknownRemote)`. First, because a
+/// 2. A `pushRemote` that is not in `remotes`, or is one with no URL (`Remote.hasURL`) →
+///    `.refused(.unknownRemote)`. First, because a
 ///    destination on a remote that does not exist is not a destination whatever else is set.
 /// 3. `pushRef` non-nil → `.push(pushRemote, pushRef)`. That field is filled in by exactly one
 ///    configuration, `remote.<name>.push` (measured row h), and honouring it is the difference
@@ -303,7 +304,9 @@ public enum PushTarget: Equatable, Sendable {
     /// and an empty remote list.
     public static func resolve(_ branch: Branch, remotes: [Remote]) -> PushTarget {
         guard let pushRemote = branch.pushRemote else { return .unpublished }
-        guard remotes.contains(where: { $0.name == pushRemote }) else {
+        // A remote with no URL (listed since B2 Task 3) is no destination either: before it was
+        // listed this was `.unknownRemote` too, and a push to it uses its name as a path.
+        guard remotes.contains(where: { $0.name == pushRemote && $0.hasURL }) else {
             return .refused(.unknownRemote(pushRemote))
         }
         if let pushRef = branch.pushRef { return .push(remote: pushRemote, ref: pushRef) }

@@ -124,6 +124,12 @@ public struct RefCollection: Sendable, Hashable {
     /// fetched from has no branches to derive it from at all.
     public var remoteNames: [String] { remotes.map(\.name) }
 
+    /// The configured remotes git can fetch from or push to (`Remote.hasURL`), in git's order:
+    /// what a remote picker, a "no remotes" gate and the push target read. `remotes` also
+    /// lists a remote with no URL (B2 Task 3), so that the sidebar can show it and Edit URL give
+    /// it one; until then nothing can be fetched or pushed through it.
+    public var remotesWithURL: [Remote] { remotes.filter(\.hasURL) }
+
     /// The remote a remote-tracking branch belongs to: the configured remote with the longest
     /// matching `"<name>/"` prefix, so `up/stream/main` belongs to `up/stream` and not to `up`.
     /// `nil` when no configured remote matches — a hand-made `refs/remotes/ghost/x`, say.

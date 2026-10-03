@@ -465,8 +465,8 @@ extension CLIGitBackend {
     }
 
     /// Every value of the configuration key `key`, in order; empty when it is not set (`--get-all`
-    /// exits 1 then).
-    private func configValues(_ key: String, at root: URL) async throws -> [String] {
+    /// exits 1 then). Internal since Task 3: a removal reads every remote's refspecs.
+    func configValues(_ key: String, at root: URL) async throws -> [String] {
         let data = try await run(["config", "--get-all", "--end-of-options", key], cwd: root, allowedExitCodes: [1])
         return GitLines.split(data)
     }

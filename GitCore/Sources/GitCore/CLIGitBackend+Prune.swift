@@ -74,8 +74,8 @@ extension CLIGitBackend: GitRemoteAdminBackend {
     }
 
     /// Every configured remote's name — one with no URL included, which `git remote -v` prints
-    /// as a name-only line (measured: `nourl\t`) and `RemoteParser` leaves out. Internal since
-    /// Task 2: Set Upstream asks which remotes map a ref.
+    /// as a name-only line (measured: `nourl\t`; `RemoteParser` lists it too since Task 3).
+    /// Internal since Task 2: Set Upstream asks which remotes map a ref.
     func configuredRemoteNames(at root: URL) async throws -> Set<String> {
         let data = try await run(["remote", "-v"], cwd: root)
         return Set(GitLines.split(data).compactMap { line in
@@ -253,26 +253,7 @@ extension CLIGitBackend: GitRemoteAdminBackend {
         // 3. Every kept branch's name, then every kept branch, at the id the sheet showed —
         // all before the first delete.
         let kept = plan.refs.compactMap { tip in keeping[tip.ref].map { (tip: tip, name: $0) } }
-        var names = Set<String>()
-        for branch in kept {
-            if let problem = try await keepBranchNameProblem(branch.name, at: root) { throw problem }
-            guard names.insert(branch.name.lowercased()).inserted else {
-                throw RemoteAdminRefusal.branchExists(branch.name)
-            }
-        }
-        var keptBranches: [String] = []
-        for branch in kept {
-            do {
-                try await createKeptBranch(branch.name, at: branch.tip.id, in: root)
-            } catch {
-                // Nothing created yet: a plain failure, and the repository is as it was. Otherwise
-                // the branches already created stay, and the error says which (fix round 1, I2).
-                guard !keptBranches.isEmpty else { throw error }
-                throw RemoteAdminPartial.keptBranchesThenStopped(
-                    kept: keptBranches, failedName: branch.name, gitsWords: Self.words(of: error))
-            }
-            keptBranches.append(branch.name)
-        }
+        let keptBranches = try await createKeptBranches(kept, at: root)
 
         // 4. One compare-and-delete per ref; every ref is tried, until a cancellation.
         var deleted: [RefTip] = []
@@ -321,6 +302,35 @@ extension CLIGitBackend: GitRemoteAdminBackend {
             outcomeUnknown: outcomeUnknown, notTried: notTried)
     }
 
+    /// Every kept branch's name checked (`keepBranchNameProblem`, and two refs kept under one
+    /// name), then every kept branch created at the id the sheet showed — the step before any
+    /// delete, shared by `prune` and (B2 Task 3) `removeRemote`. Returns the names created, in
+    /// order. If one cannot be created after others were, `keptBranchesThenStopped` names the
+    /// ones that stay; if the first cannot, it is a plain failure and nothing was created.
+    func createKeptBranches(_ kept: [(tip: RefTip, name: String)], at root: URL) async throws -> [String] {
+        var names = Set<String>()
+        for branch in kept {
+            if let problem = try await keepBranchNameProblem(branch.name, at: root) { throw problem }
+            guard names.insert(branch.name.lowercased()).inserted else {
+                throw RemoteAdminRefusal.branchExists(branch.name)
+            }
+        }
+        var keptBranches: [String] = []
+        for branch in kept {
+            do {
+                try await createKeptBranch(branch.name, at: branch.tip.id, in: root)
+            } catch {
+                // Nothing created yet: a plain failure, and the repository is as it was. Otherwise
+                // the branches already created stay, and the error says which (fix round 1, I2).
+                guard !keptBranches.isEmpty else { throw error }
+                throw RemoteAdminPartial.keptBranchesThenStopped(
+                    kept: keptBranches, failedName: branch.name, gitsWords: Self.words(of: error))
+            }
+            keptBranches.append(branch.name)
+        }
+        return keptBranches
+    }
+
     /// `.strandedGrew` unless deleting the refs that still hold their listed ids would strand
     /// only commits the sheet showed (fix round 1, Minor 2). The count alone is not enough: one
     /// commit losing its holder while another gains one keeps it equal and strands a commit
@@ -339,8 +349,9 @@ extension CLIGitBackend: GitRemoteAdminBackend {
         guard now.allSatisfy({ shown.contains($0.sha) }) else { throw RemoteAdminRefusal.strandedGrew }
     }
 
-    /// An error in words for a notice: git's own (redacted) for a git failure.
-    private static func words(of error: Error) -> String {
+    /// An error in words for a notice: git's own (redacted) for a git failure. Internal since
+    /// Task 3: a failed remote rename or removal is reported in the same words.
+    static func words(of error: Error) -> String {
         if case GitError.commandFailed(_, let stderr) = error { return RemoteFailureParser.gitsOwnWords(stderr) }
         return String(describing: error)
     }

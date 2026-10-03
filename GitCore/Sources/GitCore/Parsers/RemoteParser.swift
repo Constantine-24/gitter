@@ -17,9 +17,16 @@ import Foundation
 /// line, and nil when git printed none. Measured on git 2.54, both halves happen —
 /// `git config --add remote.pushonly.pushurl <path>` with no `url` prints a bare name-only
 /// line (name, TAB, nothing) for the fetch side and one `(push)` line, and a remote configured
-/// with no URL at all prints only the name-only line. A remote with no URL of either kind is
-/// left out entirely: there is nothing to fetch from or push to through it. (It is still in
-/// `git remote`, so it is invisible in Gitter — `docs/BACKLOG.md`.)
+/// with no URL at all — or with an empty one (R20) — prints only the name-only line.
+///
+/// **A remote with no URL of either kind is listed, with both nil** (B2 Task 3). It used to be
+/// left out — nothing can be fetched from or pushed to through it — which made it invisible
+/// while `git remote` still listed it, and Edit URL is how it gets one (`set-url` works on it,
+/// R22). What reads remotes to fetch from or push to reads `RefCollection.remotesWithURL`.
+///
+/// These URLs are the **effective** ones, after `url.<base>.insteadOf` (R20): for display and
+/// for the push target's "pushes where it fetches" comparison only. An editor reads the
+/// configured ones (`GitRemoteAdminBackend.remoteURLs`).
 public enum RemoteParser {
     private static let fetchSuffix = " (fetch)"
     private static let pushSuffix = " (push)"
@@ -42,6 +49,11 @@ public enum RemoteParser {
             guard !name.isEmpty else { continue }
 
             let rest = line[line.index(after: tab)...]
+            // The name-only line: a remote with no fetch URL. Listed, with nothing filled in.
+            if rest.isEmpty {
+                if !order.contains(name) { order.append(name) }
+                continue
+            }
             let isFetch = rest.hasSuffix(Self.fetchSuffix)
             guard isFetch || rest.hasSuffix(Self.pushSuffix) else { continue }
             let url = String(rest.dropLast(isFetch ? Self.fetchSuffix.count : Self.pushSuffix.count))

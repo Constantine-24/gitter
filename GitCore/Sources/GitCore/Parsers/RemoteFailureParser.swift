@@ -118,6 +118,41 @@ public enum RemoteFailureParser {
             .contains { !isServerOutput($0) && $0.hasPrefix("error: could not fetch ") }
     }
 
+    /// git's refusals of a remote-management command (B2 Task 3) that mean a refusal Gitter
+    /// makes itself before git runs — read, should git get there first (a remote added from a
+    /// terminal since the check) — or nil for anything else, which stays git's words. `name` is
+    /// the remote the command named. Measured on git 2.54 (R19, R21, R22), each with nothing
+    /// written:
+    ///
+    /// | line | exit | refusal |
+    /// |---|---|---|
+    /// | `error: remote <n> already exists.` (add, rename) | 3 | `.nameProblem(.exists)` |
+    /// | `fatal: '<n>' is not a valid remote name` | 128 | `.nameProblem(.invalid)` |
+    /// | `fatal: remote name '<n>' is a subset of existing remote '<x>'` (or `superset`) | 128 | `.nameProblem(.nested(x))` |
+    /// | `error: No such remote: '<n>'` (rename, remove) / `error: No such remote '<n>'` (set-url) | 2 | `.noSuchRemote(name)` |
+    /// | `warning: remote.<n>.url has multiple values` + `fatal: could not set …` (set-url) | 128 | `.severalURLs` |
+    public static func remoteAdminRefusal(stderr: String, name: String) -> RemoteAdminRefusal? {
+        let lines = Self.lines(of: stderr).filter { !isServerOutput($0) }
+        if lines.contains(where: { $0.hasPrefix("error: remote ") && $0.hasSuffix(" already exists.") }) {
+            return .nameProblem(.exists)
+        }
+        if lines.contains(where: { $0.hasPrefix("fatal: ") && $0.hasSuffix("is not a valid remote name") }) {
+            return .nameProblem(.invalid)
+        }
+        for marker in ["is a subset of existing remote ", "is a superset of existing remote "] {
+            if let line = lines.first(where: { $0.hasPrefix("fatal: remote name ") && $0.contains(marker) }),
+                let other = quoted(in: line, after: marker) {
+                return .nameProblem(.nested(other))
+            }
+        }
+        if lines.contains(where: { $0.hasPrefix("error: No such remote") }) { return .noSuchRemote(name) }
+        if lines.contains(where: { $0.hasPrefix("warning: ") && $0.hasSuffix("has multiple values") }),
+            lines.contains(where: { $0.hasPrefix("fatal: could not set ") }) {
+            return .severalURLs
+        }
+        return nil
+    }
+
     /// Git's stderr as it is shown when it is not diagnosed — a partial `fetch --all`, or words
     /// the parser does not recognise: redacted (`redactingCredentials`), and without ssh's
     /// askpass line (`isAskpassNoise`), every other line kept as git wrote it.

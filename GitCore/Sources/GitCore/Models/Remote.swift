@@ -1,6 +1,6 @@
 import Foundation
 
-/// A configured remote, as `git remote -v` reports it.
+/// A configured remote, as `git remote -v` reports it — one with no URL included (B2 Task 3).
 public struct Remote: Sendable, Hashable, Identifiable {
     public let name: String
     /// The URL git fetches from, or nil when it printed no `(fetch)` URL for this remote —
@@ -13,6 +13,12 @@ public struct Remote: Sendable, Hashable, Identifiable {
     public let pushURL: String?
 
     public var id: String { name }
+
+    /// Whether git has anywhere to fetch from or push to through this remote: a URL of either
+    /// kind. A remote configured with none — only a fetch refspec, or an empty `url` (R20, R22)
+    /// — is listed so that it can be given one, and is nowhere to fetch from or push to: git
+    /// would use its name as a path ("does not appear to be a git repository").
+    public var hasURL: Bool { fetchURL != nil || pushURL != nil }
 
     public init(name: String, fetchURL: String?, pushURL: String?) {
         self.name = name

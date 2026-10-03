@@ -98,7 +98,7 @@ extension RepositoryStore {
             showStickyError(RemoteWording.publishSheetStale)
             return
         }
-        guard snapshot?.refs.remotes.contains(where: { $0.name == remote }) == true else {
+        guard snapshot?.refs.remotesWithURL.contains(where: { $0.name == remote }) == true else {
             showStickyError(RemoteWording.noSuchRemote(remote))
             return
         }

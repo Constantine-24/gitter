@@ -2,7 +2,7 @@ import Foundation
 
 /// Keeping a repository's remotes tidy (milestone B2): prune remote-tracking refs the server no
 /// longer has, find the local branches whose upstream is gone, fast-forward a branch that is not
-/// checked out, and set or unset a branch's upstream.
+/// checked out, set or unset a branch's upstream, and add, rename, re-point or remove a remote.
 ///
 /// The tenth GitCore protocol. Its promise is the milestone's (spec, "The safety promise,
 /// extended"):
@@ -23,7 +23,9 @@ import Foundation
 /// the dry-run listing shape, `update-ref -d` only on a full `refs/remotes/` (or B1's
 /// `refs/tags/`) name with an interpolated expected id, `update-ref -m` only as the
 /// fast-forward's `refs/heads/` compare-and-set with both ids interpolated, and `branch`'s
-/// upstream options only as the three upstream vectors (set to a remote or a local branch, unset).
+/// upstream options only as the three upstream vectors (set to a remote or a local branch, unset),
+/// and `remote` only as `-v` and the four management vectors (add, set-url and its `--push`
+/// twin, rename, remove), each whole, its names after `--end-of-options`.
 public protocol GitRemoteAdminBackend: Sendable {
     /// Every remote-tracking ref of `remote` the server no longer has, with the id each holds,
     /// and what deleting them all would strand.
@@ -146,4 +148,89 @@ public protocol GitRemoteAdminBackend: Sendable {
     /// from the start (R27, measured: nothing written). Cancelled while git runs:
     /// `RemoteAdminPartial.upstreamOutcomeUnknown`.
     func unsetUpstream(of branch: String, at root: URL) async throws
+
+    // MARK: - Remote management (B2 Task 3)
+
+    /// Whether `name` can be given to a remote — by Add Remote, or as Rename Remote's new name:
+    /// nil, or the problem (`RemoteNameProblem`): git's own rule (`check-ref-format
+    /// refs/remotes/<name>/test`, what git asks, R19) plus a leading `-`, `HEAD`, `@`, a
+    /// configured remote of that name or one nested with it, compared ignoring case. The sheet's
+    /// live check; reads only.
+    func remoteNameProblem(_ name: String, at root: URL) async throws -> RemoteNameProblem?
+
+    /// `remote`'s URLs as the configuration writes them (`config --get-all remote.<n>.url` /
+    /// `.pushurl`, promise 5) and, for display, where git really fetches from (`ls-remote
+    /// --get-url --end-of-options <n>`, which applies `insteadOf` and **contacts nothing** —
+    /// verified with only the `file` transport allowed). `RemoteAdminRefusal.noSuchRemote` when
+    /// no such remote is configured; `RemoteOperationError.noRemote` for a name that is empty,
+    /// `.` or begins with `-`. Reads only.
+    func remoteURLs(_ remote: String, at root: URL) async throws -> RemoteURLs
+
+    /// Adds a remote: `remote add --end-of-options <name> <url>`, which writes `remote.<n>.url`
+    /// and the default fetch refspec and **fetches nothing** — never `remote add -f`, a plain
+    /// `git fetch` with none of Gitter's own fetch's guards (R19). The caller fetches afterwards
+    /// with `GitRemoteBackend.fetch(remote:)`, on the lane.
+    ///
+    /// Refused before anything is written: `RemoteAdminRefusal.unsafeURL` (before git runs),
+    /// `.nameProblem` (`remoteNameProblem`'s answer; an empty name or a leading `-` before git
+    /// runs). git's own refusals of a name (R19) are read into `.nameProblem` too. A failure
+    /// that wrote part of the remote is `RemoteAdminPartial.urlsChangedThenFailed`; a
+    /// cancellation while git runs, `.urlsOutcomeUnknown`. Contacts nothing.
+    func addRemote(_ name: String, url: String, at root: URL) async throws
+
+    /// Sets `remote`'s fetch URL to `fetch` and, when `push` is not nil, its push URL to `push`:
+    /// `remote set-url --end-of-options <n> <url>`, then `remote set-url --push
+    /// --end-of-options <n> <url>` — each only when the value differs from the configured one.
+    /// `push == nil` leaves every `pushurl` as it is (removing one would take `set-url --push
+    /// --delete`, which Gitter does not run). Works on a remote with no URL, giving it one (R22).
+    ///
+    /// Refused with nothing written: `.unsafeURL` for either URL (before git runs);
+    /// `.noSuchRemote`; `.severalURLs` when the remote has more than one `url` — or more than one
+    /// `pushurl` and `push` is given — since a plain `set-url` fails on it (R22). A failure after
+    /// the first write is `RemoteAdminPartial.urlsChangedThenFailed` with what the remote holds
+    /// now; a cancellation while git runs, `.urlsOutcomeUnknown`. Contacts nothing.
+    func setURLs(of remote: String, fetch: String, push: String?, at root: URL) async throws
+
+    /// Renames a remote: `remote rename --no-progress --end-of-options <old> <new>`, which moves
+    /// every ref its default refspec maps (with their reflogs), rewrites `branch.<b>.remote`,
+    /// `.pushRemote` and `remote.pushDefault`, and leaves a custom refspec that writes elsewhere
+    /// as it was, with a warning (R21). **Run it on the lane**: never beside a fetch.
+    ///
+    /// Refused with nothing written: `RemoteOperationError.noRemote` for an `old` that is empty,
+    /// `.` or begins with `-`; `.noSuchRemote(old)`; `.nameProblem` for `new`
+    /// (`remoteNameProblem`, so renaming to a name nested in `old` itself is refused too). A
+    /// failure is **read back** (R21: under a held ref or `packed-refs.lock` git exits 128 with
+    /// the section renamed and its refspec, the branches' settings and the refs not):
+    /// anything changed is `RemoteAdminPartial.renameHalfDone` describing what git left;
+    /// nothing changed (a held `config.lock`) is git's words, or the refusal they mean. A
+    /// cancellation while git runs is `.renameOutcomeUnknown`. Contacts nothing.
+    func renameRemote(_ old: String, to new: String, at root: URL) async throws
+
+    /// What "Remove <remote>…" would delete, strand and change (`RemovalImpact`): the refs
+    /// `git remote remove` deletes, computed as git computes them, with the ids they hold; the
+    /// commits only those refs hold (one union, `stranded(by:)`); the branches that lose their
+    /// upstream; the branches whose push silently goes elsewhere (git unsets only the
+    /// repository's own settings: one from the global or a worktree's configuration stays, so a
+    /// branch can go on pushing to the removed name — measured); the refs left behind.
+    /// `.noSuchRemote` when no such remote is configured. Reads only.
+    func removalImpact(of remote: String, at root: URL) async throws -> RemovalImpact
+
+    /// Removes `impact.remote`, only while removing it still means exactly `impact`.
+    ///
+    /// In order, and nothing is removed until every step before has passed:
+    /// 1. Every kept ref is one of `impact.refs` (`BranchOperationError.invalidName`), with a full
+    ///    non-zero id (`.invalidObjectID`), before any process runs.
+    /// 2. The impact is read again; any difference at all is `.impactChanged` (RF1).
+    /// 3. The kept branches (`keeping`: ref → new branch name) are checked and created at the ids
+    ///    the sheet showed, exactly as `prune` creates them (`.invalidBranchName`,
+    ///    `.branchExists`, `RemoteAdminPartial.keptBranchesThenStopped`).
+    /// 4. `remote remove --end-of-options <remote>`. **Run it on the lane.** A failure is read
+    ///    back (R23: under a held `packed-refs.lock` or ref lock git exits 1 with the remote and
+    ///    its refs kept and every branch setting naming it already unset):
+    ///    `RemoteAdminPartial.removeHalfDone` when anything changed or kept branches were
+    ///    created; otherwise git's words. Cancelled while git runs: `.removeOutcomeUnknown`.
+    ///
+    /// Residual race: a ref a process outside Gitter creates between step 2 and git's own
+    /// listing is deleted too. Contacts nothing.
+    func removeRemote(_ impact: RemovalImpact, keeping: [String: String], at root: URL) async throws
 }

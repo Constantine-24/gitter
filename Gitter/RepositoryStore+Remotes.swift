@@ -36,12 +36,14 @@ extension RepositoryStore {
     }
 
     /// Everything the blocked reasons are decided on, read in one place. An automatic fetch on
-    /// the lane blocks nothing (`blockingRemoteActivity`): the user's action stops it.
+    /// the lane blocks nothing (`blockingRemoteActivity`): the user's action stops it. Remotes
+    /// with a URL only (`remotesWithURL`): one with none is listed since B2 Task 3 so that it can
+    /// be given one, and is nothing to fetch from, publish to or count "has remotes" by.
     var remoteGate: RemoteWording.Gate {
         RemoteWording.Gate(
             hasRepository: root != nil && snapshot != nil, activity: blockingRemoteActivity,
             isMutating: isMutating, operation: operationInProgress, isDetached: isDetached,
-            branch: currentBranchRef, remotes: snapshot?.refs.remotes ?? [])
+            branch: currentBranchRef, remotes: snapshot?.refs.remotesWithURL ?? [])
     }
 
     var fetchBlockedReason: String? { RemoteWording.fetchBlocked(remoteGate) }
@@ -67,7 +69,7 @@ extension RepositoryStore {
 
     /// Push, Publish or Re-publish — decided on the push remote, not on the upstream.
     var pushKind: PushKind {
-        RemoteWording.pushKind(branch: currentBranchRef, remotes: snapshot?.refs.remotes ?? [])
+        RemoteWording.pushKind(branch: currentBranchRef, remotes: snapshot?.refs.remotesWithURL ?? [])
     }
 
     /// "Push", "Publish" or "Re-publish", from `pushKind`.
@@ -79,7 +81,7 @@ extension RepositoryStore {
     /// none.
     var pushAheadCount: Int? {
         guard let branch = currentBranchRef else { return nil }
-        return PushTarget.aheadCountToDisplay(for: branch, remotes: snapshot?.refs.remotes ?? [])
+        return PushTarget.aheadCountToDisplay(for: branch, remotes: snapshot?.refs.remotesWithURL ?? [])
     }
 
     /// The behind count the Pull button may draw, or nil (`PullPlan.behindCountToDisplay`):
@@ -91,7 +93,7 @@ extension RepositoryStore {
     /// The Push item's tooltip while it is enabled: where a push would go.
     var pushHelp: String {
         RemoteWording.pushHelp(
-            pushKind, branch: currentBranchRef, remotes: snapshot?.refs.remotes ?? [])
+            pushKind, branch: currentBranchRef, remotes: snapshot?.refs.remotesWithURL ?? [])
     }
 
     /// Whether the error banner on screen is the refusal "Force Push…" answers, and so should
@@ -230,7 +232,7 @@ extension RepositoryStore {
             showStickyError(reason)
             return
         }
-        guard let branch = currentBranchRef, let remotes = snapshot?.refs.remotes else { return }
+        guard let branch = currentBranchRef, let remotes = snapshot?.refs.remotesWithURL else { return }
         switch PushTarget.resolve(branch, remotes: remotes) {
         case .push(let remote, let ref):
             send(branch, to: remote, remoteRef: ref, publishing: false)
@@ -343,7 +345,7 @@ extension RepositoryStore {
         guard root != nil, let snapshot else { return "no repository" }
         if let remoteActivity { return "the lane is busy (\(remoteActivity.kind))" }
         if let operationInProgress { return "an operation is in progress (\(operationInProgress))" }
-        if snapshot.refs.remotes.isEmpty { return "no remotes" }
+        if snapshot.refs.remotesWithURL.isEmpty { return "no remotes" }
         return nil
     }
 

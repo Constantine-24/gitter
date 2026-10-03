@@ -146,12 +146,236 @@ public enum RemoteAdminRefusal: Error, Sendable, Hashable {
     /// one New Branch refuses (`refs/…`, `heads/…`, `@`, `@{…}`), or a root-ref name
     /// (`HEAD`, `MERGE_HEAD`, …) that would shadow git's own (Ruling 1).
     case invalidBranchName(String)
+
+    // B2 Task 3: remote management. Each is thrown with nothing written.
+
+    /// A name Add Remote or Rename Remote cannot give a remote (`RemoteNameProblem`).
+    case nameProblem(RemoteNameProblem)
+    /// A URL Gitter does not write: empty, beginning with `-` (an option to whatever transport
+    /// reads it, `-oProxyCommand=…`), an `ext::` command line (R20: stored without a word, run
+    /// by git's `ext` transport), or one holding a control character. Refused before git runs.
+    case unsafeURL
+    /// The remote has more than one `url` (or, when a push URL is being set, more than one
+    /// `pushurl`): a plain `set-url` fails on it (R22, exit 128), and which one to replace is a
+    /// choice the sheet does not offer. Shown read-only instead.
+    case severalURLs
+    /// What Remove Remote would delete, strand or change is no longer what the sheet showed
+    /// (RF1): a ref moved, appeared or went, a branch's upstream or push remote changed.
+    case impactChanged
+}
+
+// MARK: - Remote management (B2 Task 3)
+
+/// Why a name cannot be given to a remote — by Add Remote, or as the new name of Rename Remote.
+/// Git's own rule plus Gitter's (R19).
+public enum RemoteNameProblem: Sendable, Hashable {
+    /// Empty, or only whitespace.
+    case empty
+    /// git refuses it (`fatal: '<n>' is not a valid remote name`: `.`, `a..b`, `x.lock`,
+    /// `trail/`, a space, …), or Gitter does: a leading `-` (git accepts `-x` after
+    /// `--end-of-options`, and every Gitter vector would then have to keep it from being read as
+    /// an option), or a control character.
+    case invalid
+    /// `HEAD` or `@`: git accepts both (R19), and both already mean something to git's revision
+    /// syntax.
+    case reserved
+    /// A remote of this name is configured — compared ignoring case, as the file system
+    /// compares `refs/remotes/<name>/`: `Origin` beside `origin` would share their refs on a
+    /// case-insensitive volume. A remote with no URL counts.
+    case exists
+    /// The name is inside the namespace of the configured remote named here, or that remote is
+    /// inside its namespace (`origin/sub` beside `origin`, or `up` beside `up/stream`): git
+    /// refuses both ("is a subset of" / "is a superset of existing remote"), and their
+    /// remote-tracking refs would share a directory. Compared ignoring case.
+    case nested(String)
+}
+
+/// A remote's URLs **as the configuration writes them** (spec, promise 5) — never the
+/// `insteadOf`-rewritten ones `git remote -v` prints (R20): an Edit URL sheet pre-filled from
+/// those and saved would replace the user's `https://…` with the rewritten `git@…` for good.
+public struct RemoteURLs: Sendable, Hashable {
+    /// Every `remote.<name>.url`, in order (`config --get-all`). git fetches from the first.
+    /// Empty for a remote with no URL (R22).
+    public let fetch: [String]
+    /// Every `remote.<name>.pushurl`, in order. Empty when the remote pushes to its fetch URL.
+    public let push: [String]
+    /// Where git really fetches from: the first `url` after every `url.<base>.insteadOf`
+    /// rewrite (`ls-remote --get-url`, which contacts nothing — verified). Nil when the remote
+    /// has no URL, or its first is empty (git would then use the remote's name as a path).
+    /// For display only, and only when it differs: "git connects to …".
+    public let effectiveFetch: String?
+
+    public init(fetch: [String], push: [String], effectiveFetch: String?) {
+        self.fetch = fetch
+        self.push = push
+        self.effectiveFetch = effectiveFetch
+    }
+}
+
+/// A local branch whose push destination Remove Remote changes **without being asked**: its
+/// push went to the removed remote through `branch.<b>.pushRemote` or `remote.pushDefault`, and
+/// git unsets both (R23) — so the branch silently starts pushing wherever is left.
+public struct PushRedirect: Sendable, Hashable {
+    /// The branch's short name.
+    public let branch: String
+    /// Where its push goes afterwards, by the rule git applies (`branch.<b>.pushRemote`, then
+    /// `remote.pushDefault`, then `branch.<b>.remote`) with every setting git unsets gone — those
+    /// naming the removed remote **in the repository's own configuration**: a remote's name, `.`
+    /// (its upstream is a local branch), or nil — nothing configured, so Gitter offers Publish…
+    /// (a bare `git push` would fall back to `origin`). It can be the removed remote's own name:
+    /// git keeps a setting from another scope (a global or worktree `remote.pushDefault`,
+    /// measured), and the branch then pushes to a remote that no longer exists.
+    public let nowPushesTo: String?
+
+    public init(branch: String, nowPushesTo: String?) {
+        self.branch = branch
+        self.nowPushesTo = nowPushesTo
+    }
+}
+
+/// Everything "Remove <remote>…" would delete, strand and change, read before the sheet opens
+/// and compared again, whole, before git runs (RF1).
+public struct RemovalImpact: Sendable, Hashable {
+    public let remote: String
+    /// Every ref `git remote remove` deletes, with the id each holds now (R23: a deleted
+    /// remote-tracking ref loses its reflog, so this id is the only way back). Exactly what git
+    /// deletes: the `refs/remotes/` refs one of the remote's fetch refspecs maps (a negative
+    /// refspec honoured) and no other remote's does — so under a custom refspec this can hold a
+    /// ref outside `refs/remotes/<remote>/`, and a symbolic `refs/remotes/<remote>/HEAD` (its id
+    /// is its target's). In ref order.
+    public let refs: [RefTip]
+    /// The commits only `refs` hold, counted once as a union (R5, Ruling 5).
+    public let stranded: StrandedCommits
+    /// The local branches whose upstream is on this remote (`branch.<b>.remote`): git unsets
+    /// their `remote` and `merge` (R23), so they are left with **no** upstream — not `[gone]` —
+    /// and keep `branch.<b>.rebase`. Short names, in ref order.
+    public let upstreamOf: [String]
+    /// The local branches that push to this remote through `pushRemote` or `pushDefault`, and
+    /// where each pushes afterwards. In ref order.
+    public let pushRedirects: [PushRedirect]
+    /// Refs under `refs/remotes/<remote>/` that `git remote remove` leaves behind, because none
+    /// of its refspecs maps them (a custom refspec, a ref made by hand) and no other remote's
+    /// does either: they stay, and show in the "Other" group. Full names, in ref order.
+    public let leftBehind: [String]
+
+    public init(
+        remote: String, refs: [RefTip], stranded: StrandedCommits, upstreamOf: [String],
+        pushRedirects: [PushRedirect], leftBehind: [String]
+    ) {
+        self.remote = remote
+        self.refs = refs
+        self.stranded = stranded
+        self.upstreamOf = upstreamOf
+        self.pushRedirects = pushRedirects
+        self.leftBehind = leftBehind
+    }
+}
+
+/// What a failed `git remote rename` left (R21), read back after it exited non-zero. git renames
+/// the configuration section first and moves the refs and the branches' settings afterwards, so
+/// a lock held by a concurrent fetch leaves the section renamed and the rest where it was.
+///
+/// When `configured == [new]` and `refsUnderNew` is empty, renaming `new` back to `old` restores
+/// exactly the state before (measured: git rewrites no refspec, moves no ref and no setting,
+/// since none name `new`), after which the rename can be tried again.
+public struct RenameLeftover: Sendable, Hashable {
+    public let old: String
+    public let new: String
+    /// Which of `old` and `new` are configured remotes now, in that order: `[new]` when git
+    /// renamed the section and stopped.
+    public let configured: [String]
+    /// The fetch refspecs of the remote now named `new` that still write under
+    /// `refs/remotes/<old>/` — a fetch through it updates the old refs.
+    public let refspecsStillOld: [String]
+    /// Every configuration key still naming `old` (`branch.<b>.remote`, `branch.<b>.pushremote`,
+    /// `remote.pushdefault`), as git spells keys: those branches name a remote that is no longer
+    /// configured, so they have no upstream at all.
+    public let configStillNamingOld: [String]
+    /// The refs still under `refs/remotes/<old>/`, and the refs now under `refs/remotes/<new>/`,
+    /// full names in ref order.
+    public let refsUnderOld: [String]
+    public let refsUnderNew: [String]
+    /// git's own (redacted) words.
+    public let gitsWords: String
+
+    public init(
+        old: String, new: String, configured: [String], refspecsStillOld: [String],
+        configStillNamingOld: [String], refsUnderOld: [String], refsUnderNew: [String], gitsWords: String
+    ) {
+        self.old = old
+        self.new = new
+        self.configured = configured
+        self.refspecsStillOld = refspecsStillOld
+        self.configStillNamingOld = configStillNamingOld
+        self.refsUnderOld = refsUnderOld
+        self.refsUnderNew = refsUnderNew
+        self.gitsWords = gitsWords
+    }
+}
+
+/// What a failed `git remote remove` left (R23), read back after it exited non-zero. git unsets
+/// every branch's `remote`/`merge`/`pushRemote` naming the remote, and `remote.pushDefault`,
+/// **before** it deletes the refs and the section — so a lock held by a concurrent fetch leaves
+/// the remote and its refs and the branch settings already gone. Running the removal again
+/// finishes it (measured).
+public struct RemovalLeftover: Sendable, Hashable {
+    public let remote: String
+    /// Whether `remote.<remote>` is still configured.
+    public let stillConfigured: Bool
+    /// The refs of the sheet's `refs` that are still there, each with the id it holds now.
+    public let refsLeft: [RefTip]
+    /// The refs of the sheet's `refs` that are gone, each with the id the sheet showed — the
+    /// only way back (R7).
+    public let refsDeleted: [RefTip]
+    /// The configuration keys naming the remote that git had already unset
+    /// (`branch.<b>.remote`, `.merge`, `.pushremote`, `remote.pushdefault`), as git spells keys.
+    public let configRemoved: [String]
+    /// The local branches created to keep stranded commits, before git ran. They stay.
+    public let keptBranches: [String]
+    /// git's own (redacted) words.
+    public let gitsWords: String
+
+    public init(
+        remote: String, stillConfigured: Bool, refsLeft: [RefTip], refsDeleted: [RefTip],
+        configRemoved: [String], keptBranches: [String], gitsWords: String
+    ) {
+        self.remote = remote
+        self.stillConfigured = stillConfigured
+        self.refsLeft = refsLeft
+        self.refsDeleted = refsDeleted
+        self.configRemoved = configRemoved
+        self.keptBranches = keptBranches
+        self.gitsWords = gitsWords
+    }
 }
 
 /// A remote-administration action that stopped part-way and left something behind — not a
-/// refusal: what it names is in the repository now, or (the two `…OutcomeUnknown` cases) may
-/// be. Task 3 adds rename's and remove's half-done states here.
+/// refusal: what it names is in the repository now, or (the `…OutcomeUnknown` cases) may be.
 public enum RemoteAdminPartial: Error, Sendable, Hashable {
+    // B2 Task 3: remote management. A failed git command is not assumed to be a no-op (spec,
+    // promise 4): each failure is read back, and one that changed nothing stays git's words.
+
+    /// `git remote rename` failed after changing something (R21): what it left.
+    case renameHalfDone(left: RenameLeftover)
+    /// `git remote remove` failed after changing something, or after Gitter created kept
+    /// branches (R23): what it left.
+    case removeHalfDone(left: RemovalLeftover)
+    /// Rename Remote was cancelled while git ran: what the configuration and the refs hold now
+    /// is **not known** — read them back.
+    case renameOutcomeUnknown(old: String, new: String)
+    /// Remove Remote was cancelled while git ran: whether the remote, its refs and the branch
+    /// settings naming it are still there is **not known**. `keptBranches` were created before
+    /// git ran and stay.
+    case removeOutcomeUnknown(remote: String, keptBranches: [String])
+    /// Add Remote or Edit URL was cancelled while git was writing: the remote's URLs are **not
+    /// known** — read them back.
+    case urlsOutcomeUnknown(remote: String)
+    /// Add Remote or Edit URL failed (git's words, `gitsWords`) **after** writing part of what
+    /// it was asked to: `now` is what the remote's configuration holds (nil: no such remote).
+    /// `remote add` writes `url` and `fetch` one at a time; Edit URL writes the fetch URL and
+    /// then the push URL.
+    case urlsChangedThenFailed(remote: String, now: RemoteURLs?, gitsWords: String)
+
     /// A prune created the kept branches `kept` (in the plan's order), then could not create
     /// `failedName` — git's (redacted) words, or `.branchExists` for a name taken since the
     /// check — and stopped: **nothing was deleted**, and the branches in `kept` stay.

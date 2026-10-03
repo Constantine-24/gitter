@@ -179,7 +179,7 @@
 
         /// What the sidebar's tag rows, their menus and the commit list's pills draw.
         private static func logTags(_ store: RepositoryStore) {
-            let remotes = store.snapshot?.refs.remotes.map(\.name) ?? []
+            let remotes = store.snapshot?.refs.remotesWithURL.map(\.name) ?? []
             for tag in store.snapshot?.refs.tags ?? [] {
                 log("tag \(tag.name): icon \(TagWording.rowIcon(tag)) "
                     + "| voiceover: \(TagWording.rowAccessibility(tag)) "
