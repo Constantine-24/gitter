@@ -1472,10 +1472,10 @@ import Testing
     @Test(arguments: [
         #"result = try await runWithEnvironment(["rebase", "--continue"], cwd: root, extra: Self.withConfig("commit.cleanup", "scissors", over: ProcessInfo.processInfo.environment), allowedExitCodes: Self.anyExitCode)"#,
         #"result = try await runWithEnvironment(["cherry-pick", "--continue"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
-        #"result = try await runWithEnvironment(["revert", "--continue"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"result = try await runWithEnvironment(["revert", "--continue", "--no-reference"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
         #"arguments = ["rebase", "--skip"]"#,
         #"arguments = ["cherry-pick", "--skip"]"#,
-        #"arguments = ["revert", "--skip"]"#,
+        #"arguments = ["revert", "--skip", "--no-reference"]"#,
         #"let data = try await run(["diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD"], cwd: root)"#,
         #"let data = try await run(["diff", "--name-only", "-z", "--no-renames", "HEAD", "AUTO_MERGE"], cwd: root)"#,
         #"let data = try await run(["rev-parse", "--git-path", name], cwd: root)"#,
@@ -1530,13 +1530,20 @@ import Testing
     }
 
     /// The three shapes are the whole permission: each one's table entry, and nothing else
-    /// under `rebase`, `cherry-pick` or `revert` names `--skip`.
+    /// under `rebase`, `cherry-pick` or `revert` names `--skip`. The revert one carries
+    /// `--no-reference` (final fix wave I1): `sequencer/opts` does not keep it, so a skip without
+    /// it commits the rest of a range with git's placeholder subject under
+    /// `revert.reference=true`.
     @Test func theSkipShapesAreExactlyTheThreeVectors() {
         let shapes = ForceFlagScanner.skipShapes
         #expect(Set(shapes.keys) == ["rebase", "cherry-pick", "revert"])
+        let expected = [
+            "rebase": #"["rebase", "--skip"]"#, "cherry-pick": #"["cherry-pick", "--skip"]"#,
+            "revert": #"["revert", "--skip", "--no-reference"]"#,
+        ]
         for (subcommand, list) in shapes {
             #expect(list.count == 1, "\(subcommand)")
-            #expect(list.first.map { ForceFlagScanner.spelling(of: subcommand, [$0]) } == "[\"\(subcommand)\", \"--skip\"]")
+            #expect(list.first.map { ForceFlagScanner.spelling(of: subcommand, [$0]) } == expected[subcommand])
         }
         #expect(ForceFlagScanner.alwaysForbidden.contains("--skip"), "vouched for by the shapes, forbidden elsewhere")
     }
@@ -1546,8 +1553,11 @@ import Testing
     @Test(arguments: [
         (#"arguments = ["rebase", "--skip"]"#, #"arguments = ["rebase", "--skip", "--no-verify"]"#),
         (#"arguments = ["cherry-pick", "--skip"]"#, #"arguments = ["am", "--skip"]"#),
-        (#"arguments = ["revert", "--skip"]"#, #"arguments = ["revert", "--quit"]"#),
+        (#"arguments = ["revert", "--skip", "--no-reference"]"#, #"arguments = ["revert", "--quit"]"#),
         (#"["rebase", "--continue"]"#, #"["rebase", "--continue", "--autostash"]"#),
+        // Final fix wave I1: the pin left out of either revert way on is a finding.
+        (#"arguments = ["revert", "--skip", "--no-reference"]"#, #"arguments = ["revert", "--skip"]"#),
+        (#"["revert", "--continue", "--no-reference"]"#, #"["revert", "--continue"]"#),
     ])
     func theContinueFilesVectorsAreChecked(original: String, mutated: String) throws {
         let file = "CLIGitBackend+Continue.swift"
@@ -1572,7 +1582,7 @@ import Testing
         #"let result = try await runWithEnvironment(["revert", "--no-edit", "--no-reference", "--end-of-options"] + shas, cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
         #"_ = try await run(["rebase", "--no-autostash", "--no-update-refs", "--no-rebase-merges", "--end-of-options", target], cwd: root)"#,
         #"_ = try await run(["cherry-pick", "--abort"], cwd: root)"#,
-        #"_ = try await run(["revert", "--continue"], cwd: root)"#,
+        #"_ = try await run(["revert", "--continue", "--no-reference"], cwd: root)"#,
         #"arguments = ["rebase", "--skip"]"#,
         #"let data = try await run(["rev-list", "--topo-order", "--reverse", "--end-of-options"] + sorted + ["^" + head], cwd: root)"#,
         #"let data = try await run(["rev-list", "--count", "--not", "--remotes", "--not", "--end-of-options", range], cwd: root)"#,
@@ -1598,6 +1608,12 @@ import Testing
         #"_ = try await run(["revert", "--no-edit", "--end-of-options"] + shas, cwd: root)"#,
         #"_ = try await run(["revert", "--no-reference", "--end-of-options"] + shas, cwd: root)"#,
         #"_ = try await run(["revert", "--no-edit", "--no-reference", "-m", "1", "--end-of-options"] + shas, cwd: root)"#,
+        // Final fix wave I1: `sequencer/opts` keeps `edit = false` but not `--no-reference`, so
+        // a way on without it commits the rest of a range with git's placeholder subject.
+        #"_ = try await run(["revert", "--continue"], cwd: root)"#,
+        #"_ = try await run(["revert", "--skip"], cwd: root)"#,
+        #"_ = try await run(["revert", "--continue", "--reference"], cwd: root)"#,
+        #"_ = try await run(["revert", "--skip", "--no-reference", "--no-edit"], cwd: root)"#,
         // `--no-rebase-merges` left out: `rebase.rebaseMerges=true` recreates merges (B13).
         #"_ = try await run(["rebase", "--no-autostash", "--no-update-refs", "--end-of-options", target], cwd: root)"#,
         #"_ = try await run(["rebase", "--no-autostash", "--no-update-refs", "--rebase-merges", "--end-of-options", target], cwd: root)"#,
@@ -1615,7 +1631,7 @@ import Testing
         #expect(ForceFlagScanner.spelling(of: "cherry-pick", ForceFlagScanner.allowedShapes["cherry-pick"] ?? [])
             == #"["cherry-pick", "--abort"] or ["cherry-pick", "--continue"] or ["cherry-pick", "--empty=drop", "--end-of-options"] + revisions"#)
         #expect(ForceFlagScanner.spelling(of: "revert", ForceFlagScanner.allowedShapes["revert"] ?? [])
-            == #"["revert", "--abort"] or ["revert", "--continue"] or ["revert", "--no-edit", "--no-reference", "--end-of-options"] + revisions"#)
+            == #"["revert", "--abort"] or ["revert", "--continue", "--no-reference"] or ["revert", "--no-edit", "--no-reference", "--end-of-options"] + revisions"#)
         #expect(ForceFlagScanner.spelling(of: "rebase", ForceFlagScanner.allowedShapes["rebase"] ?? [])
             == #"["rebase", "--abort"] or ["rebase", "--continue"] or ["rebase", "--no-autostash", "--no-update-refs", "--no-rebase-merges", "--end-of-options", <data>]"#)
     }

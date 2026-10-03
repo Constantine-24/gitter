@@ -580,6 +580,12 @@ extension CLIGitBackend: GitOperationBackend {
         // One complete literal vector per case. `GIT_EDITOR=true` (every call's) is what lets
         // `rebase --continue` commit without an editor (M 13); `scissors` keeps git's editor
         // template out of the commit under `commit.cleanup=verbatim|whitespace` (M 29).
+        // `--no-reference` (final fix wave I1, measured): `sequencer/opts` keeps a range's
+        // `--no-edit` but not its `--no-reference`, so under `revert.reference=true` the rest of
+        // a range would be committed with git's placeholder subject. A flag, not a config
+        // override: it is the start vector's own pin, visible in the vector and pinned by the
+        // scanner. It applies to a range started in a terminal as well — the commits still to
+        // go get `Revert "<subject>"`; the stopped commit keeps the message git wrote for it.
         let result: ProcessRunner.StreamedResult
         switch expected {
         case .rebase:
@@ -587,7 +593,7 @@ extension CLIGitBackend: GitOperationBackend {
         case .cherryPick:
             result = try await runWithEnvironment(["cherry-pick", "--continue"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
         case .revert:
-            result = try await runWithEnvironment(["revert", "--continue"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
+            result = try await runWithEnvironment(["revert", "--continue", "--no-reference"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
         case .merge, .squash, .applyingPatches:
             throw OperationError.notReady(.notContinuable)
         }
@@ -693,12 +699,13 @@ extension CLIGitBackend: GitOperationBackend {
                 paths: paths, message: Self.skippedByGitter + summary, allowingUnmerged: true, backend: self, at: root)
         }
 
-        // One complete literal vector per case: `skipShapes` permits exactly these three.
+        // One complete literal vector per case: `skipShapes` permits exactly these three. The
+        // revert one keeps the rest of a range in the no-reference style, as Continue does.
         let arguments: [String]
         switch expected {
         case .rebase: arguments = ["rebase", "--skip"]
         case .cherryPick: arguments = ["cherry-pick", "--skip"]
-        case .revert: arguments = ["revert", "--skip"]
+        case .revert: arguments = ["revert", "--skip", "--no-reference"]
         case .merge, .squash, .applyingPatches: throw OperationError.skipRefused(.notSkippable)
         }
         let result = try await runWithEnvironment(arguments, cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)

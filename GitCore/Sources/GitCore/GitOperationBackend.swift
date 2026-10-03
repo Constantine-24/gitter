@@ -60,7 +60,9 @@ public protocol GitOperationBackend: Sendable {
     /// Runs `rebase|cherry-pick|revert --continue`, the rebase with `commit.cleanup=scissors`
     /// for this one command (M 29): git's editor template is dropped, the user's own
     /// comment-character lines are kept. A cherry-pick or revert strips them whatever the
-    /// setting (measured, A2 Task 3). Then reads the repository again: see `ContinueOutcome`
+    /// setting (measured, A2 Task 3). A revert's carries `--no-reference` (final review I1):
+    /// `sequencer/opts` does not keep it, and under `revert.reference=true` the rest of a range
+    /// would get git's placeholder subject. Then reads the repository again: see `ContinueOutcome`
     /// (`.sequenceHalted` when a pick or revert range made a commit and stranded the rest).
     func continueOperation(
         _ expected: RepositoryOperation, message: String?, acknowledgingOtherStaged: [String], at root: URL
@@ -83,7 +85,8 @@ public protocol GitOperationBackend: Sendable {
     /// `.ready`. Readiness is decided before anything is filed. Then files the ready
     /// paths — the partial resolution included, unmerged paths as their worktree bytes — as
     /// `Skipped by Gitter: <short sha> <subject>` (none filed when there are no paths), runs
-    /// `rebase|cherry-pick|revert --skip`, and reads the repository again as
+    /// `rebase|cherry-pick --skip` or `revert --skip --no-reference` (as `continueOperation`'s
+    /// revert), and reads the repository again as
     /// `continueOperation` does. With only the stopped commit's changes present, every skip
     /// returns the tree to HEAD (M 32).
     func skip(_ expected: RepositoryOperation, stoppedAt sha: String, at root: URL) async throws -> SkipOutcome

@@ -168,8 +168,8 @@ import Foundation
 ///   `--skip=<n>` (one token, which does not match) or else be a false positive to resolve
 ///   here — by moving `--skip` into the per-subcommand tables — rather than by deleting the
 ///   rule. Same shape as the `-M` exception below. Since A2 Task 3 the sweep stands down for
-///   it in exactly three whole vectors, `skipShapes` — Skip's `rebase|cherry-pick|revert
-///   --skip` — and nowhere else.
+///   it in exactly three whole vectors, `skipShapes` — Skip's `rebase|cherry-pick --skip`
+///   and `revert --skip --no-reference` — and nowhere else.
 /// - **`GitCore/Sources` only** — deliberately, since this file's own rule tables would
 ///   otherwise flag themselves. The app target runs no git commands of its own.
 enum ForceFlagScanner {
@@ -1163,13 +1163,16 @@ enum ForceFlagScanner {
         // stop the pick as "empty", B4), `--no-reference` (`revert.reference=true` commits git's
         // placeholder comment as the subject, B9), `--no-rebase-merges` (`rebase.rebaseMerges`
         // recreates merges the replay list flattened, B13) — and the two ways out A2 runs
-        // (`--skip` is `skipShapes`'). The shas follow `--end-of-options`, concatenated.
+        // (`--skip` is `skipShapes`'). The shas follow `--end-of-options`, concatenated. A
+        // revert's `--continue` carries `--no-reference` too (final fix wave I1): git keeps
+        // `--no-edit` in `sequencer/opts` but not it, so the rest of a stopped range would be
+        // committed with the placeholder subject.
         "cherry-pick": [
             Shape(.literal("--abort")), Shape(.literal("--continue")),
             Shape(.literal("--empty=drop"), .literal("--end-of-options")),
         ],
         "revert": [
-            Shape(.literal("--abort")), Shape(.literal("--continue")),
+            Shape(.literal("--abort")), Shape(.literal("--continue"), .literal("--no-reference")),
             Shape(.literal("--no-edit"), .literal("--no-reference"), .literal("--end-of-options")),
         ],
         "rebase": [
@@ -1214,7 +1217,8 @@ enum ForceFlagScanner {
 
     /// The only three vectors that may carry `--skip` (A2 Task 3's Skip), each whole and with
     /// nothing concatenated: `["rebase", "--skip"]`, `["cherry-pick", "--skip"]` and
-    /// `["revert", "--skip"]`.
+    /// `["revert", "--skip", "--no-reference"]` — the pin, as on `revert --continue`, because
+    /// `sequencer/opts` does not keep it (final fix wave I1).
     ///
     /// `--skip` stays in `alwaysForbidden`, so the sweep still reports it in every literal but an
     /// element of an array literal matching one of these shapes (`vouched` in `findings`), and a
@@ -1228,7 +1232,7 @@ enum ForceFlagScanner {
     static let skipShapes: [String: [Shape]] = [
         "rebase": [Shape(.literal("--skip"))],
         "cherry-pick": [Shape(.literal("--skip"))],
-        "revert": [Shape(.literal("--skip"))],
+        "revert": [Shape(.literal("--skip"), .literal("--no-reference"))],
     ]
 
     /// The two slots that end a vector whose paths are in a pathspec file (Ruling 26):

@@ -161,6 +161,53 @@ import Testing
         #expect(body.contains("This reverts commit \(f1)."))
     }
 
+    /// Final fix wave I1 (measured): `sequencer/opts` keeps only `edit = false`, never
+    /// `--no-reference`, so a range that stops and is continued or skipped commits the rest
+    /// with git's placeholder subject under `revert.reference=true` — unless A2's Continue and
+    /// Skip carry `--no-reference` themselves. `main`: base, G1 (g), F1 (f = one), F2 (f =
+    /// two); reverting [G1, F1] stops at F1 (newest first) with G1 still to go.
+    static func makeStoppedRevertRange() async throws -> (repo: TestRepo, f1: String, g1: String) {
+        let repo = try await TestRepo.makeEmpty()
+        try await repo.commit("f", "base", "base")
+        try await repo.commit("g", "x", "G0")
+        let g1 = try await repo.commit("g", "y", "G1")
+        let f1 = try await repo.commit("f", "one", "F1")
+        try await repo.commit("f", "two", "F2")
+        try await repo.git(["config", "revert.reference", "true"])
+        return (repo, f1, g1)
+    }
+
+    @Test func aStoppedRevertRangeContinuedKeepsTheNoReferenceStyle() async throws {
+        let (repo, f1, g1) = try await Self.makeStoppedRevertRange()
+        defer { repo.cleanUp() }
+        let plan = try await backend.historyPlan(.revert, shas: [g1, f1], at: repo.root)
+        #expect(try await backend.run(plan, at: repo.root) == .stopped)
+        #expect(try await backend.operationProgress(at: repo.root)?.current?.sha == f1)
+        try repo.write("f", "resolved\n")
+        try await repo.git(["add", "f"])
+
+        let outcome = try await backend.continueOperation(
+            .revert, message: nil, acknowledgingOtherStaged: [], at: repo.root)
+
+        #expect(outcome == .finished)
+        #expect(try await repo.subjects("HEAD~2..HEAD") == ["Revert \"F1\"", "Revert \"G1\""])
+        let body = String(decoding: try await repo.git(["log", "-1", "--format=%B"]), as: UTF8.self)
+        #expect(body.contains("This reverts commit \(g1)."))
+    }
+
+    @Test func aStoppedRevertRangeSkippedKeepsTheNoReferenceStyle() async throws {
+        let (repo, f1, g1) = try await Self.makeStoppedRevertRange()
+        defer { repo.cleanUp() }
+        let plan = try await backend.historyPlan(.revert, shas: [g1, f1], at: repo.root)
+        #expect(try await backend.run(plan, at: repo.root) == .stopped)
+
+        let skipped = try await backend.skip(.revert, stoppedAt: f1, at: repo.root)
+
+        #expect(skipped.outcome == .finished)
+        #expect(try await repo.subjects("HEAD~1..HEAD") == ["Revert \"G1\""])
+        #expect(try await repo.subject(of: "HEAD~1") == "F2")
+    }
+
     /// A change HEAD already undoes: "nothing to commit", nothing changed. git leaves a
     /// `MERGE_MSG` behind, which a terminal `git commit` would take as its message (measured,
     /// Task 1); it is this run's own, so Gitter removes it.
