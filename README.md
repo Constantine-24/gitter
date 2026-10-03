@@ -418,8 +418,8 @@ contains are left out and named; a commit whose change the branch already has as
 patch "may be skipped as already applied", and the notice afterwards names the ones git skipped.
 A merge commit is refused with the reason (there is no mainline picker), and so is a revert of a
 commit the branch does not contain. When git stops on a conflict, the operation bar of "Conflicts:
-resolve, continue, skip" takes over. A revert's message is always git's `Revert "<subject>"`,
-whatever `revert.reference` says.
+resolve, continue, skip" takes over. A revert's message is always git's own `Revert "<subject>"`
+(or `Reapply "<subject>"` for a revert of a revert), whatever `revert.reference` says.
 
 **Rebase onto a commit or a branch.** **Rebase "main" onto Here…** on a commit row, **Rebase
 "main" onto "feature"…** on a branch or remote branch. The sheet lists the commits that will be
@@ -431,7 +431,8 @@ The target goes to git as a full commit id, so a tag named like the branch canno
 
 **Before any of them runs.** All three are refused while an operation is in progress or any
 tracked file has changes, staged or not (untracked files are fine): a sequence that starts clean
-cannot halt half-way on one of your files. The banner offers **Stash and Continue**, which stashes
+cannot halt half-way on a tracked change of yours. An untracked file that a later commit adds can
+still halt it, and the halted bar then lists what is left. The banner offers **Stash and Continue**, which stashes
 and then asks again — the sheet comes back; nothing runs unasked. The sheet is a snapshot: if the
 branch moved, you switched to another branch (even at the same commit), the target moved or the
 commits changed while it was open, nothing runs and the banner says "The branch changed while this
@@ -476,8 +477,8 @@ server hook or a hosting service's tag protection can stop this delete.
 **What stays a terminal job.** Interactive rebase (reorder, squash, fixup, drop, reword);
 cherry-pick `-x`, `--no-commit` and `-m` (a merge commit); signed tags; pushing all tags at once
 (`--tags`); moving a tag (`tag -f`, or replacing one on a remote); and symbolic refs under
-`refs/tags/`, which Gitter lists but neither deletes, pushes nor restores — deleting one would
-delete the branch it names.
+`refs/tags/`, which Gitter lists but neither deletes, pushes nor restores — git's own delete would
+follow one to the branch it names, and a restore could not bring a symbolic ref back.
 
 ## Design decisions
 
@@ -491,7 +492,7 @@ delete the branch it names.
 | Dirty switch | git's default — carry non-conflicting changes, refuse otherwise. No force; the refusal offers Stash and Continue, never an automatic stash | A refusal that changes nothing is a better answer than a stash the user did not ask for |
 | Discard | Record first (a stash entry built from plumbing in a temporary index), then `git restore` or a reverse `git apply`; untracked items to the Trash | Every discard can be undone, and the copy is in a place git and the user already know |
 | Delete | `git branch -d` first, then `-D` only from the warning its refusal opened, and only if the tip is still the one that warning named | `-d` is git's own authority on "is this merged", and it changes nothing when it refuses |
-| Remotes | git's own transports and credentials; `fetch`, then merge or rebase, instead of `git pull`; an explicit-sha lease on every force; no prune; one tag at a time, never forced | Nothing to store or ask for; every step of a pull is one Gitter can explain and stop; the lease the automatic fetch cannot arm |
+| Remotes | git's own transports and credentials; `fetch`, then merge or rebase, instead of `git pull`; an explicit-sha lease on every force; no prune; one tag at a time, never replaced, the remote delete leased | Nothing to store or ask for; every step of a pull is one Gitter can explain and stop; the lease the automatic fetch cannot arm |
 | Conflicts | Blocks rebuilt from the index stages with `git merge-file`, choices composed in memory and written once; git's own `--continue` / `--skip` with the message file written back, behind readiness checks of Gitter's own | The worktree file can hold anything (rerere, hand edits, marker-like code); git keeps the author, the date and the sequence, and Gitter refuses before git runs where git would lose something silently |
 | History actions | A plan read first (order, left out, may be skipped, replayed, already pushed), shown on a sheet, made again by the run and refused on any difference; full commit ids and `refs/…` names in every vector; tags deleted by compare-and-delete with the receipt kept in the app | A sheet is a promise only if the run checks it; a short name can mean a tag; tags have no reflog |
 | Scope | Browsing, diffs, staging, commit, branch and remote operations, stash and discard, conflict resolution and continuing an operation, cherry-pick, revert, rebase onto a commit and tags are done | Each milestone keeps the promise before it adds the next way to lose work |
