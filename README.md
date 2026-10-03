@@ -419,7 +419,10 @@ patch "may be skipped as already applied", and the notice afterwards names the o
 A merge commit is refused with the reason (there is no mainline picker), and so is a revert of a
 commit the branch does not contain. When git stops on a conflict, the operation bar of "Conflicts:
 resolve, continue, skip" takes over. A revert's message is always git's own `Revert "<subject>"`
-(or `Reapply "<subject>"` for a revert of a revert), whatever `revert.reference` says.
+(or `Reapply "<subject>"` for a revert of a revert), whatever `revert.reference` says — for the
+commits still to go after a stop too, when Gitter's Continue or Skip goes on (git does not keep
+that choice in the sequence), and so also for a revert range started in a terminal and continued
+in Gitter. The commit git stopped on keeps the message git wrote for it.
 
 **Rebase onto a commit or a branch.** **Rebase "main" onto Here…** on a commit row, **Rebase
 "main" onto "feature"…** on a branch or remote branch. The sheet lists the commits that will be
@@ -432,11 +435,11 @@ The target goes to git as a full commit id, so a tag named like the branch canno
 **Before any of them runs.** All three are refused while an operation is in progress or any
 tracked file has changes, staged or not (untracked files are fine): a sequence that starts clean
 cannot halt half-way on a tracked change of yours. An untracked file that a later commit adds can
-still halt it, and the halted bar then lists what is left. The banner offers **Stash and Continue**, which stashes
-and then asks again — the sheet comes back; nothing runs unasked. The sheet is a snapshot: if the
-branch moved, you switched to another branch (even at the same commit), the target moved or the
-commits changed while it was open, nothing runs and the banner says "The branch changed while this
-was open … Ask again to see what it would do now."
+still halt it, and the halted bar then lists what is left. The banner offers **Stash and
+Continue**, which stashes and then asks again — the sheet comes back; nothing runs unasked. The
+sheet is a snapshot: if the branch moved, you switched to another branch (even at the same
+commit), the target moved or the commits changed while it was open, nothing runs and the banner
+says "The branch changed while this was open … Ask again to see what it would do now."
 
 **The way back.** The notice after a cherry-pick or revert says the reflog keeps where the branch
 was, with the command: `git reset --keep <full sha>`; after a rebase, that the old tip is
@@ -450,11 +453,11 @@ lines and blank lines kept), or lightweight; never signed, whatever `tag.gpgSign
 checked as you type, and refused where git would later read it as something else: a branch's or a
 remote's name (`main`, `origin`, `origin/x` — git takes the tag first in every command that names
 it), git's own names (`HEAD`, `@`, `MERGE_HEAD`, `ORIG_HEAD` and the like, which would make a clean
-repository look mid-merge), seven or more hex digits (an abbreviated commit id), and an existing
-tag in any case (`V1` beside `v1`; the file system cannot tell them apart). The sidebar's Tags
-rows show the kind by their icon and the tagger, date and message as the tooltip, and the commit
-list's tag pills come from the tag list itself, so `log.decorate` settings cannot hide or rename
-them.
+repository look mid-merge, and `stash`, after which git refuses to drop any stash entry), seven or
+more hex digits (an abbreviated commit id), and an existing tag in any case (`V1` beside `v1`; the
+file system cannot tell them apart). The sidebar's Tags rows show the kind by their icon and the
+tagger, date and message as the tooltip, and the commit list's tag pills come from the tag list
+itself, so `log.decorate` settings cannot hide or rename them.
 
 **Delete Tag…** deletes only if the tag still holds what the sheet showed (one compare-and-delete;
 otherwise nothing is deleted and the banner says so). The sheet says whether a fetch would bring
@@ -471,8 +474,8 @@ name nothing is pushed: Gitter never replaces a tag on a remote. **Delete from "
 the remote's tag, shows its id and whether it is the tag you have here, and deletes it only while
 the remote still holds that id (a lease; if it moved meanwhile, nothing is deleted). Your local tag
 is kept, and when a tag here holds the same object the notice gives the `git push` command that
-puts the remote one back. A plain git server's `receive.denyDeletes` protects branches only, not tags — only a
-server hook or a hosting service's tag protection can stop this delete.
+puts the remote one back. A plain git server's `receive.denyDeletes` protects branches only, not
+tags — only a server hook or a hosting service's tag protection can stop this delete.
 
 **What stays a terminal job.** Interactive rebase (reorder, squash, fixup, drop, reword);
 cherry-pick `-x`, `--no-commit` and `-m` (a merge commit); signed tags; pushing all tags at once
