@@ -147,6 +147,13 @@ import Testing
     static let problems: [(String, TagNameProblem?)] = [
         ("", .empty),
         ("HEAD", .reserved), ("-x", .reserved), ("@", .reserved),
+        // Fix round 1 (I1): git's root-ref syntax — `[A-Z_-]` ending in `HEAD`, and the
+        // irregular five — compared folded, as APFS compares them.
+        ("MERGE_HEAD", .reserved), ("ORIG_HEAD", .reserved), ("FETCH_HEAD", .reserved),
+        ("CHERRY_PICK_HEAD", .reserved), ("REBASE_HEAD", .reserved), ("merge_head", .reserved),
+        ("head", .reserved), ("MY-HEAD", .reserved), ("AUTO_MERGE", .reserved), ("Auto_Merge", .reserved),
+        ("BISECT_EXPECTED_REV", .reserved), ("NOTES_MERGE_PARTIAL", .reserved),
+        ("NOTES_MERGE_REF", .reserved), ("MERGE_AUTOSTASH", .reserved),
         (String(repeating: "z", count: 251), .tooLong),
         ("a..b", .invalid), ("x.lock", .invalid), ("a b", .invalid), ("a~1", .invalid),
         ("v1.0^{}", .invalid), ("x/", .invalid), (".x", .invalid), ("a//b", .invalid), ("a@{b", .invalid),
@@ -155,7 +162,13 @@ import Testing
         ("v1", .exists), ("V1", .exists), ("v1/sub", .exists),
         ("feature", .isBranchName), ("Main", .isBranchName), ("origin/feat/x", .isBranchName),
         ("origin/main", .isBranchName),
-        ("release/1.0", nil), ("abcdef", nil), ("ünï", nil), ("origin", nil),
+        ("release/1.0", nil), ("abcdef", nil), ("ünï", nil),
+        // Minor 1: a remote's name — `origin` alone resolves to `refs/remotes/origin/HEAD`, and
+        // a tag of that name wins.
+        ("origin", .isBranchName), ("ORIGIN", .isBranchName),
+        // Read as files through `--git-path`, never as refs: a tag of that name changes
+        // nothing Gitter reads (`aTagNamedLikeAStateFileIsHarmless`).
+        ("SQUASH_MSG", nil), ("MERGE_MSG", nil), ("HEADS", nil), ("V1_HEAD", nil),
         (String(repeating: "z", count: 250), nil),
     ]
 
@@ -187,6 +200,65 @@ import Testing
             }
         }
         try await before.assertUnchanged(repo)
+    }
+
+    /// I1: the reason for the root-ref refusal. A tag named `MERGE_HEAD` (made in a terminal)
+    /// is what `rev-parse MERGE_HEAD` resolves to, and Gitter would then report a merge in a
+    /// clean repository. Through Gitter the name is refused, and the snapshot is unaffected.
+    @Test func aPseudoRefNameIsRefusedAndTheSnapshotStaysClean() async throws {
+        let (repo, root, _) = try await Self.makeRepo()
+        defer { repo.cleanUp() }
+
+        await #expect(throws: TagOperationError.nameProblem(.reserved)) {
+            try await CLIGitBackend().createTag("MERGE_HEAD", at: root, message: nil, at: repo.root)
+        }
+        #expect(try await CLIGitBackend().snapshot(at: repo.root).status.operationInProgress == nil)
+
+        // The baseline that can fail: the same tag made by git itself.
+        try await repo.git(["tag", "MERGE_HEAD", root])
+        #expect(try await CLIGitBackend().snapshot(at: repo.root).status.operationInProgress == .merge)
+    }
+
+    /// `SQUASH_MSG` and `MERGE_MSG` are files Gitter reads through `--git-path`: a tag of either
+    /// name is allowed and changes no operation state (measured for fix round 1).
+    @Test(arguments: ["SQUASH_MSG", "MERGE_MSG"])
+    func aTagNamedLikeAStateFileIsHarmless(name: String) async throws {
+        let (repo, root, _) = try await Self.makeRepo()
+        defer { repo.cleanUp() }
+
+        try await CLIGitBackend().createTag(name, at: root, message: nil, at: repo.root)
+
+        #expect(try await repo.tagObject(name) == root)
+        #expect(try await CLIGitBackend().snapshot(at: repo.root).status.operationInProgress == nil)
+    }
+
+    /// Minor 1: a configured remote nothing has been fetched from is a remote's name all the
+    /// same — `git push upstream` would read the tag's name as the remote.
+    @Test func aConfiguredRemotesNameIsRefusedBeforeAnyFetch() async throws {
+        let (repo, _, _) = try await Self.makeRepo()
+        defer { repo.cleanUp() }
+        let upstream = try await repo.addEmptyRemote(named: "upstream")
+        defer { try? FileManager.default.removeItem(at: upstream) }
+
+        #expect(try await CLIGitBackend().tagNameProblem("upstream", at: repo.root) == .isBranchName)
+        #expect(try await CLIGitBackend().tagNameProblem("Upstream", at: repo.root) == .isBranchName)
+    }
+
+    /// I2: a dangling symbolic ref under `refs/tags/` is invisible to `for-each-ref`, and `git
+    /// tag <name>` writes **through** it, creating the branch it names (measured). The name is
+    /// taken: refused, and no branch appears.
+    @Test func aDanglingSymbolicTagIsAnExistingName() async throws {
+        let (repo, root, _) = try await Self.makeRepo()
+        defer { repo.cleanUp() }
+        try await repo.git(["symbolic-ref", "refs/tags/dang", "refs/heads/gone"])
+        let before = try await HistorySnapshot.capture(repo)
+
+        #expect(try await CLIGitBackend().tagNameProblem("dang", at: repo.root) == .exists)
+        await #expect(throws: TagOperationError.nameProblem(.exists)) {
+            try await CLIGitBackend().createTag("dang", at: root, message: nil, at: repo.root)
+        }
+        try await before.assertUnchanged(repo)
+        #expect(!(try await repo.gitRefExists("refs/heads/gone")))
     }
 
     /// RF2's reason: a tag named like a branch is what a short name then resolves to.

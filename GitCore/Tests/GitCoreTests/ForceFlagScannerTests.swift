@@ -1647,7 +1647,9 @@ import Testing
         #"_ = try await run(["tag", "--no-sign", "--end-of-options", name, sha], cwd: root)"#,
         #"_ = try await run(["tag", "--no-sign", "-a", "-F", file.path, "--cleanup=verbatim", "--end-of-options", name, sha], cwd: root)"#,
         #"_ = try await run(["tag", "--no-sign", "--end-of-options", receipt.name, receipt.objectID], cwd: root)"#,
-        #"let result = try await runWithEnvironment(["update-ref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"let result = try await runWithEnvironment(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"let data = try await run(["symbolic-ref", "-q", "refs/tags/\(name)"], cwd: root, allowedExitCodes: [1])"#,
+        #"let data = try await run(["remote", "-v"], cwd: root)"#,
         #"let arguments = ["push", "--porcelain", "--no-follow-tags", "--no-recurse-submodules", "--end-of-options", remote, "refs/tags/\(n):refs/tags/\(n)"]"#,
         #"let arguments = ["push", "--porcelain", "--no-follow-tags", "--no-recurse-submodules", "--force-with-lease=refs/tags/\(n):\(id)", "--end-of-options", remote, ":refs/tags/\(n)"]"#,
         #"let result = try await runStreaming(["ls-remote", "--exit-code", "--end-of-options", remote, "refs/tags/\(n)"], cwd: root, allowedExitCodes: [2], progress: { _ in })"#,
@@ -1704,16 +1706,19 @@ import Testing
     /// with no check at all (B19); a short ref name is refused by git, a branch is not a tag,
     /// and every other form of `update-ref` moves or deletes refs the sheet never named.
     @Test(arguments: [
-        #"_ = try await run(["update-ref", "-d", "--end-of-options", "refs/tags/\(name)", ""], cwd: root)"#,
-        #"_ = try await run(["update-ref", "-d", "--end-of-options", "refs/tags/\(name)", "0000000000000000000000000000000000000000"], cwd: root)"#,
-        #"_ = try await run(["update-ref", "-d", "--end-of-options", "refs/tags/\(name)"], cwd: root)"#,
-        #"_ = try await run(["update-ref", "-d", "--end-of-options", "refs/tags/\(name)", expected], cwd: root)"#,
-        #"_ = try await run(["update-ref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)^0"], cwd: root)"#,
-        #"_ = try await run(["update-ref", "-d", "--end-of-options", name, "\(expected)"], cwd: root)"#,
-        #"_ = try await run(["update-ref", "-d", "--end-of-options", "refs/heads/\(name)", "\(expected)"], cwd: root)"#,
-        #"_ = try await run(["update-ref", "-d", "refs/tags/\(name)", "\(expected)"], cwd: root)"#,
-        #"_ = try await run(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)"], cwd: root)"#,
-        #"_ = try await run(["update-ref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)"] + more, cwd: root)"#,
+        #"_ = try await run(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(name)", ""], cwd: root)"#,
+        #"_ = try await run(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(name)", "0000000000000000000000000000000000000000"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(name)"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(name)", expected], cwd: root)"#,
+        #"_ = try await run(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)^0"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "--no-deref", "-d", "--end-of-options", name, "\(expected)"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/heads/\(name)", "\(expected)"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "--no-deref", "-d", "refs/tags/\(name)", "\(expected)"], cwd: root)"#,
+        // Fix round 1 (I2): without `--no-deref` a symbolic ref under `refs/tags/` is followed,
+        // and the branch it names is deleted instead.
+        #"_ = try await run(["update-ref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "-d", "--no-deref", "--end-of-options", "refs/tags/\(name)", "\(expected)"], cwd: root)"#,
+        #"_ = try await run(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)"] + more, cwd: root)"#,
         #"_ = try await run(["update-ref", "refs/heads/main", sha], cwd: root)"#,
         #"_ = try await run(["update-ref", "--stdin"], cwd: root)"#,
         #"_ = try await run(["update-ref", "-m", why, "refs/tags/\(name)", sha], cwd: root)"#,
@@ -1756,7 +1761,7 @@ import Testing
         #expect(ForceFlagScanner.spelling(of: "tag", ForceFlagScanner.allowedShapes["tag"] ?? [])
             == #"["tag", "--no-sign", "--end-of-options", <expression>, <expression>] or ["tag", "--no-sign", "-a", "-F", <expression>, "--cleanup=verbatim", "--end-of-options", <expression>, <expression>]"#)
         #expect(ForceFlagScanner.spelling(of: "update-ref", ForceFlagScanner.allowedShapes["update-ref"] ?? [])
-            == #"["update-ref", "-d", "--end-of-options", "refs/tags/\(…)", "\(…)"]"#)
+            == #"["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(…)", "\(…)"]"#)
         #expect(Set((ForceFlagScanner.forbiddenFlags["tag"] ?? [:]).keys)
             == ["-f", "--force", "-s", "--sign", "-u", "--local-user", "-d", "--delete"])
     }
@@ -1768,6 +1773,7 @@ import Testing
         (#"["tag", "--no-sign", "-a", "-F", file.path, "--cleanup=verbatim", "--end-of-options", name, sha]"#, #"["tag", "--no-sign", "-a", "-F", file.path, "--end-of-options", name, sha]"#),
         (#"["tag", "--no-sign", "--end-of-options", receipt.name, receipt.objectID]"#, #"["tag", "-f", "--no-sign", "--end-of-options", receipt.name, receipt.objectID]"#),
         (#""refs/tags/\(name)", "\(expected)"]"#, #""refs/tags/\(name)", ""]"#),
+        (#"["update-ref", "--no-deref", "-d", "#, #"["update-ref", "-d", "#),
         (#""--end-of-options", remote, "refs/tags/\(n):refs/tags/\(n)"]"#, #""--end-of-options", remote, "tag", n]"#),
         (#""--force-with-lease=refs/tags/\(n):\(id)", "#, #""--force-with-lease=refs/tags/\(n)", "#),
     ])

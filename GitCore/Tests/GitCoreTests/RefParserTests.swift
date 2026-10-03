@@ -141,6 +141,33 @@ import Testing
         #expect(bare.subject == "")
     }
 
+    /// Fix round 1 (I2): a tag ref whose `%(symref)` (field 10) is set is a symbolic ref, and
+    /// says so.
+    @Test func aSymbolicTagRefIsMarked() throws {
+        let line = "refs/tags/sym\0ccccccc3\0\0\0commit\0\0\0\0\0refs/heads/feature\0\0\0\0\0\n"
+            + "refs/tags/plain\0ccccccc3\0\0\0commit\0\0\0\0\0\0\0\0\0\0\n"
+        let tags = RefParser.parse(Data(line.utf8)).tags
+        #expect(tags.map(\.name) == ["plain", "sym"])
+        #expect(tags.map(\.isSymbolic) == [false, true])
+    }
+
+    /// Minor 2: the shared date style parses exactly what the per-call formatter did for every
+    /// shape git prints, and an unreadable date is nil.
+    @Test(arguments: [
+        ("2023-11-16T02:00:00Z", 1_700_100_000.0), ("2023-11-16T06:00:00+04:00", 1_700_100_000.0),
+        ("2023-11-16T01:30:00-00:30", 1_700_100_000.0),
+    ])
+    func taggerDatesParse(field: String, seconds: Double) throws {
+        let line = "refs/tags/v\0aaaaaaa1\0\0\0tag\0bbbbbbb2\0\0\0\0\0\0\0T\0\(field)\0s\n"
+        let tag = try #require(RefParser.parse(Data(line.utf8)).tags.first)
+        #expect(tag.date == Date(timeIntervalSince1970: seconds))
+    }
+
+    @Test func anUnreadableTaggerDateIsNil() throws {
+        let line = "refs/tags/v\0aaaaaaa1\0\0\0tag\0bbbbbbb2\0\0\0\0\0\0\0T\0yesterday\0s\n"
+        #expect(try #require(RefParser.parse(Data(line.utf8)).tags.first).date == nil)
+    }
+
     /// Output recorded before fields 13–15 existed still parses: the tag object is still the
     /// ref's own id, and what was not read is nil rather than empty.
     @Test func aSixFieldAnnotatedTagStillHasItsObjectID() throws {

@@ -88,6 +88,11 @@ public struct Tag: Sendable, Hashable, Identifiable {
     /// never the commit's subject, which `%(contents:subject)` reports for one (B18). Empty for
     /// an annotated tag with an empty message.
     public let subject: String?
+    /// `refs/tags/<name>` is a **symbolic** ref (`%(symref)` set), naming another ref — a branch,
+    /// say — rather than holding an object. Never made by Gitter or by `git tag`, only by `git
+    /// symbolic-ref`. `objectID` is then the id the ref it names resolves to, which moves with
+    /// that ref. `GitTagBackend.deleteTag` refuses such a tag (`TagOperationError.symbolicTag`).
+    public let isSymbolic: Bool
 
     public var id: String { name }
 
@@ -95,7 +100,7 @@ public struct Tag: Sendable, Hashable, Identifiable {
     /// always passes it.
     public init(
         name: String, sha: String, isAnnotated: Bool, objectID: String? = nil,
-        tagger: String? = nil, date: Date? = nil, subject: String? = nil
+        tagger: String? = nil, date: Date? = nil, subject: String? = nil, isSymbolic: Bool = false
     ) {
         self.name = name
         self.sha = sha
@@ -104,6 +109,7 @@ public struct Tag: Sendable, Hashable, Identifiable {
         self.tagger = tagger
         self.date = date
         self.subject = subject
+        self.isSymbolic = isSymbolic
     }
 }
 

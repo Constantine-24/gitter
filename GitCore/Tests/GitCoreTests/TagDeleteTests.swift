@@ -196,6 +196,78 @@ import Testing
         git.assertNothingRan()
     }
 
+    // MARK: - Symbolic refs under refs/tags (fix round 1, I2)
+
+    /// A symbolic ref under `refs/tags/` that names a branch (`feature`, which has a reflog).
+    static func makeSymbolicTag(_ repo: TestRepo) async throws {
+        try await repo.git(["symbolic-ref", "refs/tags/symtag", "refs/heads/feature"])
+    }
+
+    @Test func aSymbolicTagIsListedAsSymbolic() async throws {
+        let repo = try await Self.makeRepo()
+        defer { repo.cleanUp() }
+        try await Self.makeSymbolicTag(repo)
+
+        #expect(try await repo.listedTag("symtag").isSymbolic)
+        #expect(!(try await repo.listedTag("ann").isSymbolic))
+        #expect(!(try await repo.listedTag("v1").isSymbolic))
+    }
+
+    /// Deleting it would take the branch with it (measured: `update-ref -d` follows the
+    /// symref), and Restore could not bring a symbolic ref back. Refused, before git runs.
+    @Test func aSymbolicTagIsRefusedAndTheBranchKept() async throws {
+        let repo = try await Self.makeRepo()
+        defer { repo.cleanUp() }
+        try await Self.makeSymbolicTag(repo)
+        let tag = try await repo.listedTag("symtag")
+        let reflog = try await repo.git(["reflog", "show", "refs/heads/feature"])
+        let before = try await HistorySnapshot.capture(repo)
+
+        await #expect(throws: TagOperationError.symbolicTag(name: "symtag")) {
+            _ = try await CLIGitBackend().deleteTag(tag, at: repo.root)
+        }
+        try await before.assertUnchanged(repo)
+        #expect(try await repo.git(["reflog", "show", "refs/heads/feature"]) == reflog)
+    }
+
+    /// The race the refusal cannot see: listed as an ordinary tag, replaced by a symbolic ref
+    /// to a branch at the same commit before the confirm. `--no-deref` deletes the symbolic
+    /// ref itself; the branch and its reflog stay.
+    @Test func aTagThatBecameSymbolicDeletesOnlyTheSymbolicRef() async throws {
+        let repo = try await Self.makeRepo()
+        defer { repo.cleanUp() }
+        try await repo.git(["tag", "plain", "refs/heads/feature"])
+        let tag = try await repo.listedTag("plain")
+        try await repo.git(["update-ref", "-d", "refs/tags/plain"])
+        try await repo.git(["symbolic-ref", "refs/tags/plain", "refs/heads/feature"])
+        let feature = try await repo.revParse("refs/heads/feature")
+        let reflog = try await repo.git(["reflog", "show", "refs/heads/feature"])
+        #expect(tag.objectID == feature)
+
+        _ = try await CLIGitBackend().deleteTag(tag, at: repo.root)
+
+        #expect(try await repo.revParse("refs/heads/feature") == feature)
+        #expect(try await repo.git(["reflog", "show", "refs/heads/feature"]) == reflog)
+        #expect(try await repo.symbolicRef("refs/tags/plain") == nil)
+        #expect(!FileManager.default.fileExists(atPath: repo.root.appendingPathComponent(".git/refs/tags/plain").path))
+    }
+
+    /// Restore never writes through a symbolic ref: a dangling one in the tag's place (invisible
+    /// to `for-each-ref`) is an existing name, and no branch is created.
+    @Test func restoreNeverWritesThroughASymbolicRef() async throws {
+        let repo = try await Self.makeRepo()
+        defer { repo.cleanUp() }
+        let receipt = try await CLIGitBackend().deleteTag(try await repo.listedTag("ann"), at: repo.root)
+        try await repo.git(["symbolic-ref", "refs/tags/ann", "refs/heads/gone"])
+        let before = try await HistorySnapshot.capture(repo)
+
+        await #expect(throws: TagOperationError.nameProblem(.exists)) {
+            try await CLIGitBackend().restoreTag(receipt, at: repo.root)
+        }
+        try await before.assertUnchanged(repo)
+        #expect(!(try await repo.gitRefExists("refs/heads/gone")))
+    }
+
     /// A reference-transaction hook refusing the delete (B19): git's words, and the tag is
     /// still there — nothing lost.
     @Test func aRefusingReferenceTransactionHookIsGitsWordsAndTheTagIsKept() async throws {

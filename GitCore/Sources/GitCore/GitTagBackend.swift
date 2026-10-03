@@ -11,19 +11,25 @@ public enum TagNameProblem: Sendable, Hashable {
     /// A tag of that name already exists — compared as the file system compares it, so `V1`
     /// beside `v1` is this too (measured on APFS: git refuses it, "tag 'V1' already exists",
     /// and `refs/tags/V1` then resolves to `v1`); and so is a name one path level above or
-    /// below an existing tag (`a` beside `a/b`), which git cannot store either.
+    /// below an existing tag (`a` beside `a/b`), which git cannot store either. A symbolic ref at
+    /// `refs/tags/<name>` — a dangling one too, which no listing shows and `git tag` would write
+    /// through onto the branch it names — is this as well (fix round 1).
     case exists
     /// The name of a local branch or the short name of a remote-tracking branch (`origin/x`),
     /// ignoring case. git resolves a short name to the **tag** before the branch (B17: `rebase
     /// main`, `merge main` and `log main` all took the tag), so such a tag silently redirects
-    /// every command that names the branch.
+    /// every command that names the branch. Also a configured remote's name, ignoring case:
+    /// `origin` alone resolves to `refs/remotes/origin/HEAD`, and a tag of that name wins.
     case isBranchName
     /// Seven or more hexadecimal digits, either case: git reads such a name as an abbreviated
     /// object id too, and a tag named like a commit's abbreviation wins over that commit (B17).
     case looksLikeObjectID
-    /// `HEAD`, `@` (git's other name for HEAD), or a name beginning with `-`. The first and
-    /// last pass `check-ref-format` and `git tag` refuses them (B17); `@` git takes, and then
-    /// every `@` the user types means the tag.
+    /// `HEAD`, `@` (git's other name for HEAD), a name beginning with `-`, or any root-ref name
+    /// ignoring case — only `A`–`Z`, `_`, `-`, ending in `HEAD` (`MERGE_HEAD`, `ORIG_HEAD`, …),
+    /// or `AUTO_MERGE`, `BISECT_EXPECTED_REV`, `NOTES_MERGE_PARTIAL`, `NOTES_MERGE_REF`,
+    /// `MERGE_AUTOSTASH`. `HEAD` and `-x` pass `check-ref-format` and `git tag` refuses them
+    /// (B17); the rest git takes, and then the name means the tag: a tag `MERGE_HEAD` made
+    /// Gitter report a merge in a clean repository (fix round 1).
     case reserved
     /// Over 250 bytes: git cannot create the lock file beside it ("File name too long", B17).
     case tooLong
@@ -81,6 +87,10 @@ public enum TagOperationError: Error, Sendable, Hashable {
     /// The remote's tag no longer holds the id the sheet showed — moved, or deleted — and was
     /// left as it is: the lease was stale (B21, RF1).
     case remoteTagMoved(name: String, remote: String)
+    /// The tag is a symbolic ref (`Tag.isSymbolic`) — Gitter neither deletes nor restores one:
+    /// a delete that followed it would delete the branch it names (measured), and a restore
+    /// could not bring a symbolic ref back. Refused before git runs; nothing changed.
+    case symbolicTag(name: String)
 }
 
 /// Tags: name checks, create, a compare-and-delete with its restore, and the remote half —

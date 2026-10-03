@@ -34,8 +34,13 @@ extension CLIGitBackend: GitTagBackend {
     public func tagNameProblem(_ name: String, at root: URL) async throws -> TagNameProblem? {
         if name.isEmpty { return .empty }
         // `HEAD` and a leading `-` pass `check-ref-format` and `git tag` refuses them; `@` git
-        // takes, and then means the tag wherever the user types `@` (B17).
-        if name == "HEAD" || name == "@" || name.hasPrefix("-") { return .reserved }
+        // takes, and then means the tag wherever the user types `@` (B17). A root-ref name
+        // (`MERGE_HEAD`, `ORIG_HEAD`, `AUTO_MERGE`, …) git takes too, and then that name
+        // resolves to the tag whenever the real one is absent: fix round 1 measured a tag
+        // `MERGE_HEAD` making Gitter report a merge in a clean repository
+        // (`operationInProgress` asks `rev-parse -q --verify MERGE_HEAD`), and a tag
+        // `ORIG_HEAD` breaking `git reset`.
+        if name == "@" || name.hasPrefix("-") || Self.isRootRefName(name) { return .reserved }
         // The lock file `<name>.lock` must fit in a file name (B17: 250 created, 251 "File name
         // too long").
         if name.utf8.count > 250 { return .tooLong }
@@ -44,11 +49,44 @@ extension CLIGitBackend: GitTagBackend {
         if name.utf8.count >= 7, name.allSatisfy(Self.hexDigitsEitherCase.contains) { return .looksLikeObjectID }
         let refs = try await refNames(at: root)
         if Self.conflictsWithATag(name, refs.tags) { return .exists }
+        if try await isSymbolicTagRef(name, at: root) { return .exists }
         if refs.branches.contains(name.lowercased()) { return .isBranchName }
+        // A remote's name too (minor 1 of fix round 1): `origin` alone resolves to
+        // `refs/remotes/origin/HEAD`, and a tag of that name wins ("refname 'origin' is
+        // ambiguous"); a remote nothing was fetched from has no refs, so it comes from the
+        // configuration.
+        let data = try await run(["remote", "-v"], cwd: root)
+        let remotes = RemoteParser.parse(String(decoding: data, as: UTF8.self)).map { $0.name.lowercased() }
+        if remotes.contains(name.lowercased()) { return .isBranchName }
         return nil
     }
 
+    /// Whether `refs/tags/<name>` is a symbolic ref — a dangling one included, which
+    /// `for-each-ref` does not list and `git tag <name>` writes **through**, creating the branch
+    /// it names (measured, fix round 1). Such a name is taken.
+    private func isSymbolicTagRef(_ name: String, at root: URL) async throws -> Bool {
+        let data = try await run(["symbolic-ref", "-q", "refs/tags/\(name)"], cwd: root, allowedExitCodes: [1])
+        return !String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private static let hexDigitsEitherCase: Set<Character> = Set("0123456789abcdefABCDEF")
+
+    /// git's root-ref syntax (`refs.c`, `is_root_ref`): only `A`–`Z`, `_` and `-`, and either
+    /// ending in `HEAD` (`HEAD`, `MERGE_HEAD`, `ORIG_HEAD`, `FETCH_HEAD`, …) or one of the five
+    /// irregular ones. Compared folded, as APFS compares names: `merge_head` is the same file.
+    /// `SQUASH_MSG` and `MERGE_MSG` are not refs — Gitter reads them as files through
+    /// `--git-path`, and a tag of either name changes nothing (measured, fix round 1).
+    static func isRootRefName(_ name: String) -> Bool {
+        guard !name.isEmpty, name.unicodeScalars.allSatisfy({
+            ("A"..."Z").contains($0) || ("a"..."z").contains($0) || $0 == "_" || $0 == "-"
+        }) else { return false }
+        let upper = name.uppercased()
+        return upper.hasSuffix("HEAD") || irregularRootRefs.contains(upper)
+    }
+
+    private static let irregularRootRefs: Set<String> = [
+        "AUTO_MERGE", "BISECT_EXPECTED_REV", "NOTES_MERGE_PARTIAL", "NOTES_MERGE_REF", "MERGE_AUTOSTASH",
+    ]
 
     /// The short names of every local and remote-tracking branch, and every tag's, folded to
     /// lower case — the way the file system compares them (see this file's doc comment).
@@ -126,11 +164,20 @@ extension CLIGitBackend: GitTagBackend {
         guard Self.isFullNonZeroObjectName(expected) else { throw TagOperationError.invalidObjectID(expected) }
         let name = tag.name
         try Self.refusingAnArgumentChangingName(name)
+        // A symbolic ref names a branch (or any ref): Restore could not bring it back, and its
+        // `objectID` is that ref's tip, which moves with it. Refused (fix round 1, I2).
+        if tag.isSymbolic { throw TagOperationError.symbolicTag(name: name) }
 
         // `tag -d` has no expected value; this is the atomic compare-and-delete, on the tag
         // **object** for an annotated tag (B19). Every exit code is read: git refused, and what
         // the ref holds now says whether it moved.
-        let result = try await runWithEnvironment(["update-ref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
+        //
+        // `--no-deref`: had the tag become a symbolic ref since the listing, a plain `-d`
+        // follows it and deletes the **branch** it names, leaving the symbolic ref dangling and
+        // hidden (fix round 1, measured). With it, git deletes the symbolic ref itself — still
+        // compared against the id it resolves to (a wrong one: "is at … but expected …") — and
+        // the branch and its reflog stay.
+        let result = try await runWithEnvironment(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
         guard result.exitCode != 0 else { return TagReceipt(name: name, objectID: expected, target: tag.sha) }
         if try await currentTagObject(name, at: root) != expected { throw TagOperationError.tagMoved(name: name) }
         // Still there, unchanged: refused for a reason of git's — a reference-transaction hook
@@ -144,10 +191,12 @@ extension CLIGitBackend: GitTagBackend {
             throw TagOperationError.invalidObjectID(receipt.objectID)
         }
         try Self.refusingAnArgumentChangingName(receipt.name)
-        // Only `.exists` of the name checks: the name was this tag a moment ago.
-        if Self.conflictsWithATag(receipt.name, try await refNames(at: root).tags) {
-            throw TagOperationError.nameProblem(.exists)
-        }
+        // Only `.exists` of the name checks: the name was this tag a moment ago. A symbolic ref
+        // in its place — even a dangling one — is a taken name: `git tag` would write through
+        // it, onto the branch it names (fix round 1, I2).
+        let taken = Self.conflictsWithATag(receipt.name, try await refNames(at: root).tags)
+        let symbolic = try await isSymbolicTagRef(receipt.name, at: root)
+        if taken || symbolic { throw TagOperationError.nameProblem(.exists) }
         // The lightweight create, naming the tag **object**: `refs/tags/<name>` then holds that
         // same object, so the identical annotated tag is back (B19). No message, so no signing
         // config applies (B17), and `--no-sign` all the same.

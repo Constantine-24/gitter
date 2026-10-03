@@ -1195,10 +1195,12 @@ enum ForceFlagScanner {
         // branch, delete with no check, read a transaction from stdin. The ref is a full
         // `refs/tags/` name, and the expected value one interpolation: an empty or all-zero
         // literal deletes **unconditionally** (B19), and the code checks the value it
-        // interpolates is a full, non-zero id before it builds the vector.
+        // interpolates is a full, non-zero id before it builds the vector. `--no-deref` (fix
+        // round 1): without it a symbolic ref under `refs/tags/` is followed, and the branch it
+        // names is deleted instead.
         "update-ref": [
             Shape(
-                .literal("-d"), .literal("--end-of-options"),
+                .literal("--no-deref"), .literal("-d"), .literal("--end-of-options"),
                 .interpolated(prefix: "refs/tags/", suffix: ""), .interpolated(prefix: "", suffix: "")),
         ],
     ]
@@ -1338,7 +1340,7 @@ enum ForceFlagScanner {
         "update-ref":
             "`update-ref` moves or deletes any ref; the one permitted form deletes a tag only while it "
             + "holds the id the sheet showed, and an empty or all-zero expected value deletes with no "
-            + "check at all (B19)",
+            + "check at all (B19); without `--no-deref` a symbolic tag's branch is deleted instead",
     ]
 
     static let shapeConcatenationNote =
