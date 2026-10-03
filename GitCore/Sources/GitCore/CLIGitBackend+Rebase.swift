@@ -107,14 +107,19 @@ extension CLIGitBackend {
         let head = try await headSHA(at: root)
         guard !head.isEmpty else { throw HistoryRefusal.unbornHead }
         let commit = try await targetCommit(target, at: root)
-        let plan = try await replayPlan(head: head, target: commit, named: target, at: root)
+        let plan = try await replayPlan(
+            head: head, headRef: try await symbolicHead(at: root), target: commit, named: target, at: root)
         let changed = try await trackedChanges(at: root)
         if !changed.isEmpty { throw HistoryRefusal.trackedChanges(changed) }
         return plan
     }
 
     public func rebase(_ plan: RebasePlan, at root: URL) async throws -> RebaseOutcome {
-        guard try await headSHA(at: root) == plan.head else { throw HistoryRefusal.headMoved }
+        // By commit AND by name: the same commit on another branch, or detached, is not the branch
+        // the sheet said it would rewrite (fix round 1).
+        guard try await headSHA(at: root) == plan.head, try await symbolicHead(at: root) == plan.headRef else {
+            throw HistoryRefusal.headMoved
+        }
         let now = try await rebasePlan(onto: plan.targetName, at: root)
         guard now == plan else { throw HistoryRefusal.planChanged }
         // The full object id, never the name: a tag spelled like a branch takes the short name
@@ -143,13 +148,15 @@ extension CLIGitBackend {
     /// measured: with a merge between, it flattens instead). Otherwise it replays
     /// `log --reverse --topo-order --cherry-pick --right-only --no-merges <t>...HEAD` — read
     /// here with `--cherry-mark`, whose `=` marks the patch-identical commits it skips.
-    private func replayPlan(head: String, target: String, named name: String, at root: URL) async throws -> RebasePlan {
+    private func replayPlan(
+        head: String, headRef: String, target: String, named name: String, at root: URL
+    ) async throws -> RebasePlan {
         let range = "\(target)..\(head)"
         let merges = Self.count(try await run(["rev-list", "--count", "--min-parents=2", "--end-of-options", range], cwd: root))
         if merges == 0, try await isAncestor(target, of: head, at: root) {
             return RebasePlan(
                 head: head, target: target, replayed: [], flattenedMerges: 0, skippedAsApplied: 0, alreadyPushed: 0,
-                targetName: name)
+                targetName: name, headRef: headRef)
         }
         let data = try await run(["log", "--reverse", "--topo-order", "--cherry-mark", "--right-only", "--no-merges", "--no-show-signature", "--format=%m%x00%H%x00%s", "--end-of-options", "\(target)...\(head)"], cwd: root)
         var replayed: [CommitRef] = []
@@ -164,7 +171,7 @@ extension CLIGitBackend {
         let unpushed = Self.count(try await run(["rev-list", "--count", "--not", "--remotes", "--not", "--end-of-options", range], cwd: root))
         return RebasePlan(
             head: head, target: target, replayed: replayed, flattenedMerges: merges, skippedAsApplied: skipped,
-            alreadyPushed: all - unpushed, targetName: name)
+            alreadyPushed: all - unpushed, targetName: name, headRef: headRef)
     }
 
     /// The line git prints when a `pre-rebase` hook exits non-zero (git 2.54, `LC_ALL=C`).

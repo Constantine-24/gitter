@@ -20,15 +20,19 @@ public protocol GitHistoryBackend: Sendable {
     ///
     /// Refuses (`HistoryRefusal`), in this order: `.operationInProgress` — an operation, or a
     /// halted range's `sequencer/`; `.unbornHead`; `.mergeCommits`; `.nothingToApply` (no
-    /// commit, or — a pick — every one already in HEAD); `.trackedChanges`. A sha that is not a
+    /// commit, or — a pick — every one already in HEAD); `.notOnBranch` (a revert of commits
+    /// HEAD does not contain); `.trackedChanges`. A sha that is not a
     /// full object id is `BranchOperationError.invalidName`. Reads only.
     func historyPlan(_ action: HistoryAction, shas: [String], at root: URL) async throws -> HistoryPlan
 
-    /// Runs `plan`: refuses `.headMoved` when HEAD is not `plan.head`, then makes the plan again
+    /// Runs `plan`: refuses `.headMoved` when HEAD is not `plan.head` or names another branch
+    /// (`plan.headRef`; detached counts), then makes the plan again
     /// from its commits (and `leftOut`) and refuses with its refusal, or `.planChanged` when it
     /// differs. Then runs the vector and reads the repository back; see `HistoryOutcome`. A
     /// refusal git printed with nothing changed (a staged change made after the check, "is a
-    /// merge but no -m option was given") is thrown: `BranchOperationError` / `.mergeCommits`.
+    /// merge but no -m option was given") is thrown: `BranchOperationError` / `.mergeCommits` —
+    /// also for a range git refused at its first commit, whose `sequencer/` is cleared first with
+    /// the range's own `--abort` (nothing had been applied).
     func run(_ plan: HistoryPlan, at root: URL) async throws -> HistoryOutcome
 
     /// The plan for rebasing the current branch (or a detached HEAD) onto `target`: a local
@@ -39,7 +43,8 @@ public protocol GitHistoryBackend: Sendable {
     /// Reads only.
     func rebasePlan(onto target: String, at root: URL) async throws -> RebasePlan
 
-    /// Runs `plan`: refuses `.headMoved`, then the plan's own refusals, then `.planChanged`
+    /// Runs `plan`: refuses `.headMoved` (another commit, another branch, or detached — the
+    /// branch the sheet named is `plan.headRef`), then the plan's own refusals, then `.planChanged`
     /// (the target moved, or anything the sheet showed changed). Then rebases onto
     /// `plan.target` — the full object id — and reads the outcome back as
     /// `GitRemoteBackend.rebase(onto:at:)` does.

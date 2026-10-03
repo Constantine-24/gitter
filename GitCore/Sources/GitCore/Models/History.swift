@@ -29,16 +29,21 @@ public struct HistoryPlan: Sendable, Hashable {
     /// drops them (`--empty=drop`); a prediction the outcome confirms (`HistoryOutcome.applied`'s
     /// `dropped`). In `commits` order. Empty for a revert.
     public let mayDrop: [CommitRef]
+    /// What HEAD named when the plan was made: `symbolic-ref -q HEAD` (`refs/heads/main`), empty
+    /// when detached. The run refuses `.headMoved` when HEAD names anything else now, even at the
+    /// same commit — the sheet named a branch. An addition to the brief's interface (fix round 1).
+    public let headRef: String
 
     public init(
         action: HistoryAction, head: String, commits: [CommitRef], leftOut: [CommitRef] = [],
-        mayDrop: [CommitRef] = []
+        mayDrop: [CommitRef] = [], headRef: String = ""
     ) {
         self.action = action
         self.head = head
         self.commits = commits
         self.leftOut = leftOut
         self.mayDrop = mayDrop
+        self.headRef = headRef
     }
 }
 
@@ -59,6 +64,9 @@ public enum HistoryRefusal: Error, Sendable, Hashable {
     case mergeCommits([CommitRef])
     /// Nothing selected, or every selected commit is already in HEAD (cherry-pick).
     case nothingToApply
+    /// Revert only: selected commits HEAD does not contain. Reverting one would apply the
+    /// inverse of a change this branch never had (fix round 1, Ruling 6a).
+    case notOnBranch([CommitRef])
     /// HEAD names a branch with no commits yet.
     case unbornHead
     /// HEAD is no longer the plan's `head`.
@@ -117,11 +125,16 @@ public struct RebasePlan: Sendable, Hashable {
     /// resolves it again and refuses with `.planChanged` when it no longer names `target`.
     /// An addition to the brief's interface, defaulting to `target`.
     public let targetName: String
+    /// What HEAD named when the plan was made: `symbolic-ref -q HEAD`, empty when detached — the
+    /// branch the rebase rewrites. `rebase(_:at:)` refuses `.headMoved` when HEAD names anything
+    /// else now, even at the same commit. An addition to the brief's interface (fix round 1).
+    public let headRef: String
 
     public init(
         head: String, target: String, replayed: [CommitRef], flattenedMerges: Int, skippedAsApplied: Int,
-        alreadyPushed: Int, targetName: String? = nil
+        alreadyPushed: Int, targetName: String? = nil, headRef: String = ""
     ) {
+        self.headRef = headRef
         self.head = head
         self.target = target
         self.replayed = replayed

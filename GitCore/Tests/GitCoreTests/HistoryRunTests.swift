@@ -275,17 +275,77 @@ import Testing
         try await before.assertUnchanged(repo)
     }
 
+    /// HEAD at the same commit but naming another branch, or detached: the sheet named `main`,
+    /// and the run would land elsewhere (fix round 1). Nothing runs.
+    @Test(arguments: ["another branch", "detached"])
+    func headOnAnotherBranchAtTheSameCommitRunsNothing(move: String) async throws {
+        let (repo, s1, _, _) = try await Self.makeSide()
+        defer { repo.cleanUp() }
+        let plan = try await backend.historyPlan(.cherryPick, shas: [s1], at: repo.root)
+        #expect(plan.headRef == "refs/heads/main")
+        try await repo.git(move == "detached" ? ["switch", "-q", "--detach"] : ["switch", "-q", "-c", "feature"])
+        let before = try await HistorySnapshot.capture(repo)
+
+        await #expect(throws: HistoryRefusal.headMoved) {
+            try await backend.run(plan, at: repo.root)
+        }
+        try await before.assertUnchanged(repo)
+    }
+
+    /// A range git refuses at its FIRST commit — an untracked file the first commit adds (or a
+    /// revert recreates) — leaves `sequencer/` with nothing applied (measured). Gitter clears it
+    /// with the range's own `--abort` (which rewinds to HEAD itself and keeps the untracked file,
+    /// measured) and throws git's refusal, as for a single pick (fix round 1, Ruling 6b).
+    @Test(arguments: [HistoryAction.cherryPick, .revert])
+    func aRangeGitRefusesAtItsFirstCommitIsItsRefusalAndLeavesNoState(action: HistoryAction) async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try await repo.commit("f", "base", "base")
+        let shas: [String]
+        let blocked: String
+        if action == .cherryPick {
+            try await repo.git(["switch", "-q", "-c", "side"])
+            let u = try await repo.commit("u", "u", "adds u")
+            let q = try await repo.commit("q", "q", "Q")
+            try await repo.git(["switch", "-q", "main"])
+            try await repo.commit("m", "m", "M")
+            (shas, blocked) = ([u, q], "u")
+        } else {
+            let e = try await repo.commit("e", "e", "adds e")
+            try await repo.git(["rm", "-q", "e"])
+            try await repo.git(["commit", "-q", "-m", "deletes e"])
+            let x = try await repo.headSha()
+            try await repo.commit("y", "y", "Y")
+            (shas, blocked) = ([x, e], "e")
+        }
+        try repo.write(blocked, "mine\n")
+        let plan = try await backend.historyPlan(action, shas: shas, at: repo.root)
+        #expect(plan.commits.count == 2)
+        let before = try await HistorySnapshot.capture(repo)
+
+        await #expect(throws: BranchOperationError.wouldOverwrite(tracked: [], untracked: [blocked])) {
+            try await backend.run(plan, at: repo.root)
+        }
+        try await before.assertUnchanged(repo)
+        #expect(try repo.fileContents(blocked) == "mine\n")
+        #expect(try await backend.operationProgress(at: repo.root) == nil)
+        #expect(try await backend.haltedSequence(at: repo.root) == nil)
+        #expect(try await repo.gitFileExists("sequencer") == false)
+    }
+
     @Test func aPlanThatIsNotTheOneMadeNowRunsNothing() async throws {
         let (repo, s1, _, s3) = try await Self.makeSide()
         defer { repo.cleanUp() }
         let plan = try await backend.historyPlan(.cherryPick, shas: [s1, s3], at: repo.root)
         let reordered = HistoryPlan(
             action: plan.action, head: plan.head, commits: plan.commits.reversed(), leftOut: plan.leftOut,
-            mayDrop: plan.mayDrop)
-        let asRevert = HistoryPlan(action: .revert, head: plan.head, commits: plan.commits)
+            mayDrop: plan.mayDrop, headRef: plan.headRef)
+        let predictsADrop = HistoryPlan(
+            action: plan.action, head: plan.head, commits: plan.commits, leftOut: plan.leftOut,
+            mayDrop: [plan.commits[0]], headRef: plan.headRef)
         let before = try await HistorySnapshot.capture(repo)
 
-        for changed in [reordered, asRevert] {
+        for changed in [reordered, predictsADrop] {
             await #expect(throws: HistoryRefusal.planChanged) {
                 try await backend.run(changed, at: repo.root)
             }

@@ -40,6 +40,7 @@ extension CLIGitBackend: GitHistoryBackend {
         let head = try await headSHA(at: root)
         guard !head.isEmpty else { throw HistoryRefusal.unbornHead }
         guard !selection.isEmpty else { throw HistoryRefusal.nothingToApply }
+        let headRef = try await symbolicHead(at: root)
 
         let selected = try await selectedCommits(selection, at: root)
         let merges = selection.compactMap { selected[$0] }.filter { $0.parents > 1 }.map(\.ref)
@@ -47,8 +48,8 @@ extension CLIGitBackend: GitHistoryBackend {
 
         let plan: HistoryPlan
         switch action {
-        case .cherryPick: plan = try await pickPlan(selection, selected, head: head, at: root)
-        case .revert: plan = try await revertPlan(selection, selected, head: head, at: root)
+        case .cherryPick: plan = try await pickPlan(selection, selected, head: head, headRef: headRef, at: root)
+        case .revert: plan = try await revertPlan(selection, selected, head: head, headRef: headRef, at: root)
         }
         // Last, after every refusal Stash and Continue could not help with: stashing first and
         // then being refused over a merge commit would move the user's work for nothing.
@@ -61,7 +62,7 @@ extension CLIGitBackend: GitHistoryBackend {
     /// selection (B2). A selected commit HEAD already reaches is not in the walk — that is the
     /// "already in HEAD" answer, `merge-base --is-ancestor` for all of them in one process.
     private func pickPlan(
-        _ selection: [String], _ selected: [String: SelectedCommit], head: String, at root: URL
+        _ selection: [String], _ selected: [String: SelectedCommit], head: String, headRef: String, at root: URL
     ) async throws -> HistoryPlan {
         let sorted = selection.sorted()
         let data = try await run(["rev-list", "--topo-order", "--reverse", "--end-of-options"] + sorted + ["^" + head], cwd: root)
@@ -75,17 +76,26 @@ extension CLIGitBackend: GitHistoryBackend {
         for commit in commits where try await isAlreadyUpstream(commit.sha, of: head, at: root) {
             mayDrop.append(commit)
         }
-        return HistoryPlan(action: .cherryPick, head: head, commits: commits, leftOut: leftOut, mayDrop: mayDrop)
+        return HistoryPlan(
+            action: .cherryPick, head: head, commits: commits, leftOut: leftOut, mayDrop: mayDrop, headRef: headRef)
     }
 
-    /// Newest first by the same topology (B8). The walk is bounded below by the selection's
+    /// Newest first by the same topology (B8), of commits HEAD contains — any other is refused
+    /// `.notOnBranch` (fix round 1: reverting a commit of another branch applies the inverse of a
+    /// change this one never had, and git's "nothing to commit" then read as "already
+    /// reverted"). The walk is bounded below by the selection's
     /// common ancestors' parents (`merge-base --octopus`, exit 1 when there is none) — every
     /// selected commit descends from each of them, so nothing between two selected commits is
     /// cut — rather than walking all history.
     private func revertPlan(
-        _ selection: [String], _ selected: [String: SelectedCommit], head: String, at root: URL
+        _ selection: [String], _ selected: [String: SelectedCommit], head: String, headRef: String, at root: URL
     ) async throws -> HistoryPlan {
         let sorted = selection.sorted()
+        // Selected commits HEAD does not reach, in one walk.
+        let outside = Set(
+            GitLines.split(try await run(["rev-list", "--end-of-options"] + sorted + ["^" + head], cwd: root)))
+        let foreign = selection.filter(outside.contains).compactMap { selected[$0]?.ref }
+        if !foreign.isEmpty { throw HistoryRefusal.notOnBranch(foreign) }
         let bases = GitLines.split(
             try await run(["merge-base", "--octopus", "--end-of-options"] + sorted, cwd: root, allowedExitCodes: [1]))
         let bound = bases.filter(Self.isFullObjectID).map { "^\($0)^@" }
@@ -98,7 +108,7 @@ extension CLIGitBackend: GitHistoryBackend {
             commits = GitLines.split(data).filter(wanted.contains).compactMap { selected[$0]?.ref }
             if commits.count == selection.count { break }
         }
-        return HistoryPlan(action: .revert, head: head, commits: commits)
+        return HistoryPlan(action: .revert, head: head, commits: commits, headRef: headRef)
     }
 
     /// Whether `sha`'s change is already on HEAD's side as a patch-identical commit:
@@ -138,7 +148,11 @@ extension CLIGitBackend: GitHistoryBackend {
         // HEAD first: a moved HEAD can make the plan refuse for a reason of its own (the
         // selection now in HEAD is `.nothingToApply`), and what the user needs to hear is that
         // HEAD moved.
-        guard try await headSHA(at: root) == plan.head else { throw HistoryRefusal.headMoved }
+        // By commit AND by name: the same commit on another branch, or detached, is not the HEAD
+        // the sheet named (fix round 1).
+        guard try await headSHA(at: root) == plan.head, try await symbolicHead(at: root) == plan.headRef else {
+            throw HistoryRefusal.headMoved
+        }
         let now = try await historyPlan(plan.action, shas: plan.commits.map(\.sha) + plan.leftOut.map(\.sha), at: root)
         guard now == plan else { throw HistoryRefusal.planChanged }
 
@@ -172,8 +186,10 @@ extension CLIGitBackend: GitHistoryBackend {
         of result: ProcessRunner.StreamedResult, plan: HistoryPlan, at root: URL
     ) async throws -> HistoryOutcome {
         if try await operationInProgress(at: root) != nil { return .stopped }
-        if try await hasSequencer(at: root) { return .stopped }
         let head = try await headSHA(at: root)
+        if try await hasSequencer(at: root) {
+            return try await refusalAtTheFirstCommit(result, plan: plan, head: head, at: root) ?? .stopped
+        }
         if result.exitCode == 0 {
             let count = try await commitCount("\(plan.head)..\(head)", at: root)
             return .applied(count: count, dropped: Self.dropped(in: result.stderr, of: plan.commits))
@@ -188,6 +204,36 @@ extension CLIGitBackend: GitHistoryBackend {
             if result.exitCode == 1 { return .alreadyReverted(plan.commits[0]) }
         }
         return .failed(gitsWords: Self.words(result))
+    }
+
+    /// A range git refused at its **first** commit (an untracked file in the way, measured):
+    /// `sequencer/` with no pseudo-ref, HEAD and the index where the plan left them, and git's
+    /// refusal on stderr. A2's halted bar would list every commit as not applied and lose git's
+    /// words, so the range's own `--abort` clears it — measured: with `sequencer/head` at HEAD it
+    /// rewinds to HEAD itself, keeps the untracked file, exits 0 — and git's refusal is thrown,
+    /// as for a single pick (fix round 1, Ruling 6b). Nil — the halted range stays, `.stopped` —
+    /// when anything is not exactly that, or the abort does not leave it so.
+    private func refusalAtTheFirstCommit(
+        _ result: ProcessRunner.StreamedResult, plan: HistoryPlan, head: String, at root: URL
+    ) async throws -> HistoryOutcome? {
+        let refusal: Error
+        if let sha = BranchRefusalParser.mergeWithoutMainline(stderr: result.stderr) {
+            refusal = HistoryRefusal.mergeCommits([plan.commits.first { $0.sha == sha } ?? CommitRef(sha: sha, subject: "")])
+        } else if let parsed = BranchRefusalParser.parse(stderr: result.stderr) {
+            refusal = parsed
+        } else {
+            return nil
+        }
+        guard result.exitCode != 0, head == plan.head,
+            Self.contents(of: try await gitPath("sequencer/head", at: root)) == plan.head,
+            try await indexDiffersFromHead(at: root) == false
+        else { return nil }
+        switch plan.action {
+        case .cherryPick: _ = try await run(["cherry-pick", "--abort"], cwd: root, allowedExitCodes: Self.anyExitCode)
+        case .revert: _ = try await run(["revert", "--abort"], cwd: root, allowedExitCodes: Self.anyExitCode)
+        }
+        guard try await hasSequencer(at: root) == false, try await headSHA(at: root) == plan.head else { return nil }
+        throw refusal
     }
 
     /// The commits `--empty=drop` reported dropping, in plan order.
@@ -213,6 +259,12 @@ extension CLIGitBackend: GitHistoryBackend {
     }
 
     // MARK: - Refusals shared with the rebase plan
+
+    /// `symbolic-ref -q HEAD`: the full ref HEAD names (`refs/heads/main`), "" when detached.
+    func symbolicHead(at root: URL) async throws -> String {
+        let data = try await run(["symbolic-ref", "-q", "HEAD"], cwd: root, allowedExitCodes: [1])
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     /// `.operationInProgress` for an operation, and for a cherry-pick or revert range git left
     /// halted: `sequencer/` with no pseudo-ref, named by its todo's first command.

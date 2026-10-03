@@ -194,6 +194,23 @@ import Testing
         try await before.assertUnchanged(repo)
     }
 
+    /// HEAD at the same commit but on another branch, or detached: the rebase would rewrite a
+    /// branch the sheet never named (fix round 1). Nothing runs.
+    @Test(arguments: ["another branch", "detached"])
+    func headOnAnotherBranchAtTheSameCommitRunsNothing(move: String) async throws {
+        let repo = try await Self.makeTopic()
+        defer { repo.cleanUp() }
+        let plan = try await backend.rebasePlan(onto: "main", at: repo.root)
+        #expect(plan.headRef == "refs/heads/topic")
+        try await repo.git(move == "detached" ? ["switch", "-q", "--detach"] : ["switch", "-q", "-c", "published"])
+        let before = try await HistorySnapshot.capture(repo)
+
+        await #expect(throws: HistoryRefusal.headMoved) {
+            try await backend.rebase(plan, at: repo.root)
+        }
+        try await before.assertUnchanged(repo)
+    }
+
     // MARK: - Refusals
 
     @Test(arguments: ["staged", "unstaged"])

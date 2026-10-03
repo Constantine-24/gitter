@@ -70,6 +70,9 @@ import Testing
 
         let one = try await backend.historyPlan(.cherryPick, shas: [x2, y2, x1, y1], at: repo.root)
         let two = try await backend.historyPlan(.cherryPick, shas: [y1, x1, y2, x2], at: repo.root)
+        // A revert takes commits HEAD contains: both branches, merged.
+        try await repo.git(["switch", "-q", "-c", "both", "y"])
+        try await repo.git(["merge", "-q", "--no-ff", "--no-edit", "x"])
         let three = try await backend.historyPlan(.revert, shas: [x2, y1], at: repo.root)
         let four = try await backend.historyPlan(.revert, shas: [y1, x2], at: repo.root)
 
@@ -195,9 +198,10 @@ import Testing
         if kind == "staged" { try await lab.repo.git(["add", "m"]) }
         let before = try await HistorySnapshot.capture(lab.repo)
 
-        for action in [HistoryAction.cherryPick, .revert] {
+        // A pick of `other`'s D, a revert of `main`'s own M.
+        for (action, sha) in [(HistoryAction.cherryPick, lab.d), (.revert, lab.m)] {
             await #expect(throws: HistoryRefusal.trackedChanges(["m"])) {
-                try await backend.historyPlan(action, shas: [lab.d], at: lab.repo.root)
+                try await backend.historyPlan(action, shas: [sha], at: lab.repo.root)
             }
         }
         try await before.assertUnchanged(lab.repo)
@@ -211,6 +215,21 @@ import Testing
         let plan = try await backend.historyPlan(.cherryPick, shas: [lab.d], at: lab.repo.root)
 
         #expect(plan.commits.map(\.sha) == [lab.d])
+    }
+
+    /// A revert of a commit HEAD does not contain would apply the inverse of a change this
+    /// branch never had (fix round 1, Ruling 6a): refused, naming it, before anything runs.
+    @Test func aRevertOfACommitNotOnTheBranchIsRefused() async throws {
+        let lab = try await Self.makeLab()
+        defer { lab.repo.cleanUp() }
+        let before = try await HistorySnapshot.capture(lab.repo)
+
+        await #expect(throws: HistoryRefusal.notOnBranch([CommitRef(sha: lab.d, subject: "D")])) {
+            try await backend.historyPlan(.revert, shas: [lab.m, lab.d], at: lab.repo.root)
+        }
+        try await before.assertUnchanged(lab.repo)
+        // A commit HEAD does contain is still revertable.
+        #expect(try await backend.historyPlan(.revert, shas: [lab.m], at: lab.repo.root).commits.map(\.sha) == [lab.m])
     }
 
     @Test func everySelectedCommitAlreadyInHeadIsNothingToApply() async throws {
