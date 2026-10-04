@@ -55,21 +55,29 @@ struct Banner: View {
     /// notice — the only record of every deleted ref and its id — never loses its last lines
     /// (the kept branches, where branches now push, how to bring a ref back). Selectable, so it
     /// can be copied whole.
+    ///
+    /// The strip is as tall as its text, up to the cap (fix round 3): the scroll view is asked
+    /// for its ideal height (`fixedSize`), which is its text's, clamped by `maxHeight` — so a
+    /// one-line notice is one line tall, and only a longer text scrolls. (A `ViewThatFits` here
+    /// gave every banner the whole cap, the text centred in empty space.)
     private var messageView: some View {
-        let height = Self.lineHeight * CGFloat(Self.lineLimit(for: message))
+        let height = Self.capHeight(for: message)
         let baseline = Self.firstBaseline
-        return ViewThatFits(in: .vertical) {
-            messageText
-            ScrollView {
-                messageText.frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .defaultScrollAnchor(Self.debugScrollAnchor)
-            .frame(height: height)
-            // A scroll view has no text baseline of its own, so the glyph and the close button
-            // would drop to its bottom: give it its first line's.
-            .alignmentGuide(.firstTextBaseline) { dimensions in dimensions[.top] + baseline }
+        return ScrollView {
+            messageText.frame(maxWidth: .infinity, alignment: .leading)
         }
+        .scrollBounceBehavior(.basedOnSize)
+        .defaultScrollAnchor(Self.debugScrollAnchor)
         .frame(maxHeight: height)
+        .fixedSize(horizontal: false, vertical: true)
+        // A scroll view has no text baseline of its own, so the glyph and the close button
+        // would drop to its middle: give it its first line's.
+        .alignmentGuide(.firstTextBaseline) { dimensions in dimensions[.top] + baseline }
+    }
+
+    /// The most a message's strip grows to before it scrolls: `lineLimit(for:)` lines.
+    static func capHeight(for message: String) -> CGFloat {
+        lineHeight * CGFloat(lineLimit(for: message))
     }
 
     private var messageText: some View {
