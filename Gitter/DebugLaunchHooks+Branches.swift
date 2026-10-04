@@ -162,6 +162,11 @@
 
         static func runBranchActions(_ spec: String, store: RepositoryStore) async {
             for step in spec.split(separator: ";") {
+                // An `open:` step, or a failed reload, can leave another repository on screen.
+                if let refusal = guardRefusal(store) {
+                    log("launch guard: \(refusal); step \(step) and the rest not run")
+                    return
+                }
                 log("step: \(step)")
                 let text = String(step)
                 // An automatic fetch does not count: the user's network actions stop it and go
@@ -309,7 +314,8 @@
                 try? await Task.sleep(for: .milliseconds(800))
                 first.map { snapshot(named: $0) }
             // "Open Repository…" mid-script, e.g. while a push is on the lane. The path is the
-            // rest of the step, colons and all.
+            // rest of the step, colons and all. Once another repository is open, the launch
+            // guard refuses every step after this one.
             case "open":
                 let path = step.dropFirst("open:".count)
                 if !path.isEmpty { store.open(URL(fileURLWithPath: String(path))) }

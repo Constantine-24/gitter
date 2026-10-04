@@ -18,11 +18,18 @@
     ///   GITTER_DEBUG_SELECT_LINES=3,4       pre-select those line ids in the first hunk
     ///   GITTER_DEBUG_APPLY=hunk:0 | lines   then stage/unstage that hunk, or those lines
     ///   GITTER_DEBUG_WINDOW=1400x1400       resize the window, past the screen if asked
-    ///   GITTER_DEBUG_OPEN=<path>            then open that path, as "Open Repository…" does
+    ///   GITTER_DEBUG_OPEN=<path>            the fixture: opened first, as "Open Repository…"
+    ///                                       does, and the only repository a hook acts on
     ///   GITTER_DEBUG_APPEARANCE=light|dark  force the window's appearance
     ///   GITTER_DEBUG_THEN=<steps>           branch-action steps to run after the clicks and
     ///                                       keys, e.g. `idle;snapshot:after-click` — what a
     ///                                       click on a toolbar button did
+    ///
+    /// **The launch guard** (`DebugLaunchGuard`, B2 Ruling 15): with any `GITTER_DEBUG_*`
+    /// variable set, the last repository is not reopened and no automatic fetch starts (unless
+    /// `GITTER_DEBUG_AUTOFETCH` asks for one); the fixture is opened first, and nothing that acts
+    /// — a selection, staging, a click, a key, a step — runs unless the repository on screen is
+    /// that fixture. Each refusal is logged as `BRANCH_ACTION launch guard: refused: …`.
     ///
     /// `DebugLaunchHooks+Events` adds the ones that click and type;
     /// `DebugLaunchHooks+Branches` the ones that run branch actions and open their sheets;
@@ -63,7 +70,17 @@
 
             Task {
                 if let window { resize(to: window) }
-                guard await wait({ store.snapshot != nil }) else { return }
+                // The launch guard: nothing was reopened, so the fixture is the first repository
+                // on screen — and nothing below acts on any other one, or with none open.
+                if let openPath { store.open(URL(fileURLWithPath: openPath)) }
+                guard await wait({ store.snapshot != nil }) else {
+                    log("launch guard: \(guardRefusal(store) ?? "refused: no snapshot loaded")")
+                    return
+                }
+                if let refusal = guardRefusal(store) {
+                    log("launch guard: \(refusal)")
+                    return
+                }
 
                 if let commit {
                     let sha = commit == "HEAD" ? store.snapshot?.commits.first?.sha : commit
@@ -81,27 +98,31 @@
                 if let apply = env["GITTER_DEBUG_APPLY"], await wait({ !store.diff.isEmpty }) {
                     self.apply(apply, store: store)
                 }
-                // After the first repository has loaded, so this is the "open another one while
-                // one is already up" path — the only way to reach a failed open from a script,
-                // since the `NSOpenPanel` cannot be driven.
-                if let openPath {
-                    store.open(URL(fileURLWithPath: openPath))
-                    try? await Task.sleep(for: .milliseconds(500))
-                }
-                // After any `GITTER_DEBUG_OPEN`, so the actions run against the repository the
-                // script meant, and before the clicks, so a sheet one of them opens is on
-                // screen for them (and for a screenshot).
+                // Before the clicks, so a sheet one of them opens is on screen for them (and for
+                // a screenshot). Each step checks the guard again (`runBranchActions`).
                 if let branchAction {
                     guard await wait({ store.snapshot != nil }) else { return }
                     await runBranchActions(branchAction, store: store)
                 }
                 // Last, so a click lands on a list that has finished loading its rows.
-                if wantsEvents { await runEvents() }
+                if wantsEvents {
+                    if let refusal = guardRefusal(store) {
+                        log("launch guard: \(refusal); no clicks or keys")
+                        return
+                    }
+                    await runEvents()
+                }
                 if let then {
                     guard await wait({ store.snapshot != nil }) else { return }
                     await runBranchActions(then, store: store)
                 }
             }
+        }
+
+        /// Why a hook must not act on the repository on screen now, or nil (`DebugLaunchGuard`).
+        // internal (not private): used by DebugLaunchHooks+Branches.swift before every step
+        static func guardRefusal(_ store: RepositoryStore) -> String? {
+            DebugLaunchGuard.stepRefusal(root: store.root, ProcessInfo.processInfo.environment)
         }
 
         /// Makes the window `<width>x<height>`, anchored at its current top-left corner.

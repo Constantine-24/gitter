@@ -1,0 +1,110 @@
+import Foundation
+import Testing
+
+@testable import Gitter
+
+/// B2 Task 6, Step 0 (Ruling 15): a scripted launch — any `GITTER_DEBUG_*` variable set — must
+/// never reach the repository the user last had open. Without this guard the app reopened
+/// `lastRepositoryPath` (a real repository on the developer's machine), started the automatic
+/// fetch on it, and ran the script's steps against whatever had loaded: `GITTER_DEBUG_OPEN` only
+/// opened the fixture after that reopen, and a script whose own open failed acted on the real
+/// one.
+@Suite struct DebugLaunchGuardTests {
+    static let fixture = "/private/tmp/gitter-guard-fixture/repo"
+
+    // MARK: - Which launches are scripted
+
+    @Test func aLaunchWithNoDebugVariableIsNotScripted() {
+        let env = ["HOME": "/Users/someone", "PATH": "/usr/bin", "GITTER_OTHER": "1"]
+        #expect(!DebugLaunchGuard.isScripted(env))
+        #expect(DebugLaunchGuard.reopensLastRepository(env))
+        #expect(DebugLaunchGuard.startsAutomaticFetch(env))
+    }
+
+    /// Every hook variable counts, not only the step lists: a click or a selection acts on the
+    /// repository on screen just as a step does.
+    @Test(arguments: [
+        "GITTER_DEBUG_OPEN", "GITTER_DEBUG_BRANCH_ACTION", "GITTER_DEBUG_THEN",
+        "GITTER_DEBUG_CLICK", "GITTER_DEBUG_KEYS", "GITTER_DEBUG_SELECT_PATH",
+        "GITTER_DEBUG_APPLY", "GITTER_DEBUG_WINDOW", "GITTER_DEBUG_SNAPSHOT_DIR",
+    ])
+    func anyDebugVariableMakesTheLaunchScripted(_ name: String) {
+        let env = [name: "x", "PATH": "/usr/bin"]
+        #expect(DebugLaunchGuard.isScripted(env))
+        #expect(!DebugLaunchGuard.reopensLastRepository(env))
+        #expect(!DebugLaunchGuard.startsAutomaticFetch(env))
+    }
+
+    /// An empty value is still a scripted launch: the variable being there is what says a
+    /// harness started the app.
+    @Test func anEmptyDebugVariableStillCounts() {
+        let env = ["GITTER_DEBUG_THEN": ""]
+        #expect(DebugLaunchGuard.isScripted(env))
+        #expect(!DebugLaunchGuard.reopensLastRepository(env))
+    }
+
+    /// The automatic fetch runs in a scripted launch only when the script asks for its schedule
+    /// by name; the reopen stays off even then.
+    @Test func theAutomaticFetchRunsOnlyWhenTheScriptAsksForIt() {
+        let env = ["GITTER_DEBUG_AUTOFETCH": "5,2", "GITTER_DEBUG_OPEN": Self.fixture]
+        #expect(DebugLaunchGuard.startsAutomaticFetch(env))
+        #expect(!DebugLaunchGuard.reopensLastRepository(env))
+    }
+
+    // MARK: - Whether a step may run
+
+    @Test func aStepRunsOnlyAgainstTheFixture() {
+        let env = ["GITTER_DEBUG_OPEN": Self.fixture, "GITTER_DEBUG_THEN": "idle"]
+        #expect(DebugLaunchGuard.stepRefusal(root: URL(fileURLWithPath: Self.fixture), env) == nil)
+    }
+
+    @Test func aStepIsRefusedAgainstAnotherRepository() throws {
+        let env = ["GITTER_DEBUG_OPEN": Self.fixture]
+        let real = URL(fileURLWithPath: "/Users/someone/Developer/real")
+        let refusal = try #require(DebugLaunchGuard.stepRefusal(root: real, env))
+        #expect(refusal.contains("/Users/someone/Developer/real"))
+        #expect(refusal.contains(Self.fixture))
+    }
+
+    @Test func aStepIsRefusedWithNothingOpen() {
+        let env = ["GITTER_DEBUG_OPEN": Self.fixture]
+        #expect(DebugLaunchGuard.stepRefusal(root: nil, env) != nil)
+    }
+
+    /// No fixture named, or an empty one: there is nothing a step could be checked against, so
+    /// none runs — whatever is open.
+    @Test(arguments: [nil, ""] as [String?])
+    func aStepIsRefusedWithoutAFixture(_ open: String?) {
+        var env = ["GITTER_DEBUG_THEN": "idle"]
+        env["GITTER_DEBUG_OPEN"] = open
+        #expect(DebugLaunchGuard.stepRefusal(root: URL(fileURLWithPath: Self.fixture), env) != nil)
+        #expect(DebugLaunchGuard.stepRefusal(root: nil, env) != nil)
+    }
+
+    /// A prefix of the fixture's path, or the fixture's parent, is another directory.
+    @Test func aPrefixOrParentOfTheFixtureIsAnotherRepository() {
+        let env = ["GITTER_DEBUG_OPEN": Self.fixture]
+        #expect(DebugLaunchGuard.stepRefusal(root: URL(fileURLWithPath: Self.fixture + "2"), env) != nil)
+        #expect(
+            DebugLaunchGuard.stepRefusal(
+                root: URL(fileURLWithPath: "/private/tmp/gitter-guard-fixture"), env) != nil)
+    }
+
+    /// `mktemp -d` answers under `/var/folders/…`, which is a link to `/private/var/folders/…`;
+    /// the store keeps the path as it was given. Both spellings of one directory are the fixture,
+    /// and so are a trailing slash and a `.` component.
+    @Test func theFixtureIsComparedByItsResolvedPath() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appending(path: "gitter-guard-\(UUID().uuidString)")
+        let repo = base.appending(path: "repo")
+        let link = base.appending(path: "link")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: repo)
+
+        let env = ["GITTER_DEBUG_OPEN": link.path + "/"]
+        #expect(DebugLaunchGuard.stepRefusal(root: repo, env) == nil)
+        #expect(DebugLaunchGuard.stepRefusal(root: URL(fileURLWithPath: repo.path + "/./"), env) == nil)
+        #expect(DebugLaunchGuard.stepRefusal(root: base, env) != nil)
+    }
+}

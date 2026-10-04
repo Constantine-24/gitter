@@ -57,11 +57,16 @@ final class AutoFetchScheduler {
 
     /// Starts `store`'s schedule for the repository open right now, replacing any other. The
     /// first tick is immediate: "on open". Never under a test host (`TestHost`): a test run
-    /// fetches nothing.
+    /// fetches nothing. Nor in a scripted DEBUG launch, unless it sets `GITTER_DEBUG_AUTOFETCH`
+    /// (`DebugLaunchGuard`).
     func start(for store: RepositoryStore) {
         stop()
         guard !TestHost.isRunningTests else { return }
         #if DEBUG
+            guard DebugLaunchGuard.startsAutomaticFetch(ProcessInfo.processInfo.environment) else {
+                RepositoryStore.logAutoFetch("launch guard: no schedule in a scripted launch")
+                return
+            }
             RepositoryStore.logAutoFetch(
                 "schedule: every \(interval), stopped after \(timeout) (store \(store.debugSerial))")
         #endif

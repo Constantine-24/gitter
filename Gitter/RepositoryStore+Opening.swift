@@ -40,9 +40,16 @@ extension RepositoryStore {
 
     // MARK: - Reopening
 
-    /// Never under a test host: the path is the user's, and a test run must not open it.
+    /// Never under a test host: the path is the user's, and a test run must not open it. Nor in
+    /// a scripted DEBUG launch (`DebugLaunchGuard`), which opens its own fixture instead.
     func reopenLastRepository() {
         guard !TestHost.isRunningTests else { return }
+        #if DEBUG
+            guard DebugLaunchGuard.reopensLastRepository(ProcessInfo.processInfo.environment) else {
+                DebugLaunchHooks.log("launch guard: the last repository is not reopened")
+                return
+            }
+        #endif
         guard let path = UserDefaults.standard.string(forKey: Self.lastRepositoryPathKey) else { return }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
