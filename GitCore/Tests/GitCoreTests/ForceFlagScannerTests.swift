@@ -1828,6 +1828,9 @@ import Testing
         #"let data = try await run(["for-each-ref", "--format=%(refname)%00%(objectname)", "--end-of-options", "refs/remotes"], cwd: root)"#,
         #"let data = try await run(["remote", "-v"], cwd: root)"#,
         #"let data = try await run(["rev-parse", "--verify", "-q", "--end-of-options", ref], cwd: root, allowedExitCodes: [1])"#,
+        // Final review m8: the two reads Task 4 added (`branchConfigKeys`, `remoteHEADTarget`).
+        #"let data = try await run(["config", "--local", "--name-only", "-z", "--list"], cwd: root)"#,
+        #"let data = try await run(["for-each-ref", "--format=%(refname)%00%(symref)", "--end-of-options", head], cwd: root)"#,
     ])
     func allowsThePruneVectorsThisMilestoneNeeds(source: String) {
         #expect(ForceFlagScanner.findings(in: source).isEmpty,
@@ -1995,11 +1998,21 @@ import Testing
             let source = "let flag = \"\(literal)\""
             #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
         }
-        // Bare `--unset` is `config --unset` too: clean in a binding, a finding in a `branch` vector.
-        #expect(!ForceFlagScanner.findings(in: #"_ = try await run(["branch", "--unset", "--end-of-options", branch], cwd: root)"#).isEmpty)
-        #expect(!ForceFlagScanner.findings(in: #"_ = try await run([flag, "--unset", "--end-of-options", branch], cwd: root)"#).isEmpty)
-        #expect(ForceFlagScanner.findings(in: #"_ = try await run(["config", "--unset", key], cwd: root)"#).isEmpty)
-        for literal in ["--set-upstream", "--un", "--unshallow", "--set", "--unset"] {
+        // Bare `--unset` is a finding wherever it is written (final review N1 + R28): bound to a
+        // name, a vector that reads the name is `git branch --unset-upstream` the scanner cannot
+        // see, and no `config --unset` vector exists to carve out (Gitter's one config write is
+        // `--unset-all`'s pinned shape). A single-value `config --unset` is a finding too.
+        for source in [
+            #"_ = try await run(["branch", "--unset", "--end-of-options", branch], cwd: root)"#,
+            #"_ = try await run([flag, "--unset", "--end-of-options", branch], cwd: root)"#,
+            #"let flag = "--unset"; _ = try await run(["branch", flag, "--end-of-options", branch], cwd: root)"#,
+            #"let flag = "--unset""#,
+            #"_ = try await run(["config", "--unset", key], cwd: root)"#,
+            #"_ = try await run(["config", "--unset", "--end-of-options", "remote.\(remote).pushurl"], cwd: root)"#,
+        ] {
+            #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+        }
+        for literal in ["--set-upstream", "--un", "--unshallow", "--set"] {
             let source = "let flag = \"\(literal)\""
             #expect(ForceFlagScanner.findings(in: source).isEmpty, "false positive: \(source)")
         }

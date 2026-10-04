@@ -72,7 +72,8 @@
                 if let window { resize(to: window) }
                 // The launch guard: nothing was reopened, so the fixture is the first repository
                 // on screen — and nothing below acts on any other one, or with none open.
-                if let openPath { store.open(URL(fileURLWithPath: openPath)) }
+                // An empty GITTER_DEBUG_OPEN opens nothing, as an unset one (final review M4).
+                if let fixture = DebugLaunchGuard.fixtureToOpen(env) { store.open(URL(fileURLWithPath: fixture)) }
                 guard await wait({ store.snapshot != nil }) else {
                     log("launch guard: \(guardRefusal(store) ?? "refused: no snapshot loaded")")
                     return

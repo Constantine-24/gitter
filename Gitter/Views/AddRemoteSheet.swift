@@ -48,7 +48,7 @@ struct AddRemoteSheet: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    label("Name:")
+                    label(RemoteAdminWording.remoteNameLabel)
                     TextField("Remote name", text: $name)
                         .textFieldStyle(.roundedBorder)
                         .focused($nameFocused)
@@ -61,7 +61,7 @@ struct AddRemoteSheet: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    label("URL:")
+                    label(RemoteAdminWording.remoteURLLabel)
                     // What the user typed is shown as typed (carried note 1): only what Gitter
                     // displays of a configured URL is redacted.
                     TextField("A path, or an address such as https://host/owner/repo.git", text: $url)

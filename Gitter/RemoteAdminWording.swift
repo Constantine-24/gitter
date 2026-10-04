@@ -20,8 +20,11 @@ enum RemoteAdminWording {
     static func fastForwardTitle(_ branch: String) -> String { "Fast-Forward \"\(branch)\"" }
     static let unsetUpstreamTitle = "Unset Upstream"
 
+    static let setUpstreamTitle = "Set Upstream…"
+    static let changeUpstreamTitle = "Change Upstream…"
+
     static func upstreamTitle(_ branch: Branch) -> String {
-        branch.upstream == nil ? "Set Upstream…" : "Change Upstream…"
+        branch.upstream == nil ? setUpstreamTitle : changeUpstreamTitle
     }
 
     /// Push, Publish… or Re-publish, decided as the toolbar decides it (`RemoteWording.pushKind`,
@@ -292,6 +295,13 @@ enum RemoteAdminWording {
 
     /// Every deleted ref with the id it held, the kept branches, and — each in its own words —
     /// the refs left alone, refused, of unknown outcome and not tried.
+    ///
+    /// Final review I2: every ref by its **full** name with its full id, as the removal notice
+    /// names them — a fetch refspec of the remote's own (`+refs/heads/*:refs/remotes/c2/*` on
+    /// "cust") puts a pruned ref outside `refs/remotes/<remote>/`, and the old
+    /// `git update-ref refs/remotes/<remote>/<branch> <id>` template recreated another ref
+    /// (measured). The suggestion is one of the deleted lines themselves, never a `/HEAD`: given
+    /// an id, update-ref would make that symbolic ref an ordinary one.
     static func pruned(_ result: PruneResult, remote: String, headTarget: String?) -> String {
         var lines: [String] = []
         let count = result.deleted.count
@@ -300,7 +310,7 @@ enum RemoteAdminWording {
                 (count == 1
                     ? "Pruned 1 remote-tracking branch of \"\(remote)\". This is the only record of what it held:"
                     : "Pruned \(count) remote-tracking branches of \"\(remote)\". This is the only record of what they held:"))
-            lines += result.deleted.map { "\(shortRef($0.ref)) \($0.id)" }
+            lines += result.deleted.map { "\($0.ref) \($0.id)" }
         } else {
             lines.append("Nothing was pruned from \"\(remote)\".")
         }
@@ -309,29 +319,30 @@ enum RemoteAdminWording {
             lines.append((result.keptBranches.count == 1 ? "Kept as a local branch: " : "Kept as local branches: ") + names + ".")
         }
         for tip in result.skippedMoved {
-            lines.append("Left alone, because it changed since the list was read: \(shortRef(tip.ref)) (was \(tip.id)).")
+            lines.append("Left alone, because it changed since the list was read: \(tip.ref) (was \(tip.id)).")
         }
         for failure in result.failed {
             lines.append(
-                "git refused to delete \(shortRef(failure.tip.ref)) (\(failure.tip.id)): "
+                "git refused to delete \(failure.tip.ref) (\(failure.tip.id)): "
                     + RemoteWording.plainJoined(failure.gitsWords.split(whereSeparator: \.isNewline).map(String.init)))
         }
         for tip in result.outcomeUnknown {
             lines.append(
-                "Stopped while deleting \(shortRef(tip.ref)) (\(tip.id)): whether it is gone is not known. Refresh to see.")
+                "Stopped while deleting \(tip.ref) (\(tip.id)): whether it is gone is not known. Refresh to see.")
         }
         if !result.notTried.isEmpty {
-            lines.append(
-                "Not tried, because the prune was stopped: "
-                    + result.notTried.map { shortRef($0.ref) }.joined(separator: ", ") + ".")
+            lines.append("Not tried, because the prune was stopped:")
+            lines += result.notTried.map { "\($0.ref) \($0.id)" }
         }
         if let headTarget, result.deleted.contains(where: { $0.ref == headTarget }) {
             lines.append(
                 "\"\(remote)/HEAD\" now points at nothing (it pointed at \"\(shortRef(headTarget))\"); a fetch "
                     + "does not repair it.")
         }
-        if count > 0 {
-            lines.append("Bring one back with: git update-ref refs/remotes/\(remote)/<branch> <id>")
+        if let example = result.deleted.first(where: { !$0.ref.hasSuffix("/HEAD") }) {
+            lines.append(
+                "To bring one back, give its line above to git update-ref, e.g.: git update-ref \(example.ref) "
+                    + "\(example.id)")
         }
         return lines.joined(separator: "\n")
     }
@@ -562,6 +573,12 @@ enum RemoteAdminWording {
         default:
             return RemoteWording.failure(error, attempt: "fast-forward \"\(branch)\"", isWrite: false)
         }
+    }
+
+    /// Gitter's fetch before the compare-and-set failed: the branch was not touched (final
+    /// review m9c, moved here from the store).
+    static func fastForwardFetchFailure(_ error: Error, remote: String, branch: String) -> String {
+        RemoteWording.failure(error, attempt: "fetch from \"\(remote)\"", isWrite: false) + " \"\(branch)\" was not moved."
     }
 
     /// Stop pressed during the fetch that comes first: nothing was moved.
@@ -798,7 +815,14 @@ enum RemoteAdminWording {
     static let fetchURLLabel = "Fetch URL:"
     static let pushToFetchURL = "Push to the fetch URL"
     static let pushToOwnURL = "Push to its own URL:"
-    static let noURLYet = "It has no URL yet."
+    static let pushURLsLabel = "Push URLs:"
+
+    /// Above Edit URL's fields for a remote with no fetch URL. Final review m14: one with a push
+    /// URL has a URL — what it lacks is the one to fetch from.
+    static func noURLYet(_ urls: RemoteURLs) -> String? {
+        guard urls.fetch.isEmpty else { return nil }
+        return urls.push.isEmpty ? "It has no URL yet." : "It has no fetch URL yet."
+    }
 
     // MARK: - Names
 
@@ -812,6 +836,9 @@ enum RemoteAdminWording {
             "It would share a folder of remote-tracking branches with \"\(other)\": one name is inside the other."
         }
     }
+
+    static let remoteNameLabel = "Name:"
+    static let remoteURLLabel = "URL:"
 
     static let addRemoteIntro =
         "Adding a remote writes its name and URL to this repository's settings. Nothing is contacted until it is fetched."

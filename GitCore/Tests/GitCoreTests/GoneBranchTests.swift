@@ -127,7 +127,7 @@ import Testing
         let fixture = try await PruneFixture.make()
         defer { fixture.cleanUp() }
         let repo = fixture.repo
-        try? await repo.git(["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"], allowedExitCodes: [1])
+        _ = try? await repo.git(["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"], allowedExitCodes: [1])
         try await repo.git(["symbolic-ref", "refs/remotes/other/HEAD", PruneFixture.gone2Ref])
 
         #expect(try await backend.remoteHEADTarget(of: "origin", at: repo.root) == nil)

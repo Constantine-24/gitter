@@ -596,6 +596,26 @@ import Testing
         #expect(RemoteAdminWording.saveURLButton == "Save")
     }
 
+    /// Final review m12: the sheets' labels are wording constants, not literals in the views.
+    @Test func theSheetsLabelsAreWordingConstants() {
+        #expect(RemoteAdminWording.remoteNameLabel == "Name:")
+        #expect(RemoteAdminWording.remoteURLLabel == "URL:")
+        #expect(RemoteAdminWording.fetchURLLabel == "Fetch URL:")
+        #expect(RemoteAdminWording.pushURLsLabel == "Push URLs:")
+    }
+
+    /// Final review m14: a remote with only a push URL has a URL — it has no fetch URL.
+    @Test func theNoURLNoteSaysWhichURLIsMissing() {
+        #expect(RemoteAdminWording.noURLYet(RemoteURLs(fetch: [], push: [], effectiveFetch: nil)) == "It has no URL yet.")
+        #expect(
+            RemoteAdminWording.noURLYet(RemoteURLs(fetch: [], push: ["/srv/po.git"], effectiveFetch: nil))
+                == "It has no fetch URL yet.")
+        #expect(RemoteAdminWording.noURLYet(RemoteURLs(fetch: ["/srv/o.git"], push: [], effectiveFetch: "/srv/o.git")) == nil)
+        #expect(
+            RemoteAdminWording.noURLYet(
+                RemoteURLs(fetch: ["/srv/o.git"], push: ["/srv/p.git"], effectiveFetch: "/srv/o.git")) == nil)
+    }
+
     // MARK: - The lane
 
     @Test func renameAndRemoveAreNamedOnTheLane() {

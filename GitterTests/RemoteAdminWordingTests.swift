@@ -72,30 +72,95 @@ import Testing
         let text = RemoteAdminWording.pruned(result, remote: "origin", headTarget: nil)
         #expect(
             text == "Pruned 2 remote-tracking branches of \"origin\". This is the only record of what they held:\n"
-                + "origin/gone1 \(Self.id1)\n"
-                + "origin/gone2 \(Self.id2)\n"
+                + "refs/remotes/origin/gone1 \(Self.id1)\n"
+                + "refs/remotes/origin/gone2 \(Self.id2)\n"
                 + "Kept as a local branch: \"gone2\".\n"
-                + "Bring one back with: git update-ref refs/remotes/origin/<branch> <id>")
+                + "To bring one back, give its line above to git update-ref, e.g.: git update-ref "
+                + "refs/remotes/origin/gone1 \(Self.id1)")
+        Self.expectEverySuggestedCommandRecreatesADeletedRef(text, result)
     }
 
-    /// RF1 and the failures: each ref named with the id the sheet showed and what happened to it;
-    /// a cancelled delete is unknown, never "unchanged"; the dangling HEAD after the fact.
+    /// RF1 and the failures: each ref named in full with the id the sheet showed and what
+    /// happened to it; a cancelled delete is unknown, never "unchanged"; the dangling HEAD after
+    /// the fact.
     @Test func everyPartialOutcomeHasItsOwnWords() {
         let result = PruneResult(
             deleted: [Self.g1], skippedMoved: [Self.g2], keptBranches: [],
             failed: [RefFailure(tip: Self.g3, gitsWords: "error: cannot lock ref")],
             outcomeUnknown: [Self.g4], notTried: [RefTip(ref: "refs/remotes/origin/gone5", id: Self.id1)])
         let text = RemoteAdminWording.pruned(result, remote: "origin", headTarget: Self.g1.ref)
-        #expect(text.contains("origin/gone1 \(Self.id1)"))
-        #expect(text.contains("Left alone, because it changed since the list was read: origin/gone2 (was \(Self.id2))."))
-        #expect(text.contains("git refused to delete origin/gone3 (\(Self.id3)): error: cannot lock ref"))
+        #expect(text.contains("\nrefs/remotes/origin/gone1 \(Self.id1)\n"))
         #expect(
             text.contains(
-                "Stopped while deleting origin/gone4 (\(Self.id4)): whether it is gone is not known. Refresh to see."))
-        #expect(text.contains("Not tried, because the prune was stopped: origin/gone5."))
+                "Left alone, because it changed since the list was read: refs/remotes/origin/gone2 (was \(Self.id2))."))
+        #expect(text.contains("git refused to delete refs/remotes/origin/gone3 (\(Self.id3)): error: cannot lock ref"))
+        #expect(
+            text.contains(
+                "Stopped while deleting refs/remotes/origin/gone4 (\(Self.id4)): whether it is gone is not known. "
+                    + "Refresh to see."))
+        #expect(text.contains("Not tried, because the prune was stopped:\nrefs/remotes/origin/gone5 \(Self.id1)\n"))
         #expect(text.contains("\"origin/HEAD\" now points at nothing (it pointed at \"origin/gone1\"); a fetch does not repair it."))
+        Self.expectEverySuggestedCommandRecreatesADeletedRef(text, result)
         #expect(RemoteAdminWording.prunedNeedsReading(result))
         #expect(!RemoteAdminWording.prunedNeedsReading(PruneResult(deleted: [Self.g1], skippedMoved: [], keptBranches: [])))
+    }
+
+    /// Final review I2: a fetch refspec of its own (`+refs/heads/*:refs/remotes/c2/*` on remote
+    /// "cust") puts the pruned ref outside `refs/remotes/cust/`. The notice names the ref git
+    /// deleted, and its suggestion recreates exactly that ref — measured, the old
+    /// `refs/remotes/<remote>/<branch>` template recreated `refs/remotes/cust/x` instead.
+    @Test func aCustomRefspecsPrunedRefIsNamedAndRecreatedAsItWas() {
+        let custom = RefTip(ref: "refs/remotes/c2/x", id: Self.id1)
+        let result = PruneResult(
+            deleted: [custom], skippedMoved: [RefTip(ref: "refs/remotes/c2/y", id: Self.id2)], keptBranches: [],
+            failed: [RefFailure(tip: RefTip(ref: "refs/remotes/c2/z", id: Self.id3), gitsWords: "error: x")],
+            outcomeUnknown: [RefTip(ref: "refs/remotes/c2/w", id: Self.id4)],
+            notTried: [RefTip(ref: "refs/remotes/c2/v", id: Self.id2)])
+        let text = RemoteAdminWording.pruned(result, remote: "cust", headTarget: nil)
+        #expect(text.contains("\nrefs/remotes/c2/x \(Self.id1)\n"))
+        #expect(text.hasSuffix("e.g.: git update-ref refs/remotes/c2/x \(Self.id1)"))
+        #expect(!text.contains("refs/remotes/cust/"))
+        for tip in [result.skippedMoved[0], result.failed[0].tip, result.outcomeUnknown[0], result.notTried[0]] {
+            #expect(text.contains("\(tip.ref) \(tip.id)") || text.contains("\(tip.ref) (was \(tip.id))")
+                || text.contains("\(tip.ref) (\(tip.id))"), "\(tip.ref) is not named in full with its id")
+        }
+        Self.expectEverySuggestedCommandRecreatesADeletedRef(text, result)
+    }
+
+    /// Never an update-ref for a `<remote>/HEAD` symref (given an id it would become an ordinary
+    /// ref), and none at all when nothing else was deleted.
+    @Test func thePruneNoticeNeverSuggestsRecreatingAHEAD() {
+        let head = RefTip(ref: "refs/remotes/origin/HEAD", id: Self.id3)
+        let both = PruneResult(deleted: [head, Self.g1], skippedMoved: [], keptBranches: [])
+        let text = RemoteAdminWording.pruned(both, remote: "origin", headTarget: nil)
+        #expect(text.hasSuffix("e.g.: git update-ref refs/remotes/origin/gone1 \(Self.id1)"))
+        Self.expectEverySuggestedCommandRecreatesADeletedRef(text, both)
+        let onlyHEAD = PruneResult(deleted: [head], skippedMoved: [], keptBranches: [])
+        #expect(!RemoteAdminWording.pruned(onlyHEAD, remote: "origin", headTarget: nil).contains("update-ref"))
+    }
+
+    /// Every `git update-ref` the notice suggests names a full `refs/` ref that the prune
+    /// deleted, with the id it held, and never a `/HEAD`; and there is at least one when a
+    /// branch was deleted.
+    static func expectEverySuggestedCommandRecreatesADeletedRef(
+        _ text: String, _ result: PruneResult, sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        RemoteManagementWordingTests.expectEverySuggestedCommandNamesFullRefs(text, sourceLocation: sourceLocation)
+        let deleted = Set(result.deleted.map { "\($0.ref) \($0.id)" })
+        var rest = Substring(text)
+        var found = 0
+        while let range = rest.range(of: "git update-ref ") {
+            let after = rest[range.upperBound...]
+            let command = after.prefix { $0 != "\n" }
+            let words = command.split(separator: " ", omittingEmptySubsequences: false)
+            #expect(words.count == 2, "\(command)", sourceLocation: sourceLocation)
+            #expect(deleted.contains(String(command)), "not a deleted ref and its id: \(command)", sourceLocation: sourceLocation)
+            #expect(!(words.first ?? "").hasSuffix("/HEAD"), "\(command)", sourceLocation: sourceLocation)
+            found += 1
+            rest = after
+        }
+        let branches = result.deleted.filter { !$0.ref.hasSuffix("/HEAD") }
+        #expect(branches.isEmpty == (found == 0), "\(found) suggestions for \(branches.count) deleted branches", sourceLocation: sourceLocation)
     }
 
     /// The HEAD line only when its target was really deleted.
@@ -160,7 +225,7 @@ import Testing
         #expect(
             RemoteWording.refused(.noURL("vendor"), branch: "main")
                 == "\"main\" is set to push to \"vendor\", which has no URL configured. Give \"vendor\" a URL "
-                + "(Edit the remote's URLs), or set branch.main.pushRemote to another remote in a terminal.")
+                + "(Edit URL… on \"vendor\"), or set branch.main.pushRemote to another remote in a terminal.")
     }
 
     // MARK: - Clean-up
@@ -266,6 +331,20 @@ import Testing
                 == "Stopped while moving \"t\": it is at a1a1a1a or at b2b2b2b, and which is not known. Refresh to see.")
         #expect(words(GitError.commandFailed(exitCode: 128, stderr: "fatal: in 'preparing' phase, update aborted by the reference-transaction hook"))
             == "Couldn't fast-forward \"t\": fatal: in 'preparing' phase, update aborted by the reference-transaction hook")
+    }
+
+    /// Final review m9c: the fetch before the compare-and-set failed — in the wording file, and
+    /// saying the branch was not moved.
+    @Test func aFailedFetchBeforeTheFastForwardSaysTheBranchWasNotMoved() {
+        #expect(
+            RemoteAdminWording.fastForwardFetchFailure(
+                GitError.commandFailed(exitCode: 128, stderr: "fatal: couldn't find remote ref main"),
+                remote: "origin", branch: "t")
+                == "Couldn't fetch from \"origin\": fatal: couldn't find remote ref main \"t\" was not moved.")
+        #expect(
+            RemoteAdminWording.fastForwardFetchFailure(RemoteOperationError.noSuchRemote("origin"), remote: "origin", branch: "t")
+                == "Couldn't fetch from \"origin\": \"origin\" is no longer a configured remote — it was removed or "
+                + "renamed since the last refresh — so nothing was run. \"t\" was not moved.")
     }
 
     // MARK: - Another branch's push

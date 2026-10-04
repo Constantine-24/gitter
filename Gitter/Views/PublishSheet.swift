@@ -62,10 +62,10 @@ struct PublishSheet: View {
                     ForEach(remotes) { remote in
                         VStack(alignment: .leading, spacing: 1) {
                             Text(remote.name)
-                            // The address as git would use it for a push, made plain like
-                            // every other string that can carry a credential.
-                            if let url = remote.pushURL ?? remote.fetchURL {
-                                Text(RemoteWording.plain(url))
+                            // The address as git would use it for a push, its credential
+                            // taken out by the URL's structure (final review I1).
+                            if let caption = RemoteWording.publishRemoteCaption(remote) {
+                                Text(caption)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
@@ -84,7 +84,7 @@ struct PublishSheet: View {
             }
 
             if let remote {
-                Text(RemoteWording.publishWillTrack(remote: remote, branch: branch))
+                Text(RemoteWording.publishWillTrack(remote: remote, branch: branch, checkedOut: branch == store.currentBranch))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

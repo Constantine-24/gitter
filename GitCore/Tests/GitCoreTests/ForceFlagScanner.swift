@@ -265,9 +265,11 @@ enum ForceFlagScanner {
                 // read the vector, because no vector may carry it.
                 // Fix round 1, M1: git takes a unique prefix of a long option, so an abbreviated
                 // upstream option is the option itself under a spelling no table names. Bare
-                // `--unset` is `config --unset` as well, so it is a finding only where a `branch`
-                // vector or a fragment holds it (below and in `fragmentFindings`).
-                if isUpstreamAbbreviation(spelling), spelling != "--unset" {
+                // `--unset` included (final review N1 + R28): it is also `config --unset`, but no
+                // such vector exists to carve out, and bound to a name it reaches a `branch`
+                // vector the rules below cannot see — `let flag = "--unset"`. A real
+                // `config --unset` would come with a pinned shape of its own.
+                if isUpstreamAbbreviation(spelling) {
                     findings.append(
                         "forbidden literal \(spelling.debugDescription) (offset \(token)): "
                             + upstreamAbbreviationReason)

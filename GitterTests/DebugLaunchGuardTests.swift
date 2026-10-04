@@ -107,4 +107,20 @@ import Testing
         #expect(DebugLaunchGuard.stepRefusal(root: URL(fileURLWithPath: repo.path + "/./"), env) == nil)
         #expect(DebugLaunchGuard.stepRefusal(root: base, env) != nil)
     }
+
+    // MARK: - What is opened (final review M4)
+
+    /// An empty `GITTER_DEBUG_OPEN` behaves as an unset one: nothing is opened — it used to open
+    /// `URL(fileURLWithPath: "")`, the working directory, which from the checkout is the
+    /// developer's own repository — and every step is refused (above).
+    @Test(arguments: [nil, ""] as [String?])
+    func anEmptyOrMissingFixtureOpensNothing(_ open: String?) {
+        var env = ["GITTER_DEBUG_THEN": "idle"]
+        env["GITTER_DEBUG_OPEN"] = open
+        #expect(DebugLaunchGuard.fixtureToOpen(env) == nil)
+    }
+
+    @Test func aNamedFixtureIsOpened() {
+        #expect(DebugLaunchGuard.fixtureToOpen(["GITTER_DEBUG_OPEN": Self.fixture]) == Self.fixture)
+    }
 }

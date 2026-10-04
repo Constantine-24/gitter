@@ -32,6 +32,14 @@
             !isScripted(environment)
         }
 
+        /// The fixture to open first: `GITTER_DEBUG_OPEN`'s path — none when it is unset or
+        /// empty (final review M4). An empty path is the working directory, which from the
+        /// checkout is the developer's own repository; every step is refused then as well.
+        static func fixtureToOpen(_ environment: [String: String]) -> String? {
+            guard let fixture = environment[openVariable], !fixture.isEmpty else { return nil }
+            return fixture
+        }
+
         static func startsAutomaticFetch(_ environment: [String: String]) -> Bool {
             !isScripted(environment) || environment[autoFetchVariable] != nil
         }

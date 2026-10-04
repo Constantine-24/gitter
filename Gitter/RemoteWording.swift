@@ -123,14 +123,17 @@ enum RemoteWording {
     static let detachedPush =
         "HEAD is detached, so there is no branch to push. Switch to a branch, or create one here."
 
+    /// Final review M1: the branch's own menu sets an upstream since B2, so neither sentence
+    /// sends the user to a terminal for one.
     static func noUpstream(_ branch: String) -> String {
-        "\"\(branch)\" has no upstream to pull from. Publish it first, or set one in a terminal "
-            + "with git branch --set-upstream-to."
+        "\"\(branch)\" has no upstream to pull from. Publish it first, or choose "
+            + "\(RemoteAdminWording.setUpstreamTitle) on \"\(branch)\"."
     }
 
     static func upstreamGone(_ branch: Branch) -> String {
         "\"\(branch.upstream ?? "The upstream")\", the upstream of \"\(branch.name)\", no longer "
-            + "exists on the remote. Re-publish the branch, or set another upstream in a terminal."
+            + "exists on the remote. Re-publish the branch, or choose another with "
+            + "\(RemoteAdminWording.upstreamTitle(branch)) on \"\(branch.name)\"."
     }
 
     /// The two push-target refusals. Neither sentence claims git itself would refuse: measured,
@@ -145,8 +148,8 @@ enum RemoteWording {
         // push remote for the branch.
         case .noURL(let name):
             "\"\(branch)\" is set to push to \"\(plain(name))\", which has no URL configured. Give "
-                + "\"\(plain(name))\" a URL (Edit the remote's URLs), or set branch.\(branch).pushRemote to "
-                + "another remote in a terminal."
+                + "\"\(plain(name))\" a URL (\(RemoteAdminWording.editURLTitle) on \"\(plain(name))\"), or set "
+                + "branch.\(branch).pushRemote to another remote in a terminal."
         case .upstreamNameDiffers(let upstream):
             "\"\(branch)\" tracks \"\(upstream)\", a branch with a different name, so Gitter "
                 + "can't tell which one a push should update. Push it once from a terminal with "
@@ -797,8 +800,22 @@ enum RemoteWording {
     }
 
     /// What `push -u` leaves behind, so the badge's next reading is not a surprise.
-    static func publishWillTrack(remote: String, branch: String) -> String {
-        "It will then track \"\(remote)/\(branch)\", and Pull and Push will use it."
+    ///
+    /// Final review m9a: Pull acts only on the branch HEAD is on, so a branch published from its
+    /// own menu while another is checked out is promised Push alone.
+    static func publishWillTrack(remote: String, branch: String, checkedOut: Bool) -> String {
+        checkedOut
+            ? "It will then track \"\(remote)/\(branch)\", and Pull and Push will use it."
+            : "It will then track \"\(remote)/\(branch)\", and pushing \"\(branch)\" will use it; Pull will too once it "
+                + "is checked out."
+    }
+
+    /// The caption under a remote in the Publish sheet: the address git would push to (its push
+    /// URL, else its fetch URL) as every configured URL is shown — its credential taken out by
+    /// the URL's structure (`RemoteAdminWording.displayURL`, final review I1). The prose
+    /// redactor `plain` stopped at `(`, `'` or a space and showed the password (measured).
+    static func publishRemoteCaption(_ remote: Remote) -> String? {
+        (remote.pushURL ?? remote.fetchURL).map(RemoteAdminWording.displayURL)
     }
 
     /// The chosen remote already has a branch of this name (as last fetched): publishing is an

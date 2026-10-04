@@ -319,8 +319,7 @@ extension RepositoryStore {
                     return LaneEnding(notice: RemoteAdminWording.fastForwardStopped(name))
                 } catch {
                     return LaneEnding(
-                        failure: RemoteWording.failure(error, attempt: "fetch from \"\(remote)\"", isWrite: false)
-                            + " \"\(name)\" was not moved.")
+                        failure: RemoteAdminWording.fastForwardFetchFailure(error, remote: remote, branch: name))
                 }
             }
             do {

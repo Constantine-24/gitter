@@ -82,8 +82,8 @@ struct EditRemoteURLSheet: View {
             Text(RemoteAdminWording.editURLSheetTitle(remote))
                 .font(.headline)
 
-            if urls.fetch.isEmpty {
-                note(RemoteAdminWording.noURLYet)
+            if let noURL = RemoteAdminWording.noURLYet(urls) {
+                note(noURL)
             }
 
             if editable {
@@ -165,7 +165,7 @@ struct EditRemoteURLSheet: View {
                 }
             }
         } else {
-            readOnlyList("Push URLs:", urls.push)
+            readOnlyList(RemoteAdminWording.pushURLsLabel, urls.push)
             RemoteAdminWording.severalPushURLs(urls, remote: remote).map(note)
         }
     }
