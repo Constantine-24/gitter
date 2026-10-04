@@ -705,11 +705,51 @@ enum RemoteAdminWording {
     // MARK: - URLs on screen (carried note 1)
 
     /// A remote's URL as a sheet, a notice or a banner shows it: controls taken out first, then
-    /// every credential redacted — but an ssh login kept (`RemoteWording.copyableURL`): it is no
-    /// secret, and without it the address names another account. Display only: what is written
-    /// is what the configuration holds or what the user typed.
+    /// its userinfo taken out **by the URL's structure** (`redactingUserinfo`) — but an ssh login
+    /// kept: it is no secret, and without it the address names another account. Display only:
+    /// what is written is what the configuration holds or what the user typed.
+    ///
+    /// Fix round 1, I4: not the prose redactor (`RemoteFailureParser.redactingCredentials`), which
+    /// walks runs of URL-ish characters and stops at RFC 3986's sub-delims — `'`, `(`, `)` are
+    /// legal in a password, and `https://u:p(ss)@host/x` came back whole.
     static func displayURL(_ url: String) -> String {
-        RemoteWording.copyableURL(RemoteWording.stripped(url))
+        redactingUserinfo(RemoteWording.stripped(url))
+    }
+
+    /// One configured URL without its userinfo, read by structure:
+    /// - `scheme://authority…`: the authority runs to the first `/`, `?` or `#`; everything in it
+    ///   up to its **last** `@` goes (a password may hold `@`, `%40`, `(`, a space…). An ssh
+    ///   login (`ssh://git@host/…`: no `:` and no blank in it) stays.
+    /// - no scheme, and not a local path (`/`, `.`, `~`): git reads `[user@]host:path` when a colon
+    ///   comes before any slash. An `@` in the part before that colon ends the userinfo there
+    ///   (`git@host:team@2024/x` keeps its login and its path); otherwise a `user:password@host:path`
+    ///   puts the password after the first colon, so everything up to the last `@` before the
+    ///   first `/` goes.
+    /// Anything else — a path, `file://`, a URL with no `@` in its authority — is returned as it is.
+    static func redactingUserinfo(_ url: String) -> String {
+        if let separator = url.range(of: "://") {
+            let scheme = url[..<separator.lowerBound].lowercased()
+            let rest = url[separator.upperBound...]
+            let authority = rest[..<(rest.firstIndex { "/?#".contains($0) } ?? rest.endIndex)]
+            guard let at = authority.lastIndex(of: "@") else { return url }
+            if ["ssh", "git+ssh", "ssh+git"].contains(scheme), isLogin(authority[..<at]) { return url }
+            return String(url[..<separator.upperBound] + rest[rest.index(after: at)...])
+        }
+        if url.hasPrefix("/") || url.hasPrefix(".") || url.hasPrefix("~") { return url }
+        guard let colon = url.firstIndex(of: ":"), !url[..<colon].contains("/") else { return url }
+        let hostPart = url[..<colon]
+        if let at = hostPart.lastIndex(of: "@") {
+            return isLogin(hostPart[..<at]) ? url : String(url[url.index(after: at)...])
+        }
+        let afterColon = url[url.index(after: colon)...]
+        let segment = afterColon[..<(afterColon.firstIndex(of: "/") ?? afterColon.endIndex)]
+        guard let at = segment.lastIndex(of: "@") else { return url }
+        return String(url[url.index(after: at)...])
+    }
+
+    /// A lone ssh user name: no password, no blank — what ssh logs in as, never a secret.
+    private static func isLogin(_ userinfo: Substring) -> Bool {
+        !userinfo.isEmpty && !userinfo.contains(":") && !userinfo.contains(where: \.isWhitespace)
     }
 
     /// Whether showing `url` as written would show something `displayURL` hides — a credential.
@@ -1043,7 +1083,8 @@ enum RemoteAdminWording {
                 "Removed the remote \(remote). This is the only record of the \(impact.refs.count) remote-tracking "
                     + "branches deleted with it:")
         }
-        lines += impact.refs.map { "\(shortRef($0.ref)) \($0.id)" }
+        // Full names: `git update-ref` with a short one writes `.git/<remote>/<branch>` (I5).
+        lines += impact.refs.map { "\($0.ref) \($0.id)" }
         if !keptBranches.isEmpty {
             lines.append(
                 (keptBranches.count == 1 ? "Kept as a local branch: " : "Kept as local branches: ")
@@ -1067,13 +1108,19 @@ enum RemoteAdminWording {
         if !impact.leftBehind.isEmpty {
             lines.append("Left behind, under Other: \(impact.leftBehind.map(shortRef).joined(separator: ", ")).")
         }
-        if !impact.refs.isEmpty { lines.append("Bring one back with: git update-ref <ref> <id>") }
+        // The example is a branch, not `<remote>/HEAD`: given an id, update-ref would make that
+        // symbolic ref an ordinary one.
+        if let example = impact.refs.first(where: { !$0.ref.hasSuffix("/HEAD") }) ?? impact.refs.first {
+            lines.append(
+                "To bring one back, give its line above to git update-ref, e.g.: git update-ref \(example.ref) "
+                    + "\(example.id)")
+        }
         return lines.joined(separator: "\n")
     }
 
     // MARK: - Remove failures
 
-    static func removeRemoteFailure(_ error: Error, remote: String) -> String {
+    static func removeRemoteFailure(_ error: Error, remote: String, refs: [RefTip] = []) -> String {
         switch error {
         case RemoteAdminRefusal.impactChanged:
             return "What removing \"\(remote)\" would delete or change is not what the sheet showed: it changed since "
@@ -1093,13 +1140,16 @@ enum RemoteAdminWording {
         case RemoteAdminPartial.removeHalfDone(let left):
             return removeHalfDone(left)
         case RemoteAdminPartial.removeOutcomeUnknown(_, let kept):
-            let base = "Stopped while git was removing \"\(remote)\": whether the remote, its remote-tracking branches "
+            var text = "Stopped while git was removing \"\(remote)\": whether the remote, its remote-tracking branches "
                 + "and the branch settings naming it are still there is not known. Refresh to see."
             switch kept.count {
-            case 0: return base
-            case 1: return base + " The kept branch \(quotedList(kept)) was created before git ran and stays."
-            default: return base + " The kept branches \(quotedList(kept)) were created before git ran and stay."
+            case 0: break
+            case 1: text += " The kept branch \(quotedList(kept)) was created before git ran and stays."
+            default: text += " The kept branches \(quotedList(kept)) were created before git ran and stay."
             }
+            // I6: the refs the sheet showed, each with its id — the only way back if they are gone (R7).
+            guard !refs.isEmpty else { return text }
+            return ([text, "If they are gone, they held:"] + refs.map { "\($0.ref) \($0.id)" }).joined(separator: "\n")
         case _ where error is CancellationError:
             // GitCore turns a cancellation during a kept branch's creation or git's own run into
             // the cases above; this one came before either.
@@ -1122,13 +1172,14 @@ enum RemoteAdminWording {
                 "git had already removed these settings: \(left.configRemoved.joined(separator: ", ")) — those "
                     + "branches have no upstream or push remote of this name now.")
         }
+        // Full names and ids, one per line (I5): what a terminal command needs.
         if !left.refsLeft.isEmpty {
-            lines.append("Still there: \(left.refsLeft.map { shortRef($0.ref) }.joined(separator: ", ")).")
+            lines.append("Still there, at the ids they hold now:")
+            lines += left.refsLeft.map { "\($0.ref) \($0.id)" }
         }
         if !left.refsDeleted.isEmpty {
-            lines.append(
-                "Deleted, the only record of what \(left.refsDeleted.count == 1 ? "it" : "they") held: "
-                    + left.refsDeleted.map { "\(shortRef($0.ref)) \($0.id)" }.joined(separator: ", "))
+            lines.append("Deleted — the only record of what they held:")
+            lines += left.refsDeleted.map { "\($0.ref) \($0.id)" }
         }
         switch left.keptBranches.count {
         case 0: break
@@ -1138,7 +1189,9 @@ enum RemoteAdminWording {
         if left.stillConfigured {
             lines.append("Remove \(remote) again to finish (\(removeRemoteTitle) on \(remote)).")
         } else if !left.refsLeft.isEmpty {
-            lines.append("Delete what is left in a terminal: git update-ref -d <ref> <id>")
+            // A compare-and-delete on the id each holds now: never an unconditional one (R6).
+            lines.append("Delete what is left in a terminal, each only while it holds that id:")
+            lines += left.refsLeft.map { "git update-ref -d \($0.ref) \($0.id)" }
         }
         return lines.joined(separator: "\n")
     }

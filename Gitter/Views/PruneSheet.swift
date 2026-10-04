@@ -30,11 +30,7 @@ struct PruneSheet: View {
 
     /// What `confirmPrune` is handed: ticked ref → trimmed name.
     private var keeping: [String: String] {
-        var result: [String: String] = [:]
-        for tip in holders where ticked[tip.ref] == true {
-            result[tip.ref] = (names[tip.ref] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return result
+        KeepBranchList.keeping(holders: holders, ticked: ticked, names: names)
     }
 
     /// Refs whose tip on screen is not the one the list read: the prune will leave them alone.
@@ -57,7 +53,7 @@ struct PruneSheet: View {
             Text(RemoteAdminWording.pruneSheetIntro(plan))
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
-            refList
+            RefIDList(refs: plan.refs, maxRows: Self.maxRows)
 
             Text(RemoteAdminWording.stranded(plan.stranded))
                 .font(.callout)
@@ -72,24 +68,11 @@ struct PruneSheet: View {
             }
 
             if !holders.isEmpty {
-                Text(RemoteAdminWording.keepHeading)
-                    .font(.callout)
-                    .fixedSize(horizontal: false, vertical: true)
-                keepControls
                 // Capped and scrolling, like the two lists above (Ruling 12): with two dozen
                 // holders an uncapped list pushed the title and both buttons off the window.
-                ScrollView {
-                    Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
-                        ForEach(holders, id: \.ref) { tip in keepRow(tip) }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(height: keepListHeight)
-                if let summary = RemoteAdminWording.keepProblemsSummary(problemCount) {
-                    Text(summary)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
+                KeepBranchList(
+                    holders: holders, loaded: loaded, ticked: $ticked, names: $names, problems: problems,
+                    checked: checked, maxRows: Self.maxRows)
             }
 
             ForEach(warnings, id: \.self) { line in
@@ -131,98 +114,16 @@ struct PruneSheet: View {
         .task(id: loaded ? keeping : nil) {
             guard loaded else { return }
             let asked = keeping
-            var found: [String: String] = [:]
-            for (ref, name) in asked {
-                let duplicate = asked.contains { $0.key != ref && $0.value.lowercased() == name.lowercased() }
-                if let problem = await store.keepNameProblem(name, duplicate: duplicate) { found[ref] = problem }
-            }
+            let found = await store.keepNameProblems(asked)
             guard !Task.isCancelled else { return }
             problems = found
             checked = asked
         }
     }
 
-    /// The refs, each with the full id the delete compares and the notice names afterwards.
-    private var refList: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(plan.refs, id: \.ref) { tip in
-                    HStack(spacing: 8) {
-                        Text(RemoteAdminWording.shortRef(tip.ref))
-                            .font(.callout)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer(minLength: 8)
-                        Text(tip.id)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-                    .textSelection(.enabled)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(height: CGFloat(min(max(plan.refs.count, 1), Self.maxRows)) * 20)
-    }
-
     /// Rows each list shows before it scrolls: with the header, every section and both buttons
     /// on screen at the default window size (Ruling 12, measured with 24 holders).
     static let maxRows = 4
-
-    /// A keep row is a toggle beside a text field; a row with a name problem has one more line.
-    private var keepListHeight: CGFloat {
-        let rows = CGFloat(min(holders.count, Self.maxRows)) * 30
-        let shownProblems = holders.prefix(Self.maxRows).filter { visibleProblem($0) != nil }.count
-        return rows + CGFloat(shownProblems) * 18
-    }
-
-    /// The ticked names with a problem, for the line under the list: a row scrolled out of view
-    /// must not leave Prune off with no reason on screen.
-    private var problemCount: Int { holders.filter { visibleProblem($0) != nil }.count }
-
-    private func visibleProblem(_ tip: RefTip) -> String? {
-        guard ticked[tip.ref] == true, checked == keeping else { return nil }
-        return problems[tip.ref]
-    }
-
-    /// Keep All / Keep None, and how many are kept.
-    private var keepControls: some View {
-        let refs = holders.map(\.ref)
-        let offers = RemoteAdminWording.keepAllOffers(refs, ticked: ticked)
-        return HStack(spacing: 8) {
-            Text(RemoteAdminWording.keepCount(refs, ticked: ticked))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            // Each box is set and the names are checked again, as a click on each would.
-            Button(RemoteAdminWording.keepAllTitle) { ticked = RemoteAdminWording.ticking(refs, all: true) }
-                .disabled(!loaded || !offers.all)
-            Button(RemoteAdminWording.keepNoneTitle) { ticked = RemoteAdminWording.ticking(refs, all: false) }
-                .disabled(!loaded || !offers.none)
-        }
-        .controlSize(.small)
-    }
-
-    @ViewBuilder
-    private func keepRow(_ tip: RefTip) -> some View {
-        GridRow {
-            Toggle(
-                RemoteAdminWording.keepLabel(tip.ref),
-                isOn: Binding(get: { ticked[tip.ref] ?? false }, set: { ticked[tip.ref] = $0 }))
-            TextField("", text: Binding(get: { names[tip.ref] ?? "" }, set: { names[tip.ref] = $0 }))
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 200)
-                .disabled(ticked[tip.ref] != true)
-        }
-        if let problem = visibleProblem(tip) {
-            GridRow {
-                Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
-                Text(problem)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-        }
-    }
 
     private var warnings: [String] {
         var lines: [String] = []

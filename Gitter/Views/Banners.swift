@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// A dismissible strip across the top of the window. Two kinds use it, and they are told apart
@@ -20,10 +21,7 @@ struct Banner: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: systemImage)
                 .foregroundStyle(iconTint)
-            Text(message)
-                .font(.callout)
-                .lineLimit(Self.lineLimit(for: message))
-                .textSelection(.enabled)
+            messageView
             Spacer(minLength: 8)
             ForEach(actions) { action in
                 Button(action.title, action: action.perform)
@@ -52,6 +50,55 @@ struct Banner: View {
         .padding(8)
     }
 
+    /// The whole message, always (B2 Task 5, fix round 1, I5): up to `lineLimit(for:)` lines it
+    /// is drawn as it is; past that it scrolls inside that height, so a removal's or a prune's
+    /// notice — the only record of every deleted ref and its id — never loses its last lines
+    /// (the kept branches, where branches now push, how to bring a ref back). Selectable, so it
+    /// can be copied whole.
+    private var messageView: some View {
+        let height = Self.lineHeight * CGFloat(Self.lineLimit(for: message))
+        let baseline = Self.firstBaseline
+        return ViewThatFits(in: .vertical) {
+            messageText
+            ScrollView {
+                messageText.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .defaultScrollAnchor(Self.debugScrollAnchor)
+            .frame(height: height)
+            // A scroll view has no text baseline of its own, so the glyph and the close button
+            // would drop to its bottom: give it its first line's.
+            .alignmentGuide(.firstTextBaseline) { dimensions in dimensions[.top] + baseline }
+        }
+        .frame(maxHeight: height)
+    }
+
+    private var messageText: some View {
+        Text(message)
+            .font(.callout)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+    }
+
+    /// One line of the callout font the message is set in.
+    static let lineHeight: CGFloat = {
+        let font = NSFont.preferredFont(forTextStyle: .callout)
+        return ceil(NSLayoutManager().defaultLineHeight(for: font))
+    }()
+
+    /// Where the first line's baseline sits below the top of the text.
+    static let firstBaseline: CGFloat = ceil(NSFont.preferredFont(forTextStyle: .callout).ascender)
+
+    /// Where a scrolling message starts: its top — or, for the debug harness, which cannot
+    /// scroll, its end (`prefill:bannerAnchor=bottom`).
+    private static var debugScrollAnchor: UnitPoint? {
+        #if DEBUG
+            if DebugLaunchHooks.sheetPrefill["bannerAnchor"] == "bottom" { return .bottom }
+        #endif
+        return nil
+    }
+
+    /// How many lines a message is drawn in before it scrolls.
+    ///
     /// Three lines for a sentence, and room for every line a message was built with on top:
     /// a server's refusal is a sentence plus up to `RemoteWording.maxServerLines` lines and a
     /// "(N more lines)" count, and a fixed three would hide the count — the one line that says

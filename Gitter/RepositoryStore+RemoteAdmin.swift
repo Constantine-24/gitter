@@ -166,6 +166,18 @@ extension RepositoryStore {
         return RemoteAdminWording.keepNameProblem(refusal, duplicate: duplicate)
     }
 
+    /// The keep fields' live check for one `keeping` (ref → name): GitCore's
+    /// `keepBranchNameProblem` for each name, and two ticked names alike (compared ignoring case).
+    /// Ref → problem; refs whose name is fine are absent.
+    func keepNameProblems(_ keeping: [String: String]) async -> [String: String] {
+        var found: [String: String] = [:]
+        for (ref, name) in keeping {
+            let duplicate = keeping.contains { $0.key != ref && $0.value.lowercased() == name.lowercased() }
+            if let problem = await keepNameProblem(name, duplicate: duplicate) { found[ref] = problem }
+        }
+        return found
+    }
+
     /// `<remote>/HEAD`'s target now, for the sheet's dangling-HEAD line.
     func remoteHEADTarget(_ remote: String) async -> String? {
         guard let root else { return nil }
@@ -582,7 +594,8 @@ extension RepositoryStore {
             do {
                 try await backend.removeRemote(impact, keeping: keeping, at: root)
             } catch {
-                return LaneEnding(failure: RemoteAdminWording.removeRemoteFailure(error, remote: remote))
+                return LaneEnding(
+                    failure: RemoteAdminWording.removeRemoteFailure(error, remote: remote, refs: impact.refs))
             }
             let kept = impact.refs.compactMap { keeping[$0.ref] }
             return LaneEnding(

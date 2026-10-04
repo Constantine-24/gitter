@@ -97,6 +97,63 @@ import Testing
         #expect(RemoteAdminWording.displayURL(url) == shown)
     }
 
+    /// Fix round 1, I4: a configured URL is redacted by its structure, not as prose — RFC 3986's
+    /// sub-delims (`'`, `(`, `)`, …) are legal in a userinfo, and a prose redactor stops at them.
+    /// Everything up to the authority's LAST `@` goes (the authority ends at the first `/`, `?`
+    /// or `#`); scp-like, everything up to the last `@` of the host part.
+    static let structuralCases: [(url: String, shown: String)] = [
+        ("https://u:p'ss@example.invalid/x.git", "https://example.invalid/x.git"),
+        ("https://u:p(ss)@example.invalid/x.git", "https://example.invalid/x.git"),
+        ("https://u:p ss@example.invalid/x.git", "https://example.invalid/x.git"),
+        ("https://u:p\"ss@example.invalid/x.git", "https://example.invalid/x.git"),
+        ("https://u:p@ss@example.invalid/x.git", "https://example.invalid/x.git"),
+        ("https://u:p%40ss@example.invalid/x.git", "https://example.invalid/x.git"),
+        ("https://(tok)@example.invalid/x.git", "https://example.invalid/x.git"),
+        ("ssh://u:p(ss)@example.invalid/x.git", "ssh://example.invalid/x.git"),
+        ("https://u:p@[::1]:8443/x.git", "https://[::1]:8443/x.git"),
+        // scp-like: a password, sub-delims and `@` in it, before the host.
+        ("u:p(ss)@example.invalid:o/x.git", "example.invalid:o/x.git"),
+        ("u:p@ss@example.invalid:o/x.git", "example.invalid:o/x.git"),
+        ("u:p'ss@example.invalid:/abs/x.git", "example.invalid:/abs/x.git"),
+        // Nothing to hide: unchanged.
+        ("https://example.invalid/x.git", "https://example.invalid/x.git"),
+        ("https://example.invalid/x.git?ref=a@b", "https://example.invalid/x.git?ref=a@b"),
+        ("https://example.invalid/a@b/x.git", "https://example.invalid/a@b/x.git"),
+        ("git@example.invalid:team@2024/x.git", "git@example.invalid:team@2024/x.git"),
+        ("file:///srv/a(b)@c.git", "file:///srv/a(b)@c.git"),
+        ("/srv/a:b@c.git", "/srv/a:b@c.git"),
+        ("../rel/a:b@c.git", "../rel/a:b@c.git"),
+    ]
+
+    @Test(arguments: structuralCases)
+    func aConfiguredURLIsRedactedByItsStructure(url: String, shown: String) {
+        #expect(RemoteAdminWording.displayURL(url) == shown)
+        #expect(!RemoteAdminWording.displayURL(url).contains("p(ss)"))
+        #expect(RemoteAdminWording.hidesCredential(url) == (url != shown))
+    }
+
+    /// I4: the notices and banners built from a URL hide such a password too.
+    @Test func noticesAndBannersHideAPasswordWithSubDelims() {
+        let secret = "https://u:p(ss)@example.invalid/x.git"
+        let texts = [
+            RemoteAdminWording.remoteAdded("up", url: secret),
+            RemoteAdminWording.urlsChanged("up", fetch: secret, push: .set(secret)),
+            RemoteAdminWording.connectsTo(RemoteURLs(fetch: ["/x"], push: [], effectiveFetch: secret)) ?? "",
+            RemoteAdminWording.addRemoteFailure(
+                RemoteAdminPartial.urlsChangedThenFailed(
+                    remote: "up", now: RemoteURLs(fetch: [secret], push: [secret], effectiveFetch: nil),
+                    gitsWords: "fatal: x"), name: "up"),
+            RemoteAdminWording.editURLFailure(
+                RemoteAdminPartial.urlsChangedThenFailed(
+                    remote: "up", now: RemoteURLs(fetch: [secret], push: [], effectiveFetch: nil), gitsWords: "fatal: x"),
+                remote: "up"),
+        ]
+        for text in texts {
+            #expect(!text.contains("p(ss)"), "\(text)")
+            #expect(!text.contains("u:"), "\(text)")
+        }
+    }
+
     /// The field starts with the configured URL as written — unless that would show a
     /// credential: then it starts empty, and an empty field keeps the configured URL.
     @Test func theURLFieldNeverShowsACredential() {
@@ -394,20 +451,28 @@ import Testing
     /// the removal changed.
     @Test func theRemoveNoticeIsTheOnlyRecordOfTheRefs() {
         let text = RemoteAdminWording.remoteRemoved(Self.impact, keptBranches: ["gone1"])
-        #expect(
-            text
-                == [
+        let expected: [String] = [
                     "Removed the remote \"origin\". This is the only record of the 2 remote-tracking branches deleted "
                         + "with it:",
-                    "origin/gone1 \(Self.id1)",
-                    "origin/main \(Self.id2)",
+                    "refs/remotes/origin/gone1 \(Self.id1)",
+                    "refs/remotes/origin/main \(Self.id2)",
                     "Kept as a local branch: \"gone1\".",
                     "Left with no upstream: \"main\", \"topic\".",
                     "Pushing elsewhere now: \"onfork\" to \"fork\"; \"solo\" nowhere (Push will offer Publish…); "
                         + "\"loc\" into this repository; \"glob\" still to \"origin\", which no longer exists.",
                     "Left behind, under Other: origin/handmade.",
-                    "Bring one back with: git update-ref <ref> <id>",
-                ].joined(separator: "\n"))
+                    "To bring one back, give its line above to git update-ref, e.g.: git update-ref "
+                        + "refs/remotes/origin/gone1 \(Self.id1)",
+                ]
+        #expect(text == expected.joined(separator: "\n"))
+        Self.expectEverySuggestedCommandNamesFullRefs(text)
+        // The example is never `<remote>/HEAD`, which update-ref would turn into an ordinary ref.
+        let withHEAD = RemovalImpact(
+            remote: "origin", refs: [RefTip(ref: "refs/remotes/origin/HEAD", id: Self.id2)] + Self.impact.refs,
+            stranded: .none, upstreamOf: [], pushRedirects: [], leftBehind: [])
+        #expect(
+            RemoteAdminWording.remoteRemoved(withHEAD, keptBranches: []).hasSuffix(
+                "e.g.: git update-ref refs/remotes/origin/gone1 \(Self.id1)"))
         let bare = RemovalImpact(
             remote: "x", refs: [], stranded: .none, upstreamOf: [], pushRedirects: [], leftBehind: [])
         #expect(RemoteAdminWording.remoteRemoved(bare, keptBranches: []) == "Removed the remote \"x\".")
@@ -465,8 +530,10 @@ import Testing
                         + "'/r/.git/packed-refs.lock': File exists.). \"origin\" is still configured.",
                     "git had already removed these settings: branch.main.remote, branch.main.merge — those branches "
                         + "have no upstream or push remote of this name now.",
-                    "Still there: origin/gone1.",
-                    "Deleted, the only record of what it held: origin/main \(Self.id2)",
+                    "Still there, at the ids they hold now:",
+                    "refs/remotes/origin/gone1 \(Self.id1)",
+                    "Deleted — the only record of what they held:",
+                    "refs/remotes/origin/main \(Self.id2)",
                     "Kept as a local branch before git ran: \"gone1\". It stays.",
                     "Remove \"origin\" again to finish (Remove… on \"origin\").",
                 ].joined(separator: "\n"))
@@ -477,15 +544,48 @@ import Testing
             RemoteAdminWording.removeRemoteFailure(RemoteAdminPartial.removeHalfDone(left: gone), remote: "origin")
                 == [
                     "Removing \"origin\" stopped part-way (fatal: x). \"origin\" is no longer configured.",
-                    "Still there: origin/a.",
-                    "Delete what is left in a terminal: git update-ref -d <ref> <id>",
+                    "Still there, at the ids they hold now:",
+                    "refs/remotes/origin/a \(Self.id1)",
+                    "Delete what is left in a terminal, each only while it holds that id:",
+                    "git update-ref -d refs/remotes/origin/a \(Self.id1)",
                 ].joined(separator: "\n"))
+        for leftover in [left, gone] {
+            Self.expectEverySuggestedCommandNamesFullRefs(
+                RemoteAdminWording.removeRemoteFailure(RemoteAdminPartial.removeHalfDone(left: leftover), remote: "origin"))
+        }
+    }
+
+    /// I6: a removal of unknown outcome names every ref the sheet showed with its id — if they
+    /// are gone, those ids are the only way back (R7).
+    @Test func anUnknownRemovalNamesEveryRefWithItsId() {
+        let text = RemoteAdminWording.removeRemoteFailure(
+            RemoteAdminPartial.removeOutcomeUnknown(remote: "origin", keptBranches: ["gone1"]), remote: "origin",
+            refs: Self.impact.refs)
         #expect(
-            RemoteAdminWording.removeRemoteFailure(
-                RemoteAdminPartial.removeOutcomeUnknown(remote: "origin", keptBranches: ["gone1"]), remote: "origin")
-                == "Stopped while git was removing \"origin\": whether the remote, its remote-tracking branches and "
-                + "the branch settings naming it are still there is not known. Refresh to see. The kept branch "
-                + "\"gone1\" was created before git ran and stays.")
+            text
+                == [
+                    "Stopped while git was removing \"origin\": whether the remote, its remote-tracking branches and "
+                        + "the branch settings naming it are still there is not known. Refresh to see. The kept branch "
+                        + "\"gone1\" was created before git ran and stays.",
+                    "If they are gone, they held:",
+                    "refs/remotes/origin/gone1 \(Self.id1)",
+                    "refs/remotes/origin/main \(Self.id2)",
+                ].joined(separator: "\n"))
+    }
+
+    /// I5: `git update-ref` with a short name writes `.git/origin/main` (measured): every
+    /// suggested `git update-ref` names a full `refs/…` ref.
+    static func expectEverySuggestedCommandNamesFullRefs(_ text: String, sourceLocation: SourceLocation = #_sourceLocation) {
+        var rest = Substring(text)
+        var found = 0
+        while let range = rest.range(of: "git update-ref ") {
+            var after = rest[range.upperBound...]
+            if after.hasPrefix("-d ") { after = after.dropFirst(3) }
+            #expect(after.hasPrefix("refs/"), "\(after.prefix(40))", sourceLocation: sourceLocation)
+            found += 1
+            rest = after
+        }
+        #expect(found > 0 || !text.contains("update-ref"), sourceLocation: sourceLocation)
     }
 
     @Test func theButtonsSayWhatTheyDo() {
