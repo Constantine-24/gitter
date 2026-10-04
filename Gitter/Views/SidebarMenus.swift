@@ -167,7 +167,8 @@ struct RemoteBranchMenu: View {
 }
 
 /// A configured remote's row: fetch just that remote, prune it (B2 Task 4: lists on the lane,
-/// then its sheet), copy its address.
+/// then its sheet), edit its URLs, rename or remove it (B2 Task 5: each opens its sheet; a remote
+/// with no URL gets one through Edit URL…), copy its address.
 ///
 /// "Copy URL" copies the fetch URL. A remote with only a push URL gets "Copy Push URL" in its
 /// place, so the title says which address is on the pasteboard; one whose push URL differs from
@@ -211,13 +212,25 @@ struct RemoteMenu: View {
         let urlReason = RemoteWording.fetchURLBlocked(remote)
         // Its list is a dry-run fetch: the same URL reason, so `MenuReasons` says it once.
         let pruneReason = store.pruneBlockedReason(remote)
+        let editReason = store.editURLBlockedReason
+        let renameReason = store.renameRemoteBlockedReason
+        let removeReason = store.removeRemoteBlockedReason
 
-        MenuReasons(reasons: [fetchReason, urlReason, pruneReason])
+        MenuReasons(reasons: [fetchReason, urlReason, pruneReason, editReason, renameReason, removeReason])
 
         Button(RemoteWording.fetchRemoteTitle(remote.name)) { store.fetch(remote: remote.name) }
             .disabled(fetchReason != nil || urlReason != nil)
         Button(RemoteAdminWording.pruneTitle(remote.name)) { store.requestPrune(remote.name) }
             .disabled(pruneReason != nil)
+
+        Divider()
+
+        Button(RemoteAdminWording.editURLTitle) { store.requestEditURL(remote.name) }
+            .disabled(editReason != nil)
+        Button(RemoteAdminWording.renameRemoteTitle) { store.requestRenameRemote(remote.name) }
+            .disabled(renameReason != nil)
+        Button(RemoteAdminWording.removeRemoteTitle) { store.requestRemoveRemote(remote.name) }
+            .disabled(removeReason != nil)
 
         Divider()
 
@@ -335,19 +348,26 @@ struct CommitMenu: View {
     }
 }
 
-/// The menu bar's Remotes menu (B2 Task 4): Prune <remote>… — one item with a single remote to
-/// fetch from, a submenu with several — and Clean Up Gone Branches…. Off while a sheet is up,
-/// as the Repository menu's items are: a sheet is a question the user has not answered yet.
+/// The menu bar's Remotes menu: Add Remote… (B2 Task 5 — the way to a first remote, which has no
+/// sidebar row to right-click yet), Prune <remote>… — one item with a single remote to fetch from,
+/// a submenu with several — and Clean Up Gone Branches… (B2 Task 4). Off while a sheet is up, as
+/// the Repository menu's items are: a sheet is a question the user has not answered yet.
 struct RemotesMenuContent: View {
     let store: RepositoryStore
 
     var body: some View {
         let sheetUp = store.activeSheet != nil
+        let addReason = store.addRemoteBlockedReason
         let pruneReason = store.pruneMenuBlockedReason
         let cleanUpReason = store.cleanUpBlockedReason
         let remotes = RemoteAdminWording.prunableRemotes(store.snapshot?.refs.remotes ?? [])
 
-        MenuReasons(reasons: [pruneReason, cleanUpReason])
+        MenuReasons(reasons: [addReason, pruneReason, cleanUpReason])
+
+        Button(RemoteAdminWording.addRemoteTitle) { store.requestAddRemote() }
+            .disabled(sheetUp || addReason != nil)
+
+        Divider()
 
         if remotes.count > 1 {
             Menu("Prune") {

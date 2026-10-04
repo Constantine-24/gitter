@@ -105,6 +105,17 @@ enum BranchSheet: Identifiable, Hashable {
     /// Set / Change Upstream… of `branch`, which tracks `current` (git's short spelling) or
     /// nothing.
     case upstream(branch: String, current: String?)
+    /// Add Remote…: a form; GitCore checks the name and the URL again as it writes.
+    case addRemote
+    /// Edit URL… of `remote`: its URLs as the configuration writes them (`remoteURLs`, read as
+    /// the sheet opened), which `confirmEditURL` compares again before it writes.
+    case editRemoteURL(RemoteURLs, remote: String)
+    /// Rename… of this remote.
+    case renameRemote(String)
+    /// Remove…: GitCore's `removalImpact`, read as the sheet opened — the refs with the ids the
+    /// notice names, what deleting them strands, the branches it changes — which
+    /// `confirmRemoveRemote` hands back to `removeRemote` as it is, to be compared again, whole.
+    case removeRemote(RemovalImpact)
 
     var id: Self { self }
 

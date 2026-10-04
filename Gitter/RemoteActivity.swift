@@ -36,17 +36,26 @@ struct RemoteActivity: Equatable {
         /// its upstream's remote, then a local compare-and-set, holding the mutation slot
         /// throughout. Not a write to the server.
         case fastForward
+        /// B2 Task 5: Rename… of a remote — `git remote rename`, which moves its remote-tracking
+        /// refs and rewrites the settings naming it. On the lane because a concurrent fetch's
+        /// ref lock leaves it half-done (R21); holds the mutation slot. Contacts nothing.
+        case renameRemote
+        /// B2 Task 5: Remove… of a remote — its kept branches, then `git remote remove`, which
+        /// deletes its remote-tracking refs and the settings naming it. On the lane for the same
+        /// reason (R23); holds the mutation slot. Contacts nothing.
+        case removeRemote
     }
 
     let kind: Kind
 
-    /// Whether this operation writes on the server — six of the eight that hold the mutation
+    /// Whether this operation writes on the server — six of the ten kinds that hold the mutation
     /// slot too, and whose cancellation leaves the remote in an unknown state. A prune's
-    /// deletes and a fast-forward hold the slot as well, but write only here (B2 Task 4).
+    /// deletes and a fast-forward hold the slot as well, but write only here (B2 Task 4), and so
+    /// do a remote's rename and removal (B2 Task 5).
     var isWrite: Bool {
         switch kind {
         case .push, .publish, .forcePush, .deleteRemoteBranch, .pushTag, .deleteRemoteTag: true
-        case .fetch, .autoFetch, .pull, .prune, .fastForward: false
+        case .fetch, .autoFetch, .pull, .prune, .fastForward, .renameRemote, .removeRemote: false
         }
     }
 
@@ -70,7 +79,8 @@ struct RemoteLane: Sendable {
     let token: Int
     let generation: Int
     /// Set when the lane also holds the mutation slot (push, publish, force push, delete, a
-    /// tag's push or remote delete, a prune's deletes and a fast-forward).
+    /// tag's push or remote delete, a prune's deletes, a fast-forward, a remote's rename and
+    /// removal).
     let mutationGeneration: Int?
 }
 

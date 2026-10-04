@@ -23,8 +23,29 @@
     ///   setupstream:<b>:<ref>  the sheet, then its button with <ref> (a full ref name).
     ///   unsetupstream:<b>      Unset Upstream.
     ///   adminmenu              every local branch's and remote's items as their menus build
-    ///                          them, with the reasons the disabled ones show, and the menu
-    ///                          bar's Remotes menu — the sidebar cannot be snapshotted.
+    ///                          them, with the reasons the disabled ones show, each remote's
+    ///                          sidebar badge and tooltip, and the menu bar's Remotes menu — the
+    ///                          sidebar cannot be snapshotted.
+    ///
+    /// B2 Task 5's, remote management (`rest` is everything after the first colon, so a URL may
+    /// hold colons; never a `;`):
+    ///
+    ///   prefill:<key>=<value>  what the next remote sheet's fields start with (`sheetPrefill`:
+    ///                          `name`, `url`, `fetch`, `push`, `own` = 0|1) — the harness cannot
+    ///                          type into a sheet (carried note 9). `prefill:clear` empties it.
+    ///   addremote              Add Remote…: the sheet.
+    ///   confirmaddremote:<name>=<url>[=nofetch]  its button (fetching after, unless `nofetch`).
+    ///   editurl:<remote>       Edit URL…: the read, then the sheet — logged with each configured
+    ///                          URL as shown, the fields' starting text, the "git connects to"
+    ///                          line and the several-URLs notes.
+    ///   confirmediturl[:<key>=<value>|…]  its Save with the fields as `prefill` keys say (the
+    ///                          rest as the sheet starts them), through the sheet's own
+    ///                          `urlToWrite` / `pushChange`.
+    ///   renameremote:<remote>  Rename…: the sheet. `confirmrenameremote:<new>` its button.
+    ///   removeremote:<remote>  Remove…: the impact's read, then the sheet — logged with every ref
+    ///                          and full id, the stranded count, the keep defaults, and each
+    ///                          sentence about upstreams, push redirects and refs left behind.
+    ///   confirmremoveremote[:<keep>]  its button, `<keep>` as for `confirmprune`.
     ///
     /// Each goes through the store's own entry point; the result line after it shows the sheet,
     /// the notice and the banner.
@@ -32,8 +53,13 @@
 
         static let remoteAdminCommands: Set<String> = [
             "prune", "confirmprune", "cleanup", "confirmcleanup", "pushbranch", "confirmpublish", "ffbranch",
-            "upstream", "setupstream", "unsetupstream", "adminmenu",
+            "upstream", "setupstream", "unsetupstream", "adminmenu", "prefill", "addremote", "confirmaddremote",
+            "editurl", "confirmediturl", "renameremote", "confirmrenameremote", "removeremote", "confirmremoveremote",
         ]
+
+        /// What the next remote sheet's fields start with (`prefill:`), read in the sheets' own
+        /// `init` under `#if DEBUG`.
+        static var sheetPrefill: [String: String] = [:]
 
         static func remoteAdminStep(_ command: String, step: String, store: RepositoryStore) async {
             let rest = step.count > command.count ? String(step.dropFirst(command.count + 1)) : ""
@@ -51,12 +77,7 @@
                 switch rest {
                 case "": keeping = await defaultKeeping(plan, store)
                 case "none": keeping = [:]
-                default:
-                    keeping = Dictionary(
-                        rest.split(separator: ",").compactMap { pair -> (String, String)? in
-                            let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
-                            return parts.count == 2 ? (parts[0], parts[1]) : nil
-                        }, uniquingKeysWith: { first, _ in first })
+                default: keeping = keepPairs(rest)
                 }
                 log("confirmprune: keeping \(keeping.sorted { $0.key < $1.key })")
                 store.confirmPrune(plan, keeping: keeping)
@@ -91,8 +112,135 @@
                 store.confirmSetUpstream(fields[0], to: fields[1])
             case "unsetupstream": store.unsetUpstream(rest)
             case "adminmenu": logAdminMenus(store)
-            default: log("unknown step: \(step)")
+            case "prefill":
+                if rest == "clear" {
+                    sheetPrefill = [:]
+                } else if let (key, value) = pair(rest) {
+                    sheetPrefill[key] = value
+                }
+                log("prefill: \(sheetPrefill.sorted { $0.key < $1.key })")
+            default: await remoteManagementStep(command, rest: rest, store: store)
             }
+        }
+
+        /// `<key>=<value>`, split at the first `=`.
+        private static func pair(_ text: some StringProtocol) -> (String, String)? {
+            let parts = String(text).split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                .map(String.init)
+            return parts.count == 2 ? (parts[0], parts[1]) : nil
+        }
+
+        /// `<ref>=<name>,…`, as `confirmprune` and `confirmremoveremote` take it.
+        private static func keepPairs(_ text: String) -> [String: String] {
+            Dictionary(text.split(separator: ",").compactMap { pair($0) }, uniquingKeysWith: { first, _ in first })
+        }
+
+        private static func remoteManagementStep(_ command: String, rest: String, store: RepositoryStore) async {
+            switch command {
+            case "addremote":
+                store.requestAddRemote()
+            case "confirmaddremote":
+                let fields = rest.split(separator: "=", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
+                guard fields.count >= 2 else { return }
+                store.confirmAddRemote(name: fields[0], url: fields[1], fetchAfter: fields.count < 3 || fields[2] != "nofetch")
+                _ = await wait({ !store.isMutating })
+                _ = await wait({ store.remoteActivity == nil }, seconds: 120)
+            case "editurl":
+                store.requestEditURL(rest)
+                _ = await wait({ !store.isMutating })
+                logEditURLSheet(store)
+            case "confirmediturl":
+                guard case .editRemoteURL(let urls, let remote) = store.activeSheet else {
+                    log("confirmediturl: no Edit URL sheet")
+                    return
+                }
+                var fields = rest.split(separator: "|").compactMap { pair($0) }.reduce(into: [String: String]()) {
+                    $0[$1.0] = $1.1
+                }
+                fields["fetch"] = fields["fetch"] ?? RemoteAdminWording.urlFieldStart(urls.fetch.first)
+                fields["push"] =
+                    fields["push"] ?? (urls.push.count == 1 ? RemoteAdminWording.urlFieldStart(urls.push.first) : "")
+                let own = fields["own"].map { $0 == "1" } ?? !urls.push.isEmpty
+                let fetch = RemoteAdminWording.urlToWrite(field: fields["fetch"] ?? "", configured: urls.fetch.first)
+                let push = RemoteAdminWording.pushChange(ownPushURL: own, field: fields["push"] ?? "", configured: urls.push)
+                log("confirmediturl: fetch=\(RemoteAdminWording.displayURL(fetch)) push=\(describe(push)) "
+                    + "writes=\(RemoteAdminWording.editURLWrites(urls, fetch: fetch, push: push)) "
+                    + "problem=\(RemoteAdminWording.urlProblem(fetch) ?? "nil")")
+                store.confirmEditURL(remote, fetch: fetch, push: push)
+                _ = await wait({ !store.isMutating })
+            case "renameremote":
+                store.requestRenameRemote(rest)
+                if case .renameRemote(let remote) = store.activeSheet {
+                    log("rename sheet: \(RemoteAdminWording.renameRemoteSheetTitle(remote)) | "
+                        + RemoteAdminWording.renameRemoteIntro(remote))
+                }
+            case "confirmrenameremote":
+                guard case .renameRemote(let remote) = store.activeSheet else {
+                    log("confirmrenameremote: no Rename sheet")
+                    return
+                }
+                let problem = await store.remoteNameProblem(rest)
+                log("confirmrenameremote: \(remote) → \(rest), verdict=\(problem.map(RemoteAdminWording.remoteNameProblem) ?? "ok")")
+                store.confirmRenameRemote(remote, to: rest)
+                _ = await wait({ store.remoteActivity == nil && !store.isMutating }, seconds: 120)
+            case "removeremote":
+                store.requestRemoveRemote(rest)
+                _ = await wait({ !store.isMutating })
+                await logRemoveSheet(store)
+            case "confirmremoveremote":
+                guard case .removeRemote(let impact) = store.activeSheet else {
+                    log("confirmremoveremote: no Remove sheet")
+                    return
+                }
+                let keeping: [String: String]
+                switch rest {
+                case "":
+                    let defaults = await store.removeKeepDefaults(impact)
+                    keeping = defaults.names.filter { defaults.ticked.contains($0.key) }
+                case "none": keeping = [:]
+                default: keeping = keepPairs(rest)
+                }
+                log("confirmremoveremote: keeping \(keeping.sorted { $0.key < $1.key })")
+                store.confirmRemoveRemote(impact, keeping: keeping)
+                _ = await wait({ store.remoteActivity == nil && !store.isMutating }, seconds: 120)
+                log("notice sticky: \(store.stickyNotice?.text.replacingOccurrences(of: "\n", with: " \u{23CE} ") ?? "nil")")
+            default: log("unknown step: \(command):\(rest)")
+            }
+        }
+
+        private static func describe(_ change: PushURLChange) -> String {
+            switch change {
+            case .unchanged: "unchanged"
+            case .set(let url): "set(\(RemoteAdminWording.displayURL(url)))"
+            case .clear: "clear"
+            }
+        }
+
+        private static func logEditURLSheet(_ store: RepositoryStore) {
+            guard case .editRemoteURL(let urls, let remote) = store.activeSheet else { return }
+            log("editurl sheet: \(RemoteAdminWording.editURLSheetTitle(remote)) "
+                + "| fetch: \(urls.fetch.map(RemoteAdminWording.displayURL)) "
+                + "| push: \(urls.push.map(RemoteAdminWording.displayURL)) "
+                + "| fetch field starts: \"\(RemoteAdminWording.urlFieldStart(urls.fetch.first))\" "
+                + "| hides credential: \(urls.fetch.first.map(RemoteAdminWording.hidesCredential) ?? false) "
+                + "| connects: \(RemoteAdminWording.connectsTo(urls) ?? "nil") "
+                + "| several fetch: \(RemoteAdminWording.severalFetchURLs(urls, remote: remote) ?? "nil") "
+                + "| several push: \(RemoteAdminWording.severalPushURLs(urls, remote: remote) ?? "nil")")
+        }
+
+        private static func logRemoveSheet(_ store: RepositoryStore) async {
+            guard case .removeRemote(let impact) = store.activeSheet else { return }
+            let defaults = await store.removeKeepDefaults(impact)
+            log("remove sheet: \(RemoteAdminWording.removeIntro(impact))")
+            for tip in impact.refs { log("remove ref: \(tip.ref) \(tip.id)") }
+            log("remove stranded: \(RemoteAdminWording.stranded(impact.stranded)) count=\(impact.stranded.count) "
+                + "holders=\(impact.stranded.holders)")
+            for ref in impact.stranded.holders {
+                log("remove keep: \(ref) ticked=\(defaults.ticked.contains(ref)) name=\(defaults.names[ref] ?? "")")
+            }
+            log("remove upstreams: \(RemoteAdminWording.removeUpstreams(impact) ?? "nil")")
+            for line in RemoteAdminWording.removePushRedirects(impact) { log("remove push: \(line)") }
+            log("remove left behind: \(RemoteAdminWording.removeLeftBehind(impact) ?? "nil")")
         }
 
         /// What the sheet ticks by default: the holders `pruneKeepDefaults` ticks, with its names.
@@ -154,11 +302,17 @@
                 log("adminmenu \(branch.name): "
                     + items.map { "\($0.0) [\($0.1.map { "off: \($0)" } ?? "on")]" }.joined(separator: " | "))
             }
+            func state(_ reason: String?) -> String { reason.map { "off: \($0)" } ?? "on" }
             for remote in remotes {
                 log("adminmenu remote \(remote.name): \(RemoteAdminWording.pruneTitle(remote.name)) "
-                    + "[\(store.pruneBlockedReason(remote).map { "off: \($0)" } ?? "on")]")
+                    + "[\(state(store.pruneBlockedReason(remote)))] | \(RemoteAdminWording.editURLTitle) "
+                    + "[\(state(store.editURLBlockedReason))] | \(RemoteAdminWording.renameRemoteTitle) "
+                    + "[\(state(store.renameRemoteBlockedReason))] | \(RemoteAdminWording.removeRemoteTitle) "
+                    + "[\(state(store.removeRemoteBlockedReason))] | sidebar badge: "
+                    + "\(RemoteAdminWording.remoteBadge(remote) ?? "nil"), help: \(RemoteAdminWording.remoteHelp(remote) ?? "nil")")
             }
-            log("adminmenu Remotes: prune \(RemoteAdminWording.prunableRemotes(remotes)) "
+            log("adminmenu Remotes: \(RemoteAdminWording.addRemoteTitle) [\(state(store.addRemoteBlockedReason))] | "
+                + "prune \(RemoteAdminWording.prunableRemotes(remotes)) "
                 + "[\(store.pruneMenuBlockedReason.map { "off: \($0)" } ?? "on")] | "
                 + "\(RemoteAdminWording.cleanUpTitle) [\(store.cleanUpBlockedReason.map { "off: \($0)" } ?? "on")]")
         }
@@ -173,6 +327,19 @@
                 "cleanUpGone(\(branches.map { "\($0.name)@\($0.tip.prefix(7)) only:\($0.uniqueCommits)" }))"
             case .upstream(let branch, let current):
                 "upstream(\(branch), current: \(current ?? "nil"))"
+            case .addRemote:
+                "addRemote(prefill: \(sheetPrefill.sorted { $0.key < $1.key }))"
+            case .editRemoteURL(let urls, let remote):
+                "editRemoteURL(\(remote), fetch: \(urls.fetch.map(RemoteAdminWording.displayURL)), "
+                    + "push: \(urls.push.map(RemoteAdminWording.displayURL)), "
+                    + "effective: \(urls.effectiveFetch.map(RemoteAdminWording.displayURL) ?? "nil"))"
+            case .renameRemote(let remote):
+                "renameRemote(\(remote))"
+            case .removeRemote(let impact):
+                "removeRemote(\(impact.remote), refs: \(impact.refs.map { "\($0.ref)@\($0.id.prefix(7))" }), "
+                    + "stranded: \(impact.stranded.count), upstreamOf: \(impact.upstreamOf), "
+                    + "redirects: \(impact.pushRedirects.map { "\($0.branch)→\($0.nowPushesTo ?? "nil")" }), "
+                    + "leftBehind: \(impact.leftBehind))"
             default: nil
             }
         }

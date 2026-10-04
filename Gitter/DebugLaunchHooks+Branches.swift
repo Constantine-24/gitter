@@ -698,7 +698,7 @@
                 describeHistorySheet(sheet) ?? "?"
             case .newTag, .deleteTag, .deleteRemoteTag:
                 describeTagSheet(sheet, store) ?? "?"
-            case .prune, .cleanUpGone, .upstream:
+            case .prune, .cleanUpGone, .upstream, .addRemote, .editRemoteURL, .renameRemote, .removeRemote:
                 describeRemoteAdminSheet(sheet) ?? "?"
             }
         }

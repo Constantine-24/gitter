@@ -65,7 +65,7 @@ struct SidebarView: View {
                         } label: {
                             // On the label only, so a right-click on one of the remote's
                             // branches still gets that branch's menu.
-                            Text(remote.name)
+                            RemoteRowLabel(remote: remote)
                                 .contextMenu { RemoteMenu(remote: remote) }
                         }
                     }
@@ -171,5 +171,27 @@ struct SidebarView: View {
             }
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// A remote's name in the sidebar. A remote git cannot fetch from — no URL at all, or only a push
+/// URL — is listed so it can be given one (carried note 3): it is marked beside its name, and its
+/// tooltip points at Edit URL….
+struct RemoteRowLabel: View {
+    let remote: Remote
+
+    var body: some View {
+        if let badge = RemoteAdminWording.remoteBadge(remote) {
+            HStack(spacing: 6) {
+                Text(remote.name)
+                Text(badge)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .help(RemoteAdminWording.remoteHelp(remote) ?? "")
+            .accessibilityElement(children: .combine)
+        } else {
+            Text(remote.name)
+        }
     }
 }

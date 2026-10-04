@@ -202,6 +202,8 @@ enum RemoteWording {
         case .deleteRemoteTag: "the tag deletion on\(remote)"
         case .prune: "the prune of\(remote)"
         case .fastForward: "the fast-forward"
+        case .renameRemote: "the rename of\(remote)"
+        case .removeRemote: "the removal of\(remote)"
         }
     }
 
@@ -223,6 +225,8 @@ enum RemoteWording {
         case .deleteRemoteTag: "Deleting a tag on\(remote)…"
         case .prune: "Pruning\(remote)…"
         case .fastForward: "Fast-forwarding…"
+        case .renameRemote: "Renaming\(remote)…"
+        case .removeRemote: "Removing\(remote)…"
         }
     }
 
@@ -269,6 +273,8 @@ enum RemoteWording {
         case .deleteRemoteBranch, .deleteRemoteTag: "Deleting"
         case .prune: "Pruning"
         case .fastForward: "Fast-forwarding"
+        case .renameRemote: "Renaming"
+        case .removeRemote: "Removing"
         }
     }
 
@@ -1071,6 +1077,17 @@ enum RemoteWording {
     /// are **kept**: stripping every Mn would take the accents off decomposed text (`e` +
     /// U+0301 is how a macOS path spells `é`) and the vowel signs off whole scripts.
     static func plain(_ text: String) -> String {
+        let redacted = RemoteFailureParser.redactingCredentials(stripped(text))
+        let line = redacted.trimmingCharacters(in: .whitespaces)
+        guard line.count > maxLineLength else { return line }
+        return String(line.prefix(maxLineLength - 1)) + "…"
+    }
+
+    /// `plain`'s first half: escape sequences, controls, format and separator characters, and the
+    /// marks riding on ASCII punctuation taken out, tabs made spaces — and **nothing redacted**.
+    /// For a caller that redacts in its own way (B2 Task 5: a remote's URL shown in a sheet keeps
+    /// its ssh login, `RemoteAdminWording.displayURL`); it must still redact after this.
+    static func stripped(_ text: String) -> String {
         var out = String.UnicodeScalarView()
         var scalars = text.unicodeScalars.makeIterator()
         var afterASCIIPunctuation = false
@@ -1101,10 +1118,7 @@ enum RemoteWording {
                     && !("0"..."9").contains(scalar)
             }
         }
-        let redacted = RemoteFailureParser.redactingCredentials(String(out))
-        let line = redacted.trimmingCharacters(in: .whitespaces)
-        guard line.count > maxLineLength else { return line }
-        return String(line.prefix(maxLineLength - 1)) + "…"
+        return String(out)
     }
 
     /// Skips the rest of an escape sequence after its `ESC`: a CSI (`ESC [ … final`), an OSC

@@ -16,6 +16,14 @@ import GitCore
 /// | fast-forward | on the lane (`.fastForward`): Gitter's fetch, then the compare-and-set | the lane and the mutation slot |
 /// | push / publish of another branch | the existing push (`send`) | the lane and the mutation slot |
 /// | clean-up's list and deletes, set / unset upstream | `mutate` | the mutation slot |
+///
+/// Task 5 adds a remote's management — Add Remote…, Edit URL…, Rename…, Remove…:
+///
+/// | action | runs | holds |
+/// |---|---|---|
+/// | add (then, if asked, Gitter's fetch of it on the lane), the URLs' read and write | `mutate` | the mutation slot |
+/// | the removal's impact (read as the sheet opens) | `mutate` | the mutation slot |
+/// | rename, remove | on the lane (`.renameRemote`, `.removeRemote`): never beside a fetch, whose ref lock leaves either half-done (R21, R23) | the lane and the mutation slot |
 extension RepositoryStore {
 
     // MARK: - Why a menu item is off
@@ -372,5 +380,219 @@ extension RepositoryStore {
         }, onSuccess: { [self] in
             showNotice(RemoteAdminWording.upstreamUnset(name, was: was))
         })
+    }
+
+    // MARK: - Remote management (B2 Task 5): menu reasons
+
+    /// A configured remote by name, as the snapshot on screen has it — one with no URL included.
+    func configuredRemote(_ name: String) -> Remote? {
+        snapshot?.refs.remotes.first { $0.name == name }
+    }
+
+    var addRemoteBlockedReason: String? { RemoteAdminWording.addRemoteBlocked(remoteGate) }
+    var editURLBlockedReason: String? { RemoteAdminWording.editURLBlocked(remoteGate) }
+    var renameRemoteBlockedReason: String? { RemoteAdminWording.renameRemoteBlocked(remoteGate) }
+    var removeRemoteBlockedReason: String? { RemoteAdminWording.removeRemoteBlocked(remoteGate) }
+
+    /// What is wrong with `name` as a new remote's name, or nil — GitCore's `remoteNameProblem`
+    /// (git's rule, a leading `-`, `HEAD`, `@`, taken or nested, case folded). Reads only, no
+    /// slot, so the sheet's debounced field can ask it. A name nothing could judge (no
+    /// repository, git failed) is `.invalid`: Add and Rename must not be enabled on a name nobody
+    /// vouched for.
+    func remoteNameProblem(_ name: String) async -> RemoteNameProblem? {
+        let trimmed = BranchNameValidator.trim(name)
+        guard !trimmed.isEmpty else { return .empty }
+        guard let root else { return .invalid }
+        do {
+            return try await backend.remoteNameProblem(trimmed, at: root)
+        } catch {
+            return .invalid
+        }
+    }
+
+    // MARK: - Add Remote
+
+    func requestAddRemote() {
+        if let reason = addRemoteBlockedReason {
+            showStickyError(reason)
+            return
+        }
+        activeSheet = .addRemote
+    }
+
+    /// Adds the remote the Add Remote sheet describes — only as the answer to that sheet.
+    /// GitCore checks the name and the URL again and writes with `remote add`, never `-f` (R19);
+    /// `fetchAfter` then starts Gitter's own fetch of it on the lane, once the slot's reload has
+    /// put it in the snapshot. A failure that wrote part of it is worded with what is configured
+    /// now (`urlsChangedThenFailed`).
+    func confirmAddRemote(name: String, url: String, fetchAfter: Bool) {
+        guard case .addRemote = activeSheet else { return }
+        // `mutate` drops a call silently while the slot is held; the sheet stays up instead.
+        guard !isMutating else {
+            showStickyError(RemoteWording.mutationBusy)
+            return
+        }
+        activeSheet = nil
+        mutate({ backend, root in
+            do {
+                try await backend.addRemote(name, url: url, at: root)
+            } catch {
+                throw RemoteBannerText(RemoteAdminWording.addRemoteFailure(error, name: name))
+            }
+        }, onSuccess: { [self] in
+            showNotice(RemoteAdminWording.remoteAdded(name, url: url))
+            if fetchAfter { fetch(remote: name) }
+        })
+    }
+
+    // MARK: - Edit URL
+
+    /// Reads `remote`'s URLs as the configuration writes them (`remoteURLs`, promise 5) and opens
+    /// the sheet with them. Ruling 11: a remote the snapshot no longer has is refused first.
+    func requestEditURL(_ remote: String) {
+        guard configuredRemote(remote) != nil else {
+            showStickyError(RemoteAdminWording.remoteGone(remote))
+            return
+        }
+        if let reason = editURLBlockedReason {
+            showStickyError(reason)
+            return
+        }
+        mutate(result: { backend, root in
+            do {
+                return try await backend.remoteURLs(remote, at: root)
+            } catch {
+                throw RemoteBannerText(
+                    RemoteAdminWording.remoteReadFailure(
+                        error, remote: remote, attempt: RemoteAdminWording.readURLsAttempt(remote)))
+            }
+        }, onSuccess: { [self] urls in
+            // Never over a sheet the user opened meanwhile.
+            guard activeSheet == nil else { return }
+            activeSheet = .editRemoteURL(urls, remote: remote)
+        })
+    }
+
+    /// Writes `fetch` and `push` (`PushURLChange`, tri-state) to `remote` — only as the answer to
+    /// its Edit URL sheet, and only while the remote's URLs are still the ones the sheet showed
+    /// (RF1, refused before git runs). GitCore refuses an unsafe URL and several URLs again, and
+    /// reads a failed write back (`urlsChangedThenFailed`).
+    func confirmEditURL(_ remote: String, fetch: String, push: PushURLChange) {
+        guard case .editRemoteURL(let shown, let shownRemote) = activeSheet, shownRemote == remote else { return }
+        guard !isMutating else {
+            showStickyError(RemoteWording.mutationBusy)
+            return
+        }
+        activeSheet = nil
+        mutate({ backend, root in
+            do {
+                guard try await backend.remoteURLs(remote, at: root) == shown else {
+                    throw RemoteBannerText(RemoteAdminWording.urlsChangedWhileShown(remote))
+                }
+                try await backend.setURLs(of: remote, fetch: fetch, push: push, at: root)
+            } catch let banner as RemoteBannerText {
+                throw banner
+            } catch {
+                throw RemoteBannerText(RemoteAdminWording.editURLFailure(error, remote: remote))
+            }
+        }, onSuccess: { [self] in
+            showNotice(RemoteAdminWording.urlsChanged(remote, fetch: fetch, push: push))
+        })
+    }
+
+    // MARK: - Rename
+
+    func requestRenameRemote(_ remote: String) {
+        guard configuredRemote(remote) != nil else {
+            showStickyError(RemoteAdminWording.remoteGone(remote))
+            return
+        }
+        if let reason = renameRemoteBlockedReason {
+            showStickyError(reason)
+            return
+        }
+        activeSheet = .renameRemote(remote)
+    }
+
+    /// Renames `old` to `new` — only as the answer to its sheet — on the lane, holding the slot:
+    /// a fetch's ref lock leaves `git remote rename` half-done (R21). GitCore refuses a remote
+    /// that is gone (Ruling 11) and a name with a problem, and reads a failure back
+    /// (`renameHalfDone`); the banner says what git left and how to finish.
+    func confirmRenameRemote(_ old: String, to new: String) {
+        guard case .renameRemote(let shown) = activeSheet, shown == old else { return }
+        // Before the sheet closes, so a refusal leaves it up to answer again.
+        if let refusal = laneClaimRefusal(.renameRemote, holdingMutation: true) {
+            showStickyError(refusal)
+            return
+        }
+        activeSheet = nil
+        runOnLane(.renameRemote, remote: old, holdingMutation: true) { backend, root, _, _ in
+            do {
+                try await backend.renameRemote(old, to: new, at: root)
+            } catch {
+                return LaneEnding(failure: RemoteAdminWording.renameRemoteFailure(error, old: old, new: new))
+            }
+            return LaneEnding(notice: RemoteAdminWording.remoteRenamed(old, to: new))
+        }
+    }
+
+    // MARK: - Remove
+
+    /// Reads what removing `remote` would delete, strand and change (`removalImpact`, local
+    /// reads) and opens the sheet with it.
+    func requestRemoveRemote(_ remote: String) {
+        guard configuredRemote(remote) != nil else {
+            showStickyError(RemoteAdminWording.remoteGone(remote))
+            return
+        }
+        if let reason = removeRemoteBlockedReason {
+            showStickyError(reason)
+            return
+        }
+        mutate(result: { backend, root in
+            do {
+                return try await backend.removalImpact(of: remote, at: root)
+            } catch {
+                throw RemoteBannerText(
+                    RemoteAdminWording.remoteReadFailure(
+                        error, remote: remote, attempt: RemoteAdminWording.readImpactAttempt(remote)))
+            }
+        }, onSuccess: { [self] impact in
+            guard activeSheet == nil else { return }
+            activeSheet = .removeRemote(impact)
+        })
+    }
+
+    /// Removes `impact.remote` — only as the answer to the sheet that showed `impact` — creating
+    /// the branches in `keeping` (ref → new branch name) first, on the lane, holding the slot
+    /// (R23). GitCore compares the whole impact again before anything is created or removed
+    /// (`.impactChanged`), and reads a failure back (`removeHalfDone`).
+    ///
+    /// The notice is **sticky**: a removed remote-tracking ref has no reflog (R7), so the ids it
+    /// names are the only way back, and it lists the kept branches (carried note 4).
+    func confirmRemoveRemote(_ impact: RemovalImpact, keeping: [String: String]) {
+        guard case .removeRemote(let shown) = activeSheet, shown == impact else { return }
+        if let refusal = laneClaimRefusal(.removeRemote, holdingMutation: true) {
+            showStickyError(refusal)
+            return
+        }
+        activeSheet = nil
+        let remote = impact.remote
+        runOnLane(.removeRemote, remote: remote, holdingMutation: true) { backend, root, _, _ in
+            do {
+                try await backend.removeRemote(impact, keeping: keeping, at: root)
+            } catch {
+                return LaneEnding(failure: RemoteAdminWording.removeRemoteFailure(error, remote: remote))
+            }
+            let kept = impact.refs.compactMap { keeping[$0.ref] }
+            return LaneEnding(
+                notice: Notice(text: RemoteAdminWording.remoteRemoved(impact, keptBranches: kept)), sticky: true)
+        }
+    }
+
+    /// The remove sheet's keep boxes: the prune sheet's rule (`pruneKeepDefaults`) over the refs
+    /// the removal deletes.
+    func removeKeepDefaults(_ impact: RemovalImpact) async -> (names: [String: String], ticked: Set<String>) {
+        await pruneKeepDefaults(PrunePlan(remote: impact.remote, refs: impact.refs, stranded: impact.stranded))
     }
 }

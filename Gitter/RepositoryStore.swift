@@ -729,7 +729,7 @@ final class RepositoryStore {
         case .push, .publish, .forcePush:
             if stickyNotice?.links.isEmpty == false { stickyNotice = nil }
         case .fetch, .autoFetch, .pull, .deleteRemoteBranch, .pushTag, .deleteRemoteTag, .prune,
-            .fastForward:
+            .fastForward, .renameRemote, .removeRemote:
             break
         }
         laneToken += 1

@@ -76,6 +76,10 @@ extension RepositoryStore {
         // A prune's compare-and-deletes rewrite `packed-refs` for a packed tracking ref. Its kept
         // branches (`refs/heads/…`) are left to cost one more reload, like a fast-forward's move.
         case .deleteRemoteBranch, .prune: return inGit == "packed-refs"
+        // A remote's rename and removal rewrite the configuration (its section, and every
+        // `branch.*` setting naming it) and `packed-refs` (its packed tracking refs). A removal's
+        // kept branches cost one more reload, as a prune's do.
+        case .renameRemote, .removeRemote: return inGit == "config" || inGit == "packed-refs"
         // A tag's push or remote delete writes nothing here: `refs/tags/…` is already in the
         // first row, and neither updates a remote-tracking ref.
         case .fetch, .autoFetch, .pull, .push, .forcePush, .pushTag, .deleteRemoteTag, .fastForward:
