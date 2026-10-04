@@ -891,52 +891,60 @@ enum RemoteWording {
     /// What "Copy URL" / "Copy Push URL" put on the pasteboard: the remote's address with any
     /// **credential** taken out. The general pasteboard is readable by every app and travels to
     /// the user's other devices through Universal Clipboard, so `https://user:token@host/…`
-    /// must not reach it whole. `RemoteFailureParser.redactingCredentials` does the removing —
-    /// one implementation of what a credential looks like, shared with every banner.
+    /// must not reach it whole.
     ///
-    /// That function strips *every* userinfo it recognises, including a bare ssh login
-    /// (`git@github.com:a/b.git` → `github.com:a/b.git`), which is right for a message and wrong
-    /// for an address someone will paste into `git clone`: without the login, ssh logs in as
-    /// the local user and the clone fails. So an ssh login — a userinfo with no `:` in it and
-    /// no second `@`, on an `ssh://` (`git+ssh://`, `ssh+git://`) URL or an scp-style
-    /// `user@host:path` address — is kept: ssh never takes a password from the address, so a
-    /// lone name there is no secret. Everything else with a userinfo goes through the redaction,
-    /// including a lone name on `https://`, where it is how a token is usually written
-    /// (`https://ghp_…@github.com/…`).
+    /// Taken out by the address's **structure** (`redactingUserinfo`, B2 Task 5 fix round 2) —
+    /// the one function the Edit URL sheet, its notices and banners show a configured URL
+    /// through. Not `RemoteFailureParser.redactingCredentials`, which reads prose: it walks runs
+    /// of URL-ish characters and stops at RFC 3986's sub-delims, so `https://u:p(ss)@host/x` —
+    /// `'`, `(`, `)` are legal in a password — reached the pasteboard whole.
     ///
-    /// Left alone, as the redaction leaves them: a query string or anything else past the
-    /// authority (see `redactingCredentials` for why), and a local path.
+    /// An ssh login — a lone name, no `:`, `@` or blank, on an `ssh://` (`git+ssh://`,
+    /// `ssh+git://`) URL or an scp-style `user@host:path` address — is kept: ssh never takes a
+    /// password from the address, and without the login a pasted `git clone` logs in as the
+    /// local user and fails. Everything else with a userinfo loses it, including a lone name on
+    /// `https://`, where it is how a token is usually written (`https://ghp_…@github.com/…`).
+    ///
+    /// Left alone: a query string or anything else past the authority, and a local path.
     static func copyableURL(_ url: String) -> String {
-        if isSSHLogin(in: url) { return url }
-        return RemoteFailureParser.redactingCredentials(url)
+        redactingUserinfo(url)
     }
 
-    /// Whether `url`'s only userinfo is an ssh login — see `copyableURL`.
-    private static func isSSHLogin(in url: String) -> Bool {
-        let userinfo: Substring
+    /// One configured URL without its userinfo, read by structure:
+    /// - `scheme://authority…`: the authority runs to the first `/`, `?` or `#`; everything in it
+    ///   up to its **last** `@` goes (a password may hold `@`, `%40`, `(`, a space…). An ssh
+    ///   login (`ssh://git@host/…`, `git+ssh://`, `ssh+git://`: no `:`, `@` or blank in it) stays.
+    /// - no scheme, and not a local path (`/`, `.`, `~`): git reads `[user@]host:path` when a colon
+    ///   comes before any slash. An `@` in the part before that colon ends the userinfo there
+    ///   (`git@host:team@2024/x` keeps its login and its path); otherwise a `user:password@host:path`
+    ///   puts the password after the first colon, so everything up to the last `@` before the
+    ///   first `/` goes.
+    /// Anything else — a path, `file://`, a URL with no `@` in its authority — is returned as it is.
+    static func redactingUserinfo(_ url: String) -> String {
         if let separator = url.range(of: "://") {
             let scheme = url[..<separator.lowerBound].lowercased()
-            guard ["ssh", "git+ssh", "ssh+git"].contains(scheme) else { return false }
-            let authority = url[separator.upperBound...].prefix { !"/?\u{23}".contains($0) }
-            guard authority.filter({ $0 == "@" }).count == 1,
-                let at = authority.firstIndex(of: "@")
-            else { return false }
-            userinfo = authority[..<at]
-        } else {
-            // scp-style: `[user@]host:path`, git's reading being "a colon before any slash".
-            // Only the part before that colon is `[user@]host`: an `@` in the path
-            // (`git@host:team@2024/x.git`) is not a second userinfo, and counting it sent the
-            // address to the redactor, which cut it down to what followed the last `@`.
-            guard let colon = url.firstIndex(of: ":"), !url[..<colon].contains("/") else {
-                return false
-            }
-            let hostPart = url[..<colon]
-            guard hostPart.filter({ $0 == "@" }).count == 1,
-                let at = hostPart.firstIndex(of: "@")
-            else { return false }
-            userinfo = hostPart[..<at]
+            let rest = url[separator.upperBound...]
+            let authority = rest[..<(rest.firstIndex { "/?#".contains($0) } ?? rest.endIndex)]
+            guard let at = authority.lastIndex(of: "@") else { return url }
+            if ["ssh", "git+ssh", "ssh+git"].contains(scheme), isLogin(authority[..<at]) { return url }
+            return String(url[..<separator.upperBound] + rest[rest.index(after: at)...])
         }
-        return !userinfo.isEmpty && !userinfo.contains(":")
+        if url.hasPrefix("/") || url.hasPrefix(".") || url.hasPrefix("~") { return url }
+        guard let colon = url.firstIndex(of: ":"), !url[..<colon].contains("/") else { return url }
+        let hostPart = url[..<colon]
+        if let at = hostPart.lastIndex(of: "@") {
+            return isLogin(hostPart[..<at]) ? url : String(url[url.index(after: at)...])
+        }
+        let afterColon = url[url.index(after: colon)...]
+        let segment = afterColon[..<(afterColon.firstIndex(of: "/") ?? afterColon.endIndex)]
+        guard let at = segment.lastIndex(of: "@") else { return url }
+        return String(url[url.index(after: at)...])
+    }
+
+    /// A lone ssh user name: no password, no second `@`, no blank — what ssh logs in as, never a
+    /// secret (ssh takes no password from the address).
+    private static func isLogin(_ userinfo: Substring) -> Bool {
+        !userinfo.isEmpty && !userinfo.contains(":") && !userinfo.contains("@")
             && !userinfo.contains(where: \.isWhitespace)
     }
 

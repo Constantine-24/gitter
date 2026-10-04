@@ -705,51 +705,16 @@ enum RemoteAdminWording {
     // MARK: - URLs on screen (carried note 1)
 
     /// A remote's URL as a sheet, a notice or a banner shows it: controls taken out first, then
-    /// its userinfo taken out **by the URL's structure** (`redactingUserinfo`) — but an ssh login
-    /// kept: it is no secret, and without it the address names another account. Display only:
-    /// what is written is what the configuration holds or what the user typed.
+    /// its userinfo taken out **by the URL's structure** (`RemoteWording.redactingUserinfo`, which
+    /// Copy URL uses too) — but an ssh login kept: it is no secret, and without it the address
+    /// names another account. Display only: what is written is what the configuration holds or
+    /// what the user typed.
     ///
     /// Fix round 1, I4: not the prose redactor (`RemoteFailureParser.redactingCredentials`), which
     /// walks runs of URL-ish characters and stops at RFC 3986's sub-delims — `'`, `(`, `)` are
     /// legal in a password, and `https://u:p(ss)@host/x` came back whole.
     static func displayURL(_ url: String) -> String {
-        redactingUserinfo(RemoteWording.stripped(url))
-    }
-
-    /// One configured URL without its userinfo, read by structure:
-    /// - `scheme://authority…`: the authority runs to the first `/`, `?` or `#`; everything in it
-    ///   up to its **last** `@` goes (a password may hold `@`, `%40`, `(`, a space…). An ssh
-    ///   login (`ssh://git@host/…`: no `:` and no blank in it) stays.
-    /// - no scheme, and not a local path (`/`, `.`, `~`): git reads `[user@]host:path` when a colon
-    ///   comes before any slash. An `@` in the part before that colon ends the userinfo there
-    ///   (`git@host:team@2024/x` keeps its login and its path); otherwise a `user:password@host:path`
-    ///   puts the password after the first colon, so everything up to the last `@` before the
-    ///   first `/` goes.
-    /// Anything else — a path, `file://`, a URL with no `@` in its authority — is returned as it is.
-    static func redactingUserinfo(_ url: String) -> String {
-        if let separator = url.range(of: "://") {
-            let scheme = url[..<separator.lowerBound].lowercased()
-            let rest = url[separator.upperBound...]
-            let authority = rest[..<(rest.firstIndex { "/?#".contains($0) } ?? rest.endIndex)]
-            guard let at = authority.lastIndex(of: "@") else { return url }
-            if ["ssh", "git+ssh", "ssh+git"].contains(scheme), isLogin(authority[..<at]) { return url }
-            return String(url[..<separator.upperBound] + rest[rest.index(after: at)...])
-        }
-        if url.hasPrefix("/") || url.hasPrefix(".") || url.hasPrefix("~") { return url }
-        guard let colon = url.firstIndex(of: ":"), !url[..<colon].contains("/") else { return url }
-        let hostPart = url[..<colon]
-        if let at = hostPart.lastIndex(of: "@") {
-            return isLogin(hostPart[..<at]) ? url : String(url[url.index(after: at)...])
-        }
-        let afterColon = url[url.index(after: colon)...]
-        let segment = afterColon[..<(afterColon.firstIndex(of: "/") ?? afterColon.endIndex)]
-        guard let at = segment.lastIndex(of: "@") else { return url }
-        return String(url[url.index(after: at)...])
-    }
-
-    /// A lone ssh user name: no password, no blank — what ssh logs in as, never a secret.
-    private static func isLogin(_ userinfo: Substring) -> Bool {
-        !userinfo.isEmpty && !userinfo.contains(":") && !userinfo.contains(where: \.isWhitespace)
+        RemoteWording.redactingUserinfo(RemoteWording.stripped(url))
     }
 
     /// Whether showing `url` as written would show something `displayURL` hides — a credential.
