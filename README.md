@@ -620,7 +620,7 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (440 tests in 28 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (451 tests in 28 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -832,7 +832,8 @@ Gitter/                   macOS app (SwiftUI)
                               DiffLineSelection, Banners, BranchToolbar, BranchNameValidator,
                               BranchSheetHost, RemoteToolbar, TrackingBadge,
                               ConflictResolverView, ConflictBlockView, OperationBar (with the
-                              halted bar), KeepBranchList and the thirty-one sheets (NewBranch,
+                              halted bar), KeepBranchList (with RefIDList, the ref and id list
+                              both sheets share) and the thirty-one sheets (NewBranch,
                               Rename, Merge, DeleteBranch, Abort, LeaveDetached, Pull, Publish,
                               ForcePush, DeleteRemoteBranch, Stash, DropStash, Discard,
                               ReplaceHandEdited, MarkResolved, ReopenConflict, ContinueEmpty,
@@ -1007,8 +1008,9 @@ environment — `open -a` passes only the `--env` variables it is given, none of
 guards — with the fixture named, inside the script's own scratch directory:
 
 ```sh
+unset SSH_AUTH_SOCK
 GIT_ALLOW_PROTOCOL=file GIT_SSH_COMMAND=/usr/bin/false GIT_CONFIG_GLOBAL=/dev/null \
-  GIT_CONFIG_NOSYSTEM=1 GITTER_DEBUG_OPEN="$fixture" GITTER_DEBUG_CLICK=684,170 \
+  GIT_CONFIG_NOSYSTEM=1 GITTER_DEBUG_OPEN="${fixture:?}" GITTER_DEBUG_CLICK=684,170 \
   GITTER_DEBUG_DUMP_RESPONDER=1 \
   .build/DerivedData/Build/Products/Debug/Gitter.app/Contents/MacOS/Gitter 2> gitter.log
 ```
