@@ -66,7 +66,8 @@ public protocol GitRemoteAdminBackend: Sendable {
     ///    `.invalidBranchName`, `.branchExists` (Ruling 1) — and then every kept branch is created
     ///    at the id the plan showed: `branch --no-track --end-of-options <name> <id>`. If one
     ///    cannot be created after others were, `RemoteAdminPartial.keptBranchesThenStopped` names
-    ///    the ones that stay; nothing is deleted.
+    ///    the ones that stay; nothing is deleted. Cancelled while one is being created:
+    ///    `RemoteAdminPartial.keptBranchesCancelled` — that one may or may not exist.
     /// 4. Each ref is deleted with the compare-and-delete. A ref that moved or is gone is
     ///    `skippedMoved`; one git refused for another reason (a lock, a hook) is `failed`, with
     ///    git's words, and the refs after it are still tried. A cancellation stops the loop: the
@@ -247,7 +248,7 @@ public protocol GitRemoteAdminBackend: Sendable {
     ///    creates nothing.
     /// 4. The kept branches (`keeping`: ref → new branch name) are checked and created at the ids
     ///    the sheet showed, exactly as `prune` creates them (`.invalidBranchName`,
-    ///    `.branchExists`, `RemoteAdminPartial.keptBranchesThenStopped`).
+    ///    `.branchExists`, `RemoteAdminPartial.keptBranchesThenStopped`, `.keptBranchesCancelled`).
     /// 5. `remote remove --end-of-options <remote>`. **Run it on the lane.** A failure is read
     ///    back (R23: under a held `packed-refs.lock` or ref lock git exits 1 with the remote and
     ///    its refs kept and every branch setting naming it already unset):

@@ -308,7 +308,9 @@ extension CLIGitBackend: GitRemoteAdminBackend {
     /// name), then every kept branch created at the id the sheet showed — the step before any
     /// delete, shared by `prune` and (B2 Task 3) `removeRemote`. Returns the names created, in
     /// order. If one cannot be created after others were, `keptBranchesThenStopped` names the
-    /// ones that stay; if the first cannot, it is a plain failure and nothing was created.
+    /// ones that stay; if the first cannot, it is a plain failure and nothing was created. A
+    /// cancellation while one is being created is `keptBranchesCancelled`: that one's outcome is
+    /// unknown (Task 4 fix round 1, Ruling 12).
     func createKeptBranches(_ kept: [(tip: RefTip, name: String)], at root: URL) async throws -> [String] {
         var names = Set<String>()
         for branch in kept {
@@ -321,6 +323,10 @@ extension CLIGitBackend: GitRemoteAdminBackend {
         for branch in kept {
             do {
                 try await createKeptBranch(branch.name, at: branch.tip.id, in: root)
+            } catch is CancellationError {
+                // Stopped while git created it (or before it started — the runner cannot say):
+                // whether this branch exists is unknown, the first one included (Ruling 12).
+                throw RemoteAdminPartial.keptBranchesCancelled(kept: keptBranches, unknown: branch.name)
             } catch {
                 // Nothing created yet: a plain failure, and the repository is as it was. Otherwise
                 // the branches already created stay, and the error says which (fix round 1, I2).

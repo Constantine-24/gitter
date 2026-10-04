@@ -235,6 +235,41 @@ enum RemoteAdminWording {
         }
     }
 
+    // Keep All / Keep None (Ruling 12): in a squash-merge repository every pruned ref is a
+    // holder, all ticked by default (promise 2), and unticking twenty-four boxes one by one is not
+    // a choice anybody can make.
+
+    static let keepAllTitle = "Keep All"
+    static let keepNoneTitle = "Keep None"
+
+    /// Every box in `refs` ticked (`all`) or unticked.
+    static func ticking(_ refs: [String], all: Bool) -> [String: Bool] {
+        Dictionary(uniqueKeysWithValues: refs.map { ($0, all) })
+    }
+
+    /// Whether Keep All and Keep None would change anything: Keep All while a box is unticked,
+    /// Keep None while one is ticked.
+    static func keepAllOffers(_ refs: [String], ticked: [String: Bool]) -> (all: Bool, none: Bool) {
+        (refs.contains { ticked[$0] != true }, refs.contains { ticked[$0] == true })
+    }
+
+    /// The line under the keep list while a ticked name has a problem (each row shows its own).
+    static func keepProblemsSummary(_ count: Int) -> String? {
+        switch count {
+        case 0: nil
+        case 1: "One name to keep needs changing; it is marked in the list."
+        default: "\(count) names to keep need changing; they are marked in the list."
+        }
+    }
+
+    /// "Keeping 3 of 24." — beside the two buttons, so the count is seen while the list scrolls.
+    static func keepCount(_ refs: [String], ticked: [String: Bool]) -> String {
+        let count = refs.filter { ticked[$0] == true }.count
+        return count == 0
+            ? "Keeping none of \(refs.count): their commits will be on no branch."
+            : "Keeping \(count) of \(refs.count)."
+    }
+
     /// The pruned branch's own name — what follows `refs/remotes/<remote>/`, or `refs/remotes/`
     /// for a ref a custom refspec put elsewhere — or `<name>-kept` (then `-kept-2`, …) when a
     /// branch, tag or remote has it, compared ignoring case as the file system does (Ruling 1).
@@ -326,9 +361,16 @@ enum RemoteAdminWording {
             let made = kept.count == 1 ? "the kept branch \(names)" : "the kept branches \(names)"
             return "Created \(made), then couldn't create \"\(failedName)\": \(RemoteWording.plain(words)). "
                 + "Nothing was pruned; \(names) \(kept.count == 1 ? "stays" : "stay")."
+        case RemoteAdminPartial.keptBranchesCancelled(let kept, let unknown):
+            // Ruling 12 (m7): git was stopped while it created this branch — it may exist.
+            let base = "Stopped while creating the kept branch \"\(unknown)\": it may or may not have been "
+                + "created — check the branch list. Nothing was pruned"
+            guard !kept.isEmpty else { return base + "." }
+            let names = kept.map { "\"\($0)\"" }.joined(separator: ", ")
+            return base + "; \(names) \(kept.count == 1 ? "was" : "were") created before it and stay\(kept.count == 1 ? "s" : "")."
         case _ where error is CancellationError:
-            return "Stopped the prune before anything was deleted. A kept branch may have been created; the "
-                + "branch list shows what is there."
+            // GitCore turns a cancellation during the kept branches' creation into the case above.
+            return "Stopped the prune before anything was created or deleted."
         default:
             return RemoteWording.failure(error, attempt: "prune \"\(remote)\"", isWrite: false)
                 + " Nothing was pruned."

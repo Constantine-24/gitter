@@ -118,11 +118,21 @@ import Testing
                 remote: "origin")
                 == "Created the kept branch \"a\", then couldn't create \"b\": fatal: x. Nothing was pruned; "
                 + "\"a\" stays.")
-        // A cancellation while the kept branches were being created: they may exist.
+        // Ruling 12 (m7): cancelled while a kept branch was being created — it may exist.
+        #expect(
+            RemoteAdminWording.pruneFailure(RemoteAdminPartial.keptBranchesCancelled(kept: [], unknown: "x"), remote: "origin")
+                == "Stopped while creating the kept branch \"x\": it may or may not have been created — check the "
+                + "branch list. Nothing was pruned.")
+        #expect(
+            RemoteAdminWording.pruneFailure(
+                RemoteAdminPartial.keptBranchesCancelled(kept: ["a", "b"], unknown: "x"), remote: "origin")
+                == "Stopped while creating the kept branch \"x\": it may or may not have been created — check the "
+                + "branch list. Nothing was pruned; \"a\", \"b\" were created before it and stay.")
+        // GitCore turns every cancellation during the creations into the case above, so a bare
+        // one came before any of them.
         #expect(
             RemoteAdminWording.pruneFailure(CancellationError(), remote: "origin")
-                == "Stopped the prune before anything was deleted. A kept branch may have been created; the "
-                + "branch list shows what is there.")
+                == "Stopped the prune before anything was created or deleted.")
         #expect(
             RemoteAdminWording.pruneListFailure(RemoteAdminRefusal.noSuchRemote("origin"), remote: "origin")
                 == RemoteAdminWording.remoteGone("origin"))

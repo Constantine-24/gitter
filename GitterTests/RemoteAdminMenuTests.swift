@@ -199,6 +199,25 @@ import Testing
                 == [Self.g1.ref, Self.g2.ref])
     }
 
+    /// Ruling 12: Keep All / Keep None set every box, and say which of the two would change
+    /// anything (a squash-merge repository makes every pruned ref a holder, all ticked).
+    @Test func keepAllAndKeepNoneSetEveryBox() {
+        let refs = [Self.g1.ref, Self.g2.ref, Self.g3.ref]
+        #expect(RemoteAdminWording.ticking(refs, all: true) == [Self.g1.ref: true, Self.g2.ref: true, Self.g3.ref: true])
+        #expect(RemoteAdminWording.ticking(refs, all: false) == [Self.g1.ref: false, Self.g2.ref: false, Self.g3.ref: false])
+        let some = [Self.g1.ref: true, Self.g2.ref: false]
+        #expect(RemoteAdminWording.keepAllOffers(refs, ticked: some) == (all: true, none: true))
+        #expect(RemoteAdminWording.keepAllOffers(refs, ticked: RemoteAdminWording.ticking(refs, all: true)) == (all: false, none: true))
+        #expect(RemoteAdminWording.keepAllOffers(refs, ticked: [:]) == (all: true, none: false))
+        #expect(RemoteAdminWording.keepCount(refs, ticked: some) == "Keeping 1 of 3.")
+        #expect(RemoteAdminWording.keepCount(refs, ticked: [:]) == "Keeping none of 3: their commits will be on no branch.")
+        #expect(RemoteAdminWording.keepProblemsSummary(0) == nil)
+        #expect(RemoteAdminWording.keepProblemsSummary(1) == "One name to keep needs changing; it is marked in the list.")
+        #expect(RemoteAdminWording.keepProblemsSummary(2) == "2 names to keep need changing; they are marked in the list.")
+        #expect(RemoteAdminWording.keepAllTitle == "Keep All")
+        #expect(RemoteAdminWording.keepNoneTitle == "Keep None")
+    }
+
     /// The pruned branch's own name, or `<name>-kept` when a branch, tag or remote has it
     /// (compared ignoring case) — Ruling 1.
     @Test func theSuggestedNameIsTheBranchsOwnOrKept() {

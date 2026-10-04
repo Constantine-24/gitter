@@ -567,6 +567,50 @@ func thrownError(
         #expect(try await RepoState.capture(repo) == before)
     }
 
+    /// Task 4 fix round 1 (Ruling 12, m7): cancelled while a kept branch is being created — the
+    /// first or a later one. Whether it exists is unknown (`keptBranchesCancelled`), never git's
+    /// words for a branch "not created"; the ones before it stay and nothing is deleted. A
+    /// `reference-transaction` hook holds that branch's creation open.
+    @Test(arguments: [false, true])
+    func aCancelledKeptBranchCreationIsOfUnknownOutcome(atTheSecond: Bool) async throws {
+        let fixture = try await PruneFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        let plan = try await backend.prunePlan("origin", at: repo.root)
+        let held = atTheSecond ? "second" : "first"
+        let marker = repo.root.appendingPathComponent("hook-started")
+        let sleep = "sleep 46.\(Int.random(in: 100_000...999_999))"
+        try repo.writeExecutable(".git/hooks/reference-transaction", """
+            #!/bin/sh
+            [ "$1" = prepared ] || exit 0
+            grep -q 'refs/heads/\(held)$' || exit 0
+            touch '\(marker.path)'
+            exec \(sleep)
+            """)
+        let backend = self.backend
+        let root = repo.root
+        let task = Task {
+            try await backend.prune(
+                plan, keeping: [PruneFixture.gone1Ref: "first", PruneFixture.gone2Ref: "second"], at: root)
+        }
+        for _ in 0..<200 where !FileManager.default.fileExists(atPath: marker.path) {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        try #require(FileManager.default.fileExists(atPath: marker.path), "the hook never ran")
+        task.cancel()
+
+        let error = await thrownError { _ = try await task.value }
+
+        #expect(
+            error as? RemoteAdminPartial
+                == .keptBranchesCancelled(kept: atTheSecond ? ["first"] : [], unknown: held),
+            "\(String(describing: error))")
+        #expect(try await repo.gitRefExists(PruneFixture.gone1Ref))
+        #expect(try await repo.gitRefExists(PruneFixture.gone2Ref))
+        if atTheSecond { #expect(try await repo.revParse("refs/heads/first") == fixture.gone1) }
+        #expect(try await processesMatching(sleep).isEmpty)
+    }
+
     /// Fix round 1 (Minor 1): cancelled while a delete is running — git was stopped part-way, so
     /// that ref's outcome is unknown (never "unchanged, in git's words"), and the refs after it
     /// were not tried. A `reference-transaction` hook holds the first delete open.

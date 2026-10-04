@@ -391,6 +391,11 @@ public enum RemoteAdminPartial: Error, Sendable, Hashable {
     /// `failedName` — git's (redacted) words, or `.branchExists` for a name taken since the
     /// check — and stopped: **nothing was deleted**, and the branches in `kept` stay.
     case keptBranchesThenStopped(kept: [String], failedName: String, gitsWords: String)
+    /// Fix round 1 (Task 4, Ruling 12): a prune or a removal was **cancelled** while the kept
+    /// branch `unknown` was being created — git was stopped part-way (or never started; the
+    /// runner cannot say which), so whether `unknown` exists is **not known**. The branches in
+    /// `kept` were created before it and stay. Nothing was deleted or removed.
+    case keptBranchesCancelled(kept: [String], unknown: String)
     /// A fast-forward was cancelled while its compare-and-set was running: git was stopped
     /// part-way (or never started — the runner cannot say which), so `branch` is at `from` or
     /// at `to` and **which is not known** — read it back. Never "nothing changed".

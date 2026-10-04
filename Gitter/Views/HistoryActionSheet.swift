@@ -63,6 +63,8 @@ struct HistoryActionSheet: View {
 /// to eight rows and then scrolls. The sheet's own sentence says how many there are.
 struct CommitRefList: View {
     let commits: [CommitRef]
+    /// Rows shown before the list scrolls (the prune sheet shows fewer, Ruling 12).
+    var maxRows = 8
 
     var body: some View {
         ScrollView {
@@ -85,6 +87,6 @@ struct CommitRefList: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(height: CGFloat(min(max(commits.count, 1), 8)) * 20)
+        .frame(height: CGFloat(min(max(commits.count, 1), maxRows)) * 20)
     }
 }

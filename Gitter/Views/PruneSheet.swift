@@ -50,7 +50,7 @@ struct PruneSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             Text(RemoteAdminWording.pruneSheetTitle(plan.remote))
                 .font(.headline)
 
@@ -63,7 +63,7 @@ struct PruneSheet: View {
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
             if plan.stranded.count > 0 {
-                CommitRefList(commits: plan.stranded.commits)
+                CommitRefList(commits: plan.stranded.commits, maxRows: Self.maxRows)
                 if let more = RemoteAdminWording.strandedMore(plan.stranded) {
                     Text(more)
                         .font(.caption)
@@ -75,8 +75,20 @@ struct PruneSheet: View {
                 Text(RemoteAdminWording.keepHeading)
                     .font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
-                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
-                    ForEach(holders, id: \.ref) { tip in keepRow(tip) }
+                keepControls
+                // Capped and scrolling, like the two lists above (Ruling 12): with two dozen
+                // holders an uncapped list pushed the title and both buttons off the window.
+                ScrollView {
+                    Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
+                        ForEach(holders, id: \.ref) { tip in keepRow(tip) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: keepListHeight)
+                if let summary = RemoteAdminWording.keepProblemsSummary(problemCount) {
+                    Text(summary)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
             }
 
@@ -150,7 +162,45 @@ struct PruneSheet: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(height: CGFloat(min(max(plan.refs.count, 1), 6)) * 20)
+        .frame(height: CGFloat(min(max(plan.refs.count, 1), Self.maxRows)) * 20)
+    }
+
+    /// Rows each list shows before it scrolls: with the header, every section and both buttons
+    /// on screen at the default window size (Ruling 12, measured with 24 holders).
+    static let maxRows = 4
+
+    /// A keep row is a toggle beside a text field; a row with a name problem has one more line.
+    private var keepListHeight: CGFloat {
+        let rows = CGFloat(min(holders.count, Self.maxRows)) * 30
+        let shownProblems = holders.prefix(Self.maxRows).filter { visibleProblem($0) != nil }.count
+        return rows + CGFloat(shownProblems) * 18
+    }
+
+    /// The ticked names with a problem, for the line under the list: a row scrolled out of view
+    /// must not leave Prune off with no reason on screen.
+    private var problemCount: Int { holders.filter { visibleProblem($0) != nil }.count }
+
+    private func visibleProblem(_ tip: RefTip) -> String? {
+        guard ticked[tip.ref] == true, checked == keeping else { return nil }
+        return problems[tip.ref]
+    }
+
+    /// Keep All / Keep None, and how many are kept.
+    private var keepControls: some View {
+        let refs = holders.map(\.ref)
+        let offers = RemoteAdminWording.keepAllOffers(refs, ticked: ticked)
+        return HStack(spacing: 8) {
+            Text(RemoteAdminWording.keepCount(refs, ticked: ticked))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            // Each box is set and the names are checked again, as a click on each would.
+            Button(RemoteAdminWording.keepAllTitle) { ticked = RemoteAdminWording.ticking(refs, all: true) }
+                .disabled(!loaded || !offers.all)
+            Button(RemoteAdminWording.keepNoneTitle) { ticked = RemoteAdminWording.ticking(refs, all: false) }
+                .disabled(!loaded || !offers.none)
+        }
+        .controlSize(.small)
     }
 
     @ViewBuilder
@@ -164,7 +214,7 @@ struct PruneSheet: View {
                 .frame(width: 200)
                 .disabled(ticked[tip.ref] != true)
         }
-        if ticked[tip.ref] == true, checked == keeping, let problem = problems[tip.ref] {
+        if let problem = visibleProblem(tip) {
             GridRow {
                 Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
                 Text(problem)
