@@ -638,25 +638,6 @@ final class RepositoryStore {
         followUpHeldForQuit = (generation, followUp)
     }
 
-    /// Claims the network lane — and, for a write, the mutation slot as well — returning the
-    /// ticket to hand back to `finishRemote`, or nil when it cannot be claimed. A refusal says
-    /// why in the banner: a second network action is refused with a reason, never queued and
-    /// never silently dropped.
-    ///
-    /// `quiet` is for the follow-up fetch after a cancelled or failed write: it must not clear
-    /// the banner that says the remote may or may not have changed, which is the one thing the
-    /// user has to read.
-    ///
-    /// **An automatic fetch gives way.** Anything else claiming the lane while one runs cancels
-    /// it and takes the lane; the task that ran it is returned as `preempted`, and the caller
-    /// waits for it before starting git, so two fetches never write the same refs at once (a
-    /// cancelled git is gone within the runner's escalation). If the claim fails for another
-    /// reason — the mutation slot is taken — the automatic fetch is left running.
-    ///
-    /// While quitting (`isTerminating`) nothing is claimed. The user's own action says why in
-    /// the banner — a click that does nothing and says nothing reads as a broken button; the
-    /// quiet ones (the automatic fetch, a write's follow-up fetch) say nothing. That banner is
-    /// not a lane's ending, so it does not call a held quit off (`laneMessagesToRead`).
     /// The banner `beginRemote` would show refusing this claim now, or nil — asked without
     /// claiming anything, so a sheet's Confirm can refuse while the sheet is still up. The same
     /// three refusals, in its order: quitting, the lane taken by anything but an automatic
@@ -680,6 +661,25 @@ final class RepositoryStore {
         return nil
     }
 
+    /// Claims the network lane — and, for a write, the mutation slot as well — returning the
+    /// ticket to hand back to `finishRemote`, or nil when it cannot be claimed. A refusal says
+    /// why in the banner: a second network action is refused with a reason, never queued and
+    /// never silently dropped.
+    ///
+    /// `quiet` is for the follow-up fetch after a cancelled or failed write: it must not clear
+    /// the banner that says the remote may or may not have changed, which is the one thing the
+    /// user has to read.
+    ///
+    /// **An automatic fetch gives way.** Anything else claiming the lane while one runs cancels
+    /// it and takes the lane; the task that ran it is returned as `preempted`, and the caller
+    /// waits for it before starting git, so two fetches never write the same refs at once (a
+    /// cancelled git is gone within the runner's escalation). If the claim fails for another
+    /// reason — the mutation slot is taken — the automatic fetch is left running.
+    ///
+    /// While quitting (`isTerminating`) nothing is claimed. The user's own action says why in
+    /// the banner — a click that does nothing and says nothing reads as a broken button; the
+    /// quiet ones (the automatic fetch, a write's follow-up fetch) say nothing. That banner is
+    /// not a lane's ending, so it does not call a held quit off (`laneMessagesToRead`).
     // internal (not private): used by +Remotes.swift's `runOnLane`
     func beginRemote(
         _ kind: RemoteActivity.Kind, remote: String?, holdingMutation: Bool, quiet: Bool = false

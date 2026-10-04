@@ -15,7 +15,11 @@ or revert stops on a conflict, it resolves it in the app — block by block, or 
 a time — and then continues, skips the commit or commits, with the stopped commit's message in
 the composer. It also starts those operations: select commits and cherry-pick or revert them,
 rebase the current branch onto a commit or a branch — each behind a sheet that lists exactly what
-will run — and create, delete (with **Restore Tag**), push and remotely delete tags.
+will run — and create, delete (with **Restore Tag**), push and remotely delete tags. And it
+keeps the remotes tidy: it prunes remote-tracking branches the server no longer has — naming the
+commits only they held and keeping a branch at each on request — cleans up branches whose
+upstream is gone, pushes or fast-forwards a branch that is not checked out, sets or unsets an
+upstream, and adds, renames, re-points or removes a remote.
 
 ![Gitter's main window: the branch button, the sidebar, the lane graph and a diff](docs/screenshots/branches.png)
 
@@ -70,6 +74,20 @@ will run — and create, delete (with **Restore Tag**), push and remotely delete
   the upstream was deleted, and `↑1 · main` when the upstream is a local branch; the Pull and
   Push buttons carry the same counts
 - Copy a remote's URL from its sidebar menu, with any password or token taken out
+- **Prune** a remote (Remotes ▸ Prune "origin"…, or the remote's sidebar menu): the sheet lists
+  every remote-tracking branch the server no longer has with its full id, the commits only they
+  hold — counted once — and a ticked "Keep … as" branch for each ref that alone holds some (Keep
+  All / Keep None); **Clean Up Gone Branches…** then deletes the local branches whose upstream is
+  gone, the merged ones ticked, the others with the unmerged warning (see "Remotes housekeeping"
+  below)
+- **Push** or **Fast-Forward** a branch that is not checked out, from its sidebar menu — never
+  forced, and a fast-forward only when the branch has nothing of its own and no worktree uses it;
+  **Set Upstream…**, **Change Upstream…** and **Unset Upstream** on any local branch
+- **Add Remote…**, and **Edit URL…**, **Rename…** and **Remove…** on a remote's row: the URL as
+  configured, a credential never shown, an `insteadOf` rewrite as a line beside it; the removal
+  sheet lists every ref it deletes with its id, the commits it would strand (keepable), and the
+  branches left with no upstream or pushing elsewhere. A remote with no URL is in the sidebar,
+  marked "no URL", and nothing talks to it until it has one
 - **Stash** every change or only the selected files, with a message and, if you ask, untracked
   files too (Repository ▸ Stash Changes…, ⌥⌘S, or **Stash…** in the working copy). The sidebar's
   **Stashes** section lists them; selecting one shows its files and diff read-only, untracked
@@ -108,6 +126,10 @@ will run — and create, delete (with **Restore Tag**), push and remotely delete
 
 ![Deleting a tag just pushed to origin: the sheet says Restore Tag puts the identical tag back and that a fetch from origin would bring it back; the tag pill on its commit row](docs/screenshots/tags.png)
 
+![Pruning "origin": three remote-tracking branches the server no longer has, each with its full id; the three commits only they hold; and two ticked boxes keeping a local branch at each ref that holds them, with Keep All and Keep None](docs/screenshots/prune.png)
+
+![Removing the remote "fork": its four remote-tracking branches with their ids, the one commit only they hold with a ticked box keeping a branch at it, and the branch that will be left with no upstream](docs/screenshots/remove-remote.png)
+
 ## Safety
 
 Staging and unstaging change only the index (`git apply --cached`, `git add`, `git reset`)
@@ -124,7 +146,8 @@ Switch, detach, track and merge run plain git with **no force flag anywhere in t
 a test greps the sources for them on every run). When git refuses, nothing has changed,
 and Gitter shows the files git named rather than a wall of stderr. The same test forbids,
 for the network: a bare `--force-with-lease`, any refspec beginning with `+`, `--mirror`,
-`--prune`, `--all` on push, `--tags` and `--follow-tags`, `--delete`/`-d` on push,
+`--prune` (except in the prune sheet's listing, a `fetch --dry-run` that deletes nothing), `--all`
+on push, `--tags` and `--follow-tags`, `--delete`/`-d` on push,
 `--no-verify`, `--autostash`, `--update-refs` on rebase, and the `pull` subcommand itself
 (Gitter fetches and then merges or rebases as two steps it controls). For the working copy
 it allows `stash` only in five exact spellings — never with a pathspec, `--keep-index`,
@@ -141,7 +164,7 @@ does not fail, it crashes the app, so every call is also checked before git star
 still passes its paths as arguments, `add -- <paths>` in batches of at most 1 000; only the
 writes of a selection use the pathspec file.)
 
-Twelve actions can lose something without being asked for by name, and each is behind a
+Fifteen actions can lose something without being asked for by name, and each is behind a
 confirmation that says what goes and what stays:
 
 | action | how it is confirmed |
@@ -157,6 +180,9 @@ confirmation that says what goes and what stays:
 | **Skip a commit** of a stopped rebase, cherry-pick or revert | a sheet names the commit and every file that goes back to how HEAD has it, resolved or not; Gitter first files their current contents in the Stashes list as `Skipped by Gitter: <sha> <subject>`, and skips only when every change in the working copy belongs to that commit — git's own `rebase --skip` resets every tracked file, your unrelated edits included |
 | **Leave a commit out of a rebase** — Continue when the resolution leaves the stopped commit with no changes | "Leave d183fcd out of the rebase?": git would drop it without a word. When other files are staged the sheet says the opposite happens — the commit is kept, holding only them, under its own title and author |
 | **Replace a hand-edited conflicted file** — Resolve File, Take Ours or Theirs, Delete or Keep on a file edited since git wrote the conflict | the sheet says the file changed since git wrote the conflict; the edited file is filed as `Replaced by Gitter: <file>` before anything is written |
+| **Prune a remote** | Gitter asks the server which of the remote's branches it no longer has (a dry run that deletes nothing), then a sheet lists each remote-tracking branch with **its full id**, the commits that would be on no branch, tag or other remote afterwards — **counted once for all of them** — and a ticked "Keep … as <name>" for each ref that alone holds some. On Prune it counts again and refuses if more would be stranded, creates the kept branches first, then deletes each ref **only while it still holds the id the sheet showed** (`update-ref -d` with that id); one that moved is left alone and named. The notice lists every deleted ref with its id — a remote-tracking ref has no reflog to find it by |
+| **Clean Up Gone Branches** | a sheet lists the local branches whose upstream is gone, each "merged" or "N commits only here"; merged ones are ticked, an unmerged one carries the unmerged-branch warning when ticked, and a branch checked out in a worktree cannot be ticked. Each is deleted only at the tip the sheet showed, after a recount; the notice lists every tip with `git branch <name> <id>` |
+| **Remove a remote** | a sheet lists every remote-tracking ref git will delete with its full id, the commits that would be stranded (keepable, as for a prune), the branches that will have no upstream and the ones whose push silently goes to another remote. On Remove it reads all of that again and refuses on any difference; the notice is the only record of the deleted refs, each with its id and the `git update-ref` that brings it back |
 | **Reopen a resolved conflict** | the sheet says what comes back — conflict markers; for a binary file ours' version, with no markers; for a mode conflict ours' mode — and the resolution is filed as `Reopened by Gitter: <file>` first |
 
 Three more confirmations stand before a commit rather than a loss: **Mark Resolved** when git
@@ -179,7 +205,7 @@ choose; the old tip stays in `ORIG_HEAD` and the reflog. A rebase that stops on 
 lands in the operation bar: resolve there and Continue, Skip the commit, or Abort, which puts
 everything back.
 
-Amending is the one more — twelve confirmed actions, plus amend — and the one with no
+Amending is the one more — fifteen confirmed actions, plus amend — and the one with no
 confirmation sheet: it rewrites HEAD and leaves
 the commit it replaces reachable from no branch, tag or remote. What stands in for the sheet
 is that nothing else asks for it — you tick the Amend toggle yourself and the commit button
@@ -236,18 +262,19 @@ terminal, ssh's own rules apply and it can still be stopped there (see the backl
 
 ### What fetch and push deliberately do not do
 
-- **No prune.** Gitter's fetch always passes `--no-prune`, even when `fetch.prune`,
-  `remote.<name>.prune` or `fetch.pruneTags` is set: pruning can drop the last ref to a
-  deleted branch's commits, and that will need a confirmation of its own. So a branch
-  someone deleted on the server keeps its `origin/…` ref in Gitter, and its local branch
-  keeps counting against it; the **"gone"** badge appears only after a prune done elsewhere
-  (`git fetch --prune` in a terminal) — or after Gitter's own "Delete on …", which removes the
-  one ref it deleted. A "gone" branch's Push button reads **Re-publish**.
+- **No prune on fetch.** Gitter's fetch, manual or automatic, always passes `--no-prune`, even
+  when `fetch.prune`, `remote.<name>.prune` or `fetch.pruneTags` is set: pruning can drop the
+  last ref to a deleted branch's commits, so it has a confirmation of its own — **Prune
+  "origin"…** (see "Remotes housekeeping"). Until you prune, a branch someone deleted on the
+  server keeps its `origin/…` ref, and its local branch keeps counting against it; the **"gone"**
+  badge appears after a prune — Gitter's or a terminal's — or after Gitter's own "Delete on …",
+  which removes the one ref it deleted. A "gone" branch's Push button reads **Re-publish**.
 - **No tags.** Every push passes `--no-follow-tags`, even when `push.followTags` is set,
   including a force push and a deletion — measured, git otherwise publishes annotated tags
   beside the one ref it was asked to push, even beside a delete.
-- **Only the current branch**, always by an explicit refspec (`refs/heads/<b>:<remote ref>`),
-  to the branch's push remote (`branch.<b>.pushRemote` / `remote.pushDefault` are honoured).
+- **One branch at a time** — the current one from the toolbar, another from its sidebar menu
+  (**Push "b"**) — always by an explicit refspec (`refs/heads/<b>:<remote ref>`), to that
+  branch's push remote (`branch.<b>.pushRemote` / `remote.pushDefault` are honoured).
   The force push is the one exception to the spelling, not to the rule: it sends the sha its
   sheet showed (`<sha>:<remote ref>`), so what lands is the commit you were shown even if the
   branch moved meanwhile — and if it did, Gitter refuses instead.
@@ -483,6 +510,72 @@ cherry-pick `-x`, `--no-commit` and `-m` (a merge commit); signed tags; pushing 
 `refs/tags/`, which Gitter lists but neither deletes, pushes nor restores — git's own delete would
 follow one to the branch it names, and a restore could not bring a symbolic ref back.
 
+### Remotes housekeeping
+
+**Prune "origin"…** — in the Remotes menu, and on the remote's row in the sidebar — asks the server
+which of the remote's branches it no longer has. That listing is git's own dry run (`fetch --prune
+--no-prune-tags --dry-run --porcelain`): it runs on the network lane like a fetch, with a Stop,
+and deletes nothing. Only refs under `refs/remotes/` are listed, so a mirror-style remote is
+refused, and `fetch.pruneTags` cannot add your local tags. The sheet shows each ref with its full
+id, then the commits that would be on no branch, tag or other remote once they are gone — one
+count for all of them, since two refs can share commits — and a "Keep "origin/x" as" box with a
+name for each ref that alone holds some, ticked. **Keep All** and **Keep None** set every box, and
+"Keeping 2 of 3." says where you are; a name that is taken or not a valid branch name says so as
+you type. When `origin/HEAD` points at a ref being pruned the sheet says it will point at nothing
+— a later fetch does not repair it. Prune then counts again (refusing if more would be stranded
+than the sheet said), creates the kept branches, and deletes each ref only while it still holds
+the id the sheet showed: a ref that moved meanwhile — a fetch updated it, say — is left alone and
+named. The notice is the only record of what was deleted, so it lists every ref with its id and
+the `git update-ref` that brings one back. Gitter's own fetch still never prunes.
+
+**Clean Up Gone Branches…** (Remotes menu) lists the local branches whose upstream is gone — a
+remote branch deleted on the server and pruned, or a deleted local upstream. Each row says
+"merged" or how many commits exist only on it; merged rows start ticked, an unmerged row shows
+the unmerged-branch warning when you tick it, and a branch checked out in any worktree cannot be
+ticked. Each ticked branch is deleted only at the tip the sheet showed, after its commits are
+counted again; the notice lists every tip with `git branch <name> <id>`. git deletes a branch
+even when another process holds `.git/config`, and then leaves its `branch.<name>.*` settings
+behind (measured); Gitter reads them back and gives the `git config --remove-section` that
+removes them.
+
+**Another branch.** A local branch's menu has **Push "b"** (or **Publish "b"…** when it has no
+upstream) and **Fast-Forward "b"** for a branch that is not checked out. Push is the toolbar's
+push for that branch — never forced; a refusal because the server has commits you don't says to
+fast-forward it, or to check it out and pull. Fast-forward fetches first, then moves the branch to
+its upstream's commit with one compare-and-set on the tip it read (`update-ref --no-deref` with
+both ids), and only when the branch has no commits of its own and no worktree uses it — checked
+out, being rebased or bisected, or a `rebase --update-refs` there would move it. The checked-out
+branch keeps Pull. Merging into or rebasing a branch that is not checked out stays a terminal job.
+
+**Upstream.** **Set Upstream…** / **Change Upstream…** picks any fetched remote branch or local
+branch; git gets the full ref name, so a tag or branch of the same short name cannot redirect
+it, and Gitter reads what git wrote back — overlapping fetch refspecs can make git record a
+different branch, which is then shown as written. When `branch.autoSetupRebase` makes git add
+`rebase = true`, the notice says so. **Unset Upstream** leaves the branch's `rebase` and
+`pushRemote` settings as they were.
+
+**Remotes.** **Add Remote…** checks the name as you type — git's rules, plus a leading `-`,
+`HEAD`, `@`, and a remote of that name or nested in one, ignoring case — and refuses a URL that
+begins with `-`, is an `ext::` command or holds a control character; it adds the remote without
+fetching (never `remote add -f`) and then fetches it with Gitter's own fetch. **Edit URL…** shows
+the URLs **as your configuration writes them** — not the `insteadOf`-rewritten one `git remote
+-v` prints, which is shown on a line of its own ("git connects to …") — so saving never replaces
+your `https://…` with the rewritten `git@…`. A URL holding a password or token is never shown or
+copied: the field starts empty and the line beside it shows the URL without it. A push URL can be
+set or cleared; a remote with several fetch or push URLs is shown read-only, with the `git remote
+set-url` to use instead. **Rename…** moves the remote's branches and settings; **Remove…** opens
+the sheet in the table above. Both can stop part-way when another git process holds a lock — git
+renames the section but not the refs, or unsets the branches' settings but keeps the refs — and
+Gitter reads the repository back and says exactly what was left and how to finish: rename it
+back, or remove it again. A remote with no URL (only a fetch refspec, say) appears in the sidebar
+marked "no URL": Edit URL… gives it one, and until then every fetch, push and prune is off with
+the reason — git would use its **name as a path** (measured: a directory of that name in the
+working tree was fetched from, and had a branch deleted by a push).
+
+**What stays a terminal job.** Merging or rebasing a branch that is not checked out; force-pushing
+one; editing a remote with several URLs; editing fetch refspecs; pruning on every fetch.
+Prune, clean-up, rename and remove are not yet waited for by quitting (see the backlog).
+
 ## Design decisions
 
 | Area | Decision | Rationale |
@@ -495,10 +588,11 @@ follow one to the branch it names, and a restore could not bring a symbolic ref 
 | Dirty switch | git's default — carry non-conflicting changes, refuse otherwise. No force; the refusal offers Stash and Continue, never an automatic stash | A refusal that changes nothing is a better answer than a stash the user did not ask for |
 | Discard | Record first (a stash entry built from plumbing in a temporary index), then `git restore` or a reverse `git apply`; untracked items to the Trash | Every discard can be undone, and the copy is in a place git and the user already know |
 | Delete | `git branch -d` first, then `-D` only from the warning its refusal opened, and only if the tip is still the one that warning named | `-d` is git's own authority on "is this merged", and it changes nothing when it refuses |
-| Remotes | git's own transports and credentials; `fetch`, then merge or rebase, instead of `git pull`; an explicit-sha lease on every force; no prune; one tag at a time, never replaced, the remote delete leased | Nothing to store or ask for; every step of a pull is one Gitter can explain and stop; the lease the automatic fetch cannot arm |
+| Remotes | git's own transports and credentials; `fetch`, then merge or rebase, instead of `git pull`; an explicit-sha lease on every force; no prune on fetch; one tag at a time, never replaced, the remote delete leased | Nothing to store or ask for; every step of a pull is one Gitter can explain and stop; the lease the automatic fetch cannot arm |
 | Conflicts | Blocks rebuilt from the index stages with `git merge-file`, choices composed in memory and written once; git's own `--continue` / `--skip` with the message file written back, behind readiness checks of Gitter's own | The worktree file can hold anything (rerere, hand edits, marker-like code); git keeps the author, the date and the sequence, and Gitter refuses before git runs where git would lose something silently |
+| Remotes housekeeping | A dry-run listing on the lane, then a per-ref compare-and-delete on the ids the sheet showed; stranded commits counted once as a union and kept as branches before anything is deleted; URLs read as configured; a failed `remote rename` / `remove` read back, never assumed a no-op | `fetch --prune` deletes whatever the server lacks at that moment; remote-tracking refs have no reflog; `remote -v` shows the rewritten URL; git leaves half-done state under a held lock |
 | History actions | A plan read first (order, left out, may be skipped, replayed, already pushed), shown on a sheet, made again by the run and refused on any difference; full commit ids and `refs/…` names in every vector; tags deleted by compare-and-delete with the receipt kept in the app | A sheet is a promise only if the run checks it; a short name can mean a tag; tags have no reflog |
-| Scope | Browsing, diffs, staging, commit, branch and remote operations, stash and discard, conflict resolution and continuing an operation, cherry-pick, revert, rebase onto a commit and tags are done | Each milestone keeps the promise before it adds the next way to lose work |
+| Scope | Browsing, diffs, staging, commit, branch and remote operations, stash and discard, conflict resolution and continuing an operation, cherry-pick, revert, rebase onto a commit, tags and remotes housekeeping are done | Each milestone keeps the promise before it adds the next way to lose work |
 
 ## Build & run
 
@@ -526,25 +620,28 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (356 tests in 21 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (440 tests in 28 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
-`DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`, the
-commit list's set selection, the deleted tags' receipts in the store, the pull-request link extraction and
+`DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
+`RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
+the no-URL gates, Copy URL's redaction, the banners' height, the commit list's set selection, the deleted tags' receipts in the store, the pull-request link extraction and
 the notices' lifetime, which files a discard is offered for and when its sheet reads git again,
 which refusals Stash and Continue answers, when the toolbar reveals a lane's activity, the
 resolver's choices and previews (the same composition GitCore writes), and every state of the
-operation bar and the composer's prefill. Under a test host the app reopens no repository and starts no
-automatic fetch (`TestHost`), and no test opens a repository or touches the app's defaults,
-so a run never touches the repository you last had open.
+operation bar and the composer's prefill, and the launch guard's decisions (`DebugLaunchGuard`).
+Under a test host the app reopens no repository and starts no automatic fetch (`TestHost`), and
+no test opens a repository or touches the app's defaults, so a run never touches the repository
+you last had open.
 
-`GitCoreTests` has 1 364 tests in 122 suites. Most of them run real `git` against a temporary
+`GitCoreTests` has 1 502 tests in 133 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
 for a server, with a second clone as "the colleague" who pushes in between — including one
 that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
 your git configuration (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`) and never
-touches the network.
+touches the network: the transports other than `file` (and a fake ssh one test needs) are refused,
+and an inherited `GIT_SSH_COMMAND` or `GIT_CONFIG_*` is cleared first.
 
-The run also reports **21 known issues, and they are meant to be there** — please do not
+The run also reports **25 known issues, and they are meant to be there** — please do not
 "fix" them. They are deliberate negative controls: tests that make an assertion helper fail
 on purpose, inside `withKnownIssue`, to prove it *can* fail.
 
@@ -581,15 +678,22 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   checked with, made to fail by a new branch.
 - One comes from `GitLaunchLogTests`: `GitLaunchLog`, the git wrapper that proves a refusal
   launched no process at all (`assertNothingRan`), made to fail by a real `rev-parse`.
+- Two come from `UpstreamTestSupportTests`: `assertConfigUnchanged`, which every refused or
+  failed upstream, fast-forward and remote write is checked with, made to fail by a changed
+  `branch.<b>.rebase` and by an empty baseline.
+- One comes from `RemoteAdminTestSupportTests`: `refTips(under:)`, behind every "nothing fetched"
+  and "nothing left" under a remote's prefix, made to fail by a ref created there.
+- One comes from `NoURLRemoteTests`: git itself, handed an unconfigured remote name, pushes into
+  a directory of that name — the hazard Gitter refuses — and `assertRemoteUnchanged` sees it.
 
 Deleting any of them would take the proof away and the suite would go on looking green.
 
 ## Project layout
 
-Every `.swift` file in the two product targets — 156 of them, which is what `find
+Every `.swift` file in the two product targets — 173 of them, which is what `find
 GitCore/Sources Gitter -name '*.swift' | wc -l` prints — with the ones inside `Models/`,
-`Parsers/` and `Views/` named in prose rather than one per line. The 136 test files (116 in
-`GitCore/Tests`, 20 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
+`Parsers/` and `Views/` named in prose rather than one per line. The 150 test files (123 in
+`GitCore/Tests`, 27 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
 listed, which is also why the check is that command and not a bare `find . -name '*.swift'`:
 that one reaches them too, and the generated sources under `.build` as well.
 
@@ -608,6 +712,8 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
     GitHistoryBackend.swift     Cherry-pick, revert and rebase onto a target: plan, then run
     GitTagBackend.swift         Tag names, create, compare-and-delete and restore, push one,
                                 leased remote delete; TagNameProblem, TagReceipt, TagOperationError
+    GitRemoteAdminBackend.swift Prune and gone branches, fast-forward and upstream of a branch,
+                                add, set-url, rename and remove a remote
     DiscardTypes.swift          DiscardRequest, DiscardReceipt, the refusals and undo outcomes
     Trasher.swift               Moving an untracked item to the Trash and back
     GitError.swift              commandFailed, launchFailed, and the two pre-flight refusals
@@ -640,18 +746,25 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
       +History.swift              the cherry-pick and revert plans, the run and its read-back
       +Tags.swift                 tag names, create, delete, restore, the remote read, push and
                                   leased delete, the remotes that fetch no tags
+      +Prune.swift                the dry-run listing, the stranded union, kept branches, the
+                                  per-ref compare-and-delete, gone branches
+      +Upstream.swift             fast-forward of a branch that is not checked out (and the
+                                  worktree scan), set and unset upstream with the read-back
+      +RemoteAdmin.swift          remote names, URLs as configured, add, set-url, rename, the
+                                  removal impact and remove, each failure read back
     ProcessRunner.swift         Process spawning with LC_ALL=C and captured stderr
       +Streaming.swift            the cancellable runner: progress, SIGTERM then SIGKILL
     GraphLayout.swift           gitk-style commit lane assignment
     PatchBuilder.swift          Builds a hunk- or line-level patch from a parsed diff, with
       +Markers.swift / +Paths.swift
     Models/                     RepoSnapshot, Commit, FileStatus, Diff, Branch (and Tag), Graph,
-                                Remote, Stash, Conflict, OperationProgress, History
+                                Remote, Stash, Conflict, OperationProgress, History,
+                                RemoteAdmin
     Parsers/                    Status, Log, Ref, Diff (+Paths), BranchRefusal, Remote,
                                 PushPorcelain, RemoteFailure, StashList, StashFailure and
                                 Conflict parsers, and GitLines (git's output split at the
                                 newline byte)
-  Tests/GitCoreTests/           122 suites; ForceFlagScanner(+Lexing) is the force-flag grep
+  Tests/GitCoreTests/           133 suites; ForceFlagScanner(+Lexing) is the force-flag grep
 
 Gitter/                   macOS app (SwiftUI)
   GitterApp.swift            App entry point, the one store (`AppModel`), the Repository
@@ -680,6 +793,8 @@ Gitter/                   macOS app (SwiftUI)
                                   run, notices
   RepositoryStore+Tags.swift      New, delete, restore, push and remote-delete a tag; the
                                   deleted tags' receipts
+  RepositoryStore+RemoteAdmin.swift  Prune, clean-up, push / fast-forward another branch,
+                                  upstream, and the remote sheets: requests, gates, notices
   AutoFetchScheduler.swift   When the quiet automatic fetch runs (the store decides what it does)
   QuitGuard.swift            Quitting while the network lane is busy: stop, or ask first
   RemoteActivity.swift       What the lane is running, a refused push, the progress relay
@@ -693,6 +808,8 @@ Gitter/                   macOS app (SwiftUI)
                               refusals and notices
   TagWording.swift           Every sentence about a tag; the rows, the pills, the receipts
                               (DeletedTags) and the remotes seen holding a tag (RemoteTagsSeen)
+  RemoteAdminWording.swift   Every sentence of remotes housekeeping: the sheets, the menus'
+                              reasons, the notices and the half-done states
   Notice.swift               A notice's text, links and buttons, and the link extraction
   BranchSheet.swift          Which confirmation or form the store wants on screen
   CommitDraft.swift          The commit message + amend toggle being edited
@@ -707,24 +824,30 @@ Gitter/                   macOS app (SwiftUI)
     +Conflicts.swift           its resolver steps
     +Continue.swift            its operation bar and composer steps
     +History.swift             its history and tag steps
+    +RemoteAdmin.swift         its remotes housekeeping steps
+  DebugLaunchGuard.swift     Debug-only: a scripted launch never reaches the last repository
   Views/                     MainWindow, SidebarView, SidebarMenus, StashesSection,
                               CommitListView, CommitGraphCell, DetailView, StashDetailView,
                               WorkingCopyFileList, CommitComposerView, DiffView, DiffHunkView,
                               DiffLineSelection, Banners, BranchToolbar, BranchNameValidator,
                               BranchSheetHost, RemoteToolbar, TrackingBadge,
                               ConflictResolverView, ConflictBlockView, OperationBar (with the
-                              halted bar) and the twenty-four sheets (NewBranch, Rename, Merge,
-                              DeleteBranch, Abort, LeaveDetached, Pull, Publish, ForcePush,
-                              DeleteRemoteBranch, Stash, DropStash, Discard, ReplaceHandEdited,
-                              MarkResolved, ReopenConflict, ContinueEmpty, Skip, StageAll,
-                              HistoryAction, RebaseOnto, NewTag, DeleteTag, DeleteRemoteTag)
+                              halted bar), KeepBranchList and the thirty-one sheets (NewBranch,
+                              Rename, Merge, DeleteBranch, Abort, LeaveDetached, Pull, Publish,
+                              ForcePush, DeleteRemoteBranch, Stash, DropStash, Discard,
+                              ReplaceHandEdited, MarkResolved, ReopenConflict, ContinueEmpty,
+                              Skip, StageAll, HistoryAction, RebaseOnto, NewTag, DeleteTag,
+                              DeleteRemoteTag, Prune, GoneBranches, Upstream, AddRemote,
+                              EditRemoteURL, RenameRemote, RemoveRemote)
 
 GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app): wording,
                           notices and links, the discard (and its sheet's stale check) and
                           Stash and Continue decisions, the toolbar's activity reveal, the
                           resolver's choices, the operation bar's states and the prefill,
                           the history and tag wording, the commit set and the deleted tags'
-                          receipts, and the test-host check
+                          receipts, remotes housekeeping's wording and menu reasons, the
+                          no-URL gates, Copy URL's redaction, the banners' height, the
+                          launch guard, and the test-host check
 ```
 
 ## Debug launch hooks
@@ -732,10 +855,24 @@ GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app):
 `Gitter/DebugLaunchHooks.swift`, `DebugLaunchHooks+Events.swift`,
 `DebugLaunchHooks+Branches.swift`, `DebugLaunchHooks+Stash.swift`,
 `DebugLaunchHooks+Discard.swift`, `DebugLaunchHooks+Conflicts.swift`,
-`DebugLaunchHooks+Continue.swift` and `DebugLaunchHooks+History.swift` exist only in Debug builds (`#if DEBUG`, compiled out of
-Release) and drive the UI from environment variables, read once at startup. They exist because the verification environment has Screen Recording
-but not Accessibility, so nothing outside the process can click — without these, a diff can
-never be put on screen from a script, and a focus bug can never be reproduced.
+`DebugLaunchHooks+Continue.swift`, `DebugLaunchHooks+History.swift`,
+`DebugLaunchHooks+RemoteAdmin.swift` and `DebugLaunchGuard.swift` exist only in Debug builds
+(`#if DEBUG`, compiled out of Release) and drive the UI from environment variables, read once at
+startup. They exist because the verification environment has Screen Recording but not
+Accessibility, so nothing outside the process can click — without these, a diff can never be put
+on screen from a script, and a focus bug can never be reproduced.
+
+**The launch guard.** A launch with any `GITTER_DEBUG_*` variable set is a script's, and it never
+reaches the repository you last had open: it does not reopen it, starts no automatic fetch
+(unless `GITTER_DEBUG_AUTOFETCH` asks for one), opens `GITTER_DEBUG_OPEN` first, and runs no
+selection, staging, click, key or step unless the repository on screen is that path (compared
+with links resolved). Before this guard (B2, Ruling 15) the app reopened the last repository and
+a script's steps ran against whatever had loaded — measured with a scratch stand-in: a script
+with no `GITTER_DEBUG_OPEN`, or whose own open failed, force-deleted a branch of the reopened
+repository. Each refusal is logged as `BRANCH_ACTION launch guard: refused: …`, and a refused
+launch then sits idle: quit it yourself. A launcher should still write `lastRepositoryPath` and
+`autoFetchEnabled=false` (and read them back) before it starts the app, export the app's
+defaults first and restore them afterwards.
 
 | variable | effect |
 |---|---|
@@ -745,7 +882,7 @@ never be put on screen from a script, and a focus bug can never be reproduced.
 | `GITTER_DEBUG_SELECT_LINES=3,4` | pre-select those line ids in the first hunk |
 | `GITTER_DEBUG_APPLY=hunk:0` or `lines` | then stage/unstage that hunk, or those lines |
 | `GITTER_DEBUG_WINDOW=1400x1400` | resize the window, past the screen if asked |
-| `GITTER_DEBUG_OPEN=<path>` | after the first repository has loaded, open that path as "Open Repository…" would — the only way to reach a failed open from a script |
+| `GITTER_DEBUG_OPEN=<path>` | the fixture: opened first, as "Open Repository…" would, and the only repository any hook acts on (the launch guard above). A failed open leaves nothing to act on, so every step is refused |
 | `GITTER_DEBUG_APPEARANCE=light\|dark` | force the app's appearance, so a screenshot pass can shoot both without changing the machine's setting |
 | `GITTER_DEBUG_CLICK=x,y[:2\|:shift\|:right][;…]` | click those points, in points from the top-left of the *frontmost* window's content area — the sheet's own, while one is up; `:2` double-clicks, `:shift` shift-clicks, a `type=text` step types between two clicks, and `:right` posts a right-click, which is kept as a recorded negative result: it does not open a SwiftUI `.contextMenu` |
 | `GITTER_DEBUG_KEYS=space,return,cmd+return` | then press those keys (`space`, `return`, `tab`, `escape`, `up`, `down`, `period`, `f`, `l`, `p`, `r`, `delete` (⌫), with `cmd+`/`shift+`/`opt+`/`ctrl+`). A key with `cmd+` is dispatched as AppKit dispatches one — the window's views, then the main menu — because a *posted* command key never reaches a menu's key equivalent (measured: a posted ⌘R ran no Refresh) |
@@ -823,6 +960,16 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `deletetag:<n>` / `confirmdeletetag` | open Delete Tag… for that tag (it opens after a config read, and the step waits for it), and **act**: its Delete Tag |
 | `restoretag[:<n>]` | **acts**: the sticky notice's Restore Tag(s), or with a name that deleted tag's row's Restore Tag |
 | `pushtag:<n>:<r>` / `deleteremotetag:<n>:<r>` / `confirmdeleteremotetag` | **act**: Push Tag to <r>; Delete from <r>…'s read, then its sheet (the id it is leased on, or "no such tag"), and its button |
+| `prune:<remote>` / `confirmprune[:none\|:<ref>=<name>,…]` | Prune <remote>…: the listing on the lane, then the sheet — every ref with its id, the stranded count and commits, the holders, the default keep boxes with their names and verdicts, `<remote>/HEAD`'s target — or the notice; and **act**: its Prune with the default boxes, none, or those (each ref in full). The harness cannot tick a box or press Keep All / Keep None inside a sheet |
+| `cleanup` / `confirmcleanup[:<b,…>]` | Clean Up Gone Branches…: the rows (detail, ticked, where checked out, the unmerged warning) or the notice; and **act**: its button with the default ticks or those names |
+| `pushbranch:<b>` / `confirmpublish:<remote>` / `ffbranch:<b>` | **act**: Push / Publish… / Re-publish of a branch from its menu, the publish sheet's button with that remote, and Fast-Forward |
+| `upstream:<b>` / `setupstream:<b>:<ref>` / `unsetupstream:<b>` | Set / Change Upstream…'s sheet and its choices; **act**: the sheet's button with that full ref, and Unset Upstream |
+| `adminmenu` | log every local branch's and remote's housekeeping items as their menus build them, with the reasons the disabled ones show, each remote's sidebar badge and tooltip ("no URL"), and the menu bar's Remotes menu |
+| `prefill:<key>=<value>` / `prefill:clear` | what the next remote sheet's fields start with (`name`, `url`, `fetch`, `push`, `own` = 0\|1) — the harness cannot type into a sheet; `bannerAnchor=bottom` starts a scrolling banner at its end |
+| `addremote` / `confirmaddremote:<name>=<url>[=nofetch]` | Add Remote…'s sheet; and **act**: its button, fetching the new remote after unless `nofetch` |
+| `editurl:<remote>` / `confirmediturl[:<key>=<value>\|…]` | Edit URL…: the read, then the sheet — each configured URL as shown, the fields' starting text, the "git connects to" line, the several-URLs notes; and **act**: its Save with the fields as `prefill` keys say |
+| `renameremote:<remote>` / `confirmrenameremote:<new>` | Rename…'s sheet; and **act**: its button |
+| `removeremote:<remote>` / `confirmremoveremote[:<keep>]` | Remove…: the impact's read, then the sheet — every ref with its id, the stranded count, the keep defaults, each sentence about upstreams, push redirects and refs left behind; and **act**: its button, `<keep>` as for `confirmprune` |
 | `tags` | log every tag row as the sidebar draws it (icon, tooltip, VoiceOver), its menu with the reasons, the deleted tags' rows, and each commit's pills beside `%D` — the snapshot cannot draw the sidebar |
 
 A step that starts network work waits for the lane to free as well, for up to 120 seconds; a
@@ -855,11 +1002,15 @@ BRANCH_ACTION result: <sheet or nil> | notice: <…> | error: <…> | head: <…
 
 The click and key variables wait for the window to actually become key first, and activate
 the app, because an inactive window draws its selection in the unemphasized grey whatever
-has focus. Launch through `open` to see stderr and to get a properly frontmost app:
+has focus. Start the binary itself, from `bash`, so that it inherits exactly the script's
+environment — `open -a` passes only the `--env` variables it is given, none of a script's network
+guards — with the fixture named, inside the script's own scratch directory:
 
 ```sh
-open -n -F --stderr /tmp/gitter.log --env GITTER_DEBUG_CLICK=684,170 \
-  --env GITTER_DEBUG_DUMP_RESPONDER=1 -a .build/DerivedData/Build/Products/Debug/Gitter.app
+GIT_ALLOW_PROTOCOL=file GIT_SSH_COMMAND=/usr/bin/false GIT_CONFIG_GLOBAL=/dev/null \
+  GIT_CONFIG_NOSYSTEM=1 GITTER_DEBUG_OPEN="$fixture" GITTER_DEBUG_CLICK=684,170 \
+  GITTER_DEBUG_DUMP_RESPONDER=1 \
+  .build/DerivedData/Build/Products/Debug/Gitter.app/Contents/MacOS/Gitter 2> gitter.log
 ```
 
 ## Status / roadmap
@@ -886,11 +1037,16 @@ Cherry-picks and reverts one or several selected commits as one git sequence and
 current branch onto a commit or a branch (milestone B1), each behind a sheet the run checks
 again; creates, deletes (with Restore Tag), pushes and remotely deletes tags, one at a time.
 
-Next up (milestone B2): remotes housekeeping — prune with a confirmation plus cleaning up "gone"
-branches, setting or changing an upstream, push and pull of another branch, and adding, removing
-and renaming remotes. Everything wanted and deliberately deferred is kept
-in [`docs/BACKLOG.md`](docs/BACKLOG.md), with what is already known about each item —
-including what only a person at the keyboard can still check (real HTTPS and ssh credentials,
-the menus, tooltips, VoiceOver, the Trash's Put Back in Finder, the resolver in both
-appearances, a real rebase of a branch of yours, and a tag pushed to and deleted from your own
-remote).
+Keeps the remotes tidy (milestone B2): prunes a remote behind a sheet that names every ref with
+its id and keeps a branch at the commits only they hold, cleans up branches whose upstream is
+gone, pushes and fast-forwards a branch that is not checked out, sets, changes and unsets an
+upstream, and adds, renames, re-points and removes remotes — a half-done rename or removal read
+back and worded with how to finish.
+
+Next up (milestone B3): navigation — branch search and filter, comparing two branches, worktrees.
+Everything wanted and deliberately deferred is kept in [`docs/BACKLOG.md`](docs/BACKLOG.md), with
+what is already known about each item — including what only a person at the keyboard can still
+check (real HTTPS and ssh credentials, the menus, tooltips, VoiceOver, the Trash's Put Back in
+Finder, the resolver in both appearances, a real rebase of a branch of yours, a tag pushed to and
+deleted from your own remote, and a prune, an Edit URL with your own `insteadOf` rules, a rename
+and a removal on a real repository).
