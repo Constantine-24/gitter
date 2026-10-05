@@ -13,8 +13,13 @@ import Foundation
 ///   worktree's own index.
 /// - The nested-repository walk (`FileManager`'s enumerator, `.git` entries, not descending into
 ///   one): 20 000 entries in 0.07–0.11 s, 80 000 in 0.28–0.31 s (about 250 000 a second, APFS);
-///   `status --ignored=matching` lists a 20 000-entry `node_modules/` as one entry in 9 ms. The
-///   plan's 20 000-entry cap binds long before its 2 s.
+///   `status --ignored=matching` lists a 20 000-entry `node_modules/` as one entry in 9 ms. Ruling
+///   5 set the cap from this: 500 000 entries or 3 s.
+/// - Fix round 1: `status` skips every path component named `.git` (and, on APFS, `.GIT`); a folder
+///   it cannot open is `warning: could not open directory '<dir>/': …` and exit 0; a
+///   `core.fsmonitor` hook answering "nothing changed" hides a tracked edit from it and from
+///   `worktree remove`'s own check, and `core.fsmonitor=false` in the environment restores both;
+///   `remove` can exit 255 (`failed to delete '…'`) after the worktree has left `list`.
 /// - A worktree whose `.git` file is gone but whose folder is there is `prunable`, and `worktree
 ///   remove` refuses it (`validation failed, cannot remove working tree`, exit 128) and deletes
 ///   nothing. A locked worktree whose folder is gone has no `prunable` line (R25).
@@ -26,11 +31,11 @@ extension CLIGitBackend: GitWorktreeBackend {
 
     public func worktrees(at root: URL) async throws -> [Worktree] {
         let listed = try await listedWorktrees(at: root)
-        let held = try await worktreeAdministrativeDirectories(at: root).compactMap { admin in
-            Self.branchHeldByOperation(in: admin.directory).map { (path: admin.path, branch: $0) }
+        let held = try await worktreeAdministrativeDirectories(at: root).map { admin in
+            (path: admin.path, branches: Self.operationBranches(in: admin.directory))
         }
         return listed.map { worktree in
-            worktree.with(operationBranch: held.first { Self.samePath($0.path, worktree.path) }?.branch)
+            worktree.with(operationBranches: held.first { Self.samePath($0.path, worktree.path) }?.branches ?? [])
         }
     }
 
@@ -40,17 +45,14 @@ extension CLIGitBackend: GitWorktreeBackend {
         return WorktreeListParser.parse(data)
     }
 
-    /// The branch a rebase or a bisect holds in the worktree whose administrative directory is
-    /// `directory`, as `worktreeUsing` reads it (R14): `rebase-merge/head-name`, then
-    /// `rebase-apply/head-name` unless that is an `am` (`rebase-apply/applying`), then
-    /// `BISECT_START` — a branch's short name, or an id when the bisect began detached.
-    static func branchHeldByOperation(in directory: URL) -> String? {
-        let file = { (name: String) in Self.contents(of: directory.appendingPathComponent(name)) }
-        if let ref = file("rebase-merge/head-name"), ref.hasPrefix("refs/heads/") { return ref }
-        let applying = FileManager.default.fileExists(atPath: directory.appendingPathComponent("rebase-apply/applying").path)
-        if !applying, let ref = file("rebase-apply/head-name"), ref.hasPrefix("refs/heads/") { return ref }
-        if let start = file("BISECT_START"), !start.isEmpty, !isFullObjectID(start) { return "refs/heads/" + start }
-        return nil
+    /// The branches an operation holds in the worktree whose administrative directory is
+    /// `directory` (R14): `branchesHeld(in:)`'s — the reader `worktreeUsing` refuses with — less
+    /// anything that is not a branch (`rebase-merge/head-name` reads `detached HEAD` for a rebase
+    /// begun detached, and `BISECT_START` an id for a bisect).
+    static func operationBranches(in directory: URL) -> [String] {
+        branchesHeld(in: directory).byOperation.filter { ref in
+            ref.hasPrefix("refs/heads/") && !isFullObjectID(String(ref.dropFirst("refs/heads/".count)))
+        }
     }
 
     // MARK: - Changes
@@ -128,6 +130,12 @@ extension CLIGitBackend: GitWorktreeBackend {
             return WorktreeRemoval(worktree: current, changes: nil, ignored: .none, stranded: stranded, refusals: refusals)
         }
         let folder = URL(fileURLWithPath: current.path, isDirectory: true)
+        // A link where the folder was: git's remove fails on it part-way (`Not a directory`,
+        // measured), and nothing read through it is the folder's own.
+        if (try? FileManager.default.attributesOfItem(atPath: folder.path))?[.type] as? FileAttributeType == .typeSymbolicLink {
+            refusals.append(.unreadable(folder.path))
+            return WorktreeRemoval(worktree: current, changes: nil, ignored: .none, stranded: stranded, refusals: refusals)
+        }
         let state = try await stateDirectory(of: folder)
         guard let gitDirectory = state else {
             refusals.append(.unreadable(folder.path))
@@ -135,14 +143,46 @@ extension CLIGitBackend: GitWorktreeBackend {
         }
         if let operation = Self.operationRefusal(in: gitDirectory) { refusals.append(operation) }
 
-        let data = try await run(["status", "--porcelain=v2", "-z", "--untracked-files=normal", "--ignored=matching"], cwd: folder)
-        let status = Self.statusEntries(data)
+        // With the settings that hide changes forced off, and its warnings read: a folder `status`
+        // cannot open is a warning and exit 0 to git (fix round 1, I2).
+        let read = try await runWithEnvironment(["status", "--porcelain=v2", "-z", "--untracked-files=normal", "--ignored=matching"], cwd: folder, extra: Self.forcedCheckConfig())
+        let status = Self.statusEntries(read.stdout)
         if !status.changes.isClean { refusals.append(.changes(status.changes)) }
         refusals += try await hiddenEdits(in: folder)
-        refusals += Self.nestedRepositories(in: folder, ignored: status.ignored, limit: walkLimit)
+        refusals += Self.unopenedFolders(in: read.stderr).map { .unreadable(folder.path + "/" + $0) }
+        refusals += try Self.walkForNestedRepositories(in: folder, limit: walkLimit)
+        var unique: [WorktreeRemovalRefusal] = []
+        for refusal in refusals where !unique.contains(refusal) { unique.append(refusal) }
         return WorktreeRemoval(
             worktree: current, changes: status.changes, ignored: Self.ignoredSummary(status.ignored),
-            stranded: stranded, refusals: refusals)
+            stranded: stranded, refusals: unique)
+    }
+
+    /// The process's environment with the two settings that make `status` — Gitter's and git's own
+    /// check inside `worktree remove` — miss what would be lost, forced back for this one command,
+    /// as the last config parameters (`withConfig`): `status.showUntrackedFiles=normal` (R21: under
+    /// `no`, untracked files are deleted) and `core.fsmonitor=false` (fix round 1, m7: a hook that
+    /// answers "nothing changed" hides an edit to a tracked file, measured). With nothing
+    /// inherited: `GIT_CONFIG_COUNT=2`, `KEY_0/VALUE_0`, `KEY_1/VALUE_1`.
+    static func forcedCheckConfig() -> [String: String] {
+        withConfig(
+            "core.fsmonitor", "false",
+            over: withConfig("status.showUntrackedFiles", "normal", over: ProcessInfo.processInfo.environment))
+    }
+
+    /// The folders a `status` warned it could not open (`warning: could not open directory
+    /// '<dir>/': <reason>`, exit 0 — measured), relative to where it ran, without the slash.
+    static func unopenedFolders(in stderr: String) -> [String] {
+        let marker = "could not open directory '"
+        return stderr.split(separator: "\n").compactMap { line -> String? in
+            guard let start = line.range(of: marker) else { return nil }
+            let rest = line[start.upperBound...]
+            guard let end = rest.range(of: "': ", options: .backwards) ?? rest.range(of: "'", options: .backwards)
+            else { return nil }
+            var folder = String(rest[..<end.lowerBound])
+            while folder.hasSuffix("/") { folder.removeLast() }
+            return folder.isEmpty ? "." : folder
+        }
     }
 
     /// The worktree's own git directory (`rev-parse --absolute-git-dir`, run in its folder), or
@@ -209,43 +249,48 @@ extension CLIGitBackend: GitWorktreeBackend {
         return refusals
     }
 
-    /// Repositories inside the ignored folders (`!` entries ending `/`): every `.git` entry — a
-    /// folder, or a file naming one elsewhere — is a repository `remove` would delete (R21). The
-    /// walk does not descend into a `.git`, or follow a link (`remove` deletes a link, not its
-    /// target). Past `limit` it stops and refuses (`.tooLargeToCheck`), with whatever it found;
-    /// a folder it cannot read refuses as `.unreadable`.
-    static func nestedRepositories(in folder: URL, ignored: [String], limit: WorktreeWalkLimit) -> [WorktreeRemovalRefusal] {
+    /// Every `.git` entry in the worktree but its own — fix round 1, I1: `status` skips any path
+    /// component named `.git`, in any case on APFS, so a `.git` or `.GIT` folder in a tracked
+    /// folder is no change to it, and a repository whose git directory is spelled `.GIT` is one git
+    /// still reads; `remove` deletes them all. So the **whole** worktree is walked, not only its
+    /// ignored folders, and any entry whose name is `.git` compared ignoring case — a folder, or a
+    /// file naming one elsewhere (a submodule's gitlink included, which git refuses anyway) —
+    /// refuses as `.nestedRepository`, named by its parent folder relative to the worktree. Only
+    /// the worktree's own top-level `.git` file is skipped. The walk does not descend into a `.git`
+    /// or follow a link (`remove` deletes a link, not its target). Past `limit` it stops and refuses
+    /// (`.tooLargeToCheck`) with whatever it found; a folder it cannot read refuses as
+    /// `.unreadable`; it checks for cancellation every 4 096 entries.
+    static func walkForNestedRepositories(in folder: URL, limit: WorktreeWalkLimit) throws -> [WorktreeRemovalRefusal] {
         let clock = ContinuousClock()
         let start = clock.now
         let deadline = Duration.seconds(limit.seconds)
         var visited = 0
         var found: [String] = []
-        for entry in ignored where entry.hasSuffix("/") {
-            let base = folder.appendingPathComponent(entry, isDirectory: true)
-            let failure = WalkFailure()
-            guard let enumerator = FileManager.default.enumerator(
-                at: base, includingPropertiesForKeys: [], options: [],
-                errorHandler: { url, _ in
-                    failure.url = url
-                    return false
-                })
-            else {
-                return [.unreadable(base.path)]
-            }
-            for case let url as URL in enumerator {
-                visited += 1
-                if visited > limit.entries || clock.now - start > deadline {
-                    return (found.isEmpty ? [] : [.nestedRepository(Array(found.prefix(WorktreeRemovalRefusal.pathLimit)))])
-                        + [.tooLargeToCheck]
-                }
-                guard url.lastPathComponent == ".git" else { continue }
-                enumerator.skipDescendants()
-                let inside = url.deletingLastPathComponent().path.dropFirst(base.path.count)
-                found.append(String(entry.dropLast()) + inside)
-            }
-            if let url = failure.url { return [.unreadable(url.path)] }
+        let nested = { found.isEmpty ? [] : [WorktreeRemovalRefusal.nestedRepository(Array(found.prefix(WorktreeRemovalRefusal.pathLimit)))] }
+        let failure = WalkFailure()
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder, includingPropertiesForKeys: [.isRegularFileKey], options: [],
+            errorHandler: { url, _ in
+                failure.url = url
+                return false
+            })
+        else {
+            return [.unreadable(folder.path)]
         }
-        return found.isEmpty ? [] : [.nestedRepository(Array(found.prefix(WorktreeRemovalRefusal.pathLimit)))]
+        for case let url as URL in enumerator {
+            visited += 1
+            if visited % 4_096 == 0 { try Task.checkCancellation() }
+            if visited > limit.entries || clock.now - start > deadline { return nested() + [.tooLargeToCheck] }
+            guard url.lastPathComponent.caseInsensitiveCompare(".git") == .orderedSame else { continue }
+            let isFile = (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) ?? false
+            // Only for a folder: called on a file, it skips the next folder's contents (measured).
+            if !isFile { enumerator.skipDescendants() }
+            if enumerator.level == 1, isFile { continue }
+            let parent = url.deletingLastPathComponent().path
+            found.append(parent.count > folder.path.count ? String(parent.dropFirst(folder.path.count + 1)) : ".")
+        }
+        if let url = failure.url { return nested() + [.unreadable(url.path)] }
+        return nested()
     }
 
     /// Where the enumerator's error handler records the folder it could not read.
@@ -375,7 +420,7 @@ extension CLIGitBackend: GitWorktreeBackend {
         let path = removal.worktree.path
         let result: ProcessRunner.StreamedResult
         do {
-            result = try await runWithEnvironment(["worktree", "remove", "--end-of-options", path], cwd: root, extra: Self.withConfig("status.showUntrackedFiles", "normal", over: ProcessInfo.processInfo.environment), allowedExitCodes: Self.anyExitCode)
+            result = try await runWithEnvironment(["worktree", "remove", "--end-of-options", path], cwd: root, extra: Self.forcedCheckConfig(), allowedExitCodes: Self.anyExitCode)
         } catch is CancellationError {
             throw WorktreeRemovalPartial.outcomeUnknown(keptBranches: kept)
         } catch {
@@ -391,9 +436,15 @@ extension CLIGitBackend: GitWorktreeBackend {
         } catch {
             throw WorktreeRemovalPartial.outcomeUnknown(keptBranches: kept)
         }
+        let words = RemoteFailureParser.gitsOwnWords(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !stillListed else {
-            let words = RemoteFailureParser.gitsOwnWords(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
             throw WorktreeRemovalPartial.refusedByGit(gitsWords: words, keptBranches: kept)
+        }
+        // Out of `list` is not removed (fix round 1, I3): git deletes the administrative entry and
+        // the `.git` file first, and can then fail on the folder — `failed to delete '…'` (exit
+        // 255, measured), the folder or some of its files left behind.
+        if result.exitCode != 0 || Self.entryExists(path) {
+            throw WorktreeRemovalPartial.removedWithLeftovers(gitsWords: words, keptBranches: kept)
         }
         return kept
     }

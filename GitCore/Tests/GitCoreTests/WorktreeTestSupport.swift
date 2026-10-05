@@ -99,7 +99,7 @@ func realPath(_ path: String) -> String {
 
 /// A shell script standing in for `/usr/bin/git` that logs every launch's **whole** argument
 /// vector (one line, NUL-free, arguments joined by a space) and the `GIT_CONFIG_COUNT` /
-/// `KEY_0` / `VALUE_0` it was started with, then runs the real git. `GitLaunchLog` keeps only the
+/// `KEY_0` / `VALUE_0` / `KEY_1` / `VALUE_1` it was started with, then runs the real git. `GitLaunchLog` keeps only the
 /// subcommand, which cannot tell `worktree add` from `worktree list`.
 ///
 /// `beforeRemove`, when given, is a shell command run just before a `worktree remove` is handed
@@ -116,7 +116,7 @@ struct WorktreeLaunchLog {
             .appendingPathComponent("gitter-wt-git-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         var script = "#!/bin/sh\n"
-        script += "printf '%s | %s %s %s\\n' \"$*\" \"$GIT_CONFIG_COUNT\" \"$GIT_CONFIG_KEY_0\" \"$GIT_CONFIG_VALUE_0\" >> '\(directory.path)/log'\n"
+        script += "printf '%s | %s %s %s %s %s\\n' \"$*\" \"$GIT_CONFIG_COUNT\" \"$GIT_CONFIG_KEY_0\" \"$GIT_CONFIG_VALUE_0\" \"$GIT_CONFIG_KEY_1\" \"$GIT_CONFIG_VALUE_1\" >> '\(directory.path)/log'\n"
         if let beforeRemove {
             script += "if [ \"$1\" = worktree ] && [ \"$2\" = remove ]; then \(beforeRemove); fi\n"
         }
@@ -133,7 +133,7 @@ struct WorktreeLaunchLog {
     /// With `stallAfterAdd`: git has finished the `worktree add`, and the stall has begun.
     var addFinished: Bool { FileManager.default.fileExists(atPath: directory.appendingPathComponent("added").path) }
 
-    /// Every launch so far: `<arguments> | <count> <key0> <value0>`.
+    /// Every launch so far: `<arguments> | <count> <key0> <value0> <key1> <value1>`.
     var launches: [String] {
         ((try? String(contentsOf: log, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
     }

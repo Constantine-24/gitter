@@ -25,7 +25,7 @@ import Testing
 
     /// Raw `git worktree remove <path>` from main, any exit code: the unguarded form.
     private func rawRemove(_ fixture: WorktreeFixture, _ name: String) async throws {
-        try await fixture.repo.git(["worktree", "remove", fixture.path(name)], allowedExitCodes: [128])
+        try await fixture.repo.git(["worktree", "remove", fixture.path(name)], allowedExitCodes: [128, 255])
     }
 
     // MARK: - A clean worktree
@@ -58,7 +58,7 @@ import Testing
         #expect(!fixture.exists("wt"))
         #expect(try await fixture.repo.revParse("refs/heads/w") == branchTip)
         #expect(git.launches(startingWith: "worktree remove")
-            == ["worktree remove --end-of-options \(fixture.listedPath("wt")) | 1 status.showUntrackedFiles normal"])
+            == ["worktree remove --end-of-options \(fixture.listedPath("wt")) | 2 status.showUntrackedFiles normal core.fsmonitor false"])
         #expect(!git.launches.contains { $0.contains("prune") })
         // The control for every "nothing launched" in this suite: a removal does launch git
         // through the same wrapper.
@@ -276,6 +276,189 @@ import Testing
             return
         }
         #expect(path.hasSuffix("build/sealed"))
+    }
+
+    // MARK: - Fix round 1: what `status` cannot see (I1, I2, m7)
+
+    /// A folder named `.git` — or `.GIT`, which APFS takes for the same name — anywhere in the
+    /// worktree, a tracked folder included: `status` skips every such path component, so nothing
+    /// in it is a change, and `remove` deletes it. The whole worktree is walked, and any `.git`
+    /// entry but the worktree's own refuses.
+    @Test(arguments: ["src/.git", "src/.GIT"])
+    func aDotGitFolderInATrackedFolderIsRefused(dotGit: String) async throws {
+        let (fixture, wt) = try await fixtureWithWorktree()
+        defer { fixture.cleanUp() }
+        try wt.write("src/a.txt", "a\n")
+        try await wt.commitAll("src")
+        try wt.write("\(dotGit)/precious.txt", "p\n")
+
+        let removal = try await check(fixture, "wt")
+
+        #expect(removal.changes == WorktreeChanges.none, "status cannot see it")
+        #expect(removal.refusals == [.nestedRepository(["src"])])
+        try await rawRemove(fixture, "wt")
+        withKnownIssue("git deletes what is under a `.git` folder status skips") {
+            #expect(fixture.exists("wt/\(dotGit)/precious.txt"))
+        }
+    }
+
+    /// A real repository whose git directory is spelled `.GIT`, inside an ignored folder: git reads
+    /// it (case-insensitive APFS), and `remove` deletes its history.
+    @Test func aRepositoryWhoseGitDirectoryIsSpelledInCapitalsIsRefused() async throws {
+        let (fixture, wt) = try await fixtureWithWorktree()
+        defer { fixture.cleanUp() }
+        let inner = TestRepo(root: wt.root.appendingPathComponent("build/inner"))
+        try FileManager.default.createDirectory(at: inner.root, withIntermediateDirectories: true)
+        try await inner.git(["init", "-q", "-b", "main"])
+        try inner.write("x.txt", "x\n")
+        try await inner.git(["add", "x.txt"])
+        try await inner.git(["-c", "user.email=t@t", "-c", "user.name=T", "commit", "-qm", "inner history"])
+        try FileManager.default.moveItem(
+            at: inner.root.appendingPathComponent(".git"), to: inner.root.appendingPathComponent(".GIT"))
+        // Not vacuous: git still reads the repository through `.GIT`.
+        #expect(!(try await inner.git(["log", "--oneline"])).isEmpty)
+
+        let removal = try await check(fixture, "wt")
+
+        #expect(removal.refusals == [.nestedRepository(["build/inner"])])
+        try await rawRemove(fixture, "wt")
+        withKnownIssue("git deletes a repository spelled `.GIT` in an ignored folder") {
+            #expect(fixture.exists("wt/build/inner/.GIT/HEAD"))
+        }
+    }
+
+    /// A folder `status` cannot open — not an ignored one — is only a warning to git (exit 0), and
+    /// the check refuses it rather than calling the worktree clean.
+    @Test func anUnreadableFolderOutsideTheIgnoredOnesIsRefused() async throws {
+        let (fixture, wt) = try await fixtureWithWorktree()
+        defer { fixture.cleanUp() }
+        let sealed = wt.root.appendingPathComponent("src/sealed")
+        try wt.write("src/sealed/p.txt", "p\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: sealed.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: sealed.path) }
+
+        let removal = try await check(fixture, "wt")
+
+        #expect(removal.refusals == [.unreadable(fixture.listedPath("wt") + "/src/sealed")])
+        try await rawRemove(fixture, "wt")
+        withKnownIssue("git calls it clean and deletes the tracked files around it") {
+            #expect(fixture.exists("wt/f.txt"))
+        }
+    }
+
+    /// The status reads look past the walk: an unreadable folder named by `status`'s warning.
+    @Test func statusWarningsNameTheFoldersTheyCouldNotOpen() {
+        let stderr = "warning: could not open directory 'src/sealed/': Permission denied\n"
+            + "warning: could not open directory 'a b/c/': Permission denied\nwarning: something else\n"
+
+        #expect(CLIGitBackend.unopenedFolders(in: stderr) == ["src/sealed", "a b/c"])
+    }
+
+    /// A `core.fsmonitor` hook that says nothing changed hides an edit to a tracked file from
+    /// `status` and from git's own remove check. The check's reads, and the remove, run with
+    /// `core.fsmonitor=false` forced.
+    @Test func aLyingFsmonitorHookDoesNotHideAnEdit() async throws {
+        let (fixture, wt) = try await fixtureWithWorktree()
+        defer { fixture.cleanUp() }
+        let hook = fixture.base.appendingPathComponent("fsmonitor.sh")
+        try "#!/bin/sh\nprintf 'token\\0'\n".write(to: hook, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path)
+        try await fixture.repo.git(["config", "core.fsmonitor", hook.path])
+        try await wt.git(["update-index", "--fsmonitor"])
+        try await wt.git(["update-index", "--fsmonitor-valid", "f.txt"])
+        try wt.write("f.txt", "an edit the hook hides\n")
+        // Not vacuous: git's own status, trusting the hook, sees nothing.
+        #expect(try await wt.git(["status", "--porcelain=v2", "-z"]).isEmpty)
+
+        let removal = try await check(fixture, "wt")
+
+        #expect(removal.refusals == [.changes(WorktreeChanges(staged: 0, unstaged: 1, untracked: 0, conflicted: 0))])
+        try await rawRemove(fixture, "wt")
+        withKnownIssue("git, trusting the hook, deletes the edit") {
+            #expect(fixture.exists("wt/f.txt"))
+        }
+    }
+
+    // MARK: - Fix round 1: a half-done remove (I3)
+
+    /// git takes the worktree out of `list` and then cannot finish: a folder it cannot empty, or
+    /// the folder replaced by a link after the check. Not a success — `removedWithLeftovers`, with
+    /// git's words.
+    @Test(arguments: ["undeletable", "symlink"])
+    func aRemoveGitCouldNotFinishIsRemovedWithLeftovers(how: String) async throws {
+        let (fixture, wt) = try await fixtureWithWorktree()
+        defer { fixture.cleanUp() }
+        let stuck = fixture.path("wt/build/x")
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stuck) }
+        var swap: String?
+        if how == "undeletable" {
+            try wt.write("build/x/o.o", "o\n")
+            try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: stuck)
+        } else {
+            swap = "mv '\(fixture.path("wt"))' '\(fixture.path("wt-real"))' && ln -s '\(fixture.path("wt-real"))' '\(fixture.path("wt"))'"
+        }
+        let removal = try await check(fixture, "wt")
+        #expect(removal.refusals == [])
+        let git = try WorktreeLaunchLog(beforeRemove: swap)
+        defer { git.cleanUp() }
+
+        let error = await thrownError { _ = try await git.backend.removeWorktree(removal, keeping: [:], at: fixture.repo.root) }
+
+        guard case .removedWithLeftovers(let words, let kept) = error as? WorktreeRemovalPartial else {
+            Issue.record("expected .removedWithLeftovers, got \(String(describing: error))")
+            return
+        }
+        #expect(words.contains("failed to delete"), "\(words)")
+        #expect(kept == [])
+        #expect(try await !fixture.isListed("wt"))
+        // The control: git's own exit says it failed, and the worktree has left `list` anyway.
+        try await fixture.addOnNewBranch("wt2", "w2")
+        try fixture.write("wt2/build/y/o.o", "o\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: fixture.path("wt2/build/y"))
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fixture.path("wt2/build/y")) }
+        try await fixture.repo.git(["worktree", "remove", fixture.path("wt2")], allowedExitCodes: [255])
+        let stillListed = try await fixture.isListed("wt2")
+        withKnownIssue("an unlisted worktree is not a removed one") {
+            #expect(stillListed)
+        }
+    }
+
+    /// A worktree whose folder is a link (to the real one) by the time of the check: refused,
+    /// with nothing read through the link.
+    @Test func aWorktreeFolderThatIsALinkIsRefused() async throws {
+        let (fixture, _) = try await fixtureWithWorktree()
+        defer { fixture.cleanUp() }
+        try FileManager.default.moveItem(atPath: fixture.path("wt"), toPath: fixture.path("wt-real"))
+        try FileManager.default.createSymbolicLink(atPath: fixture.path("wt"), withDestinationPath: fixture.path("wt-real"))
+
+        let removal = try await check(fixture, "wt")
+
+        #expect(removal.refusals == [.unreadable(fixture.listedPath("wt"))])
+        #expect(removal.changes == nil)
+    }
+
+    // MARK: - Fix round 1: the walk (Ruling 5)
+
+    @Test func theWalksCapIsHalfAMillionEntriesOrThreeSeconds() {
+        #expect(WorktreeWalkLimit.standard == WorktreeWalkLimit(entries: 500_000, seconds: 3))
+    }
+
+    /// The walk gives up when its task is cancelled, rather than walking on to the cap.
+    @Test func theWalkStopsWhenCancelled() async throws {
+        let (fixture, wt) = try await fixtureWithWorktree()
+        defer { fixture.cleanUp() }
+        for n in 0..<5_000 {
+            try Data().write(to: wt.root.appendingPathComponent("many-\(n).o"))
+        }
+        let folder = URL(fileURLWithPath: fixture.listedPath("wt"), isDirectory: true)
+
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try CLIGitBackend.walkForNestedRepositories(in: folder, limit: .standard)
+        }
+        let error = await thrownError { _ = try await task.value }
+
+        #expect(error is CancellationError)
     }
 
     // MARK: - A detached worktree's own commits (R22)
@@ -503,7 +686,7 @@ import Testing
         #expect(try await git.backend.removeWorktree(removal, keeping: [:], at: fixture.repo.root) == [])
         #expect(try await !fixture.isListed("wt"))
         #expect(git.launches(startingWith: "worktree remove")
-            == ["worktree remove --end-of-options \(fixture.listedPath("wt")) | 1 status.showUntrackedFiles normal"])
+            == ["worktree remove --end-of-options \(fixture.listedPath("wt")) | 2 status.showUntrackedFiles normal core.fsmonitor false"])
         #expect(!git.launches.contains { $0.contains("prune") }, "\(git.launches)")
         #expect(try await fixture.repo.revParse("refs/heads/w") != "")
     }

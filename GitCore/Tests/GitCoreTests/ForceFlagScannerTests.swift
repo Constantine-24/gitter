@@ -2237,20 +2237,25 @@ import Testing
     /// --porcelain -z` (R13); `add -q`, the path and an existing local branch's short name after
     /// `--end-of-options` — never `-f`, `-b`, `-B`, `--orphan`, `--detach`, a missing commit-ish or
     /// a `refs/heads/…` one (R17, R18); `remove`, the path as listed after `--end-of-options`, never
-    /// `-f` (R20), run with `status.showUntrackedFiles=normal` forced (R21). The reads run in the
-    /// worktree's folder (cwd, never `-C`): `status` always with `--untracked-files=normal` (R15,
-    /// R21), `ls-files -v -z` (assume-unchanged and skip-worktree tags), `rev-parse
+    /// `-f` (R20), run with `status.showUntrackedFiles=normal` and `core.fsmonitor=false` forced
+    /// (R21; fix round 1, m7). The reads run in the worktree's folder (cwd, never `-C`): `status`
+    /// always with `--untracked-files=normal` (R15, R21), the check's under the same forced
+    /// settings, `ls-files -v -z` (assume-unchanged and skip-worktree tags), `rev-parse
     /// --absolute-git-dir --show-toplevel` (its state files, from its own folder), and the branch check by full ref. The stranded count
     /// is B2's own vector (`StrandedHolders`).
     static let worktreeContract = [
         #"let data = try await run(["worktree", "list", "--porcelain", "-z"], cwd: root)"#,
         #"let data = try await run(["status", "--porcelain=v2", "-z", "--untracked-files=normal"], cwd: folder)"#,
-        #"let data = try await run(["status", "--porcelain=v2", "-z", "--untracked-files=normal", "--ignored=matching"], cwd: folder)"#,
+        #"let read = try await runWithEnvironment(["status", "--porcelain=v2", "-z", "--untracked-files=normal", "--ignored=matching"], cwd: folder, extra: Self.forcedCheckConfig())"#,
         #"let data = try await run(["ls-files", "-v", "-z"], cwd: folder)"#,
         #"let data = try await run(["rev-parse", "--absolute-git-dir", "--show-toplevel"], cwd: folder)"#,
         #"let data = try await run(["for-each-ref", "--format=%(refname)%00%(symref)", "--end-of-options", "refs/heads/\(branch)"], cwd: root)"#,
         #"result = try await runWithEnvironment(["worktree", "add", "-q", "--end-of-options", path, branch], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
-        #"result = try await runWithEnvironment(["worktree", "remove", "--end-of-options", path], cwd: root, extra: Self.withConfig("status.showUntrackedFiles", "normal", over: ProcessInfo.processInfo.environment), allowedExitCodes: Self.anyExitCode)"#,
+        #"result = try await runWithEnvironment(["worktree", "remove", "--end-of-options", path], cwd: root, extra: Self.forcedCheckConfig(), allowedExitCodes: Self.anyExitCode)"#,
+        // The environment both of those run with (fix round 1, m7): the two settings that hide
+        // what would be lost, forced back.
+        #""core.fsmonitor", "false","#,
+        #"over: withConfig("status.showUntrackedFiles", "normal", over: ProcessInfo.processInfo.environment))"#,
     ]
 
     @Test(arguments: worktreeContract)

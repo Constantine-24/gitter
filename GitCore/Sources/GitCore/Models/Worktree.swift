@@ -22,7 +22,7 @@ public struct Worktree: Sendable, Hashable, Identifiable {
     /// The commit its HEAD holds, a full id; nil for a bare main repository, which has none.
     public let head: String?
     /// The branch checked out there, a full `refs/heads/…` name; nil when HEAD is detached —
-    /// which it also is while a rebase or a bisect runs there (`operationBranch`).
+    /// which it also is while a rebase or a bisect runs there (`operationBranches`).
     public let branch: String?
     /// The main worktree: always `list`'s first record. It cannot be removed.
     public let isMain: Bool
@@ -33,19 +33,26 @@ public struct Worktree: Sendable, Hashable, Identifiable {
     /// Why git calls it prunable (`prunable <reason>`) — its folder, or the `.git` file in it, is
     /// gone; nil when it is there. A locked missing worktree has no such line (R25).
     public let missingReason: String?
-    /// The branch a rebase or a bisect in this worktree holds, a full `refs/heads/…` name, read
-    /// from its state files (`rebase-merge/head-name`, `rebase-apply/head-name`, `BISECT_START`):
-    /// `list` shows such a worktree as detached and `%(worktreepath)` leaves the branch empty,
-    /// yet git refuses to delete, rename or check that branch out anywhere else (R14). nil when
-    /// none.
-    public let operationBranch: String?
+    /// The branches an operation in this worktree holds, full `refs/heads/…` names, read from its
+    /// state files by the one reader git's own rule needs (`CLIGitBackend.branchesHeld(in:)`, B2's
+    /// `worktreeUsing`): the branch a rebase started from (`rebase-merge/head-name`, or
+    /// `rebase-apply/head-name` when it is not an `am`), the one a bisect started from
+    /// (`BISECT_START`), then every branch a `rebase --update-refs` will move
+    /// (`rebase-merge/update-refs`). `list` shows such a worktree as detached and
+    /// `%(worktreepath)` leaves those branches empty, yet git refuses to delete, rename or check
+    /// any of them out anywhere else (R14). Empty when none.
+    public let operationBranches: [String]
+
+    /// The first of `operationBranches` — the branch the rebase or bisect itself started from,
+    /// when there is one — or nil.
+    public var operationBranch: String? { operationBranches.first }
 
     /// Whether its folder is gone (`missingReason` set).
     public var isMissing: Bool { missingReason != nil }
 
     public init(
         path: String, head: String?, branch: String?, isMain: Bool, isBare: Bool, lock: WorktreeLock?,
-        missingReason: String?, operationBranch: String? = nil
+        missingReason: String?, operationBranches: [String] = []
     ) {
         self.path = path
         self.head = head
@@ -54,14 +61,14 @@ public struct Worktree: Sendable, Hashable, Identifiable {
         self.isBare = isBare
         self.lock = lock
         self.missingReason = missingReason
-        self.operationBranch = operationBranch
+        self.operationBranches = operationBranches
     }
 
-    /// A copy holding `operationBranch`.
-    func with(operationBranch: String?) -> Worktree {
+    /// A copy holding `operationBranches`.
+    func with(operationBranches: [String]) -> Worktree {
         Worktree(
             path: path, head: head, branch: branch, isMain: isMain, isBare: isBare, lock: lock,
-            missingReason: missingReason, operationBranch: operationBranch)
+            missingReason: missingReason, operationBranches: operationBranches)
     }
 }
 
@@ -132,12 +139,13 @@ public enum WorktreeRemovalRefusal: Error, Sendable, Hashable {
     /// Skip-worktree entries (`S`/`s`) whose file is present: an edit to it is invisible in the
     /// same way. Paths, at most `pathLimit`.
     case skipWorktreePresent([String])
-    /// Git repositories inside ignored folders — a `.git` folder or file — which `remove`
-    /// deletes, history and all (R21). Paths of the repositories' folders, relative to the
-    /// worktree, at most `pathLimit`.
+    /// `.git` entries anywhere in the worktree but its own — compared ignoring case, a folder or a
+    /// file: a repository nested in an ignored folder, or a `.git` folder `status` skips, which
+    /// `remove` deletes, history and all (R21; fix round 1, I1). Paths of their parent folders,
+    /// relative to the worktree, at most `pathLimit`.
     case nestedRepository([String])
-    /// The ignored folders hold more entries than Gitter walks (`WorktreeWalkLimit`), or the
-    /// walk took too long: a repository inside them could not be ruled out.
+    /// The worktree holds more entries than Gitter walks (`WorktreeWalkLimit`), or the walk took
+    /// too long: a repository inside it could not be ruled out.
     case tooLargeToCheck
     /// A folder or state file Gitter must read to make the check could not be read (B3 Task 2,
     /// carried note 4: unreadable is never "nothing there"). The path, as Gitter tried it.
@@ -186,9 +194,10 @@ struct WorktreeWalkLimit: Sendable, Hashable {
     /// Seconds since the walk began.
     let seconds: Double
 
-    /// The plan's cap: 20 000 entries or 2 s. Measured (B3 Task 2): about 250 000 entries a second
-    /// on an APFS SSD, so the entry count is the cap that binds.
-    static let standard = WorktreeWalkLimit(entries: 20_000, seconds: 2)
+    /// Ruling 5: 500 000 entries or 3 s, whichever comes first (the plan's 20 000 / 2 s refused
+    /// most worktrees with a `node_modules/` or `.build/`). Measured (B3 Task 2): about 250 000
+    /// entries a second on an APFS SSD.
+    static let standard = WorktreeWalkLimit(entries: 500_000, seconds: 3)
 }
 
 /// Why Add Worktree was refused. Each is thrown before git runs.
@@ -237,6 +246,11 @@ public enum WorktreeRemovalPartial: Error, Sendable, Hashable {
     /// branches, created before git ran, stay. git checks as it deletes, so files may be gone —
     /// read the worktree back.
     case refusedByGit(gitsWords: String, keptBranches: [String])
+    /// git took the worktree out of `list` but did not finish: it exited non-zero, or its folder
+    /// is still there (B3 Task 2 fix round 1, I3). Measured: `failed to delete '…': Directory not
+    /// empty` / `Permission denied` / `Not a directory`, exit 255, after the administrative entry,
+    /// the `.git` file and some files were already deleted. git's own words; the kept branches stay.
+    case removedWithLeftovers(gitsWords: String, keptBranches: [String])
     /// Cancelled while git was removing, or the list could not be read back afterwards: whether
     /// the worktree is gone is **not known**. The kept branches stay.
     case outcomeUnknown(keptBranches: [String])

@@ -153,17 +153,32 @@ extension CLIGitBackend {
     func worktreeUsing(_ branch: String, at root: URL) async throws -> String? {
         let ref = "refs/heads/\(branch)"
         for worktree in try await worktreeAdministrativeDirectories(at: root) {
-            let dir = worktree.directory
-            let file = { (name: String) in Self.contents(of: dir.appendingPathComponent(name)) }
-            let applying = FileManager.default.fileExists(atPath: dir.appendingPathComponent("rebase-apply/applying").path)
-            if file("HEAD") == "ref: \(ref)" || file("rebase-merge/head-name") == ref
-                || (!applying && file("rebase-apply/head-name") == ref) || file("BISECT_START") == branch
-                || Self.refsAnUpdateRefsRebaseWillMove(file("rebase-merge/update-refs")).contains(ref)
-            {
+            let held = Self.branchesHeld(in: worktree.directory)
+            if held.head == ref || held.byOperation.contains(ref) {
                 return worktree.path
             }
         }
         return nil
+    }
+
+    /// What one worktree's state files say it holds — **the one reader** of them (B3 Task 2 fix
+    /// round 1: `worktreeUsing` and `Worktree.operationBranches` both read it): `head`, the ref its
+    /// HEAD names (`ref: <ref>`; nil when detached), and `byOperation`, every ref an operation there
+    /// holds, in this order — the branch a rebase started from (`rebase-merge/head-name`, or
+    /// `rebase-apply/head-name` when it is not an `am`), the branch a bisect started from
+    /// (`refs/heads/` + `BISECT_START`, which holds an id when the bisect began detached), then
+    /// each ref a `rebase --update-refs` will move (`rebase-merge/update-refs`).
+    static func branchesHeld(in directory: URL) -> (head: String?, byOperation: [String]) {
+        let file = { (name: String) in Self.contents(of: directory.appendingPathComponent(name)) }
+        let head = file("HEAD").flatMap { $0.hasPrefix("ref: ") ? String($0.dropFirst("ref: ".count)) : nil }
+        var held: [String] = []
+        let add = { (ref: String?) in if let ref, !ref.isEmpty, !held.contains(ref) { held.append(ref) } }
+        add(file("rebase-merge/head-name"))
+        let applying = FileManager.default.fileExists(atPath: directory.appendingPathComponent("rebase-apply/applying").path)
+        if !applying { add(file("rebase-apply/head-name")) }
+        add(file("BISECT_START").flatMap { $0.isEmpty ? nil : "refs/heads/" + $0 })
+        for ref in refsAnUpdateRefsRebaseWillMove(file("rebase-merge/update-refs")) { add(ref) }
+        return (head, held)
     }
 
     /// The refs a `rebase --update-refs` will move when it finishes: `rebase-merge/update-refs`

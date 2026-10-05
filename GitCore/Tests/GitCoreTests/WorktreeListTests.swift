@@ -125,6 +125,40 @@ import Testing
         #expect(try await fixture.repo.revParse("refs/heads/op") != "")
     }
 
+    /// Fix round 1 (m6): one state-file reader. A `rebase --update-refs` in another worktree holds
+    /// the branch it rebases and every branch it will move at the end — the same set B2's
+    /// `worktreeUsing` refuses.
+    @Test func aRebaseWithUpdateRefsHoldsEveryBranchItWillMove() async throws {
+        let fixture = try await WorktreeFixture.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
+        let c1 = try await repo.headSha()
+        let low = String(decoding: try await repo.git(["commit-tree", "-p", c1, "-m", "L1", "\(c1)^{tree}"]), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let top = String(decoding: try await repo.git(["commit-tree", "-p", low, "-m", "T1", "\(c1)^{tree}"]), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try await repo.git(["branch", "low", low])
+        try await repo.git(["branch", "top", top])
+        try repo.write("m.txt", "m\n")
+        try await repo.commitAll("M1")
+        try await fixture.addRaw("wt-top", ["top"])
+        let other = fixture.repo(at: "wt-top")
+        try await other.git(["rebase", "-q", "--update-refs", "-x", "false", "main"], allowedExitCodes: [1])
+        let updateRefs = try String(
+            contentsOf: repo.root.appendingPathComponent(".git/worktrees/wt-top/rebase-merge/update-refs"), encoding: .utf8)
+        #expect(updateRefs.hasPrefix("refs/heads/low\n"), "\(updateRefs)")
+
+        let listed = try await fixture.listed("wt-top")
+
+        #expect(listed.operationBranches == ["refs/heads/top", "refs/heads/low"])
+        #expect(listed.operationBranch == "refs/heads/top")
+        // The same reader refuses an add for `low`.
+        let error = await thrownError {
+            _ = try await fixture.backend.addWorktree(path: fixture.path("new"), branch: "low", at: repo.root)
+        }
+        #expect(error as? AddWorktreeRefusal == .branchHeldByOperation(path: fixture.listedPath("wt-top")))
+    }
+
     // MARK: - Changes (R15)
 
     /// Staged, unstaged, untracked and conflicted entries, counted from `status` run in the

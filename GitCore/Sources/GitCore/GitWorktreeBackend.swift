@@ -11,9 +11,10 @@ import Foundation
 ///   a repository nested in one included — files `info/exclude` hides, assume-unchanged and
 ///   skip-worktree edits, and, under `status.showUntrackedFiles=no`, untracked files (R21). A
 ///   rebase, a bisect or a clean merge in progress does not stop it either (R20). So Gitter checks
-///   every one of those itself (`removalCheck`), makes the check again just before git runs, and
-///   runs git with `status.showUntrackedFiles=normal` put back through the environment, which
-///   makes git refuse a file that appeared in between (R21, R24).
+///   every one of those itself (`removalCheck`), walking the whole worktree for `.git` entries
+///   `status` never shows, makes the check again just before git runs, and runs both its own
+///   `status` and git with `status.showUntrackedFiles=normal` and `core.fsmonitor=false` put back
+///   through the environment, which makes git refuse a file that appeared in between (R21, R24).
 /// - **Add never checks out or creates a branch the user did not choose.** `add <path> <name>`
 ///   creates a tracking branch for a remote-only name whatever `--no-guess-remote` says, detaches
 ///   at a `refs/heads/…` name, and omitting the name creates a branch named after the folder
@@ -29,7 +30,7 @@ import Foundation
 /// are findings there.
 public protocol GitWorktreeBackend: Sendable {
     /// Every worktree, the main one first (`worktree list --porcelain -z`, R13), each with the
-    /// branch a rebase or bisect there holds (R14).
+    /// branches an operation there holds (R14), read by B2's one state-file reader.
     func worktrees(at root: URL) async throws -> [Worktree]
 
     /// `worktree`'s changes: `status --porcelain=v2 -z --untracked-files=normal`, run in its folder
@@ -44,7 +45,8 @@ public protocol GitWorktreeBackend: Sendable {
     /// The main worktree is refused (`.isMain`) without reading anything else. A missing one has
     /// no changes (`nil`) and is not walked: only a lock refuses it. Any other is refused for every
     /// one of `WorktreeRemovalRefusal`'s reasons that applies — and for one it could not rule out:
-    /// a folder or state file it cannot read, a walk past `WorktreeWalkLimit.standard`.
+    /// a folder or state file it cannot read (a folder `status` only warns about included), a walk
+    /// of the whole worktree past `WorktreeWalkLimit.standard`.
     func removalCheck(_ worktree: Worktree, at root: URL) async throws -> WorktreeRemoval
 
     /// Adds a worktree at the absolute `path` for the existing local branch `branch` (its short
@@ -70,8 +72,10 @@ public protocol GitWorktreeBackend: Sendable {
     /// - Kept branches are created with B2's `createKeptBranches`; its refusals and its
     ///   `RemoteAdminPartial.keptBranchesCancelled` come through as they are.
     /// - Then `worktree remove --end-of-options <path as listed>`, with
-    ///   `status.showUntrackedFiles=normal` forced (R21), and `list` read back: gone returns the
-    ///   kept branches; still listed is `.refusedByGit`; cancelled, or unreadable afterwards,
-    ///   `.outcomeUnknown`. `worktree prune` is never run (R25).
+    ///   `status.showUntrackedFiles=normal` and `core.fsmonitor=false` forced (R21), and `list` read
+    ///   back: gone, with git's exit 0 and no folder left, returns the kept branches; gone but git
+    ///   failed or the folder is still there is `.removedWithLeftovers`; still listed is
+    ///   `.refusedByGit`; cancelled, or unreadable afterwards, `.outcomeUnknown`. `worktree prune` is
+    ///   never run (R25).
     func removeWorktree(_ removal: WorktreeRemoval, keeping: [String: String], at root: URL) async throws -> [String]
 }
