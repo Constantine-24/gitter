@@ -96,10 +96,12 @@ extension RepositoryStore {
     static let currentBranchReason = "This is the branch you are on."
 
     /// Why switching to `branch` is off right now, or nil when it is available. Detaching at it
-    /// is a different question (that is always possible).
+    /// is a different question (that is always possible). A branch another worktree has checked
+    /// out, or a rebase or bisect there holds, cannot be checked out here (B3, R14): git refuses,
+    /// and the reason says which worktree to open instead.
     func switchBlockedReason(for branch: String) -> String? {
         if branch == currentBranch { return Self.currentBranchReason }
-        return branchSwitchingBlockedReason
+        return worktreeHeldReason(branch) ?? branchSwitchingBlockedReason
     }
 
     /// Why merging `branch` into HEAD is off right now, or nil when it is available.
@@ -110,9 +112,9 @@ extension RepositoryStore {
 
     /// Why deleting `branch` is off right now, or nil when it is available. Not gated on an
     /// operation in progress: deleting some *other* branch mid-merge touches neither the
-    /// worktree nor the index.
+    /// worktree nor the index. Off for a branch another worktree holds (B3, R14): git refuses.
     func deleteBlockedReason(for branch: String) -> String? {
-        branch == currentBranch ? Self.currentBranchReason : nil
+        branch == currentBranch ? Self.currentBranchReason : worktreeHeldReason(branch)
     }
 
     func canSwitch(to branch: String) -> Bool {

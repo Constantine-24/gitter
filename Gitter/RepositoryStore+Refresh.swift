@@ -63,9 +63,15 @@ extension RepositoryStore {
     ///   worktree). It does not run on the lane: the fast-forward runs in the lane's `then`
     ///   and Merge or Rebase from the sheet, both after the lane is free and through
     ///   `mutate`, which reloads by itself. While a pull holds the lane it only fetches.
+    ///
+    /// A linked worktree's fetch writes its `FETCH_HEAD` in its own git directory,
+    /// `.git/worktrees/<id>/FETCH_HEAD` (B3, R28), which the watcher sees once it watches that
+    /// directory: it is the lane's own write too.
     static func isLaneOwnWrite(_ path: String, during kind: RemoteActivity.Kind) -> Bool {
         guard let range = path.range(of: "/.git/") else { return false }
         let inGit = path[range.upperBound...]
+        let perWorktree = inGit.split(separator: "/", omittingEmptySubsequences: false)
+        if perWorktree.count == 3, perWorktree[0] == "worktrees", perWorktree[2] == "FETCH_HEAD" { return true }
         if inGit == "FETCH_HEAD" || inGit.hasPrefix("refs/remotes/")
             || inGit.hasPrefix("logs/refs/remotes/") || inGit.hasPrefix("refs/tags/")
         {
@@ -128,6 +134,8 @@ extension RepositoryStore {
         setLoading(true)
         defer { setLoading(false) }
 
+        // The worktrees beside the snapshot, off the main actor (B3 Task 3): never a failure.
+        async let worktreeRead = Self.readWorktreeState(backend: backend, root: root)
         do {
             let newSnapshot = try await backend.snapshot(at: root)
             // The stop of the operation it shows, if any, read before either is written: the bar
@@ -137,10 +145,12 @@ extension RepositoryStore {
             // read shows nothing rather than failing the snapshot.
             let halted =
                 newSnapshot.status.operationInProgress == nil ? (try? await backend.haltedSequence(at: root)) ?? nil : nil
+            let worktreeState = await worktreeRead
             // The repository may have been switched (via `open`) while this snapshot was in
             // flight; a snapshot from before that must never overwrite the new state.
             guard generation == capturedGeneration else { return }
             setSnapshot(newSnapshot)
+            setWorktreeState(worktreeState)
             setOperationStop(stop, halted: halted)
             syncDraftWithOperation()
             // A mutation's own failure outranks the reload it provokes. git writes inside

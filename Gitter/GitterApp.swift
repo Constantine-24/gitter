@@ -132,6 +132,23 @@ struct GitterApp: App {
             CommandMenu("Remotes") {
                 RemotesMenuContent(store: store)
             }
+            // B3: ⌘F into the sidebar's filter (⇧⌘F is Fetch).
+            SidebarFilterCommands()
+        }
+    }
+}
+
+/// "Filter Sidebar" (⌘F) in the Edit menu, after its text-editing items: puts the keyboard in the
+/// sidebar's filter field of the window in front. Off with no repository open, where there is no
+/// sidebar.
+struct SidebarFilterCommands: Commands {
+    @FocusedValue(\.focusSidebarFilter) private var focusSidebarFilter
+
+    var body: some Commands {
+        CommandGroup(after: .textEditing) {
+            Button("Filter Sidebar") { focusSidebarFilter?.focus() }
+                .keyboardShortcut("f")
+                .disabled(focusSidebarFilter == nil)
         }
     }
 }

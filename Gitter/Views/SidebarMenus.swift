@@ -297,6 +297,32 @@ struct TagMenu: View {
     }
 }
 
+/// A worktree's row (B3): open it in this window, show it in Finder, copy its path. Open is off
+/// for this window's own worktree, a missing one and a bare repository, and Reveal for a missing
+/// one, each with the reason at the top. Copy Path copies the path exactly as git lists it.
+/// Remove Worktree… joins them in Task 5.
+struct WorktreeMenu: View {
+    let worktree: Worktree
+
+    @Environment(RepositoryStore.self) private var store
+
+    var body: some View {
+        let openReason = store.openWorktreeBlockedReason(worktree)
+        let revealReason = WorktreeWording.revealBlocked(worktree)
+
+        MenuReasons(reasons: [openReason, revealReason])
+
+        Button(WorktreeWording.openTitle) { store.openWorktree(worktree) }
+            .disabled(openReason != nil)
+
+        Divider()
+
+        Button(WorktreeWording.revealTitle) { store.revealWorktree(worktree) }
+            .disabled(revealReason != nil)
+        Button(WorktreeWording.copyPathTitle) { Clipboard.copy(worktree.path) }
+    }
+}
+
 /// One commit in the list, or several selected together: cherry-pick or revert them, rebase onto
 /// one; and for a single commit branch or tag from it, check it out detached, copy its sha.
 ///

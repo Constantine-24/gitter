@@ -38,8 +38,11 @@ extension RepositoryStore {
         return RemoteAdminWording.pushBranchBlocked(branch, gate: remoteGate)
     }
 
+    /// Off for a branch another worktree holds as well (B3, R14): git refuses to move it, and
+    /// GitCore's own check would refuse after the fetch.
     func fastForwardBlockedReason(_ name: String) -> String? {
         guard let branch = localBranch(name) else { return RemoteAdminWording.noSuchBranch(name) }
+        if branch.name != currentBranch, let reason = worktreeHeldReason(name) { return reason }
         return RemoteAdminWording.fastForwardBlocked(branch, gate: remoteGate)
     }
 

@@ -202,6 +202,21 @@ final class RepositoryStore {
     /// receipts go (`refreshDeletedTagsNotice`), never brought back once replaced or dismissed.
     private var deletedTagsNotice: Notice?
 
+    /// The sidebar filter's text (B3, `SidebarFilter`). View state hosted here, like
+    /// `activeSheet` (B3 Ruling 2): the `.searchable` field binds it directly. It survives
+    /// refreshes, is cleared by `open()` — it was about the repository that was open — and is
+    /// never persisted.
+    var sidebarFilter = ""
+
+    /// The worktrees, their changes and this window's among them (B3, `RepositoryStore
+    /// +Worktrees`), read with every snapshot and written with it (`setWorktreeState`).
+    private(set) var worktreeState = WorktreeState()
+
+    /// Where git keeps this repository's files for the worktree that is open — its own git
+    /// directory and the common one (`RepositoryDirectories`) — read by `open()` for the watcher
+    /// and the window title, and by the discard fingerprint. Nil with no repository.
+    private(set) var directories: RepositoryDirectories?
+
     #if DEBUG
         /// How many snapshot loads have run, for the harness's "exactly one refresh when the
         /// lane frees" check.
@@ -376,6 +391,10 @@ final class RepositoryStore {
         remoteTagsSeen = RemoteTagsSeen()
         deletedTags = DeletedTags()
         deletedTagsNotice = nil
+        // The filter was typed for the repository being left (B3 Ruling 2), and its worktrees
+        // are not this one's.
+        sidebarFilter = ""
+        worktreeState = WorktreeState()
         // The automatic fetch belongs to the repository it fetches: the old one's schedule
         // stops here, and its mark says nothing about this one. This one's starts once its first
         // snapshot is in (below), so the first tick can see whether it has a remote at all.
@@ -389,7 +408,11 @@ final class RepositoryStore {
         UserDefaults.standard.set(standardized.path, forKey: Self.lastRepositoryPathKey)
         NSDocumentController.shared.noteNewRecentDocumentURL(standardized)
 
-        watcher = RepositoryWatcher(path: standardized.path) { [weak self] paths in
+        // A linked worktree's HEAD, index and refs are outside its root (R28): the watcher is
+        // given where they are (`RepositoryWatcher.paths`).
+        directories = RepositoryDirectories.resolve(root: standardized)
+        watcher = RepositoryWatcher(paths: RepositoryWatcher.paths(root: standardized, directories: directories)) {
+            [weak self] paths in
             self?.scheduleRefresh(changed: paths)
         }
 
@@ -482,6 +505,12 @@ final class RepositoryStore {
         }
         stickyNotice = nil
         stagedRevertNotice = nil
+    }
+
+    /// internal (not private(set) write): used by +Refresh.swift's `loadSnapshot()`, right after
+    /// `setSnapshot`, with the worktrees read for that snapshot.
+    func setWorktreeState(_ state: WorktreeState) {
+        worktreeState = state
     }
 
     /// internal (not private(set) write): used by +Refresh.swift

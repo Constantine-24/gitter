@@ -62,26 +62,18 @@ struct DiscardSheetFingerprint: Hashable {
 
     /// Nil when the git directory cannot be found: then there is nothing to compare, and the
     /// sheet reads again after every reload.
+    ///
+    /// The index is the worktree's own git directory's; `config` and `info/attributes` are the
+    /// common one's (`--git-common-dir`), which for a linked worktree is the main worktree's
+    /// `.git` — its own git directory has neither (B3, R28).
     static func take(tracked paths: [String], root: URL, head: String?) -> DiscardSheetFingerprint? {
-        guard let gitDirectory = gitDirectory(of: root) else { return nil }
+        guard let directories = RepositoryDirectories.resolve(root: root) else { return nil }
         var files = paths.map { root.appendingPathComponent($0).path }
-        files += ["index", "config", "info/attributes"].map { gitDirectory.appendingPathComponent($0).path }
+        files.append(directories.gitDirectory.appendingPathComponent("index").path)
+        files += ["config", "info/attributes"].map { directories.commonDirectory.appendingPathComponent($0).path }
         let folders = Set([""] + paths.flatMap(folders(of:))).sorted()
         files += folders.map { root.appendingPathComponent($0).appendingPathComponent(".gitattributes").path }
         return DiscardSheetFingerprint(entries: files.map { Entry(path: $0, stamp: stamp($0)) }, head: head)
-    }
-
-    /// `root/.git`, or where a `.git` file's `gitdir:` line points (a linked worktree).
-    static func gitDirectory(of root: URL) -> URL? {
-        let dotGit = root.appendingPathComponent(".git")
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: dotGit.path, isDirectory: &isDirectory) else { return nil }
-        if isDirectory.boolValue { return dotGit }
-        guard let text = try? String(contentsOf: dotGit, encoding: .utf8),
-            let line = text.split(separator: "\n").first, line.hasPrefix("gitdir: ")
-        else { return nil }
-        let path = String(line.dropFirst("gitdir: ".count)).trimmingCharacters(in: .whitespaces)
-        return path.hasPrefix("/") ? URL(fileURLWithPath: path) : root.appendingPathComponent(path)
     }
 
     /// `a/b/c` → `a`, `a/b`.

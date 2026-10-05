@@ -84,6 +84,12 @@
     ///     setupstream:<b>:<ref>
     ///     unsetupstream:<b>            adminmenu
     ///
+    ///   Navigation (`SidebarFilter`, `RepositoryStore+Worktrees`, `DebugLaunchHooks+Navigation`):
+    ///
+    ///     filter:<text>                sidebar                      worktrees
+    ///     worktreemenu                 openworktree:<folder>        pills
+    ///     watchloads:<seconds>         firstresponder
+    ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
     /// `start:<step>` runs a step **without** waiting for its lane, which is how the steps after
@@ -382,6 +388,8 @@
                 await historyStep(command, step: step, store: store)
             case let admin where remoteAdminCommands.contains(admin):
                 await remoteAdminStep(command, step: step, store: store)
+            case let navigation where navigationCommands.contains(navigation):
+                await navigationStep(command, step: step, store: store)
             case "stashcontinue":
                 guard store.offeredStashAndContinue != nil else {
                     log("stashcontinue: not offered")

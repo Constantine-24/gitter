@@ -5,6 +5,15 @@ import Foundation
 /// on the main actor with the paths that changed, after filtering out noise (lockfiles and
 /// loose object writes).
 ///
+/// A **linked worktree** (B3, R28) keeps none of that under its root: its `.git` is a file, and
+/// git writes its HEAD, index and `FETCH_HEAD` in its own git directory
+/// (`<common>/worktrees/<id>`), and the refs, `packed-refs` and configuration in the common
+/// one. One stream takes several paths, so `paths(root:directories:)` adds exactly the ones the
+/// watcher VERIFY measured (B3 Task 3): its git directory, `<common>/refs`, `<common>/packed-refs`
+/// (a file, reported even when it is only created later), `<common>/config`, and the main
+/// worktree's `<common>/HEAD`. Never the whole common directory — not its objects, not the other
+/// worktrees' index files.
+///
 /// `.git/index` is deliberately *not* filtered: `git add`/`reset`/`rm --cached` touch only
 /// the index, and ignoring it made staging invisible to the live refresh. Our own reads
 /// can't feed the loop back, because `ProcessRunner` sets `GIT_OPTIONAL_LOCKS=0`, which
@@ -23,7 +32,18 @@ final class RepositoryWatcher: @unchecked Sendable {
     private let queue = DispatchQueue(label: "dev.penzin.Gitter.RepositoryWatcher")
     private let onChange: @MainActor @Sendable ([String]) -> Void
 
-    init(path: String, onChange: @escaping @MainActor @Sendable ([String]) -> Void) {
+    /// Every path one stream watches for the repository opened at `root`: the root alone for a
+    /// main worktree (its `.git/` is inside it), and for a linked one the places git writes for it
+    /// outside it (see the type's comment). `directories` nil — no `.git` found — watches the
+    /// root alone, as before.
+    static func paths(root: URL, directories: RepositoryDirectories?) -> [String] {
+        guard let directories, directories.isLinkedWorktree else { return [root.path] }
+        let common = directories.commonDirectory
+        return [root.path, directories.gitDirectory.path]
+            + ["refs", "packed-refs", "config", "HEAD"].map { common.appendingPathComponent($0).path }
+    }
+
+    init(paths: [String], onChange: @escaping @MainActor @Sendable ([String]) -> Void) {
         self.onChange = onChange
 
         // `info` is a +1 (passRetained) reference: the C stream effectively co-owns this
@@ -55,7 +75,7 @@ final class RepositoryWatcher: @unchecked Sendable {
             kCFAllocatorDefault,
             RepositoryWatcher.callback,
             &context,
-            [path] as CFArray,
+            paths as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             0.2,
             flags
@@ -115,5 +135,51 @@ final class RepositoryWatcher: @unchecked Sendable {
         Task { @MainActor in
             onChange(relevant)
         }
+    }
+}
+
+/// Where git keeps a repository's files for the worktree opened at a root, found as git finds
+/// them: `<root>/.git` is the git directory when it is a folder; when it is a file (a linked
+/// worktree) its `gitdir:` line names it. The common directory — refs, `packed-refs`, the
+/// configuration, `info/` — is named by the git directory's `commondir` file, relative to it
+/// (`../..`, measured), and is the git directory itself when there is none. That is
+/// `rev-parse --absolute-git-dir` and `--git-common-dir`, read without starting git: the watcher
+/// is created and the discard fingerprint taken synchronously.
+struct RepositoryDirectories: Hashable, Sendable {
+    let gitDirectory: URL
+    let commonDirectory: URL
+
+    var isLinkedWorktree: Bool { gitDirectory.path != commonDirectory.path }
+
+    /// Nil when there is no `.git` at `root`, or its `gitdir:` line cannot be read.
+    static func resolve(root: URL) -> RepositoryDirectories? {
+        let dotGit = root.appendingPathComponent(".git")
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dotGit.path, isDirectory: &isDirectory) else { return nil }
+        let gitDirectory: URL
+        if isDirectory.boolValue {
+            gitDirectory = dotGit
+        } else {
+            guard let path = firstLine(of: dotGit, after: "gitdir: ") else { return nil }
+            gitDirectory = resolved(path, against: root)
+        }
+        let common = firstLine(of: gitDirectory.appendingPathComponent("commondir"), after: "")
+            .map { resolved($0, against: gitDirectory) }
+        return RepositoryDirectories(gitDirectory: gitDirectory, commonDirectory: common ?? gitDirectory)
+    }
+
+    /// The first line of `file`, past `prefix`, trimmed; nil when unreadable, empty or not
+    /// starting with it.
+    private static func firstLine(of file: URL, after prefix: String) -> String? {
+        guard let text = try? String(contentsOf: file, encoding: .utf8),
+            let line = text.split(separator: "\n", omittingEmptySubsequences: false).first, line.hasPrefix(prefix)
+        else { return nil }
+        let value = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        return value.isEmpty ? nil : value
+    }
+
+    /// `path` as an absolute, standardized URL: as it is when absolute, else against `base`.
+    private static func resolved(_ path: String, against base: URL) -> URL {
+        (path.hasPrefix("/") ? URL(fileURLWithPath: path) : base.appendingPathComponent(path)).standardizedFileURL
     }
 }

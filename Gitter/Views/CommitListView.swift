@@ -33,8 +33,10 @@ struct CommitListView: View {
         let rows = rows()
         // Once per body, not per row: the pills of 500 rows look up one dictionary.
         let tags = TagWording.tagsByCommit(store.snapshot?.refs.tags ?? [])
+        // The same for other worktrees' detached HEADs (B3): `log --all` lists their commits.
+        let worktreeHeads = store.detachedWorktreeHeads
         ScrollViewReader { proxy in
-            table(rows, tags: tags)
+            table(rows, tags: tags, worktreeHeads: worktreeHeads)
                 .onChange(of: store.selection) { _, newValue in
                     // Cleared whichever branch is taken, so the flag can only ever suppress
                     // the one scroll it was set for. Left standing, a selection the table made
@@ -61,7 +63,7 @@ struct CommitListView: View {
     }
 
     @ViewBuilder
-    private func table(_ rows: [CommitRow], tags: [String: [Tag]]) -> some View {
+    private func table(_ rows: [CommitRow], tags: [String: [Tag]], worktreeHeads: [String: [Worktree]]) -> some View {
         Table(rows, selection: selectionBinding(rows)) {
             TableColumn("") { row in
                 switch row {
@@ -104,6 +106,9 @@ struct CommitListView: View {
                         }
                         ForEach(tags[commit.sha] ?? []) { tag in
                             TagCapsule(tag: tag)
+                        }
+                        ForEach(worktreeHeads[commit.sha] ?? []) { worktree in
+                            WorktreeCapsule(worktree: worktree)
                         }
                         Text(commit.summary).lineLimit(1)
                     }
@@ -213,6 +218,25 @@ private struct RefCapsule: View {
             .padding(.vertical, 1)
             .background(Color.accentColor.opacity(0.2), in: Capsule())
             .foregroundStyle(Color.accentColor)
+    }
+}
+
+/// "worktree: <folder>" on the commit another worktree's detached HEAD is at (B3, R27): `log
+/// --all` shows that commit, and nothing else on its row would say why. Its own style — teal,
+/// with a window icon — so it is not read as a branch or a tag.
+private struct WorktreeCapsule: View {
+    let worktree: Worktree
+
+    var body: some View {
+        Label(WorktreeWording.pillText(worktree), systemImage: "macwindow")
+            .labelStyle(TagPillLabelStyle())
+            .font(.caption2)
+            .lineLimit(1)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Color.teal.opacity(0.2), in: Capsule())
+            .foregroundStyle(Color.teal)
+            .help(WorktreeWording.pillHelp(worktree))
     }
 }
 

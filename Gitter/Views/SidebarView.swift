@@ -1,18 +1,31 @@
 import GitCore
 import SwiftUI
 
-/// Repository outline: the working copy, local branches, stashes, remotes and tags.
+/// Repository outline: the working copy, local branches, worktrees, stashes, remotes and tags.
 ///
 /// Selecting a branch or tag selects the commit it points at in the commit list. Right-clicking
 /// one opens its menu (see `SidebarMenus.swift`), and double-clicking does the obvious thing for
 /// the kind of ref it is: a local branch is switched to, a remote branch is checked out as a
 /// local tracking branch, and a tag does nothing at all — detaching HEAD should be deliberate.
+///
+/// The filter field (B3, `.searchable` on this column, ⌘F) narrows local branches, remote
+/// branches and tags (`SidebarFilter.rows`); Working Copy, Worktrees and Stashes are not
+/// filtered. While it narrows anything, every remote's group is expanded — the user's own
+/// expansion is kept here and comes back when the filter is cleared — a section left empty says
+/// "No matches", and VoiceOver announces how many refs match.
 struct SidebarView: View {
     @Environment(RepositoryStore.self) private var store
+
+    /// The remotes whose group the user expanded, by name. Kept while filtering, which only
+    /// overrides what is shown (`SidebarFilter.isExpanded`).
+    @State private var expandedRemotes: Set<String> = []
+    /// The same for the "Other" group, which is no remote's.
+    @State private var otherExpanded = false
 
     private var refs: RefCollection { store.snapshot?.refs ?? .empty }
 
     var body: some View {
+        let rows = SidebarFilter.rows(refs, deletedTags: store.deletedTags.receipts, query: store.sidebarFilter)
         List {
             Section("Working Copy") {
                 Button {
@@ -32,9 +45,9 @@ struct SidebarView: View {
                 .buttonStyle(.plain)
             }
 
-            if !refs.localBranches.isEmpty {
+            if rows.showsBranches {
                 Section("Branches") {
-                    ForEach(refs.localBranches) { branch in
+                    ForEach(rows.localBranches) { branch in
                         branchRow(branch, showCheck: true)
                             .contextMenu { LocalBranchMenu(branch: branch.name) }
                             // Double-click switches, which is what a branch row in every other
@@ -47,44 +60,48 @@ struct SidebarView: View {
                                     store.switchTo(branch: branch.name)
                                 })
                     }
+                    if rows.branchesHaveNoMatches { noMatches }
                 }
             }
+
+            WorktreesSection()
 
             StashesSection()
 
             // The groups come from the configured remotes, not from splitting a branch name on
             // "/": a remote nothing has been fetched from still gets a (empty) group of its
             // own, and a remote whose name contains a slash keeps its branches.
-            if !refs.remotes.isEmpty || !refs.branchesWithoutRemote.isEmpty {
+            if rows.showsRemotes {
                 Section("Remotes") {
-                    ForEach(refs.remotes) { remote in
-                        DisclosureGroup {
-                            ForEach(refs.branches(of: remote)) { branch in
+                    ForEach(rows.remoteGroups, id: \.remote) { group in
+                        DisclosureGroup(isExpanded: expansion(of: group.remote.name)) {
+                            ForEach(group.branches) { branch in
                                 remoteBranchRow(branch)
                             }
                         } label: {
                             // On the label only, so a right-click on one of the remote's
                             // branches still gets that branch's menu.
-                            RemoteRowLabel(remote: remote)
-                                .contextMenu { RemoteMenu(remote: remote) }
+                            RemoteRowLabel(remote: group.remote)
+                                .contextMenu { RemoteMenu(remote: group.remote) }
                         }
                     }
                     // Refs under `refs/remotes/` that no configured remote claims — left over
                     // from a removed remote, or written by hand. They are shown rather than
                     // dropped: the commits they hold may be reachable from nowhere else.
-                    if !refs.branchesWithoutRemote.isEmpty {
-                        DisclosureGroup("Other") {
-                            ForEach(refs.branchesWithoutRemote) { branch in
+                    if !rows.otherBranches.isEmpty {
+                        DisclosureGroup("Other", isExpanded: otherExpansion) {
+                            ForEach(rows.otherBranches) { branch in
                                 remoteBranchRow(branch)
                             }
                         }
                     }
+                    if rows.remotesHaveNoMatches { noMatches }
                 }
             }
 
-            if !refs.tags.isEmpty || !store.deletedTags.receipts.isEmpty {
+            if rows.showsTags {
                 Section("Tags") {
-                    ForEach(refs.tags) { tag in
+                    ForEach(rows.tags) { tag in
                         Button {
                             store.select(.commit(tag.sha))
                         } label: {
@@ -104,7 +121,7 @@ struct SidebarView: View {
                     // took the slot, or ×). Here rather than in a menu because a row is seen
                     // without looking for it, and it outlives every tag being deleted — the
                     // section stays while any is.
-                    ForEach(store.deletedTags.receipts, id: \.self) { receipt in
+                    ForEach(rows.deletedTags, id: \.self) { receipt in
                         Button {
                             store.select(.commit(receipt.target))
                         } label: {
@@ -119,11 +136,41 @@ struct SidebarView: View {
                             Button(TagWording.restoreMenuTitle) { store.restoreTags([receipt]) }
                         }
                     }
+                    if rows.tagsHaveNoMatches { noMatches }
                 }
             }
         }
         .listStyle(.sidebar)
-        .navigationTitle(store.root?.lastPathComponent ?? "Gitter")
+        // The count as it changes while filtering — typing, or a refresh bringing refs in.
+        .onChange(of: rows.isFiltering ? rows.matchCount : nil) { _, count in
+            guard let count else { return }
+            AccessibilityNotification.Announcement(SidebarFilter.announcement(matches: count)).post()
+        }
+    }
+
+    private var noMatches: some View {
+        Text(SidebarFilter.noMatches)
+            .foregroundStyle(.secondary)
+    }
+
+    /// A remote group's expansion: forced open while filtering, the user's own otherwise. A
+    /// click while filtering changes nothing, so their choice is what the cleared filter shows.
+    private func expansion(of remote: String) -> Binding<Bool> {
+        Binding(
+            get: { SidebarFilter.isExpanded(stored: expandedRemotes.contains(remote), query: store.sidebarFilter) },
+            set: { expanded in
+                guard !SidebarFilter.isFiltering(store.sidebarFilter) else { return }
+                if expanded { expandedRemotes.insert(remote) } else { expandedRemotes.remove(remote) }
+            })
+    }
+
+    private var otherExpansion: Binding<Bool> {
+        Binding(
+            get: { SidebarFilter.isExpanded(stored: otherExpanded, query: store.sidebarFilter) },
+            set: { expanded in
+                guard !SidebarFilter.isFiltering(store.sidebarFilter) else { return }
+                otherExpanded = expanded
+            })
     }
 
     @ViewBuilder
@@ -154,6 +201,16 @@ struct SidebarView: View {
                     }
                 }
                 Spacer(minLength: 4)
+                // Checked out in another worktree, or held by a rebase or bisect there (B3): its
+                // Switch, Delete and Fast-Forward are off with this same sentence.
+                if showCheck, let holder = store.worktreeHolder(of: branch.name) {
+                    let reason = WorktreeWording.heldReason(branch.name, by: holder)
+                    Image(systemName: WorktreeWording.holderSymbol(holder))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help(reason)
+                        .accessibilityLabel(reason)
+                }
                 // Local branches only: a remote-tracking branch has no upstream of its own, so
                 // its tracking is always `.none` and the badge would draw nothing anyway.
                 if showCheck {

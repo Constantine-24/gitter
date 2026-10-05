@@ -9,6 +9,10 @@ struct MainWindow: View {
     /// `bannerInset`. View state, not the store's: it is layout, measured here.
     @State private var bannerHeight: CGFloat = 0
 
+    /// The sidebar filter's field has the keyboard: ⌘F sets it (`SidebarFilterCommands`, through
+    /// `focusSidebarFilter`).
+    @FocusState private var filterFocused: Bool
+
     var body: some View {
         @Bindable var store = store
         Group {
@@ -18,6 +22,9 @@ struct MainWindow: View {
                 NavigationSplitView {
                     SidebarView()
                         .navigationSplitViewColumnWidth(min: 200, ideal: 240)
+                        // The filter (B3): its text is the store's (Ruling 2), cleared by `open()`.
+                        .searchable(text: $store.sidebarFilter, placement: .sidebar, prompt: SidebarFilter.prompt)
+                        .searchFocused($filterFocused)
                 } content: {
                     CommitListView()
                         // Under the banners too, so the Working Copy row is never covered.
@@ -70,6 +77,9 @@ struct MainWindow: View {
                 .sheet(item: $store.activeSheet) { sheet in
                     BranchSheetHost(sheet: sheet)
                 }
+                .focusedSceneValue(\.focusSidebarFilter, SidebarFilterFocus { filterFocused = true })
+                // "wt-feat (worktree of main)" for a linked worktree, the folder otherwise (B3).
+                .navigationTitle(store.windowTitle)
             }
         }
         .overlay(alignment: .top) {
@@ -138,4 +148,14 @@ struct MainWindow: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+}
+
+/// What ⌘F calls to put the keyboard in the sidebar's filter field: published by the window that
+/// has a repository open (`focusedSceneValue`), read by `SidebarFilterCommands`.
+struct SidebarFilterFocus {
+    let focus: @MainActor () -> Void
+}
+
+extension FocusedValues {
+    @Entry var focusSidebarFilter: SidebarFilterFocus?
 }
