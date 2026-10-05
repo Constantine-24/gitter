@@ -2230,6 +2230,129 @@ import Testing
                 "false positive: \(ForceFlagScanner.findings(in: source))")
     }
 
+    // MARK: - Worktrees (B3 Task 2)
+
+    /// A **contract**: every vector `CLIGitBackend+Worktrees.swift` runs, spelled as it writes
+    /// them. The three `worktree` vectors are the subcommand's only shapes (R30): `list
+    /// --porcelain -z` (R13); `add -q`, the path and an existing local branch's short name after
+    /// `--end-of-options` — never `-f`, `-b`, `-B`, `--orphan`, `--detach`, a missing commit-ish or
+    /// a `refs/heads/…` one (R17, R18); `remove`, the path as listed after `--end-of-options`, never
+    /// `-f` (R20), run with `status.showUntrackedFiles=normal` forced (R21). The reads run in the
+    /// worktree's folder (cwd, never `-C`): `status` always with `--untracked-files=normal` (R15,
+    /// R21), `ls-files -v -z` (assume-unchanged and skip-worktree tags), `rev-parse
+    /// --absolute-git-dir --show-toplevel` (its state files, from its own folder), and the branch check by full ref. The stranded count
+    /// is B2's own vector (`StrandedHolders`).
+    static let worktreeContract = [
+        #"let data = try await run(["worktree", "list", "--porcelain", "-z"], cwd: root)"#,
+        #"let data = try await run(["status", "--porcelain=v2", "-z", "--untracked-files=normal"], cwd: folder)"#,
+        #"let data = try await run(["status", "--porcelain=v2", "-z", "--untracked-files=normal", "--ignored=matching"], cwd: folder)"#,
+        #"let data = try await run(["ls-files", "-v", "-z"], cwd: folder)"#,
+        #"let data = try await run(["rev-parse", "--absolute-git-dir", "--show-toplevel"], cwd: folder)"#,
+        #"let data = try await run(["for-each-ref", "--format=%(refname)%00%(symref)", "--end-of-options", "refs/heads/\(branch)"], cwd: root)"#,
+        #"result = try await runWithEnvironment(["worktree", "add", "-q", "--end-of-options", path, branch], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"result = try await runWithEnvironment(["worktree", "remove", "--end-of-options", path], cwd: root, extra: Self.withConfig("status.showUntrackedFiles", "normal", over: ProcessInfo.processInfo.environment), allowedExitCodes: Self.anyExitCode)"#,
+    ]
+
+    @Test(arguments: worktreeContract)
+    func allowsTheWorktreeVectorsThisMilestoneNeeds(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
+    /// Not vacuous: the worktrees file is clean and spells each contract vector exactly.
+    @Test func theWorktreesFileRunsTheContractVectors() throws {
+        let file = "CLIGitBackend+Worktrees.swift"
+        let source = try String(contentsOf: Self.sourcesRoot.appendingPathComponent(file), encoding: .utf8)
+        #expect(ForceFlagScanner.findings(in: source, fileName: file).isEmpty)
+        for line in Self.worktreeContract {
+            #expect(source.contains(line), "\(file) no longer spells \(line)")
+        }
+    }
+
+    /// Every other `worktree` form is a finding (R30): a force, a new or reset or orphan branch, a
+    /// detached add, an add with no commit-ish or a `refs/heads/…` one (it detaches, R17), a name or
+    /// path that is a literal, a missing `--end-of-options`, anything appended; a forced remove;
+    /// `prune` (it takes admin dirs `list` never shows, R25), `move`, `repair`, `lock`, `unlock`;
+    /// a `list` without `-z` (a newline in a path splits its record, R13). And the shapes hidden:
+    /// a fragment, a binding, an append. Built in test strings only, never in a source.
+    @Test(arguments: [
+        #"_ = try await run(["worktree", "add", "-f", "--end-of-options", path, branch], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "--force", "--end-of-options", path, branch], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "-q", "-f", "--end-of-options", path, branch], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "-q", "-b", name, "--end-of-options", path, id], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "-q", "-B", name, "--end-of-options", path, id], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "-q", "--orphan", "-b", name, "--end-of-options", path], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "-q", "--detach", "--end-of-options", path, id], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "-q", "--no-checkout", "--end-of-options", path, branch], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "-q", "--lock", "--end-of-options", path, branch], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "-q", "--relative-paths", "--end-of-options", path, branch], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "-q", "--guess-remote", "--end-of-options", path, branch], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "-q", "--end-of-options", path], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "-q", "--end-of-options", path, "refs/heads/\(branch)"], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "-q", "--end-of-options", path, "main"], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "-q", "--end-of-options", "/tmp/wt", branch], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "-q", path, branch], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "--end-of-options", path, branch], cwd: root)"#,
+        #"_ = try await run(["worktree", "add", "-q", "--end-of-options", path, branch] + more, cwd: root)"#,
+        #"_ = try await run(["worktree", "remove", "-f", "--end-of-options", path], cwd: root)"#,
+        #"_ = try await run(["worktree", "remove", "--force", "--end-of-options", path], cwd: root)"#,
+        #"_ = try await run(["worktree", "remove", "-f", "-f", "--end-of-options", path], cwd: root)"#,
+        #"_ = try await run(["worktree", "remove", path], cwd: root)"#,
+        #"_ = try await run(["worktree", "remove", "--end-of-options", path] + more, cwd: root)"#,
+        #"_ = try await run(["worktree", "remove", "--end-of-options", "wt"], cwd: root)"#,
+        #"_ = try await run(["worktree", "prune"], cwd: root)"#,
+        #"_ = try await run(["worktree", "prune", "--dry-run", "--verbose"], cwd: root)"#,
+        #"_ = try await run(["worktree", "prune", "--expire=now"], cwd: root)"#,
+        #"_ = try await run(["worktree", "move", "--end-of-options", path, new], cwd: root)"#,
+        #"_ = try await run(["worktree", "repair"], cwd: root)"#,
+        #"_ = try await run(["worktree", "lock", "--end-of-options", path], cwd: root)"#,
+        #"_ = try await run(["worktree", "unlock", "--end-of-options", path], cwd: root)"#,
+        #"_ = try await run(["worktree", "list"], cwd: root)"#,
+        #"_ = try await run(["worktree", "list", "--porcelain"], cwd: root)"#,
+        #"_ = try await run(["worktree", "list", "-v"], cwd: root)"#,
+        #"_ = try await run(["worktree", "list", "--porcelain", "-z"] + more, cwd: root)"#,
+        // Hidden from the shapes: a global option, a fragment, a binding, an append.
+        #"_ = try await run(["-C", folder, "worktree", "list", "--porcelain", "-z"], cwd: root)"#,
+        #"_ = try await run([repoFlag, "worktree", "remove", "--end-of-options", path], cwd: root)"#,
+        #"let verb = "unlock"; _ = try await run(["worktree", verb, "--end-of-options", path], cwd: root)"#,
+        #"let verb = "move""#,
+        #"let verb = "repair""#,
+        #"let flag = "--orphan""#,
+        #"var a = ["worktree"]; a += ["add", "-q", "--end-of-options", path, branch]"#,
+        #"var a = ["worktree", "list", "--porcelain", "-z"]; a.append("lock")"#,
+        #"var a = ["status", "--porcelain=v2"]; a.append("worktree")"#,
+    ])
+    func catchesAWorktreeVectorOutsideItsShapes(source: String) {
+        #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// `worktree` has exactly the three shapes.
+    @Test func theWorktreeShapesAreExactlyListAddAndRemove() {
+        #expect(ForceFlagScanner.spelling(of: "worktree", ForceFlagScanner.allowedShapes["worktree"] ?? [])
+            == #"["worktree", "list", "--porcelain", "-z"] or ["worktree", "add", "-q", "--end-of-options", <expression>, <expression>] or ["worktree", "remove", "--end-of-options", <expression>]"#)
+    }
+
+    /// Not vacuous: each of the worktrees file's vectors, changed in memory only, becomes a
+    /// finding.
+    @Test(arguments: [
+        (#"["worktree", "add", "-q", "--end-of-options", path, branch]"#, #"["worktree", "add", "-q", "-f", "--end-of-options", path, branch]"#),
+        (#"["worktree", "add", "-q", "--end-of-options", path, branch]"#, #"["worktree", "add", "-q", "--end-of-options", path, "refs/heads/\(branch)"]"#),
+        (#"["worktree", "add", "-q", "--end-of-options", path, branch]"#, #"["worktree", "add", "-q", "--detach", "--end-of-options", path, branch]"#),
+        (#"["worktree", "remove", "--end-of-options", path]"#, #"["worktree", "remove", "--force", "--end-of-options", path]"#),
+        (#"["worktree", "remove", "--end-of-options", path]"#, #"["worktree", "prune"]"#),
+        (#"["worktree", "list", "--porcelain", "-z"]"#, #"["worktree", "list", "--porcelain"]"#),
+    ])
+    func theWorktreesFilesVectorsAreChecked(original: String, mutated: String) throws {
+        let file = "CLIGitBackend+Worktrees.swift"
+        let source = try String(contentsOf: Self.sourcesRoot.appendingPathComponent(file), encoding: .utf8)
+        #expect(ForceFlagScanner.findings(in: source, fileName: file).isEmpty)
+        #expect(source.contains(original), "\(file) no longer spells \(original)")
+        let changed = source.replacingOccurrences(of: original, with: mutated)
+        #expect(changed != source)
+
+        #expect(!ForceFlagScanner.findings(in: changed, fileName: file).isEmpty)
+    }
+
     /// Not vacuous: the real sources hold exactly the five parsed reads, and the rule read them.
     @Test func everyParsedDiffReadInTheSourcesIsChecked() throws {
         let sources = try ForceFlagScanner.gitCoreSources(root: Self.sourcesRoot)

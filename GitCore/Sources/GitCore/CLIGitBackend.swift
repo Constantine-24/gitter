@@ -33,11 +33,16 @@ public struct CLIGitBackend: GitBackend {
     // 2.54): for a branch the fields are empty or the commit's subject, which `RefParser`
     // ignores, and `%(contents:subject)` is always one line — git joins the first paragraph
     // with spaces, CR LF included — so the line-per-ref split stays sound.
+    //
+    // B3 Task 2 appended `%(worktreepath)` (16), last for the same reason: the worktree another
+    // branch is checked out in (R14). A path can hold a newline, the one field that can, and
+    // `RefParser` joins such a record's continuation lines back (see its doc comment).
     private static let refFormat =
         "%(refname)%00%(objectname)%00%(HEAD)%00%(upstream:short)%00%(objecttype)%00%(*objectname)"
         + "%00%(upstream:track)%00%(upstream:remotename)%00%(upstream:remoteref)"
         + "%00%(symref)%00%(push:remotename)%00%(push:remoteref)"
         + "%00%(taggername)%00%(taggerdate:iso-strict)%00%(contents:subject)"
+        + "%00%(worktreepath)"
     // Internal, not private: `CLIGitBackend+Remotes.swift`'s `commits(in:notIn:limit:)` reads a
     // second log through the same `LogParser`, and two format strings that must match one
     // parser's doc comment verbatim are one too many.
@@ -60,8 +65,9 @@ public struct CLIGitBackend: GitBackend {
         let status = Self.markingNestedRepositories(
             in: StatusParser.parse(try await statusData), under: root
         ).with(operationInProgress: try await operation)
-        let refs = RefParser.parse(try await refData)
-            .with(remotes: RemoteParser.parse(String(decoding: try await remoteData, as: UTF8.self)))
+        let refs = Self.withoutBareRepositoryCheckouts(
+            RefParser.parse(try await refData)
+                .with(remotes: RemoteParser.parse(String(decoding: try await remoteData, as: UTF8.self))))
         let log = try await commits
         let graph = GraphLayout.layout(log)
 

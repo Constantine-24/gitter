@@ -149,7 +149,8 @@ extension CLIGitBackend {
     /// one whose directory is gone (prunable), whose state is still in its administrative
     /// directory — as git asks: the main one's is the common directory (none for a bare
     /// repository), a linked one's `<common>/worktrees/<id>/`, read straight from the files.
-    private func worktreeUsing(_ branch: String, at root: URL) async throws -> String? {
+    /// Internal since B3 Task 2: Add Worktree refuses a branch it names.
+    func worktreeUsing(_ branch: String, at root: URL) async throws -> String? {
         let ref = "refs/heads/\(branch)"
         for worktree in try await worktreeAdministrativeDirectories(at: root) {
             let dir = worktree.directory
@@ -178,7 +179,8 @@ extension CLIGitBackend {
     /// worktree's (the common directory, unless the main one is bare) first, then each
     /// `<common>/worktrees/<id>/`, its path read from its `gitdir` file (`<path>/.git`, relative
     /// to the directory under `worktree.useRelativePaths`) — present for a prunable one too.
-    private func worktreeAdministrativeDirectories(at root: URL) async throws -> [(directory: URL, path: String)] {
+    /// Internal since B3 Task 2: `worktrees(at:)` reads each one's `operationBranch` from it.
+    func worktreeAdministrativeDirectories(at root: URL) async throws -> [(directory: URL, path: String)] {
         let common = try await commonDirectory(at: root)
         var result: [(directory: URL, path: String)] = []
         if let main = try await mainWorktree(at: root), !main.bare {

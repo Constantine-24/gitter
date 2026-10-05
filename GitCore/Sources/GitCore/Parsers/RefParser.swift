@@ -1,11 +1,11 @@
 import Foundation
 
-/// Parses the output of `git for-each-ref` with the fifteen-field format
+/// Parses the output of `git for-each-ref` with the sixteen-field format
 /// `%(refname) %(objectname) %(HEAD) %(upstream:short) %(objecttype) %(*objectname)`
 /// `%(upstream:track) %(upstream:remotename) %(upstream:remoteref)`
 /// `%(symref) %(push:remotename) %(push:remoteref)`
-/// `%(taggername) %(taggerdate:iso-strict) %(contents:subject)`, NUL-separated, into a
-/// `RefCollection`.
+/// `%(taggername) %(taggerdate:iso-strict) %(contents:subject) %(worktreepath)`, NUL-separated,
+/// into a `RefCollection`.
 ///
 /// The sixth `%(*objectname)` field is the *peeled* object: for an annotated tag it is the
 /// commit the tag object points at — through a tag of a tag, all the way (B18) — and it is
@@ -15,8 +15,16 @@ import Foundation
 /// only: a lightweight tag has no tagger, and its `%(contents:subject)` is the commit's
 /// subject, not the tag's (B18).
 ///
-/// Every field after the fifth is optional: a line with only the first five, six, nine, eleven
-/// or twelve is still accepted, so output captured before a field was added (and the test
+/// Field 16, `%(worktreepath)` (B3 Task 2, R14), is the worktree a local branch is checked out
+/// in — this one included, which is why `checkedOutAt` is left nil for the row `%(HEAD)` marks.
+/// It is the one field that can hold a newline (a worktree's path can; a ref name, an id and the
+/// one-line subject cannot), and git ends each record with a newline, so a record is read as its
+/// line plus every following line that has no NUL in it: a new record always has at least five
+/// NUL-separated fields, and a path never holds a NUL. The newline git ends the output with is
+/// not part of any path.
+///
+/// Every field after the fifth is optional: a line with only the first five, six, nine, eleven,
+/// twelve or fifteen is still accepted, so output captured before a field was added (and the test
 /// fixtures recorded from it) keeps parsing, with the missing fields simply unset.
 ///
 /// `RefParser` knows nothing about which remotes are *configured* — that is `git remote -v`
@@ -33,7 +41,7 @@ public enum RefParser {
         var remoteBranches: [Branch] = []
         var tags: [Tag] = []
 
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+        for line in records(text) {
             let fields = line.split(separator: "\u{0}", omittingEmptySubsequences: false)
             guard fields.count >= 5 else { continue }
 
@@ -52,6 +60,7 @@ public enum RefParser {
             let taggerField = fields.count >= 13 ? String(fields[12]) : ""
             let taggerDateField = fields.count >= 14 ? String(fields[13]) : ""
             let subjectField = fields.count >= 15 ? String(fields[14]) : nil
+            let worktreeField = fields.count >= 16 ? String(fields[15]) : ""
 
             if refname.hasPrefix(localBranchPrefix) {
                 let name = String(refname.dropFirst(localBranchPrefix.count))
@@ -71,7 +80,8 @@ public enum RefParser {
                            upstreamRemote: upstreamRemote,
                            upstreamRef: remoteRefField.isEmpty ? nil : remoteRefField,
                            pushRemote: pushRemote,
-                           pushRef: pushRefField.isEmpty ? nil : pushRefField)
+                           pushRef: pushRefField.isEmpty ? nil : pushRefField,
+                           checkedOutAt: worktreeField.isEmpty || headMarker == "*" ? nil : worktreeField)
                 )
             } else if refname.hasPrefix(remoteBranchPrefix) {
                 let name = String(refname.dropFirst(remoteBranchPrefix.count))
@@ -117,6 +127,26 @@ public enum RefParser {
         tags.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
         return RefCollection(localBranches: localBranches, remoteBranches: remoteBranches, tags: tags)
+    }
+
+    /// The output cut into records: each line, with the lines that follow it and hold no NUL —
+    /// the rest of a `%(worktreepath)` with a newline in it — joined back on with their newlines.
+    /// Without the final newline git ends the output with, and without lines that belong to no
+    /// record.
+    private static func records(_ text: String) -> [String] {
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        if lines.last?.isEmpty == true { lines.removeLast() }
+        var records: [String] = []
+        for line in lines {
+            if !line.contains("\u{0}"), let last = records.last,
+                last.split(separator: "\u{0}", omittingEmptySubsequences: false).count >= 16
+            {
+                records[records.count - 1] = last + "\n" + line
+            } else {
+                records.append(String(line))
+            }
+        }
+        return records
     }
 
     /// `%(taggerdate:iso-strict)` — `2023-11-16T02:00:00Z` or `…+04:00` — or nil when empty

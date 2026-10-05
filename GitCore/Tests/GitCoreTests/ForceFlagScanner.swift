@@ -242,7 +242,8 @@ enum ForceFlagScanner {
                         remoteWordsForbiddenEverywhere.contains(spelling)
                         ? ": \(remoteWordReason)"
                         : stashWordsForbiddenEverywhere.contains(spelling)
-                            ? ": \(stashWordReason)" : ""
+                            ? ": \(stashWordReason)"
+                            : worktreeWordsForbiddenEverywhere.contains(spelling) ? ": \(worktreeWordReason)" : ""
                     findings.append(
                         "forbidden literal \(spelling.debugDescription) (offset \(token))\(why)")
                 }
@@ -540,6 +541,10 @@ enum ForceFlagScanner {
         result += literals.filter(remoteWordsForbiddenInFragments.contains).map {
             "forbidden literal \($0.debugDescription) in an argument fragment: "
                 + remoteFragmentReason
+        }
+        // `worktree` the same way (B3 Task 2), with `lock`, which only a fragment cannot carry.
+        result += literals.filter(worktreeWordsForbiddenInFragments.contains).map {
+            "forbidden literal \($0.debugDescription) in an argument fragment: \(worktreeFragmentReason)"
         }
         // `stash` the same way, and for the same reason: its shape is the whole rule.
         result += literals.filter(stashWordsForbiddenInFragments.contains).map {
@@ -1309,6 +1314,20 @@ enum ForceFlagScanner {
                 .interpolated(prefix: "refs/heads/", suffix: ""), .interpolated(prefix: "", suffix: ""),
                 .interpolated(prefix: "", suffix: "")),
         ],
+        // B3 Task 2: the three `worktree` vectors (R30), each whole and with nothing concatenated.
+        // `list` with `-z`, without which a newline in a path splits its record (R13). `add -q`
+        // with the path and an existing local branch's short name, both expressions after
+        // `--end-of-options` (R18): never `-f`/`--force` (checks out a branch in use, reuses a
+        // missing or locked path), `-b`/`-B`/`--orphan` (creates or resets a branch), `--detach`,
+        // a missing commit-ish (a branch named after the folder) or a `refs/heads/…` literal (it
+        // detaches) (R17). `remove` with the path as `list` printed it, never `-f` (R20, R21).
+        // `prune`, `move`, `repair`, `lock` and `unlock` have no shape, and are word rules
+        // (`remoteWordsForbiddenEverywhere`, `worktreeWordsForbiddenEverywhere`, `…InFragments`).
+        "worktree": [
+            Shape(.literal("list"), .literal("--porcelain"), .literal("-z")),
+            Shape(.literal("add"), .literal("-q"), .literal("--end-of-options"), .expression, .expression),
+            Shape(.literal("remove"), .literal("--end-of-options"), .expression),
+        ],
     ]
 
     /// The shape-governed subcommands that also keep a deny table (`forbiddenFlags`) and the
@@ -1495,6 +1514,12 @@ enum ForceFlagScanner {
             + "and `-m` or `-F` without `-a` under `tag.forceSignAnnotated=true` whatever `--no-sign` "
             + "says; `-F` without `--cleanup=verbatim` strips the message's `#` lines (B17); and "
             + "`-f`, `-d`, `-s`, `-u` move, delete or sign tags with no confirmation",
+        "worktree":
+            "`worktree remove -f` deletes changes, untracked files and locked or submodule worktrees, "
+            + "`add -f`/`-b`/`-B`/`--orphan`/`--detach` or an add with no branch or a `refs/heads/…` one "
+            + "creates, resets or detaches a branch nobody chose (R17), `prune` deletes administrative "
+            + "data `list` never shows (R25), and `move`, `repair`, `lock` and `unlock` are not B3 actions; "
+            + "a `list` without `-z` splits a path holding a newline (R13)",
         "update-ref":
             "`update-ref` moves or deletes any ref; the three permitted forms delete a tag or a "
             + "remote-tracking ref, or move a local branch, only while it holds the id the sheet "
@@ -1507,6 +1532,20 @@ enum ForceFlagScanner {
 
     /// The words a failed `stash` shape is most likely to contain, named in the finding.
     static let shapeWordReasons: [String: [String: String]] = [
+        "worktree": [
+            "prune": "deletes the administrative data of every missing worktree, and admin dirs `list` never shows (R25); Gitter removes one listed path",
+            "move": "relocates a worktree; not a B3 action",
+            "repair": "rewrites the links between worktrees and their administrative data; not a B3 action",
+            "lock": "not a B3 action; locked worktrees are shown and left alone",
+            "unlock": "removes the user's guard against `prune` and `remove`",
+            "-b": "creates a branch; Gitter creates one in its own named step first",
+            "--detach": "checks out no branch; not what Add Worktree is asked for",
+            "--orphan": "creates an unborn branch with an empty index",
+            "--no-checkout": "leaves an index that shows every file deleted",
+            "--lock": "locks the new worktree; not a B3 action",
+            "--relative-paths": "rewrites the worktree's link files",
+            "--guess-remote": "is how git turns a remote-only name into a new tracking branch (R17)",
+        ],
         "stash": [
             "pop": "drops the entry after an apply git itself decided was good enough",
             "clear": "deletes every stash entry",
@@ -1810,6 +1849,31 @@ enum ForceFlagScanner {
     /// a seed whose `remote` is not a literal at all.
     static let remoteWordsForbiddenInFragments: Set<String> = ["remote", "rm"]
 
+    /// `git worktree`'s words that have no shape (B3 Task 2, R30), as literals, anywhere in a
+    /// file: `move`, `repair` and `unlock` (with `lock`, below) are worktree actions B3 does not
+    /// take, and `--orphan`, `--no-checkout` and `--relative-paths` are `add` options no Gitter
+    /// vector carries. `prune` and `remove` are `remoteWordsForbiddenEverywhere`'s already; `remove`
+    /// is written once, as the pinned literal of `worktree`'s matched shape. Checked with
+    /// `git grep -n '"<word>"' -- GitCore/Sources`: zero hits for each.
+    static let worktreeWordsForbiddenEverywhere: Set<String> = [
+        "move", "repair", "unlock", "--orphan", "--no-checkout", "--relative-paths", "--no-relative-paths",
+    ]
+
+    /// `worktree` itself and `lock`, forbidden only in a fragment or the append pool, where no
+    /// shape can be read: `worktree` is the first element of every vector that runs it (as
+    /// `remote` is), and `"lock"` is also a path extension in `CLIGitBackend+StashRecord.swift`
+    /// (`appendingPathExtension("lock")`), so it cannot be fatal file-wide.
+    static let worktreeWordsForbiddenInFragments: Set<String> = ["worktree", "lock"]
+
+    static let worktreeWordReason =
+        "`git worktree move|repair|unlock|lock` and `add --orphan|--no-checkout|--relative-paths` are "
+        + "worktree actions Gitter does not take (R30). The `worktree` vectors Gitter runs are listed "
+        + "whole in `allowedShapes`"
+
+    static let worktreeFragmentReason =
+        "a fragment cannot prove its shape, and `worktree`'s three permitted shapes are the whole rule. "
+        + "Spell the vector as one array literal beginning with its subcommand"
+
     static let remoteWordReason =
         "`git remote prune|remove|rm|set-url|rename|set-head|set-branches|update` each rewrite "
         + "or delete the user's remote configuration, and not one of them is a flag any table "
@@ -1927,6 +1991,7 @@ enum ForceFlagScanner {
         .union(forbiddenSubcommands.keys)
         .union(remoteWordsForbiddenEverywhere)
         .union(stashWordsForbiddenEverywhere)
+        .union(worktreeWordsForbiddenEverywhere)
 
     /// Tokens the sweep must skip because `GitCore/Sources` uses each of them legitimately,
     /// under a subcommand the sweep cannot see. Every entry is a fact about this codebase,

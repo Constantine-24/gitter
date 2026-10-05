@@ -169,15 +169,16 @@ extension CLIGitBackend: GitRemoteAdminBackend {
         }
     }
 
-    /// One `rev-list --count`: how many commits only `refs` hold.
-    private func strandedCount(of refs: [String], _ holders: StrandedHolders, at root: URL) async throws -> Int {
+    /// One `rev-list --count`: how many commits only `refs` hold. Internal since B3 Task 2: a
+    /// detached worktree's removal counts its own the same way.
+    func strandedCount(of refs: [String], _ holders: StrandedHolders, at root: URL) async throws -> Int {
         var arguments = ["rev-list", "--count", "--not"]
         holders.complete(&arguments, asking: refs)
         return try await revListCount(arguments, at: root)
     }
 
-    /// The newest `StrandedCommits.displayLimit` of them.
-    private func strandedCommits(of refs: [String], _ holders: StrandedHolders, at root: URL) async throws -> [CommitRef] {
+    /// The newest `StrandedCommits.displayLimit` of them. Internal since B3 Task 2.
+    func strandedCommits(of refs: [String], _ holders: StrandedHolders, at root: URL) async throws -> [CommitRef] {
         var listing = ["rev-list", "--max-count=\(StrandedCommits.displayLimit)", "--format=%H%x00%s", "--no-commit-header", "--not"]
         holders.complete(&listing, asking: refs)
         return GitLines.split(try await run(listing, cwd: root)).compactMap { line -> CommitRef? in

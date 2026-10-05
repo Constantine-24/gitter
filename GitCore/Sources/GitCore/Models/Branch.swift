@@ -43,6 +43,14 @@ public struct Branch: Sendable, Hashable, Identifiable {
     /// that is where the branch fetches from, which under a `pushRemote` override is a
     /// different repository entirely.
     public let pushRef: String?
+    /// The path of **another** worktree this branch is checked out in (`%(worktreepath)`, B3
+    /// R14), exactly as git prints it — a missing (prunable) worktree's included, since git still
+    /// refuses to delete or check out the branch while it is listed. nil for the worktree that
+    /// is open (its branch is `isHead`), for a branch checked out nowhere, for a remote-tracking
+    /// branch, and for a bare main repository's HEAD branch, which is not a checkout (git adds a
+    /// worktree for it, measured). A branch a rebase or bisect elsewhere holds is not here —
+    /// `%(worktreepath)` is empty for it — but in `Worktree.operationBranch`.
+    public let checkedOutAt: String?
 
     public var id: String { name }
 
@@ -54,7 +62,7 @@ public struct Branch: Sendable, Hashable, Identifiable {
     public init(name: String, sha: String, isHead: Bool, upstream: String?,
                 tracking: Tracking = .none, upstreamRemote: String? = nil,
                 upstreamRef: String? = nil, pushRemote: String? = nil,
-                pushRef: String? = nil) {
+                pushRef: String? = nil, checkedOutAt: String? = nil) {
         self.name = name
         self.sha = sha
         self.isHead = isHead
@@ -64,6 +72,14 @@ public struct Branch: Sendable, Hashable, Identifiable {
         self.upstreamRef = upstreamRef
         self.pushRemote = pushRemote
         self.pushRef = pushRef
+        self.checkedOutAt = checkedOutAt
+    }
+
+    /// A copy whose `checkedOutAt` is `path`.
+    func with(checkedOutAt path: String?) -> Branch {
+        Branch(name: name, sha: sha, isHead: isHead, upstream: upstream, tracking: tracking,
+               upstreamRemote: upstreamRemote, upstreamRef: upstreamRef, pushRemote: pushRemote,
+               pushRef: pushRef, checkedOutAt: path)
     }
 }
 
