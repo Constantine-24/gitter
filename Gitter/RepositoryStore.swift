@@ -406,7 +406,16 @@ final class RepositoryStore {
 
         root = standardized
         UserDefaults.standard.set(standardized.path, forKey: Self.lastRepositoryPathKey)
-        NSDocumentController.shared.noteNewRecentDocumentURL(standardized)
+        #if DEBUG
+            // A harness's scratch fixture is not one of the user's recent repositories (B3 Ruling 7).
+            if DebugLaunchGuard.notesRecentDocuments(ProcessInfo.processInfo.environment) {
+                NSDocumentController.shared.noteNewRecentDocumentURL(standardized)
+            } else {
+                DebugLaunchHooks.log("launch guard: \(standardized.lastPathComponent) is not added to Open Recent")
+            }
+        #else
+            NSDocumentController.shared.noteNewRecentDocumentURL(standardized)
+        #endif
 
         // A linked worktree's HEAD, index and refs are outside its root (R28): the watcher is
         // given where they are (`RepositoryWatcher.paths`).

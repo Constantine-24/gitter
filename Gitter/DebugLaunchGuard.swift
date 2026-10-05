@@ -10,6 +10,7 @@
     ///
     /// - nothing is reopened (`reopensLastRepository`): the fixture named by
     ///   `GITTER_DEBUG_OPEN` is the first repository the window shows;
+    /// - nothing it opens is added to Open Recent (`notesRecentDocuments`);
     /// - no automatic fetch starts (`startsAutomaticFetch`) unless the script asks for its
     ///   schedule with `GITTER_DEBUG_AUTOFETCH`;
     /// - no hook acts — no selection, staging, click, key or step — unless the repository on
@@ -38,6 +39,13 @@
         static func fixtureToOpen(_ environment: [String: String]) -> String? {
             guard let fixture = environment[openVariable], !fixture.isEmpty else { return nil }
             return fixture
+        }
+
+        /// Whether `open(_:)` adds what it opens to Open Recent (B3 Ruling 7): not in a scripted
+        /// launch, whose fixtures are scratch folders — that list is the user's, kept outside
+        /// the defaults, where a harness's restore cannot put it back.
+        static func notesRecentDocuments(_ environment: [String: String]) -> Bool {
+            !isScripted(environment)
         }
 
         static func startsAutomaticFetch(_ environment: [String: String]) -> Bool {

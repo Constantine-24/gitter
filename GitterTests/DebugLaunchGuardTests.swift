@@ -123,4 +123,16 @@ import Testing
     @Test func aNamedFixtureIsOpened() {
         #expect(DebugLaunchGuard.fixtureToOpen(["GITTER_DEBUG_OPEN": Self.fixture]) == Self.fixture)
     }
+
+    // MARK: - Open Recent (B3 Ruling 7)
+
+    /// A scripted launch opens scratch fixtures; each `open(_:)` used to add one to the user's
+    /// Open Recent list, which lives outside the defaults, so no `cmp` of them could see it. A
+    /// harness run leaves that list alone; an ordinary launch still records what it opens.
+    @Test func onlyAnUnscriptedLaunchNotesRecentDocuments() {
+        #expect(DebugLaunchGuard.notesRecentDocuments(["HOME": "/Users/someone", "GITTER_OTHER": "1"]))
+        #expect(!DebugLaunchGuard.notesRecentDocuments(["GITTER_DEBUG_OPEN": Self.fixture]))
+        #expect(!DebugLaunchGuard.notesRecentDocuments(["GITTER_DEBUG_THEN": ""]))
+        #expect(!DebugLaunchGuard.notesRecentDocuments(["GITTER_DEBUG_SNAPSHOT_DIR": "/tmp/x"]))
+    }
 }
