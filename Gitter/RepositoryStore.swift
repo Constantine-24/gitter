@@ -299,6 +299,9 @@ final class RepositoryStore {
     var conflictTask: Task<Void, Never>?
     // internal (not private), bookkeeping only, views must not touch this: used by +Compare.swift
     var compareTask: Task<Void, Never>?
+    /// The Remove Worktree sheet's check (B3 Task 5), cancelled when the sheet closes.
+    // internal (not private), bookkeeping only, views must not touch this: used by +Worktrees.swift
+    var worktreeCheckTask: Task<Void, Never>?
     /// The most recently scheduled snapshot load; new ones chain behind it. See `refresh()`.
     // internal (not private), bookkeeping only, views must not touch this: used by +Refresh.swift
     var lastRefresh: Task<Void, Never>?
@@ -388,6 +391,8 @@ final class RepositoryStore {
         // never be answered against this one, and its notice is about a repository nobody is
         // looking at any more.
         activeSheet = nil
+        // A worktree removal's check is about the repository being left.
+        worktreeCheckTask?.cancel()
         dismissNotice()
         // Its link or its undo is for the repository being left.
         stickyNotice = nil

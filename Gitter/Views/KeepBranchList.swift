@@ -2,7 +2,7 @@ import GitCore
 import SwiftUI
 
 /// The "keep a local branch" boxes of Prune <remote>… and Remove… (fix round 1, I7: one view for
-/// both sheets): the heading, Keep All / Keep None with how many are kept, and a row per holder —
+/// both sheets), and of Remove Worktree… and Remove All Missing… (B3 Task 5): the heading, Keep All / Keep None with how many are kept, and a row per holder —
 /// a box beside the suggested name, with the name's problem under it — capped at `maxRows` rows
 /// and scrolling, so a sheet with two dozen holders keeps its title and buttons on screen
 /// (Ruling 12). The line under the list counts the ticked names with a problem, so a row scrolled
@@ -21,10 +21,14 @@ struct KeepBranchList: View {
     let problems: [String: String]
     let checked: [String: String]?
     var maxRows = 4
+    /// The line above the boxes, and each box's label for its holder: B2's for remote-tracking
+    /// refs; a worktree removal (B3) passes its own, its holders being worktree paths.
+    var heading = RemoteAdminWording.keepHeading
+    var label: (String) -> String = RemoteAdminWording.keepLabel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(RemoteAdminWording.keepHeading)
+            Text(heading)
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
             controls
@@ -93,7 +97,7 @@ struct KeepBranchList: View {
     private func row(_ tip: RefTip) -> some View {
         GridRow {
             Toggle(
-                RemoteAdminWording.keepLabel(tip.ref),
+                label(tip.ref),
                 isOn: Binding(get: { ticked[tip.ref] ?? false }, set: { ticked[tip.ref] = $0 }))
             TextField("", text: Binding(get: { names[tip.ref] ?? "" }, set: { names[tip.ref] = $0 }))
                 .textFieldStyle(.roundedBorder)

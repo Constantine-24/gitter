@@ -281,3 +281,632 @@ enum WorktreeWording {
         }
     }
 }
+
+// MARK: - Add and Remove Worktree (B3 Task 5)
+
+/// The three things Add Worktree can check out (`AddWorktreeChoice` is the choice made).
+enum AddWorktreeKind: Hashable, CaseIterable {
+    /// A local branch no worktree has checked out.
+    case existing
+    /// A new branch created first at a start point's id.
+    case newBranch
+    /// A new local branch created at a remote branch's id, then set to track it.
+    case tracking
+}
+
+/// What is at the folder Add Worktree is asked for, read by the store for the live check.
+enum WorktreeFolderState: Hashable, Sendable {
+    /// Nothing: git creates it, and any missing parent (R16).
+    case missing
+    /// A folder with nothing in it: git accepts it (R16).
+    case empty
+    case notEmpty
+    /// A file or a link: never a folder git would fill.
+    case notAFolder
+    /// A folder that cannot be listed: not known to be empty.
+    case unreadable
+}
+
+/// What an add did, for its notice: the sentence, the worktree Open switches to (nil when none
+/// is listed at the path), and whether anything in it is not what was asked.
+struct AddWorktreeReport: Hashable {
+    let text: String
+    let opens: String?
+    let isProblem: Bool
+}
+
+/// One worktree of Remove All Missing…, after its turn: removed (with the kept branch made
+/// first, if any) or not, in words.
+struct MissingRemoval: Hashable {
+    enum Outcome: Hashable {
+        case removed(kept: [String])
+        case notRemoved(String)
+    }
+
+    let worktree: Worktree
+    let outcome: Outcome
+}
+
+/// Add Worktree… and Remove Worktree… (B3 Task 5): the menus' titles and reasons, the Add
+/// sheet's choices, default folder and live folder check, the Remove sheet's check — every
+/// refusal in place of the button, what git deletes with it, the commits a detached HEAD holds —
+/// and every result, whole, partial or unknown. A worktree's path is shown through
+/// `displayPath`; git's words through `RemoteWording.plain`.
+extension WorktreeWording {
+
+    // MARK: Titles
+
+    static let addTitle = "Add Worktree…"
+    static func newWorktreeTitle(_ branch: String) -> String { "New Worktree for \"\(branch)\"…" }
+    static let removeTitle = "Remove Worktree…"
+    static let removeAllMissingTitle = "Remove All Missing…"
+    static let addSheetTitle = "Add Worktree"
+    static let addButton = "Add Worktree"
+    static let removeButton = "Remove Worktree"
+    static func removeSheetTitle(_ worktree: Worktree) -> String { "Remove Worktree \"\(folderName(worktree.path))\"" }
+    static let removeMissingSheetTitle = "Remove Missing Worktrees"
+    /// The add notice's button: this window switches to the new worktree.
+    static let openNoticeButton = "Open"
+
+    // MARK: Why an item is off
+
+    /// "New Worktree for <b>…" on a branch's menu: off for the branch checked out here and for one
+    /// another worktree holds (`heldReason`, Task 3's sentence).
+    static func newWorktreeBlocked(_ branch: String, isCurrent: Bool, heldReason: String?) -> String? {
+        if isCurrent {
+            return "\"\(branch)\" is checked out in this window, and a branch can be checked out in only one worktree."
+        }
+        return heldReason
+    }
+
+    /// Remove Worktree… on a row: off for the two git or Gitter refuse before any check.
+    static func removeBlocked(_ worktree: Worktree, isOpenHere: Bool) -> String? {
+        if worktree.isMain { return "The main worktree holds the repository itself, so it can't be removed." }
+        if isOpenHere { return "This window has this worktree open. Open another one first, then remove it from there." }
+        return nil
+    }
+
+    /// The linked worktrees whose folder is gone, in list order.
+    static func missing(_ worktrees: [Worktree]) -> [Worktree] {
+        worktrees.filter { !$0.isMain && $0.isMissing }
+    }
+
+    static let noneMissing = "No worktree's folder is missing."
+
+    static func removeAllMissingBlocked(_ worktrees: [Worktree]) -> String? {
+        missing(worktrees).isEmpty ? noneMissing : nil
+    }
+
+    // MARK: The Add sheet
+
+    static func kindTitle(_ kind: AddWorktreeKind) -> String {
+        switch kind {
+        case .existing: "Existing branch"
+        case .newBranch: "New branch"
+        case .tracking: "Remote branch"
+        }
+    }
+
+    static func kindExplanation(_ kind: AddWorktreeKind) -> String {
+        switch kind {
+        case .existing: "Check out a local branch that no worktree has checked out."
+        case .newBranch: "Create a new branch at a start point, then check it out in the new worktree."
+        case .tracking: "Create a new local branch that tracks a remote branch, then check it out in the new worktree."
+        }
+    }
+
+    static let branchLabel = "Branch:"
+    static let newNameLabel = "New branch:"
+    static let startLabel = "From:"
+    static let remoteLabel = "Remote branch:"
+    static let folderLabel = "Folder:"
+    static let chooseFolderTitle = "Choose…"
+    static let chooseFolderMessage = "Choose an empty folder for the new worktree, or create one."
+    static let noFreeBranches = "Every local branch is checked out in a worktree or held by a rebase or bisect."
+    static let noRemoteBranches = "There is no fetched remote branch."
+
+    /// The local branches Existing branch offers: not this window's own, not checked out in
+    /// another worktree, not held by a rebase or bisect anywhere (R14) — this window's included.
+    /// GitCore checks again right before git runs.
+    static func freeBranches(_ branches: [Branch], current: String?, worktrees: [Worktree]) -> [String] {
+        let held = Set(worktrees.flatMap(\.operationBranches) + worktrees.compactMap(\.branch))
+        return branches.filter { branch in
+            branch.name != current && branch.checkedOutAt == nil && !held.contains("refs/heads/" + branch.name)
+        }.map(\.name)
+    }
+
+    /// A tracking branch's suggested name: the remote branch's own name after its remote.
+    static func trackingName(_ remoteBranch: String, remote: String?) -> String {
+        if let remote, remoteBranch.hasPrefix(remote + "/") { return String(remoteBranch.dropFirst(remote.count + 1)) }
+        guard let slash = remoteBranch.firstIndex(of: "/") else { return remoteBranch }
+        return String(remoteBranch[remoteBranch.index(after: slash)...])
+    }
+
+    /// A start point as the sheet and the notice name it: a branch by its short name, a commit
+    /// (Ruling 3: its `ref` is its id) by its first seven digits.
+    static func startLabel(_ tip: RefTip) -> String {
+        if tip.ref.hasPrefix("refs/heads/") { return String(tip.ref.dropFirst("refs/heads/".count)) }
+        if tip.ref.hasPrefix("refs/remotes/") { return String(tip.ref.dropFirst("refs/remotes/".count)) }
+        return tip.ref == tip.id ? String(tip.id.prefix(7)) : tip.ref
+    }
+
+    /// The folder the sheet starts with: a sibling of the main worktree's, `<main folder>-<branch>`,
+    /// with a branch's slashes made dashes (a bare `x.git` is `x`).
+    static func defaultFolder(mainPath: String, branch: String) -> String {
+        let main = URL(fileURLWithPath: mainPath)
+        var name = main.lastPathComponent
+        if name.hasSuffix(".git"), name.count > 4 { name.removeLast(4) }
+        let slug = branch.replacingOccurrences(of: "/", with: "-")
+        return main.deletingLastPathComponent().appendingPathComponent(name + "-" + (slug.isEmpty ? "worktree" : slug)).path
+    }
+
+    /// The folder field as the check and git get it: trimmed, a leading `~` expanded, a trailing
+    /// slash off.
+    static func normalizedFolder(_ text: String) -> String {
+        var path = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if path.hasPrefix("~") { path = (path as NSString).expandingTildeInPath }
+        while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+        return path
+    }
+
+    /// The listed worktree whose folder holds `resolved` (or is it), both sides compared by real
+    /// path (R23): its path as listed, or nil.
+    static func containingWorktree(_ resolved: String, in listed: [(path: String, resolved: String)]) -> String? {
+        listed.first { worktree in
+            resolved == worktree.resolved
+                || resolved.hasPrefix(worktree.resolved.hasSuffix("/") ? worktree.resolved : worktree.resolved + "/")
+        }?.path
+    }
+
+    private static let chooseAnother = "Choose a folder that doesn't exist yet, or an empty one."
+
+    /// The folder's live check, or nil when Add may go ahead: a full path, outside every
+    /// worktree (`insideWorktree`), and nothing there but an empty folder (R16).
+    static func folderProblem(_ path: String, state: WorktreeFolderState, insideWorktree: String?) -> String? {
+        if path.isEmpty { return "Choose a folder for the worktree." }
+        if !path.hasPrefix("/") { return "Enter a full path, beginning with /." }
+        if let inside = insideWorktree {
+            return "This is inside the worktree at \(displayPath(inside)), where the new one would show as untracked "
+                + "files. Choose a folder outside every worktree."
+        }
+        switch state {
+        case .missing, .empty: return nil
+        case .notEmpty: return "This folder is not empty. " + chooseAnother
+        case .notAFolder: return "Something that is not a folder is at this path. " + chooseAnother
+        case .unreadable: return "Gitter can't read this folder, so it can't tell whether it is empty. Choose another."
+        }
+    }
+
+    // MARK: What an add did
+
+    /// The notice after an add that left a worktree listed — or, for `.unexpected` with nothing
+    /// listed, the banner. Every partial state is said (Ruling 3): the upstream not set, git's
+    /// error after a complete worktree (R19), a worktree not on the branch asked for.
+    static func added(_ result: AddWorktreeResult, choice: AddWorktreeChoice, upstreamProblem: String?) -> AddWorktreeReport {
+        let upstream = upstreamProblem.map {
+            " Setting its upstream did not work either: \($0). Set it with Set Upstream… in the branch's menu."
+        } ?? ""
+        switch result {
+        case .added(let worktree):
+            let base = addedBase(choice, path: worktree.path, upstreamFailed: upstreamProblem != nil)
+            guard let upstreamProblem else { return AddWorktreeReport(text: base + ".", opens: worktree.path, isProblem: false) }
+            return AddWorktreeReport(
+                text: base + ", but setting its upstream did not work: \(upstreamProblem). Set it with Set Upstream… "
+                    + "in the branch's menu.",
+                opens: worktree.path, isProblem: true)
+        case .addedWithError(let worktree, let words):
+            let base = addedBase(choice, path: worktree.path, upstreamFailed: upstreamProblem != nil)
+            let said = RemoteWording.plain(words)
+            return AddWorktreeReport(
+                text: base + ", but git exited with an error after making it" + (said.isEmpty ? "" : ": \(said)")
+                    + ". A post-checkout hook may have failed — check the files there." + upstream,
+                opens: worktree.path, isProblem: true)
+        case .unexpected(let worktree?, let words):
+            let what = worktree.branch.map { "on \"\(shortName($0))\"" } ?? branchLine(worktree)
+            let said = RemoteWording.plain(words)
+            return AddWorktreeReport(
+                text: "git added a worktree at \(displayPath(worktree.path)), but it is \(what), not on "
+                    + "\"\(choice.branch)\" as asked\(said.isEmpty ? "" : " (\(said))"). Gitter changed nothing there: "
+                    + "open it to look, or remove it." + created(choice),
+                opens: worktree.path, isProblem: true)
+        case .unexpected(nil, let words):
+            let said = RemoteWording.plain(words)
+            return AddWorktreeReport(
+                text: "git said it added the worktree, but nothing is listed at the folder you chose"
+                    + (said.isEmpty ? "." : " (\(said)).") + created(choice),
+                opens: nil, isProblem: true)
+        }
+    }
+
+    private static func addedBase(_ choice: AddWorktreeChoice, path: String, upstreamFailed: Bool) -> String {
+        let at = " at \(displayPath(path))"
+        switch choice {
+        case .existing(let branch):
+            return "Added a worktree for \"\(branch)\"" + at
+        case .newBranch(let name, let start):
+            return "Created \"\(name)\" from \(startLabel(start)) and added a worktree for it" + at
+        case .tracking(let name, let remote):
+            let how = upstreamFailed ? "from \(startLabel(remote))" : "tracking \"\(startLabel(remote))\""
+            return "Created \"\(name)\" \(how) and added a worktree for it" + at
+        }
+    }
+
+    /// " The branch "x" was created first and stays." for a choice that created one.
+    private static func created(_ choice: AddWorktreeChoice) -> String {
+        guard choice.createsBranch else { return "" }
+        return " The branch \"\(choice.branch)\" was created first and stays."
+    }
+
+    /// Why setting a new tracking branch's upstream did not work (B2's `setUpstream`, read back),
+    /// as a clause.
+    static func upstreamProblem(_ error: Error) -> String {
+        switch error {
+        case UpstreamRefusal.notFetched(let ref):
+            return "\"\(RemoteAdminWording.shortUpstream(ref))\" doesn't exist here any more"
+        case UpstreamRefusal.notABranch(let ref):
+            return "\"\(RemoteAdminWording.shortUpstream(ref))\" is not a branch a remote fetches into"
+        case UpstreamRefusal.ambiguousNamespace(let ref):
+            return "two remotes fetch into \"\(RemoteAdminWording.shortUpstream(ref))\""
+        case UpstreamRefusal.ownUpstream:
+            return "a branch can't track itself"
+        case UpstreamRefusal.mergeMismatch(let expected, let written):
+            return "git set it to \(RemoteWording.plain(written)) on the server, not \(RemoteWording.plain(expected)), "
+                + "because overlapping fetch refspecs map it elsewhere"
+        case RemoteAdminPartial.upstreamChangedThenFailed(let branch, let remote, let merge, let words):
+            let remoteNow = remote.map { "branch.\(branch).remote = \(RemoteWording.plain($0))" } ?? "no branch.\(branch).remote"
+            let mergeNow = merge.map { "branch.\(branch).merge = \(RemoteWording.plain($0))" } ?? "no branch.\(branch).merge"
+            return "git failed part-way (\(RemoteWording.plain(words))), leaving \(remoteNow) and \(mergeNow)"
+        case RemoteAdminPartial.upstreamOutcomeUnknown:
+            return "Gitter was stopped while setting it, so whether it is set is not known"
+        case BranchOperationError.noSuchBranch(let name):
+            return "there is no branch named \"\(name)\" any more"
+        case GitError.commandFailed(let code, let stderr):
+            return gitsWords(stderr, code: code)
+        default:
+            return RemoteWording.plain(error.localizedDescription)
+        }
+    }
+
+    /// An add that threw: nothing is listed at the path. A branch created first stays, and is
+    /// named (Ruling 3).
+    static func addFailure(_ error: Error, choice: AddWorktreeChoice, path: String, branchCreated: Bool) -> String {
+        let branch = choice.branch
+        let at = displayPath(path)
+        let text: String
+        switch error {
+        case AddWorktreeRefusal.noSuchBranch(let name):
+            text = "There is no local branch \"\(name)\" any more, so no worktree was added."
+        case AddWorktreeRefusal.branchInUse(let other):
+            text = "\"\(branch)\" is checked out in \(displayPath(other)) now, so no worktree was added."
+        case AddWorktreeRefusal.branchHeldByOperation(let other):
+            text = "\"\(branch)\" is held by a rebase or bisect in \(displayPath(other)), so no worktree was added."
+        case AddWorktreeRefusal.pathExists(let p):
+            text = "Something is at \(displayPath(p)) now, so no worktree was added. " + chooseAnother
+        case AddWorktreeRefusal.pathInsideWorktree(let p):
+            text = "\(displayPath(p)) is inside a worktree, so no worktree was added."
+        case AddWorktreeRefusal.pathNotAbsolute(let p):
+            text = "\(displayPath(p)) is not a full path, so no worktree was added."
+        case GitError.commandFailed(let code, let stderr):
+            text = "git didn't add the worktree at \(at): \(gitsWords(stderr, code: code)). Nothing is listed there."
+        case is CancellationError:
+            text = "Stopped before the worktree was added. Nothing is listed at \(at)."
+        default:
+            text = RemoteWording.failure(error, attempt: "add a worktree at \(at)", isWrite: false)
+        }
+        return branchCreated ? text + " The branch \"\(branch)\" was created first and stays." : text
+    }
+
+    /// The add notice's Open, for a worktree no longer listed.
+    static func notListedAnyMore(_ path: String) -> String {
+        "The worktree at \(displayPath(path)) is no longer listed, so there is nothing to open."
+    }
+
+    /// The new branch could not be created: nothing was done.
+    static func branchNotCreated(_ error: Error, name: String) -> String {
+        switch error {
+        case let refusal as BranchOperationError:
+            return refusal.sentence(refusing: "create \"\(name)\"") + " No worktree was added."
+        case GitError.commandFailed(let code, let stderr):
+            return "Couldn't create \"\(name)\": \(gitsWords(stderr, code: code)). No worktree was added."
+        default:
+            return RemoteWording.failure(error, attempt: "create \"\(name)\"", isWrite: false) + " No worktree was added."
+        }
+    }
+
+    // MARK: The Remove sheet
+
+    static let checking = "Checking what removing it would lose…"
+    static let checkingMissing = "Checking the worktrees whose folder is gone…"
+    static let refusalsHeading = "Gitter won't remove it:"
+    static let keepHeading = "Keep a branch at its HEAD, so these commits stay on a branch:"
+    static let missingKeepHeading = "Keep a branch at each detached HEAD, so their commits stay on a branch:"
+
+    /// `Keep "<folder>" as` — a keep box's label; the holder is the worktree's path as listed.
+    static func keepLabel(_ path: String) -> String { "Keep \"\(folderName(path))\" as" }
+
+    /// The check found no folder: a missing worktree (R25), or a locked one whose folder is gone
+    /// — anything but a folder the check could not read.
+    static func folderIsGone(_ removal: WorktreeRemoval) -> Bool {
+        if removal.worktree.isMissing { return true }
+        guard !removal.worktree.isMain, removal.changes == nil else { return false }
+        return !removal.refusals.contains { if case .unreadable = $0 { true } else { false } }
+    }
+
+    static func removeIntro(_ removal: WorktreeRemoval) -> String {
+        guard folderIsGone(removal) else {
+            return "This deletes its folder, above, and everything in it."
+        }
+        return removal.worktree.branch == nil
+            ? "Its folder is gone. Removing it takes it off git's list; nothing on disk changes."
+            : "Its folder is gone. Removing it takes it off git's list, so its branch can be checked out elsewhere; "
+                + "nothing on disk changes."
+    }
+
+    /// R22: a branch worktree's branch is never deleted.
+    static func branchStays(_ removal: WorktreeRemoval) -> String? {
+        removal.worktree.branch.map { "The branch \"\(shortName($0))\" stays." }
+    }
+
+    /// A detached HEAD's own commits (R22), counted as B2's union is.
+    static func strandedLine(_ removal: WorktreeRemoval) -> String? {
+        guard removal.worktree.branch == nil, let head = removal.worktree.head else { return nil }
+        switch removal.stranded.count {
+        case 0:
+            return "Its detached HEAD (\(head.prefix(7))) is also on a branch, tag, remote or another worktree, so no "
+                + "commit is lost."
+        case 1:
+            return "Its detached HEAD holds 1 commit no branch, tag, remote or other worktree has. Removing it deletes "
+                + "its HEAD's history, so the commit would be on no branch:"
+        case let count:
+            return "Its detached HEAD holds \(count) commits no branch, tag, remote or other worktree has. Removing it "
+                + "deletes its HEAD's history, so they would be on no branch:"
+        }
+    }
+
+    /// R21: what git's remove deletes without asking — the count, and the top names.
+    static func ignoredLine(_ ignored: IgnoredSummary) -> String? {
+        guard ignored.count > 0 else { return nil }
+        let entries = ignored.count == 1 ? "1 ignored entry" : "\(ignored.count) ignored entries"
+        let names = ignored.topLevel.map(displayPath).joined(separator: ", ")
+            + (ignored.topLevel.count >= IgnoredSummary.topLevelLimit ? ", …" : "")
+        return "git also deletes \(entries) with it — files git doesn't track, which it removes without asking: \(names)"
+    }
+
+    /// Ruling 1 for a worktree: its folder's name made a branch name, then `-kept`, `-kept-2`, …
+    /// while a branch, tag or remote has it (compared ignoring case). GitCore checks the name
+    /// again (`keepBranchNameProblem`), live and before it creates it.
+    static func suggestedKeepName(folder: String, taken: Set<String>) -> String {
+        var name = ""
+        for character in folder {
+            let fits = character.isLetter || character.isNumber || character == "-" || character == "_" || character == "."
+            if fits {
+                name.append(character)
+            } else if name.last != "-" {
+                name.append("-")
+            }
+        }
+        while name.contains("..") { name = name.replacingOccurrences(of: "..", with: "-") }
+        while name.contains("--") { name = name.replacingOccurrences(of: "--", with: "-") }
+        if name.hasSuffix(".lock") { name.removeLast(".lock".count) }
+        name = name.trimmingCharacters(in: CharacterSet(charactersIn: "-."))
+        let base = name.isEmpty ? "kept-worktree" : name
+        let lowered = Set(taken.map { $0.lowercased() })
+        guard lowered.contains(base.lowercased()) else { return base }
+        var candidate = base + "-kept"
+        var n = 2
+        while lowered.contains(candidate.lowercased()) {
+            candidate = "\(base)-kept-\(n)"
+            n += 1
+        }
+        return candidate
+    }
+
+    /// One refusal of the check, shown in place of the button, with the next step where there is
+    /// one.
+    static func refusal(_ refusal: WorktreeRemovalRefusal) -> String {
+        switch refusal {
+        case .isMain:
+            return "It is the main worktree, which holds the repository itself."
+        case .isOpenHere:
+            return "This window has it open. Open another worktree first, then remove this one from there."
+        case .locked(let reason):
+            let what = reason.flatMap { $0.isEmpty ? nil : "It is locked (\"\(displayPath($0))\")." }
+                ?? "It is locked, with no reason given."
+            return what + " Gitter leaves locked worktrees alone; unlock it in Terminal (git worktree unlock) if you "
+                + "mean to remove it."
+        case .operationInProgress("sequencer"):
+            return "A cherry-pick or revert is between its steps there, and git would remove it with the worktree. "
+                + "Finish or abort it there first."
+        case .operationInProgress(let operation):
+            let article = operation.first.map { "aeiou".contains($0) } == true ? "An" : "A"
+            return "\(article) \(RemoteWording.plain(operation)) is in progress there, and git would remove it with the "
+                + "worktree. Finish or abort it there first."
+        case .changes(let changes):
+            let parts = [
+                (changes.staged, "staged"), (changes.unstaged, "unstaged"), (changes.untracked, "untracked"),
+                (changes.conflicted, "conflicted"),
+            ].filter { $0.0 > 0 }.map { "\($0.0) \($0.1)" }
+            return "It has changes that are not committed: \(parts.joined(separator: ", ")). Commit, stash or discard "
+                + "them there first."
+        case .assumeUnchanged(let paths):
+            return hiddenEdits(paths, mark: "assume-unchanged", flag: "--no-assume-unchanged")
+        case .skipWorktreePresent(let paths):
+            return hiddenEdits(paths, mark: "skip-worktree and present", flag: "--no-skip-worktree")
+        case .nestedRepository(let paths):
+            return paths.count == 1
+                ? "It holds another repository, in \(quoted(paths)): removing would delete it, history and all. Move "
+                    + "it out first."
+                : "It holds other repositories, in \(quoted(paths)): removing would delete them, history and all. "
+                    + "Move them out first."
+        case .tooLargeToCheck:
+            return "It holds too many files for Gitter to check for repositories inside it. Remove it in Terminal "
+                + "after checking it yourself."
+        case .unreadable(let path):
+            return "Gitter couldn't read \(displayPath(path)), so it can't tell what removing would lose. Check its "
+                + "permissions."
+        }
+    }
+
+    private static func hiddenEdits(_ paths: [String], mark: String, flag: String) -> String {
+        let more = paths.count >= WorktreeRemovalRefusal.pathLimit ? " or more" : ""
+        let files = paths.count == 1 && more.isEmpty ? "1 file there is" : "\(paths.count)\(more) files there are"
+        let them = paths.count == 1 && more.isEmpty ? "it" : "them"
+        return "\(files) marked \(mark) (\(quoted(paths))): an edit to \(them) is hidden from git, and removing would "
+            + "delete it. Clear the mark in Terminal (git update-index \(flag)) first."
+    }
+
+    /// `"a", "b", "c" and 2 more`.
+    private static func quoted(_ paths: [String]) -> String {
+        let shown = paths.prefix(3).map { "\"\(displayPath($0))\"" }.joined(separator: ", ")
+        return paths.count > 3 ? "\(shown) and \(paths.count - 3) more" : shown
+    }
+
+    /// A check that could not be made: the sheet closes, nothing was changed.
+    static func checkFailure(_ error: Error, worktree: Worktree) -> String {
+        let at = displayPath(worktree.path)
+        switch error {
+        case WorktreeRemovalPartial.changedSinceShown:
+            return "The worktree at \(at) is no longer listed — removed or moved since the last refresh. Nothing was "
+                + "changed."
+        case GitError.commandFailed(let code, let stderr):
+            return "Couldn't check what removing the worktree at \(at) would lose: \(gitsWords(stderr, code: code)). "
+                + "Nothing was changed."
+        default:
+            return RemoteWording.failure(error, attempt: "check what removing the worktree at \(at) would lose", isWrite: false)
+                + " Nothing was changed."
+        }
+    }
+
+    // MARK: What a removal did
+
+    /// A removal git finished and `list` confirmed: what went, what stays, and the kept branch.
+    static func removed(_ removal: WorktreeRemoval, kept: [String]) -> String {
+        let at = displayPath(removal.worktree.path)
+        var text: String
+        if folderIsGone(removal) {
+            text = "Removed the missing worktree \(at) from git's list."
+        } else {
+            let ignored = removal.ignored.count
+            let with = ignored == 0 ? "" : ", with the \(ignored == 1 ? "1 ignored entry" : "\(ignored) ignored entries") in it"
+            text = "Removed the worktree at \(at)\(with)."
+        }
+        if let stays = branchStays(removal) { text += " " + stays }
+        if let name = kept.first {
+            let count = removal.stranded.count
+            text += count == 1
+                ? " Its 1 commit is on the kept branch \"\(name)\"."
+                : " Its \(count) commits are on the kept branch \"\(name)\"."
+        }
+        return text
+    }
+
+    /// A removal that threw: every refusal, the partial and unknown results (each naming the
+    /// kept branches, which stay), and B2's own words for a kept branch whose creation was
+    /// stopped.
+    static func removeFailure(_ error: Error, removal: WorktreeRemoval) -> String {
+        let at = displayPath(removal.worktree.path)
+        switch error {
+        case WorktreeRemovalPartial.changedSinceShown:
+            return "The worktree at \(at) changed since the sheet checked it — a file, a commit, a lock or its list "
+                + "entry. Nothing was removed and no branch was created. Remove it again to see what it holds now."
+        case WorktreeRemovalPartial.keptBranchesThenStopped(let kept, let words):
+            let names = quotedNames(kept)
+            let made = kept.count == 1 ? "the kept branch \(names)" : "the kept branches \(names)"
+            return "Created \(made), then the removal could not go on: \(RemoteWording.plain(words)). Nothing was "
+                + "removed; \(names) \(kept.count == 1 ? "stays" : "stay")."
+        case WorktreeRemovalPartial.refusedByGit(let words, let kept):
+            let said = RemoteWording.plain(words)
+            return "git refused to remove the worktree at \(at)\(said.isEmpty ? "" : ": \(said)"). It is still listed, "
+                + "but git checks as it deletes, so some files may be gone — look in the folder." + keptStay(kept)
+        case WorktreeRemovalPartial.removedWithLeftovers(let words, let kept):
+            let said = RemoteWording.plain(words)
+            return "git took the worktree at \(at) off its list but did not finish deleting its folder"
+                + "\(said.isEmpty ? "" : ": \(said)"). What is left is still on disk; delete it yourself once you've "
+                + "checked it." + keptStay(kept)
+        case WorktreeRemovalPartial.outcomeUnknown(let kept):
+            return "Whether the worktree at \(at) was removed is not known: git was stopped, or the list could not be "
+                + "read back. Refresh to see." + keptStay(kept)
+        case RemoteAdminPartial.keptBranchesCancelled(let kept, let unknown):
+            return RemoteAdminWording.keptCancelled(kept: kept, unknown: unknown, nothing: "removed")
+        case RemoteAdminRefusal.branchExists(let name):
+            return "Couldn't keep \"\(name)\": a branch, tag or remote has that name now. Nothing was removed."
+        case RemoteAdminRefusal.invalidBranchName(let name):
+            return "Couldn't keep \"\(name)\": that is not a valid branch name. Nothing was removed."
+        case let refusal as WorktreeRemovalRefusal:
+            let text = Self.refusal(refusal)
+            let lowered = text.hasPrefix("It ") ? "i" + text.dropFirst() : text
+            return "Didn't remove the worktree at \(at): \(lowered)"
+        case BranchOperationError.invalidName:
+            return "Gitter asked to keep a branch for something other than this worktree, so nothing was removed."
+        case is CancellationError:
+            return "Stopped before anything was removed or created."
+        case GitError.commandFailed(let code, let stderr):
+            return "Couldn't remove the worktree at \(at): \(gitsWords(stderr, code: code)). Nothing was removed."
+        default:
+            return RemoteWording.failure(error, attempt: "remove the worktree at \(at)", isWrite: false)
+                + " Nothing was removed."
+        }
+    }
+
+    /// " The kept branch "k" stays." — or nothing.
+    private static func keptStay(_ kept: [String]) -> String {
+        switch kept.count {
+        case 0: ""
+        case 1: " The kept branch \(quotedNames(kept)) stays."
+        default: " The kept branches \(quotedNames(kept)) stay."
+        }
+    }
+
+    private static func quotedNames(_ names: [String]) -> String {
+        names.map { "\"\($0)\"" }.joined(separator: ", ")
+    }
+
+    // MARK: Remove All Missing…
+
+    static func removeMissingIntro(_ count: Int) -> String {
+        count == 1
+            ? "This worktree's folder is gone. Removing it takes it off git's list, so its branch can be checked out "
+                + "elsewhere; nothing on disk changes."
+            : "These \(count) worktrees' folders are gone. Removing them takes them off git's list one at a time, so "
+                + "their branches can be checked out elsewhere; nothing on disk changes."
+    }
+
+    static func removeMissingButton(_ count: Int) -> String {
+        count == 1 ? "Remove 1 Worktree" : "Remove \(count) Worktrees"
+    }
+
+    static let noneRemovable = "None of them can be removed: see why under each."
+
+    /// Each one, removed or not, in the order they were taken.
+    static func removedMissing(_ report: [MissingRemoval]) -> String {
+        let removed = report.filter { if case .removed = $0.outcome { true } else { false } }.count
+        let noun = report.count == 1 ? "missing worktree" : "missing worktrees"
+        let head = removed == report.count
+            ? "Removed \(report.count) \(noun) from git's list:"
+            : "Removed \(removed) of \(report.count) \(noun) from git's list:"
+        let lines = report.map { item -> String in
+            let at = displayPath(item.worktree.path)
+            switch item.outcome {
+            case .removed(let kept):
+                if let name = kept.first { return "\(at) — its commits are on the kept branch \"\(name)\"." }
+                if let branch = item.worktree.branch { return "\(at) — the branch \"\(shortName(branch))\" stays." }
+                return "\(at) — removed."
+            case .notRemoved(let why):
+                return "\(at) — not removed: \(why)"
+            }
+        }
+        return ([head] + lines).joined(separator: "\n")
+    }
+
+    static func missingReportHasProblems(_ report: [MissingRemoval]) -> Bool {
+        report.contains { if case .notRemoved = $0.outcome { true } else { false } }
+    }
+
+    // MARK: Pieces
+
+    /// git's own words, one line, or its exit code when it said nothing.
+    private static func gitsWords(_ stderr: String, code: Int32) -> String {
+        let words = RemoteWording.plainJoined(stderr.split(whereSeparator: \.isNewline).map(String.init))
+        return words.isEmpty ? "git exited with code \(code)" : words
+    }
+}

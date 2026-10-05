@@ -57,6 +57,8 @@ extension RepositoryStore {
     /// - Undo Discard puts back what the discard took (`undoDiscard`).
     /// - Show Copy selects the entry a conflict write filed (`showOfferedStash`).
     /// - Restore Tag(s) recreates the tags Delete Tag took (`restoreTags`).
+    /// - Open (Add Worktree's notice) switches this window to the new worktree
+    ///   (`openAddedWorktree`).
     ///
     /// `pasteboard` and `openURL` are the seams: a test and the DEBUG harness pass a private
     /// pasteboard and an opener that records, so neither ever touches the user's clipboard or
@@ -79,6 +81,8 @@ extension RepositoryStore {
             showOfferedStash(stash)
         case .restoreTag(let receipts):
             restoreTags(receipts)
+        case .openWorktree(let path):
+            openAddedWorktree(path)
         }
     }
 }

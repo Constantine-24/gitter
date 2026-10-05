@@ -57,11 +57,43 @@
     ///   sidebarclick:<branch>      a sidebar branch row's click (`selectFromSidebar`).
     ///   reload                     a snapshot load (what the watcher would start), then
     ///                              `comparestate`.
+    ///
+    /// B3 Task 5's worktree sheets. The harness cannot type into or click inside a sheet, so the
+    /// confirms are driven through the store's own `confirm…`, which refuses without its sheet on
+    /// screen — each step opens the sheet first, as a user does:
+    ///
+    ///   addworktree[:<branch>]       Add Worktree… (preset to that local branch), then what the
+    ///                                sheet offers: the free branches, start points, remote
+    ///                                branches, the default folder and its live check.
+    ///   folderproblem:<path>         the folder field's live check for that text.
+    ///   confirmaddworktree:existing:<b>:<path> | :new:<name>:<start>:<path> |
+    ///     :tracking:<name>:<remote ref>:<path>
+    ///                                the sheet's Add with that choice (<start>: a full ref or a
+    ///                                full id; the path is the rest, colons and all), then the
+    ///                                notice or banner and the worktree list.
+    ///   removeworktree:<folder|path> Remove Worktree… on that row: the check, then the sheet's
+    ///                                every line — or the banner.
+    ///   removeworktreestart:<folder|path>  the same, without waiting for the check: the progress
+    ///                                state is on screen for a snapshot.
+    ///   removeallmissing             Remove All Missing…: the checks, then the sheet's lines.
+    ///   worktreesheet                the worktree sheet on screen, as it is now.
+    ///   confirmremoveworktree[:none|:<name>]  the Remove sheet's button with the keep boxes as
+    ///                                they start (every holder ticked, the suggested names), none
+    ///                                ticked, or the one holder kept as <name>; then the notice or
+    ///                                banner and the worktree list. Also answers Remove All
+    ///                                Missing… (default or `none`).
+    ///   noticeopen                   the sticky notice's Open (`openWorktree`), then the root and
+    ///                                the titles. The launch guard refuses every step after it.
     extension DebugLaunchHooks {
 
         static let navigationCommands: Set<String> = Set([
             "filter", "sidebar", "worktrees", "worktreemenu", "openworktree", "pills", "watchloads", "firstresponder",
-        ]).union(compareCommands)
+        ]).union(compareCommands).union(worktreeSheetCommands)
+
+        private static let worktreeSheetCommands: Set<String> = [
+            "addworktree", "folderproblem", "confirmaddworktree", "removeworktree", "removeworktreestart",
+            "removeallmissing", "worktreesheet", "confirmremoveworktree", "noticeopen",
+        ]
 
         private static let compareCommands: Set<String> = [
             "comparewith", "compare", "comparesheet", "comparefilter", "confirmcompare", "comparestate", "compareselect",
@@ -115,7 +147,184 @@
                 log("firstresponder: \(responder.map { String(describing: type(of: $0)) } ?? "nil")")
             case let compare where compareCommands.contains(compare):
                 await compareStep(command, rest: rest, store: store)
+            case let sheet where worktreeSheetCommands.contains(sheet):
+                await worktreeSheetStep(command, rest: rest, store: store)
             default: log("unknown step: \(step)")
+            }
+        }
+
+        // MARK: - Add and Remove Worktree (Task 5)
+
+        private static func worktreeSheetStep(_ command: String, rest: String, store: RepositoryStore) async {
+            switch command {
+            case "addworktree":
+                store.requestAddWorktree(branch: rest.isEmpty ? nil : rest)
+                await logAddSheet(store)
+            case "folderproblem":
+                log("folderproblem \"\(rest)\" -> \"\(WorktreeWording.normalizedFolder(rest))\": "
+                    + "\(await store.worktreeFolderProblem(rest) ?? "ok")")
+            case "confirmaddworktree":
+                guard let (choice, path) = addChoice(rest, store) else {
+                    return log("confirmaddworktree: cannot read \(rest)")
+                }
+                log("confirmaddworktree: \(choice) at \(flatten(path)) | sheet: \(describeWorktreeSheet(store.activeSheet) ?? "none")")
+                store.confirmAddWorktree(choice, path: path)
+                _ = await wait({ !store.isMutating }, seconds: 60)
+                logOutcome(store)
+            case "removeworktree", "removeworktreestart":
+                guard let worktree = worktree(rest, store) else { return log("\(command): no worktree \(rest)") }
+                store.requestRemoveWorktree(worktree)
+                if command == "removeworktree" { await store.worktreeCheckTask?.value }
+                await logWorktreeSheet(store)
+            case "removeallmissing":
+                store.requestRemoveAllMissing()
+                await store.worktreeCheckTask?.value
+                await logWorktreeSheet(store)
+            case "worktreesheet":
+                await logWorktreeSheet(store)
+            case "confirmremoveworktree":
+                await confirmRemove(rest, store)
+            case "noticeopen":
+                let open = store.stickyNotice?.actions.first { if case .openWorktree = $0 { true } else { false } }
+                guard let open else { return log("noticeopen: no Open on the sticky notice") }
+                log("noticeopen: \(open) [\(NoticeWording.title(open))]")
+                let before = store.generation
+                store.perform(open)
+                _ = await wait({ store.generation != before && store.snapshot != nil && !store.worktrees.isEmpty })
+                log("noticeopen: root \(store.root?.path ?? "nil") | error: \(store.lastError.map(flatten) ?? "nil")")
+                logTitles(store)
+            default: log("unknown step: \(command)")
+            }
+        }
+
+        private static func worktree(_ name: String, _ store: RepositoryStore) -> Worktree? {
+            store.worktrees.first { WorktreeWording.folderName($0.path) == name || $0.path == name }
+        }
+
+        /// `existing:<b>:<path>`, `new:<name>:<start>:<path>`, `tracking:<name>:<remote ref>:<path>`.
+        private static func addChoice(_ spec: String, _ store: RepositoryStore) -> (AddWorktreeChoice, String)? {
+            let parts = spec.split(separator: ":", maxSplits: 3, omittingEmptySubsequences: false).map(String.init)
+            func tip(_ ref: String) -> RefTip? {
+                store.worktreeStartPoints.first { $0.ref == ref }
+                    ?? (ref.count == 40 && ref.allSatisfy(\.isHexDigit) ? RefTip(ref: ref, id: ref) : nil)
+            }
+            switch parts.first {
+            case "existing":
+                let rest = spec.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
+                guard rest.count == 3 else { return nil }
+                return (.existing(rest[1]), rest[2])
+            case "new":
+                guard parts.count == 4, let start = tip(parts[2]) else { return nil }
+                return (.newBranch(name: parts[1], start: start), parts[3])
+            case "tracking":
+                guard parts.count == 4, let remote = store.worktreeRemoteTips.first(where: { $0.ref == parts[2] }) else { return nil }
+                return (.tracking(name: parts[1], remote: remote), parts[3])
+            default:
+                return nil
+            }
+        }
+
+        private static func confirmRemove(_ rest: String, _ store: RepositoryStore) async {
+            let removals: [WorktreeRemoval]
+            switch store.activeSheet {
+            case .removeWorktree(let removal): removals = [removal]
+            case .removeMissingWorktrees(let all): removals = all
+            default: return log("confirmremoveworktree: no Remove sheet | sheet: \(describeWorktreeSheet(store.activeSheet) ?? "none")")
+            }
+            let holders = RepositoryStore.keepHolders(removals)
+            let defaults = store.worktreeKeepDefaults(holders)
+            var keeping: [String: String] = [:]
+            switch rest {
+            case "": keeping = defaults.names.filter { defaults.ticked.contains($0.key) }
+            case "none": keeping = [:]
+            default: if let holder = holders.first { keeping = [holder.ref: rest] }
+            }
+            let problems = await store.keepNameProblems(keeping)
+            log("confirmremoveworktree: keeping \(keeping.sorted { $0.key < $1.key }) | name problems: \(problems)")
+            guard problems.isEmpty else { return log("confirmremoveworktree: not confirmed — a name has a problem") }
+            if case .removeWorktree(let removal) = store.activeSheet {
+                store.confirmRemoveWorktree(removal, keeping: keeping)
+            } else {
+                store.confirmRemoveMissingWorktrees(removals, keeping: keeping)
+            }
+            _ = await wait({ !store.isMutating }, seconds: 60)
+            logOutcome(store)
+        }
+
+        /// The notices and banner after a write, and the worktrees git lists now.
+        private static func logOutcome(_ store: RepositoryStore) {
+            let sticky = store.stickyNotice
+            log("outcome notice: \(store.notice.map { flatten($0.text) } ?? "nil")")
+            log("outcome sticky: \(sticky.map { flatten($0.text) } ?? "nil") | actions: "
+                + "\(sticky?.actions.map { "\(NoticeWording.title($0)) \($0)" } ?? [])")
+            log("outcome error: \(store.lastError.map(flatten) ?? "nil")")
+            log("outcome worktrees: \(store.worktrees.map { "\(flatten($0.path)) [\(WorktreeWording.branchLine($0))]" })")
+        }
+
+        private static func logAddSheet(_ store: RepositoryStore) async {
+            guard case .addWorktree(let preset) = store.activeSheet else {
+                return log("addworktree: no sheet | error: \(store.lastError.map(flatten) ?? "nil")")
+            }
+            let free = store.freeWorktreeBranches
+            let branch = preset.flatMap { free.contains($0) ? $0 : nil } ?? free.first ?? ""
+            let folder = store.defaultWorktreeFolder(for: branch)
+            log("addworktree: \(WorktreeWording.addSheetTitle) | preset: \(preset ?? "nil") | kinds: "
+                + "\(AddWorktreeKind.allCases.map(WorktreeWording.kindTitle))")
+            log("addworktree existing: \(free.isEmpty ? WorktreeWording.noFreeBranches : free.joined(separator: ", "))")
+            log("addworktree starts: \(store.worktreeStartPoints.map(WorktreeWording.startLabel).joined(separator: ", "))")
+            log("addworktree remotes: \(store.worktreeRemoteTips.map { "\(WorktreeWording.startLabel($0)) -> \(store.trackingName(for: $0))" })")
+            log("addworktree folder for \(branch): \(flatten(folder)) | check: \(await store.worktreeFolderProblem(folder) ?? "ok")")
+        }
+
+        private static func logWorktreeSheet(_ store: RepositoryStore) async {
+            log("worktreesheet: \(describeWorktreeSheet(store.activeSheet) ?? "none") | error: \(store.lastError.map(flatten) ?? "nil") "
+                + "| notice: \(store.notice.map { flatten($0.text) } ?? "nil")")
+            let removals: [WorktreeRemoval]
+            switch store.activeSheet {
+            case .checkingWorktreeRemoval(let worktrees, let all):
+                log("worktreesheet checking: \(all ? WorktreeWording.checkingMissing : WorktreeWording.checking) "
+                    + "\(worktrees.map { flatten($0.path) })")
+                return
+            case .removeWorktree(let removal): removals = [removal]
+            case .removeMissingWorktrees(let all):
+                removals = all
+                log("worktreesheet \(WorktreeWording.removeMissingSheetTitle): \(WorktreeWording.removeMissingIntro(all.count)) "
+                    + "| button: \(all.contains { $0.refusals.isEmpty } ? WorktreeWording.removeMissingButton(all.filter { $0.refusals.isEmpty }.count) : "none: " + WorktreeWording.noneRemovable)")
+            default: return
+            }
+            for removal in removals {
+                let name = WorktreeWording.folderName(removal.worktree.path)
+                log("worktreesheet \(name): \(WorktreeWording.removeSheetTitle(removal.worktree)) | head \(removal.worktree.head ?? "nil") "
+                    + "| branch \(removal.worktree.branch ?? "nil") | changes: \(removal.changes.map { "\($0)" } ?? "nil")")
+                log("worktreesheet \(name) intro: \(WorktreeWording.removeIntro(removal))")
+                log("worktreesheet \(name) stays: \(WorktreeWording.branchStays(removal) ?? "-") | stranded: "
+                    + "\(WorktreeWording.strandedLine(removal) ?? "-") \(removal.stranded.commits.map { "\($0.sha.prefix(7)) \($0.subject)" })")
+                log("worktreesheet \(name) ignored: \(WorktreeWording.ignoredLine(removal.ignored) ?? "-") (count \(removal.ignored.count))")
+                log("worktreesheet \(name) refusals (\(removal.refusals.count)): \(removal.refusals.map(WorktreeWording.refusal)) "
+                    + "| button: \(removal.refusals.isEmpty ? WorktreeWording.removeButton : "none")")
+            }
+            let holders = RepositoryStore.keepHolders(removals)
+            let defaults = store.worktreeKeepDefaults(holders)
+            let problems = await store.keepNameProblems(defaults.names)
+            let boxes = holders.map { tip -> String in
+                let ticked = defaults.ticked.contains(tip.ref) ? "ticked" : "unticked"
+                return "\(WorktreeWording.keepLabel(tip.ref)) \(defaults.names[tip.ref] ?? "") [\(ticked)] at "
+                    + "\(tip.id.prefix(7)) \(problems[tip.ref] ?? "ok")"
+            }
+            log("worktreesheet keep: \(boxes)")
+        }
+
+        static func describeWorktreeSheet(_ sheet: BranchSheet?) -> String? {
+            switch sheet {
+            case .addWorktree(let branch): "addWorktree(preset: \(branch ?? "nil"))"
+            case .checkingWorktreeRemoval(let worktrees, let all):
+                "checkingWorktreeRemoval(\(worktrees.map { flatten($0.path) }), allMissing: \(all))"
+            case .removeWorktree(let r):
+                "removeWorktree(\(flatten(r.worktree.path)), refusals: \(r.refusals.count), ignored: \(r.ignored.count), "
+                    + "stranded: \(r.stranded.count))"
+            case .removeMissingWorktrees(let all):
+                "removeMissingWorktrees(\(all.map { "\(flatten($0.worktree.path)) refusals: \($0.refusals.count) stranded: \($0.stranded.count)" }))"
+            default: nil
             }
         }
 
@@ -346,14 +555,20 @@
                 log("worktreemenu \(WorktreeWording.folderName(worktree.path)): "
                     + "\(WorktreeWording.openTitle) [\(state(store.openWorktreeBlockedReason(worktree)))] | "
                     + "\(WorktreeWording.revealTitle) [\(state(WorktreeWording.revealBlocked(worktree)))] | "
-                    + "\(WorktreeWording.copyPathTitle) [on: \(flatten(worktree.path))]")
+                    + "\(WorktreeWording.copyPathTitle) [on: \(flatten(worktree.path))] | "
+                    + "\(WorktreeWording.removeTitle) [\(state(store.removeWorktreeBlockedReason(worktree)))]"
+                    + (worktree.isMissing ? " | \(WorktreeWording.removeAllMissingTitle) [on]" : "")
+                    + " | \(WorktreeWording.addTitle) [\(state(store.addWorktreeBlockedReason))]")
             }
+            log("worktreemenu header: \(WorktreeWording.addTitle) [\(state(store.addWorktreeBlockedReason))] | "
+                + "\(WorktreeWording.removeAllMissingTitle) [\(state(store.removeAllMissingBlockedReason))]")
             for branch in store.localBranches {
                 let icon = store.worktreeHolder(of: branch.name).map(WorktreeWording.holderSymbol) ?? "none"
                 log("branchmenu \(branch.name) [icon: \(icon), checkedOutAt: \(branch.checkedOutAt ?? "nil")]: "
                     + "Switch [\(state(store.switchBlockedReason(for: branch.name)))] | "
                     + "Delete… [\(state(store.deleteBlockedReason(for: branch.name)))] | "
-                    + "\(RemoteAdminWording.fastForwardTitle(branch.name)) [\(state(store.fastForwardBlockedReason(branch.name)))]")
+                    + "\(RemoteAdminWording.fastForwardTitle(branch.name)) [\(state(store.fastForwardBlockedReason(branch.name)))] | "
+                    + "\(WorktreeWording.newWorktreeTitle(branch.name)) [\(state(store.newWorktreeBlockedReason(branch.name)))]")
             }
         }
 

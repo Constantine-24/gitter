@@ -45,6 +45,9 @@ enum NoticeAction: Equatable {
     /// since tags keep no reflog: each receipt's `objectID` recreates the identical tag (B19).
     /// Every tag the notice names, in the order they were deleted.
     case restoreTag([TagReceipt])
+    /// Switches this window to the worktree Add Worktree just added, by its path as `list`
+    /// printed it (`RepositoryStore.openAddedWorktree`) — Open Worktree's own path.
+    case openWorktree(String)
 }
 
 /// The words on a notice's buttons.
@@ -57,6 +60,7 @@ enum NoticeWording {
         case .undoDiscard: DiscardWording.undoButton
         case .showStash: ConflictWording.showCopy
         case .restoreTag(let receipts): TagWording.restoreButton(count: receipts.count)
+        case .openWorktree: WorktreeWording.openNoticeButton
         }
     }
 }

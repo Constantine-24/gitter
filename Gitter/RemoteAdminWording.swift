@@ -391,8 +391,9 @@ enum RemoteAdminWording {
     }
 
     /// Ruling 12 (m7), carried note 6: git was stopped while it created `unknown` — it may exist.
-    /// Never "couldn't create".
-    private static func keptCancelled(kept: [String], unknown: String, nothing: String) -> String {
+    /// Never "couldn't create". Internal since B3 Task 5: a worktree removal's kept branch is
+    /// worded the same (`WorktreeWording.removeFailure`).
+    static func keptCancelled(kept: [String], unknown: String, nothing: String) -> String {
         let base = "Stopped while creating the kept branch \"\(unknown)\": it may or may not have been "
             + "created — check the branch list. Nothing was \(nothing)"
         guard !kept.isEmpty else { return base + "." }

@@ -179,3 +179,366 @@ extension RepositoryStore {
         return String(cString: resolved)
     }
 }
+
+/// What Add Worktree checks out (B3 Task 5, Ruling 3): an existing local branch by its short
+/// name, or a branch it creates first — at a start point's id (for a commit, `start.ref` is the
+/// id itself), or at a remote branch's id, then set to track it.
+enum AddWorktreeChoice: Hashable {
+    case existing(String)
+    case newBranch(name: String, start: RefTip)
+    case tracking(name: String, remote: RefTip)
+
+    /// The local branch the worktree is for.
+    var branch: String {
+        switch self {
+        case .existing(let name), .newBranch(let name, _), .tracking(let name, _): name
+        }
+    }
+
+    /// Whether a branch is created before the worktree is added.
+    var createsBranch: Bool {
+        if case .existing = self { false } else { true }
+    }
+}
+
+/// Add Worktree… and Remove Worktree… (B3 Task 5). Both write through `mutate` — local work,
+/// never the network lane — and run git off the main actor. Every sentence is
+/// `WorktreeWording`'s.
+///
+/// - **Add** checks out only the branch the user chose (promise 3): an existing local branch
+///   no worktree holds, or one it creates first as a separate step — `createBranch` from an id,
+///   then, for a remote branch, B2's `setUpstream`, which reads its write back — and then
+///   GitCore's `addWorktree`, which verifies the branch right before git and reads `list` back
+///   whatever git's exit code (R19). Each partial state is said, and the notice offers Open.
+/// - **Remove** shows what Gitter's own check found (`removalCheck`, off the main actor, with a
+///   progress state and cancelled when the sheet closes) and hands exactly that to GitCore,
+///   which makes the check again before it creates a kept branch or runs git (promise 2, RF1).
+extension RepositoryStore {
+
+    // MARK: - Add Worktree
+
+    var addWorktreeBlockedReason: String? {
+        root == nil ? RemoteWording.noRepository : nil
+    }
+
+    /// "New Worktree for <b>…": off for this window's branch and one another worktree holds.
+    func newWorktreeBlockedReason(_ name: String) -> String? {
+        WorktreeWording.newWorktreeBlocked(name, isCurrent: name == currentBranch, heldReason: worktreeHeldReason(name))
+    }
+
+    /// Opens the Add Worktree sheet, preset to the local branch `branch` when given.
+    func requestAddWorktree(branch: String?) {
+        if let reason = addWorktreeBlockedReason ?? branch.flatMap(newWorktreeBlockedReason) {
+            showStickyError(reason)
+            return
+        }
+        activeSheet = .addWorktree(branch: branch)
+    }
+
+    /// Existing branch's choices: no worktree has them checked out, no rebase or bisect holds
+    /// them.
+    var freeWorktreeBranches: [String] {
+        WorktreeWording.freeBranches(localBranches, current: currentBranch, worktrees: worktrees)
+    }
+
+    /// New branch's start points: a detached HEAD's commit (by its id), then every local and
+    /// remote branch at the id the snapshot read.
+    var worktreeStartPoints: [RefTip] {
+        var tips: [RefTip] = []
+        if currentBranch == nil, let head = headSha, !head.isEmpty { tips.append(RefTip(ref: head, id: head)) }
+        tips += localBranches.filter { !$0.sha.isEmpty }.map { RefTip(ref: "refs/heads/" + $0.name, id: $0.sha) }
+        return tips + worktreeRemoteTips
+    }
+
+    /// Remote branch's choices, at the id the snapshot read.
+    var worktreeRemoteTips: [RefTip] {
+        remoteBranches.filter { !$0.sha.isEmpty }.map { RefTip(ref: "refs/remotes/" + $0.name, id: $0.sha) }
+    }
+
+    /// The local name a tracking branch is offered for `tip`: the remote branch's own name.
+    func trackingName(for tip: RefTip) -> String {
+        let short = WorktreeWording.startLabel(tip)
+        let owner = remoteBranches.first { "refs/remotes/" + $0.name == tip.ref }.flatMap { snapshot?.refs.remote(of: $0)?.name }
+        return WorktreeWording.trackingName(short, remote: owner)
+    }
+
+    /// The folder the sheet starts with for `branch`: a sibling of the main worktree.
+    func defaultWorktreeFolder(for branch: String) -> String {
+        let main = worktrees.first(where: \.isMain)?.path ?? root?.path ?? "/"
+        return WorktreeWording.defaultFolder(mainPath: main, branch: branch)
+    }
+
+    /// The folder field's live check, read off the main actor: what is at the path, and which
+    /// listed worktree holds it, both sides by real path (R23).
+    func worktreeFolderProblem(_ text: String) async -> String? {
+        let path = WorktreeWording.normalizedFolder(text)
+        let listed = worktrees.map(\.path)
+        return await Task.detached { Self.folderProblem(path, listed: listed) }.value
+    }
+
+    nonisolated static func folderProblem(_ path: String, listed: [String]) -> String? {
+        guard path.hasPrefix("/") else { return WorktreeWording.folderProblem(path, state: .missing, insideWorktree: nil) }
+        let inside = WorktreeWording.containingWorktree(
+            resolvedPath(path), in: listed.map { (path: $0, resolved: resolvedPath($0)) })
+        return WorktreeWording.folderProblem(path, state: folderState(path), insideWorktree: inside)
+    }
+
+    /// What is at `path`, not following a link (a link is not a folder git would fill).
+    nonisolated static func folderState(_ path: String) -> WorktreeFolderState {
+        guard let type = (try? FileManager.default.attributesOfItem(atPath: path))?[.type] as? FileAttributeType else {
+            return .missing
+        }
+        guard type == .typeDirectory else { return .notAFolder }
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: path) else { return .unreadable }
+        return names.isEmpty ? .empty : .notEmpty
+    }
+
+    /// `path` as git compares it (R23): `..` and `.` taken out, then the deepest part that exists
+    /// resolved with `realpath(3)` and the rest put back — GitCore's rule for a path that may
+    /// not exist yet.
+    nonisolated static func resolvedPath(_ path: String) -> String {
+        var url = URL(fileURLWithPath: path).standardizedFileURL
+        var rest: [String] = []
+        while true {
+            if let real = realpath(url.path, nil) {
+                defer { free(real) }
+                let head = String(cString: real)
+                return rest.isEmpty ? head : (head == "/" ? "" : head) + "/" + rest.joined(separator: "/")
+            }
+            guard url.path != "/", !url.path.isEmpty else { return path }
+            rest.insert(url.lastPathComponent, at: 0)
+            url.deleteLastPathComponent()
+        }
+    }
+
+    /// Adds the worktree the Add sheet describes — only as the answer to that sheet. A branch is
+    /// created first only for a new or tracking choice (Ruling 3); a failure after that names it.
+    /// The notice is sticky and offers Open; one with nothing listed is a banner.
+    func confirmAddWorktree(_ choice: AddWorktreeChoice, path: String) {
+        guard case .addWorktree = activeSheet else { return }
+        guard !isMutating else {
+            showStickyError(RemoteWording.mutationBusy)
+            return
+        }
+        activeSheet = nil
+        let path = WorktreeWording.normalizedFolder(path)
+        mutate(result: { backend, root in
+            try await Self.addWorktree(choice, path: path, backend: backend, root: root)
+        }, onSuccess: { [self] report in
+            guard let opens = report.opens else {
+                showStickyError(report.text)
+                return
+            }
+            showStickyNotice(Notice(text: report.text, actions: [.openWorktree(opens)]))
+        })
+    }
+
+    private static func addWorktree(
+        _ choice: AddWorktreeChoice, path: String, backend: Backend, root: URL
+    ) async throws -> AddWorktreeReport {
+        var upstreamProblem: String?
+        switch choice {
+        case .existing:
+            break
+        case .newBranch(let name, let start):
+            try await createWorktreeBranch(name, at: start.id, backend: backend, root: root)
+        case .tracking(let name, let remote):
+            try await createWorktreeBranch(name, at: remote.id, backend: backend, root: root)
+            do {
+                _ = try await backend.setUpstream(of: name, to: remote.ref, at: root)
+            } catch {
+                upstreamProblem = WorktreeWording.upstreamProblem(error)
+            }
+        }
+        let result: AddWorktreeResult
+        do {
+            result = try await backend.addWorktree(path: path, branch: choice.branch, at: root)
+        } catch {
+            throw RemoteBannerText(
+                WorktreeWording.addFailure(error, choice: choice, path: path, branchCreated: choice.createsBranch))
+        }
+        return WorktreeWording.added(result, choice: choice, upstreamProblem: upstreamProblem)
+    }
+
+    /// The new branch, from an id and not switched to — the existing branch creation.
+    private static func createWorktreeBranch(_ name: String, at id: String, backend: Backend, root: URL) async throws {
+        do {
+            try await backend.createBranch(name, startPoint: id, switchTo: false, at: root)
+        } catch {
+            throw RemoteBannerText(WorktreeWording.branchNotCreated(error, name: name))
+        }
+    }
+
+    /// The add notice's Open: this window switches to the worktree, if it is still listed.
+    func openAddedWorktree(_ path: String) {
+        guard let worktree = worktrees.first(where: { $0.path == path }) else {
+            showStickyError(WorktreeWording.notListedAnyMore(path))
+            return
+        }
+        openWorktree(worktree)
+    }
+
+    // MARK: - Remove Worktree
+
+    func removeWorktreeBlockedReason(_ worktree: Worktree) -> String? {
+        WorktreeWording.removeBlocked(worktree, isOpenHere: isOpenHere(worktree))
+    }
+
+    var removeAllMissingBlockedReason: String? {
+        WorktreeWording.removeAllMissingBlocked(worktrees)
+    }
+
+    /// Opens the Remove sheet in its progress state and runs Gitter's removal check off the main
+    /// actor; the sheet then shows what it found.
+    func requestRemoveWorktree(_ worktree: Worktree) {
+        if let reason = removeWorktreeBlockedReason(worktree) {
+            showStickyError(reason)
+            return
+        }
+        startRemovalCheck([worktree], allMissing: false)
+    }
+
+    /// Remove All Missing…: the check of every worktree whose folder is gone, then one sheet.
+    func requestRemoveAllMissing() {
+        if let reason = removeAllMissingBlockedReason {
+            showStickyError(reason)
+            return
+        }
+        startRemovalCheck(WorktreeWording.missing(worktrees), allMissing: true)
+    }
+
+    private func startRemovalCheck(_ targets: [Worktree], allMissing: Bool) {
+        guard let root, !targets.isEmpty else { return }
+        worktreeCheckTask?.cancel()
+        let sheet = BranchSheet.checkingWorktreeRemoval(targets, allMissing: allMissing)
+        activeSheet = sheet
+        let generation = self.generation
+        let backend = self.backend
+        worktreeCheckTask = Task { [weak self] in
+            var removals: [WorktreeRemoval] = []
+            var failure: (error: Error, worktree: Worktree)?
+            for target in targets {
+                do {
+                    removals.append(try await backend.removalCheck(target, at: root))
+                } catch WorktreeRemovalPartial.changedSinceShown where allMissing {
+                    // Off the list already: nothing left to remove.
+                    continue
+                } catch {
+                    failure = (error, target)
+                    break
+                }
+            }
+            guard let self, !Task.isCancelled, self.generation == generation, self.activeSheet == sheet else { return }
+            if let failure {
+                guard !(failure.error is CancellationError) else { return }
+                self.activeSheet = nil
+                self.showStickyError(WorktreeWording.checkFailure(failure.error, worktree: failure.worktree))
+                return
+            }
+            if !allMissing, let removal = removals.first {
+                self.activeSheet = .removeWorktree(removal)
+            } else if removals.isEmpty {
+                self.activeSheet = nil
+                self.showNotice(WorktreeWording.noneMissing)
+            } else {
+                self.activeSheet = .removeMissingWorktrees(removals)
+            }
+        }
+    }
+
+    /// The Remove sheet closed: its check, if still running, is not wanted.
+    func cancelWorktreeRemovalCheck() {
+        worktreeCheckTask?.cancel()
+    }
+
+    /// The keep boxes' holders: each detached worktree whose HEAD alone holds commits, by its
+    /// path as listed, at its HEAD — only for removals the sheet offers (no refusals).
+    static func keepHolders(_ removals: [WorktreeRemoval]) -> [RefTip] {
+        removals.filter { $0.refusals.isEmpty && $0.stranded.count > 0 }.flatMap { removal in
+            removal.stranded.holders.compactMap { holder in removal.worktree.head.map { RefTip(ref: holder, id: $0) } }
+        }
+    }
+
+    /// The keep boxes' defaults: every holder ticked, each with its folder's name made a branch
+    /// name (`suggestedKeepName`), none alike and none a branch, tag or remote has.
+    func worktreeKeepDefaults(_ holders: [RefTip]) -> (names: [String: String], ticked: Set<String>) {
+        let refs = snapshot?.refs
+        var taken = Set(
+            (refs?.localBranches.map(\.name) ?? []) + (refs?.tags.map(\.name) ?? []) + (refs?.remoteNames ?? []))
+        var names: [String: String] = [:]
+        for tip in holders {
+            let name = WorktreeWording.suggestedKeepName(folder: URL(fileURLWithPath: tip.ref).lastPathComponent, taken: taken)
+            names[tip.ref] = name
+            taken.insert(name)
+        }
+        return (names, Set(holders.map(\.ref)))
+    }
+
+    /// Removes the worktree `removal` describes — only as the answer to the sheet that showed it,
+    /// and only when it showed no refusal — creating the kept branch in `keeping` (the worktree's
+    /// path → a name) first. GitCore makes the check again and refuses any difference
+    /// (`changedSinceShown`) before anything is written. A partial or unknown result is a sticky
+    /// banner naming the kept branches; a removal that kept one is a sticky notice.
+    func confirmRemoveWorktree(_ removal: WorktreeRemoval, keeping: [String: String]) {
+        guard case .removeWorktree(let shown) = activeSheet, shown == removal, removal.refusals.isEmpty else { return }
+        guard !isMutating else {
+            showStickyError(RemoteWording.mutationBusy)
+            return
+        }
+        activeSheet = nil
+        mutate(result: { backend, root in
+            do {
+                return try await backend.removeWorktree(removal, keeping: keeping, at: root)
+            } catch {
+                throw RemoteBannerText(WorktreeWording.removeFailure(error, removal: removal))
+            }
+        }, onSuccess: { [self] kept in
+            let text = WorktreeWording.removed(removal, kept: kept)
+            if kept.isEmpty {
+                showNotice(text)
+            } else {
+                showStickyNotice(Notice(text: text))
+            }
+        })
+    }
+
+    /// Remove All Missing…: each of `removals` the sheet showed, one at a time through the same
+    /// `removeWorktree` (which checks each again), the refused ones left; one report naming each.
+    func confirmRemoveMissingWorktrees(_ removals: [WorktreeRemoval], keeping: [String: String]) {
+        guard case .removeMissingWorktrees(let shown) = activeSheet, shown == removals,
+            removals.contains(where: { $0.refusals.isEmpty })
+        else { return }
+        guard !isMutating else {
+            showStickyError(RemoteWording.mutationBusy)
+            return
+        }
+        activeSheet = nil
+        mutate(result: { backend, root in
+            var report: [MissingRemoval] = []
+            for removal in removals {
+                if let refusal = removal.refusals.first {
+                    report.append(MissingRemoval(worktree: removal.worktree, outcome: .notRemoved(WorktreeWording.refusal(refusal))))
+                    continue
+                }
+                let mine = keeping.filter { $0.key == removal.worktree.path }
+                do {
+                    let kept = try await backend.removeWorktree(removal, keeping: mine, at: root)
+                    report.append(MissingRemoval(worktree: removal.worktree, outcome: .removed(kept: kept)))
+                } catch {
+                    report.append(
+                        MissingRemoval(
+                            worktree: removal.worktree,
+                            outcome: .notRemoved(WorktreeWording.removeFailure(error, removal: removal))))
+                }
+            }
+            return report
+        }, onSuccess: { [self] report in
+            let text = WorktreeWording.removedMissing(report)
+            if WorktreeWording.missingReportHasProblems(report) {
+                showStickyError(text)
+            } else {
+                showStickyNotice(Notice(text: text))
+            }
+        })
+    }
+}

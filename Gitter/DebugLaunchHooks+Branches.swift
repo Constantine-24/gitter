@@ -94,6 +94,9 @@
     ///     compareselect:<id|changes>   comparepath:<path>           compareswap
     ///     comparerefresh               comparedone                  comparemenu
     ///     comparecopy:<id>             sidebarclick:<branch>        reload
+    ///     addworktree[:<b>]            folderproblem:<path>         confirmaddworktree:<kind>:…:<path>
+    ///     removeworktree:<folder>      removeworktreestart:<folder> removeallmissing
+    ///     worktreesheet                confirmremoveworktree[:none|:<name>]  noticeopen
     ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
@@ -721,6 +724,8 @@
                 describeRemoteAdminSheet(sheet) ?? "?"
             case .compareBranches(let a, let b):
                 "compareBranches(a: \(a ?? "nil"), b: \(b ?? "nil"))"
+            case .addWorktree, .checkingWorktreeRemoval, .removeWorktree, .removeMissingWorktrees:
+                describeWorktreeSheet(sheet) ?? "?"
             }
         }
 

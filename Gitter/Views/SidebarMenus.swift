@@ -60,10 +60,11 @@ struct LocalBranchMenu: View {
         let fullRef = "refs/heads/" + branch
         let compareReason = store.compareWithCurrentBlockedReason(fullRef)
         let compareBranchesReason = store.compareBranchesBlockedReason
+        let worktreeReason = store.newWorktreeBlockedReason(branch)
 
         MenuReasons(reasons: [
             switchReason, mergeReason, rebaseReason, deleteReason, pushReason, fastForwardReason,
-            upstreamReason, unsetReason, compareReason, compareBranchesReason,
+            upstreamReason, unsetReason, compareReason, compareBranchesReason, worktreeReason,
         ])
 
         Button("Switch") { store.switchTo(branch: branch) }
@@ -86,6 +87,9 @@ struct LocalBranchMenu: View {
         Divider()
 
         Button("New Branch from Here…") { store.requestNewBranch(from: branch) }
+        // B3: Add Worktree… preset to this branch.
+        Button(WorktreeWording.newWorktreeTitle(branch)) { store.requestAddWorktree(branch: branch) }
+            .disabled(worktreeReason != nil)
         Button("Rename…") { store.requestRename(branch) }
         // Spelled with an ellipsis as the design lists it, although a branch git considers
         // merged is deleted straight away: `requestDelete` runs a plain `git branch -d`, and
@@ -331,10 +335,11 @@ struct TagMenu: View {
     }
 }
 
-/// A worktree's row (B3): open it in this window, show it in Finder, copy its path. Open is off
-/// for this window's own worktree, a missing one and a bare repository, and Reveal for a missing
-/// one, each with the reason at the top. Copy Path copies the path exactly as git lists it.
-/// Remove Worktree… joins them in Task 5.
+/// A worktree's row (B3): open it in this window, show it in Finder, copy its path, remove it.
+/// Open is off for this window's own worktree, a missing one and a bare repository, Reveal for a
+/// missing one, and Remove Worktree… for the main and this window's own, each with the reason at
+/// the top. Copy Path copies the path exactly as git lists it. A missing worktree's menu also
+/// has Remove All Missing…, and every row's Add Worktree… (Task 5).
 struct WorktreeMenu: View {
     let worktree: Worktree
 
@@ -343,8 +348,9 @@ struct WorktreeMenu: View {
     var body: some View {
         let openReason = store.openWorktreeBlockedReason(worktree)
         let revealReason = WorktreeWording.revealBlocked(worktree)
+        let removeReason = store.removeWorktreeBlockedReason(worktree)
 
-        MenuReasons(reasons: [openReason, revealReason])
+        MenuReasons(reasons: [openReason, revealReason, removeReason])
 
         Button(WorktreeWording.openTitle) { store.openWorktree(worktree) }
             .disabled(openReason != nil)
@@ -354,6 +360,37 @@ struct WorktreeMenu: View {
         Button(WorktreeWording.revealTitle) { store.revealWorktree(worktree) }
             .disabled(revealReason != nil)
         Button(WorktreeWording.copyPathTitle) { Clipboard.copy(worktree.path) }
+
+        Divider()
+
+        Button(WorktreeWording.removeTitle) { store.requestRemoveWorktree(worktree) }
+            .disabled(removeReason != nil)
+        if worktree.isMissing {
+            Button(WorktreeWording.removeAllMissingTitle) { store.requestRemoveAllMissing() }
+        }
+
+        Divider()
+
+        Button(WorktreeWording.addTitle) { store.requestAddWorktree(branch: nil) }
+            .disabled(store.addWorktreeBlockedReason != nil)
+    }
+}
+
+/// The Worktrees section header's menu (B3 Task 5): Add Worktree…, and Remove All Missing…, off
+/// with its reason while no worktree's folder is missing.
+struct WorktreeSectionMenu: View {
+    @Environment(RepositoryStore.self) private var store
+
+    var body: some View {
+        let addReason = store.addWorktreeBlockedReason
+        let missingReason = store.removeAllMissingBlockedReason
+
+        MenuReasons(reasons: [addReason, missingReason])
+
+        Button(WorktreeWording.addTitle) { store.requestAddWorktree(branch: nil) }
+            .disabled(addReason != nil)
+        Button(WorktreeWording.removeAllMissingTitle) { store.requestRemoveAllMissing() }
+            .disabled(missingReason != nil)
     }
 }
 

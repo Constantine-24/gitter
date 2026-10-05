@@ -6,14 +6,15 @@ import SwiftUI
 /// HEAD, and its marks — this window, changes, locked, missing, the rebase or bisect there.
 ///
 /// A double-click opens the worktree in this window, as Open Worktree does; the menu adds Reveal
-/// in Finder and Copy Path (`WorktreeMenu`). The section is not filtered: the filter narrows
-/// branches, remote branches and tags.
+/// in Finder, Copy Path, Remove Worktree… and Add Worktree… (`WorktreeMenu`), and the header's
+/// Add Worktree… and Remove All Missing… (`WorktreeSectionMenu`, B3 Task 5). The section is not
+/// filtered: the filter narrows branches, remote branches and tags.
 struct WorktreesSection: View {
     @Environment(RepositoryStore.self) private var store
 
     var body: some View {
         if WorktreeWording.showsSection(store.worktrees) {
-            Section(WorktreeWording.sectionTitle) {
+            Section {
                 ForEach(store.worktrees) { worktree in
                     WorktreeRow(worktree: worktree, marks: store.marks(worktree))
                         .contextMenu { WorktreeMenu(worktree: worktree) }
@@ -24,6 +25,9 @@ struct WorktreesSection: View {
                                 store.openWorktree(worktree)
                             })
                 }
+            } header: {
+                Text(WorktreeWording.sectionTitle)
+                    .contextMenu { WorktreeSectionMenu() }
             }
         }
     }

@@ -122,6 +122,10 @@ struct GitterApp: App {
                 Button(CompareWording.compareBranchesTitle) { store.requestCompareBranches(a: nil, b: nil) }
                     .disabled(
                         store.activeSheet != nil || store.root == nil || store.compareBranchesBlockedReason != nil)
+                // B3 Task 5: the Worktrees section shows only with a second worktree, so the first
+                // one is added from here (or a branch's menu).
+                Button(WorktreeWording.addTitle) { store.requestAddWorktree(branch: nil) }
+                    .disabled(store.activeSheet != nil || store.addWorktreeBlockedReason != nil)
                 Divider()
                 // Off also stops an automatic fetch that is running; on waits for the next tick.
                 Toggle(

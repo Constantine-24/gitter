@@ -119,8 +119,36 @@ enum BranchSheet: Identifiable, Hashable {
     /// Compare Branches… (B3): two pickers, preset to `a` and `b` (full refs) where given. Reads
     /// nothing and writes nothing until its Compare, which hands the two refs to `compare`.
     case compareBranches(a: String?, b: String?)
+    /// Add Worktree… (B3 Task 5): the sheet, preset to the local branch `branch` when it was
+    /// opened from that branch's menu ("New Worktree for <b>…"). A form: nothing is written until
+    /// its Add, which hands the choice and the folder to `confirmAddWorktree`.
+    case addWorktree(branch: String?)
+    /// Remove Worktree… (or Remove All Missing…) while Gitter's removal check runs, off the main
+    /// actor — it walks the whole worktree and can take 2–3 s: the sheet's progress state. Its
+    /// Cancel closes it and cancels the check (`cancelWorktreeRemovalCheck`).
+    /// `allMissing`: Remove All Missing…'s, which ends in `.removeMissingWorktrees`.
+    case checkingWorktreeRemoval([Worktree], allMissing: Bool)
+    /// Remove Worktree…: everything the check found (`removalCheck`), which
+    /// `confirmRemoveWorktree` hands to GitCore as it is — GitCore makes the check again and
+    /// refuses on any difference, so what the sheet showed is what is removed.
+    case removeWorktree(WorktreeRemoval)
+    /// Remove All Missing…: each missing worktree's check, removed one at a time through the same
+    /// `removeWorktree` by `confirmRemoveMissingWorktrees`.
+    case removeMissingWorktrees([WorktreeRemoval])
 
-    var id: Self { self }
+    /// The sheet's identity: the question itself, except that a worktree removal's progress
+    /// state and the check it ends in are one sheet (the same worktrees, by path), so the sheet
+    /// stays up while its content changes instead of closing and opening again.
+    var id: AnyHashable {
+        switch self {
+        case .checkingWorktreeRemoval(let worktrees, _):
+            AnyHashable(WorktreeRemovalSheetID(paths: worktrees.map(\.path)))
+        case .removeWorktree(let removal): AnyHashable(WorktreeRemovalSheetID(paths: [removal.worktree.path]))
+        case .removeMissingWorktrees(let removals):
+            AnyHashable(WorktreeRemovalSheetID(paths: removals.map(\.worktree.path)))
+        default: AnyHashable(self)
+        }
+    }
 
     /// Whether `other` is the same question as this one, with possibly different numbers: the
     /// same case about the same branch or remote branch. A lane that ends with a question may
@@ -143,6 +171,12 @@ enum BranchSheet: Identifiable, Hashable {
         default: false
         }
     }
+}
+
+/// A worktree removal sheet's identity across its progress state and its check
+/// (`BranchSheet.id`): the worktrees' paths as listed.
+struct WorktreeRemovalSheetID: Hashable {
+    let paths: [String]
 }
 
 /// An action that was asked for while HEAD was detached over unreferenced commits, and is
