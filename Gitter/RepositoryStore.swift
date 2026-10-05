@@ -9,6 +9,9 @@ enum Selection: Hashable {
     case commit(String)
     /// A stash entry, by its sha: its position moves whenever an entry above it is dropped.
     case stash(String)
+    /// The changes the compared branch B brings (B3, `RepositoryStore+Compare`): the files and
+    /// diff from the comparison's first merge base to B's id. Only while `comparison` is set.
+    case comparisonChanges
 }
 
 @Observable @MainActor
@@ -212,6 +215,18 @@ final class RepositoryStore {
     /// +Worktrees`), read with every snapshot and written with it (`setWorktreeState`).
     private(set) var worktreeState = WorktreeState()
 
+    /// Two branches compared (B3, `RepositoryStore+Compare`): while set, the commit list column
+    /// is in compare mode. One state, read from two ids once; ended by Done, Esc, a sidebar
+    /// click and `open()`.
+    private(set) var comparison: Comparison?
+    /// The files the comparison's changes hold, once read for it (`loadDetail`), or nil: not
+    /// read yet, the read failed, or no merge base. Read from the comparison's ids alone, so
+    /// they are kept for as long as it is.
+    private(set) var comparisonFiles: [FileStatus]?
+    /// The refusal banner the last failed comparison put up, so the next comparison that is read
+    /// can take exactly that banner down — and no other one (`clearCompareFailure`).
+    private var compareFailureBanner: String?
+
     /// Where git keeps this repository's files for the worktree that is open — its own git
     /// directory and the common one (`RepositoryDirectories`) — read by `open()` for the watcher
     /// and the window title, and by the discard fingerprint. Nil with no repository.
@@ -282,6 +297,8 @@ final class RepositoryStore {
     var diffTask: Task<Void, Never>?
     // internal (not private), bookkeeping only, views must not touch this: used by +Conflicts.swift
     var conflictTask: Task<Void, Never>?
+    // internal (not private), bookkeeping only, views must not touch this: used by +Compare.swift
+    var compareTask: Task<Void, Never>?
     /// The most recently scheduled snapshot load; new ones chain behind it. See `refresh()`.
     // internal (not private), bookkeeping only, views must not touch this: used by +Refresh.swift
     var lastRefresh: Task<Void, Never>?
@@ -347,6 +364,7 @@ final class RepositoryStore {
         detailTask?.cancel()
         diffTask?.cancel()
         conflictTask?.cancel()
+        compareTask?.cancel()
         // `lastRefresh` is deliberately left in place: a load still in flight for the old root
         // writes nothing (it re-checks `root` before it lands), and keeping the chain intact
         // keeps this repository's first load from overlapping it.
@@ -395,6 +413,10 @@ final class RepositoryStore {
         // are not this one's.
         sidebarFilter = ""
         worktreeState = WorktreeState()
+        // A comparison is of this repository's branches (B3): opening another ends it.
+        comparison = nil
+        comparisonFiles = nil
+        compareFailureBanner = nil
         // The automatic fetch belongs to the repository it fetches: the old one's schedule
         // stops here, and its mark says nothing about this one. This one's starts once its first
         // snapshot is in (below), so the first tick can see whether it has a remote at all.
@@ -520,6 +542,36 @@ final class RepositoryStore {
     /// `setSnapshot`, with the worktrees read for that snapshot.
     func setWorktreeState(_ state: WorktreeState) {
         worktreeState = state
+    }
+
+    /// Starts, replaces or (nil) ends the comparison; its files go with it.
+    /// internal (not private(set) write): used by +Compare.swift
+    func setComparison(_ newComparison: Comparison?) {
+        comparison = newComparison
+        comparisonFiles = nil
+    }
+
+    /// A comparison was refused: its sentence goes up as a sticky banner, remembered as the
+    /// comparison's own. internal (not private(set) write): used by +Compare.swift
+    func showCompareFailure(_ message: String) {
+        showStickyError(message)
+        compareFailureBanner = message
+    }
+
+    /// A comparison was read: the refusal of an earlier attempt is out of date, and comes down —
+    /// only while it is still the banner on screen. internal: used by +Compare.swift
+    func clearCompareFailure() {
+        if let banner = compareFailureBanner, lastError == banner {
+            lastError = nil
+            errorIsSticky = false
+        }
+        compareFailureBanner = nil
+    }
+
+    /// internal (not private(set) write): used by +Detail.swift, with the files read for
+    /// `comparison` while it is still the one on screen
+    func setComparisonFiles(_ files: [FileStatus]?) {
+        comparisonFiles = files
     }
 
     /// internal (not private(set) write): used by +Refresh.swift

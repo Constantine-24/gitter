@@ -31,10 +31,42 @@
     ///                          the app show (RF5).
     ///   firstresponder         the class of the key window's first responder (after ⌘F, through
     ///                          `menuitem:Edit:Filter Sidebar`).
+    ///
+    /// B3 Task 4's compare steps. Each waits for the comparison's read and the detail it selects
+    /// (files, then the diff of a selected file) before it logs, since none of them claims the
+    /// mutation slot the step list waits for:
+    ///
+    ///   comparewith:<full ref>     the branch menu's "Compare with "<current>"" on that branch,
+    ///                              then the `comparestate` lines.
+    ///   compare:<ref A>:<ref B>    `compare` with two full refs, then `comparestate`.
+    ///   comparesheet[:<a>[:<b>]]   Compare Branches… (the Repository menu's when bare), then its
+    ///                              presets and every picker option with a filter `cafe`-style
+    ///                              query applied by `comparefilter:<text>`.
+    ///   confirmcompare:<a>:<b>     the sheet's Compare with those two refs (`confirmCompareBranches`).
+    ///   comparestate               the bar (title, help, the moved line, which of Swap, Refresh
+    ///                              and Done it shows), the changes row, each group with its count,
+    ///                              listed ids and "…not listed" line, the header's lines, the
+    ///                              selection, the files and the diff's files.
+    ///   compareselect:<id|changes> a commit of the comparison (or the changes row), as a click.
+    ///   comparepath:<path>         a file of the changes, then the diff's files and hunks.
+    ///   compareswap / comparerefresh / comparedone
+    ///                              Swap, Refresh and Done, then `comparestate`.
+    ///   comparemenu                every local and remote branch's two compare items with the
+    ///                              reasons their menus show, and Compare Branches…'s reason.
+    ///   comparecopy:<id>           Copy Commit ID onto a private pasteboard, read back.
+    ///   sidebarclick:<branch>      a sidebar branch row's click (`selectFromSidebar`).
+    ///   reload                     a snapshot load (what the watcher would start), then
+    ///                              `comparestate`.
     extension DebugLaunchHooks {
 
-        static let navigationCommands: Set<String> = [
+        static let navigationCommands: Set<String> = Set([
             "filter", "sidebar", "worktrees", "worktreemenu", "openworktree", "pills", "watchloads", "firstresponder",
+        ]).union(compareCommands)
+
+        private static let compareCommands: Set<String> = [
+            "comparewith", "compare", "comparesheet", "comparefilter", "confirmcompare", "comparestate", "compareselect",
+            "comparepath", "compareswap", "comparerefresh", "comparedone", "comparemenu", "comparecopy",
+            "sidebarclick", "reload",
         ]
 
         static func navigationStep(_ command: String, step: String, store: RepositoryStore) async {
@@ -81,7 +113,178 @@
             case "firstresponder":
                 let responder = NSApp.keyWindow?.firstResponder
                 log("firstresponder: \(responder.map { String(describing: type(of: $0)) } ?? "nil")")
+            case let compare where compareCommands.contains(compare):
+                await compareStep(command, rest: rest, store: store)
             default: log("unknown step: \(step)")
+            }
+        }
+
+        // MARK: - Compare (Task 4)
+
+        private static func compareStep(_ command: String, rest: String, store: RepositoryStore) async {
+            let parts = rest.split(separator: ":", maxSplits: 1).map(String.init)
+            switch command {
+            case "comparewith":
+                store.compareWithCurrent(rest)
+                await settleCompare(store)
+                logCompare(store)
+            case "compare":
+                guard parts.count == 2 else { return log("compare: needs <ref A>:<ref B>") }
+                store.compare(parts[0], parts[1])
+                await settleCompare(store)
+                logCompare(store)
+            case "comparesheet":
+                store.requestCompareBranches(a: parts.first, b: parts.count > 1 ? parts[1] : nil)
+                logCompareSheet(store, query: "")
+            case "comparefilter":
+                logCompareSheet(store, query: rest)
+            case "confirmcompare":
+                guard parts.count == 2 else { return log("confirmcompare: needs <ref A>:<ref B>") }
+                store.confirmCompareBranches(parts[0], parts[1])
+                await settleCompare(store)
+                log("confirmcompare: sheet \(store.activeSheet.map { "\($0)" } ?? "nil")")
+                logCompare(store)
+            case "comparestate":
+                logCompare(store)
+            case "compareselect":
+                let selection: Selection =
+                    rest == "changes" ? .comparisonChanges
+                    : .commit(
+                        (store.comparison.map { $0.commitsOnlyB + $0.commitsOnlyA } ?? [])
+                            .first { $0.sha.hasPrefix(rest) }?.sha ?? rest)
+                store.select(selection)
+                await settleDetail(store)
+                logCompare(store)
+            case "comparepath":
+                store.selectPath(rest)
+                await settleDetail(store)
+                logCompareDiff(store)
+            case "compareswap":
+                store.swapComparison()
+                await settleCompare(store)
+                logCompare(store)
+            case "comparerefresh":
+                store.refreshComparison()
+                await settleCompare(store)
+                logCompare(store)
+            case "comparedone":
+                store.endComparison()
+                await settleDetail(store)
+                logCompare(store)
+            case "comparemenu":
+                logCompareMenus(store)
+            case "comparecopy":
+                let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.penzin.Gitter.harness"))
+                let sha =
+                    (store.comparison.map { $0.commitsOnlyB + $0.commitsOnlyA } ?? []).first { $0.sha.hasPrefix(rest) }?.sha
+                guard let sha else { return log("comparecopy: no commit \(rest) in the comparison") }
+                // The menu item's own call, onto a private pasteboard.
+                Clipboard.copy(sha, to: pasteboard)
+                log("comparecopy \(CompareWording.copyCommitIDTitle): \(pasteboard.string(forType: .string) ?? "nil")")
+                pasteboard.releaseGlobally()
+            case "sidebarclick":
+                guard let branch = store.localBranches.first(where: { $0.name == rest }) else {
+                    return log("sidebarclick: no branch \(rest)")
+                }
+                store.selectFromSidebar(.commit(branch.sha))
+                await settleDetail(store)
+                logCompare(store)
+            case "reload":
+                await store.refresh()
+                await settleDetail(store)
+                logCompare(store)
+            default: log("unknown step: \(command)")
+            }
+        }
+
+        /// The comparison's read, then the detail it selected.
+        private static func settleCompare(_ store: RepositoryStore) async {
+            await store.compareTask?.value
+            await settleDetail(store)
+        }
+
+        private static func settleDetail(_ store: RepositoryStore) async {
+            await store.detailTask?.value
+            await store.diffTask?.value
+            // A frame, so the column has drawn what the store now says.
+            try? await Task.sleep(for: .milliseconds(300))
+        }
+
+        private static func logCompare(_ store: RepositoryStore) {
+            guard let c = store.comparison else {
+                log("compare: none | selection: \(store.selection) | error: \(store.lastError.map(flatten) ?? "nil") "
+                    + "| history rows shown: \(store.snapshot?.commits.count ?? 0)")
+                return
+            }
+            let staleness = store.comparisonStaleness
+            let buttons =
+                [staleness?.offersSwap != false ? CompareWording.swapTitle : nil,
+                 staleness?.offersRefresh == true ? CompareWording.refreshTitle : nil, CompareWording.doneTitle]
+                .compactMap { $0 }
+            log("compare bar: \(CompareWording.barTitle(c)) | a \(c.a.ref) \(c.a.id) | b \(c.b.ref) \(c.b.id) "
+                + "| buttons: \(buttons) | moved: \(store.comparisonMoved) | line: \(staleness.flatMap(CompareWording.staleLine) ?? "nil")")
+            log("compare help: \(CompareWording.barHelp(c))")
+            log("compare row: \(CompareWording.changesRow(c, fileCount: store.comparisonFiles?.count) ?? CompareWording.noHistoryRow(c))")
+            for (ref, count, commits) in [(c.b.ref, c.onlyB, c.commitsOnlyB), (c.a.ref, c.onlyA, c.commitsOnlyA)] {
+                let shown = commits.prefix(12).map { "\($0.shortSha) \(flatten($0.summary))" }.joined(separator: ", ")
+                log("compare group \(CompareWording.onlyOn(ref, count: count)): listed \(commits.count) "
+                    + "| first: [\(shown)\(commits.count > 12 ? ", …" : "")] "
+                    + "| \(CompareWording.notListed(total: count, listed: commits.count) ?? "all listed") "
+                    + "| ids: \(commits.map(\.sha).joined(separator: ","))")
+            }
+            log("compare header: \(CompareWording.headerTitle(c)) | \(CompareWording.baseLine(c)) | \(CompareWording.countsLine(c)) "
+                + "| \(CompareWording.filesLine(c, fileCount: store.comparisonFiles?.count) ?? "-") | bases: \(c.mergeBases)")
+            let files = store.detailFiles.map { "\(letter($0.staged)) \($0.path)\($0.originalPath.map { " <- \($0)" } ?? "")" }
+            log("compare selection: \(store.selection) | detail files (\(files.count)): \(files.joined(separator: ", ")) "
+                + "| comparisonFiles: \(store.comparisonFiles.map { "\($0.count)" } ?? "nil") | path: \(store.selectedPath ?? "nil") "
+                + "| diff files: \(store.diff.count) | error: \(store.lastError.map(flatten) ?? "nil") "
+                + "| header commit: \(selectedCommitLine(store))")
+        }
+
+        private static func selectedCommitLine(_ store: RepositoryStore) -> String {
+            guard case .commit(let sha) = store.selection else { return "-" }
+            return store.commitForDetail(sha).map { "\($0.shortSha) \(flatten($0.summary))" } ?? "not found (\(sha.prefix(7)))"
+        }
+
+        private static func letter(_ kind: ChangeKind?) -> String {
+            switch kind {
+            case .modified: "M"
+            case .added: "A"
+            case .deleted: "D"
+            case .renamed: "R"
+            case .copied: "C"
+            case .typeChanged: "T"
+            default: "?"
+            }
+        }
+
+        private static func logCompareDiff(_ store: RepositoryStore) {
+            log("compare diff: path \(store.selectedPath ?? "nil") | files \(store.diff.count) | error: \(store.lastError.map(flatten) ?? "nil")")
+            for file in store.diff {
+                let lines = file.hunks.flatMap(\.lines)
+                log("compare diff file \(file.displayPath): hunks \(file.hunks.count) | lines \(lines.count) "
+                    + "| first: \(lines.prefix(4).map { flatten($0.text) })")
+            }
+        }
+
+        private static func logCompareSheet(_ store: RepositoryStore, query: String) {
+            guard case .compareBranches(let a, let b) = store.activeSheet else {
+                return log("comparesheet: no sheet | error: \(store.lastError.map(flatten) ?? "nil")")
+            }
+            let options = CompareWording.pickerOptions(store.snapshot?.refs ?? .empty, query: query)
+            log("comparesheet: \(CompareWording.sheetTitle) | a: \(a ?? "nil") | b: \(b ?? "nil") "
+                + "| blocked: \(CompareWording.sheetBlocked(a: a, b: b) ?? "nil") "
+                + "| \(CompareWording.chosen(a)) / \(CompareWording.chosen(b))")
+            log("comparesheet options for \"\(query)\" (\(options.count)): \(options.isEmpty ? SidebarFilter.noMatches : options.joined(separator: ", "))")
+        }
+
+        private static func logCompareMenus(_ store: RepositoryStore) {
+            func state(_ reason: String?) -> String { reason.map { "off: \($0)" } ?? "on" }
+            let title = CompareWording.compareWithTitle(current: store.currentBranch)
+            let branches = store.compareBranchesBlockedReason
+            for ref in store.localBranches.map({ "refs/heads/" + $0.name }) + store.remoteBranches.map({ "refs/remotes/" + $0.name }) {
+                log("comparemenu \(ref): \(title) [\(state(store.compareWithCurrentBlockedReason(ref)))] "
+                    + "| \(CompareWording.compareBranchesTitle) [\(state(branches))]")
             }
         }
 

@@ -2,8 +2,8 @@ import GitCore
 import SwiftUI
 
 /// Right-hand pane. For the working copy: the staged/unstaged file list and the commit box
-/// above, the diff of the selected file below. For a commit or a stash entry: its header and
-/// file list above, the diff below (read-only).
+/// above, the diff of the selected file below. For a commit, a stash entry or a comparison's
+/// changes (B3): its header and file list above, the diff below (read-only).
 struct DetailView: View {
     @Environment(RepositoryStore.self) private var store
     /// Makes the commit's file list claim keyboard focus when it is clicked, so its selection
@@ -65,14 +65,51 @@ struct DetailView: View {
         case .stash(let sha):
             StashDetailView(sha: sha)
                 .frame(minHeight: 140)
+        case .comparisonChanges:
+            VStack(alignment: .leading, spacing: 0) {
+                if let comparison = store.comparison {
+                    comparisonHeader(comparison)
+                }
+                Divider()
+                commitFileList
+            }
+            // Taller than a commit's: the header has up to four lines, and the files must still
+            // show a few rows under it.
+            .frame(minHeight: 260)
         }
+    }
+
+    // MARK: - The changes a comparison's B brings (B3)
+
+    /// What the files below are: the changes B brings, from which merge base — or why there are
+    /// none — and the two counts.
+    private func comparisonHeader(_ c: Comparison) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(CompareWording.headerTitle(c))
+                .font(.headline)
+            Text(CompareWording.baseLine(c))
+                .font(.callout)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(CompareWording.countsLine(c))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let line = CompareWording.filesLine(c, fileCount: store.comparisonFiles?.count) {
+                Text(line)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
     }
 
     // MARK: - Header
 
     @ViewBuilder
     private func commitHeader(_ sha: String) -> some View {
-        if let commit = store.snapshot?.commits.first(where: { $0.sha == sha }) {
+        if let commit = store.commitForDetail(sha) {
             commitHeader(commit)
         } else {
             Text(sha).font(.system(.body, design: .monospaced)).padding(8)
@@ -119,7 +156,13 @@ struct DetailView: View {
         .simultaneousGesture(TapGesture().onEnded { isFileListFocused = true })
         .overlay {
             if store.detailFiles.isEmpty {
-                ContentUnavailableView("No Files", systemImage: "doc")
+                if store.selection == .comparisonChanges, let comparison = store.comparison {
+                    ContentUnavailableView(
+                        comparison.mergeBases.isEmpty ? CompareWording.noHistoryTitle : CompareWording.noChangesTitle,
+                        systemImage: "arrow.left.arrow.right")
+                } else {
+                    ContentUnavailableView("No Files", systemImage: "doc")
+                }
             }
         }
     }

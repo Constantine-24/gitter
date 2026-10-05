@@ -57,10 +57,13 @@ struct LocalBranchMenu: View {
         let fastForwardReason = store.fastForwardBlockedReason(branch)
         let upstreamReason = store.upstreamBlockedReason
         let unsetReason = ref?.upstream == nil ? nil : store.unsetUpstreamBlockedReason(branch)
+        let fullRef = "refs/heads/" + branch
+        let compareReason = store.compareWithCurrentBlockedReason(fullRef)
+        let compareBranchesReason = store.compareBranchesBlockedReason
 
         MenuReasons(reasons: [
             switchReason, mergeReason, rebaseReason, deleteReason, pushReason, fastForwardReason,
-            upstreamReason, unsetReason,
+            upstreamReason, unsetReason, compareReason, compareBranchesReason,
         ])
 
         Button("Switch") { store.switchTo(branch: branch) }
@@ -75,6 +78,10 @@ struct LocalBranchMenu: View {
             store.requestRebaseOnto("refs/heads/" + branch)
         }
         .disabled(rebaseReason != nil)
+
+        Divider()
+
+        CompareItems(ref: fullRef, reason: compareReason, branchesReason: compareBranchesReason)
 
         Divider()
 
@@ -136,8 +143,11 @@ struct RemoteBranchMenu: View {
         let deleteReason =
             remote == nil
             ? nil : (RemoteWording.deleteOnRemoteURLBlocked(owner) ?? store.deleteRemoteBranchBlockedReason)
+        let fullRef = "refs/remotes/" + branch
+        let compareReason = store.compareWithCurrentBlockedReason(fullRef)
+        let compareBranchesReason = store.compareBranchesBlockedReason
 
-        MenuReasons(reasons: [reason, deleteReason])
+        MenuReasons(reasons: [reason, deleteReason, compareReason, compareBranchesReason])
 
         Button("Check Out as Local Branch") { store.track(remoteBranch: branch) }
             .disabled(reason != nil)
@@ -146,6 +156,10 @@ struct RemoteBranchMenu: View {
             store.requestRebaseOnto("refs/remotes/" + branch)
         }
         .disabled(reason != nil)
+
+        Divider()
+
+        CompareItems(ref: fullRef, reason: compareReason, branchesReason: compareBranchesReason)
 
         Divider()
 
@@ -163,6 +177,26 @@ struct RemoteBranchMenu: View {
             }
             .disabled(deleteReason != nil)
         }
+    }
+}
+
+/// "Compare with "<current>"" and Compare Branches… on a local or remote branch's menu (B3), for
+/// the branch `ref` (full). Compare Branches… presets the sheet to the current branch and this
+/// one. Their reasons are in the menu's `MenuReasons`.
+struct CompareItems: View {
+    let ref: String
+    let reason: String?
+    let branchesReason: String?
+
+    @Environment(RepositoryStore.self) private var store
+
+    var body: some View {
+        Button(CompareWording.compareWithTitle(current: store.currentBranch)) { store.compareWithCurrent(ref) }
+            .disabled(reason != nil)
+        Button(CompareWording.compareBranchesTitle) {
+            store.requestCompareBranches(a: store.currentBranchFullRef, b: ref)
+        }
+        .disabled(branchesReason != nil)
     }
 }
 

@@ -118,6 +118,11 @@ struct GitterApp: App {
                     .keyboardShortcut("s", modifiers: [.command, .option])
                     .disabled(store.activeSheet != nil || store.stashBlockedReason != nil)
                 Divider()
+                // B3: two pickers, A preset to the current branch.
+                Button(CompareWording.compareBranchesTitle) { store.requestCompareBranches(a: nil, b: nil) }
+                    .disabled(
+                        store.activeSheet != nil || store.root == nil || store.compareBranchesBlockedReason != nil)
+                Divider()
                 // Off also stops an automatic fetch that is running; on waits for the next tick.
                 Toggle(
                     "Fetch Automatically",

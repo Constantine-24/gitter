@@ -116,6 +116,9 @@ enum BranchSheet: Identifiable, Hashable {
     /// notice names, what deleting them strands, the branches it changes — which
     /// `confirmRemoveRemote` hands back to `removeRemote` as it is, to be compared again, whole.
     case removeRemote(RemovalImpact)
+    /// Compare Branches… (B3): two pickers, preset to `a` and `b` (full refs) where given. Reads
+    /// nothing and writes nothing until its Compare, which hands the two refs to `compare`.
+    case compareBranches(a: String?, b: String?)
 
     var id: Self { self }
 

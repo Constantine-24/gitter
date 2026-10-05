@@ -89,6 +89,11 @@
     ///     filter:<text>                sidebar                      worktrees
     ///     worktreemenu                 openworktree:<folder>        pills
     ///     watchloads:<seconds>         firstresponder
+    ///     comparewith:<ref>            compare:<a>:<b>              comparesheet[:<a>[:<b>]]
+    ///     comparefilter:<text>         confirmcompare:<a>:<b>       comparestate
+    ///     compareselect:<id|changes>   comparepath:<path>           compareswap
+    ///     comparerefresh               comparedone                  comparemenu
+    ///     comparecopy:<id>             sidebarclick:<branch>        reload
     ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
@@ -714,6 +719,8 @@
                 describeTagSheet(sheet, store) ?? "?"
             case .prune, .cleanUpGone, .upstream, .addRemote, .editRemoteURL, .renameRemote, .removeRemote:
                 describeRemoteAdminSheet(sheet) ?? "?"
+            case .compareBranches(let a, let b):
+                "compareBranches(a: \(a ?? "nil"), b: \(b ?? "nil"))"
             }
         }
 

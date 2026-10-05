@@ -93,7 +93,7 @@ extension RepositoryStore {
     /// Deliberately one sentence for all three. A disabled menu item shows no tooltip on macOS,
     /// so these reasons are rendered *in* the menu (see `MenuReasons` and `LocalBranchMenu`),
     /// and three wordings for one fact would be three grey lines explaining the same thing.
-    static let currentBranchReason = "This is the branch you are on."
+    nonisolated static let currentBranchReason = "This is the branch you are on."
 
     /// Why switching to `branch` is off right now, or nil when it is available. Detaching at it
     /// is a different question (that is always possible). A branch another worktree has checked

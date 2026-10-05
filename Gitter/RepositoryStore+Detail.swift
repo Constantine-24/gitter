@@ -2,7 +2,8 @@ import Foundation
 import GitCore
 
 /// Loading the detail pane: the file list for the current selection (a stash entry's is its
-/// `stashContents`), and the diff for the currently selected path within it.
+/// `stashContents`, a comparison's changes are its `comparisonFiles`), and the diff for the
+/// currently selected path within it.
 extension RepositoryStore {
 
     // MARK: - Detail loading
@@ -24,11 +25,16 @@ extension RepositoryStore {
 
         let capturedSelection = selection
         let capturedGeneration = generation
+        // The comparison the changes are read from (B3): its ids, never the names now.
+        let capturedComparison = comparison
+        let cachedComparisonFiles = comparisonFiles
 
         detailTask = Task {
             var files: [FileStatus] = []
             var contents: StashContents?
             var stashGone = false
+            var comparisonGone = false
+            var readComparisonFiles: [FileStatus]?
             var loadError: Error?
 
             switch capturedSelection {
@@ -51,12 +57,38 @@ extension RepositoryStore {
                 } else {
                     stashGone = true
                 }
+            case .comparisonChanges:
+                if let comparison = capturedComparison {
+                    if let cachedComparisonFiles {
+                        files = cachedComparisonFiles
+                    } else if !comparison.mergeBases.isEmpty {
+                        // Off the main actor, from the merge base's id to B's (Task 1). With no
+                        // merge base there is nothing to read: GitCore would refuse.
+                        do {
+                            files = try await self.backend.comparisonFiles(comparison, at: root)
+                            readComparisonFiles = files
+                        } catch {
+                            loadError = error
+                        }
+                    }
+                } else {
+                    comparisonGone = true
+                }
             }
 
             guard !Task.isCancelled,
                 self.generation == capturedGeneration,
-                self.selection == capturedSelection
+                self.selection == capturedSelection,
+                self.comparison == capturedComparison || capturedSelection != .comparisonChanges
             else { return }
+
+            if comparisonGone {
+                // Compare mode ended under it: the working copy, as Done leaves it.
+                self.selection = .workingCopy
+                self.loadDetail()
+                return
+            }
+            if let readComparisonFiles { self.setComparisonFiles(readComparisonFiles) }
 
             if stashGone {
                 // Popped or dropped — here or in a terminal. The pop's or drop's own notice says
@@ -86,6 +118,11 @@ extension RepositoryStore {
                     self.setError(Self.describe(loadError))
                     self.loadDetail()
                     return
+                case .comparisonChanges:
+                    // The pane stays on the comparison and says why it has no files; the list's
+                    // row shows no count rather than a wrong one.
+                    self.setError(CompareWording.failure(loadError) ?? Self.describe(loadError))
+                    self.setDetailFiles([])
                 case .workingCopy:
                     // Unreachable today (the working-copy branch above never throws); kept so
                     // this switch stays exhaustive if that ever changes.
@@ -128,6 +165,7 @@ extension RepositoryStore {
         let capturedPath = selectedPath
         let capturedStagedView = stagedView
         let capturedGeneration = generation
+        let capturedComparison = comparison
 
         diffTask = Task {
             var result: [FileDiff] = []
@@ -145,6 +183,12 @@ extension RepositoryStore {
                     // Already read with the entry's files: both parts, so a path in each shows
                     // both. Read-only — `canPartiallyStage` is false off the working copy.
                     result = (self.stashContents?.all ?? []).filter { $0.displayPath == capturedPath }
+                case .comparisonChanges:
+                    // From the comparison's ids, as its files were (Task 1).
+                    if let capturedComparison, !capturedComparison.mergeBases.isEmpty {
+                        result = try await self.backend.comparisonDiff(
+                            capturedComparison, path: capturedPath, at: root)
+                    }
                 }
             } catch {
                 loadError = error
@@ -153,11 +197,14 @@ extension RepositoryStore {
             guard !Task.isCancelled,
                   self.generation == capturedGeneration,
                   self.selection == capturedSelection,
-                  self.selectedPath == capturedPath
+                  self.selectedPath == capturedPath,
+                  self.comparison == capturedComparison || capturedSelection != .comparisonChanges
             else { return }
 
             if let loadError {
-                self.setError(Self.describe(loadError))
+                let compareFailure =
+                    capturedSelection == .comparisonChanges ? CompareWording.failure(loadError) : nil
+                self.setError(compareFailure ?? Self.describe(loadError))
                 self.clearSticky()
                 self.setDiff([], staged: capturedStagedView)
             } else {

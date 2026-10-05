@@ -30,6 +30,17 @@ struct CommitListView: View {
     @State private var selectedInTable: Selection?
 
     var body: some View {
+        // Compare mode (B3): the column shows the comparison instead of the history until it
+        // ends (Done, Esc, a sidebar click, another repository).
+        if store.comparison != nil {
+            CompareListView()
+        } else {
+            history
+        }
+    }
+
+    @ViewBuilder
+    private var history: some View {
         let rows = rows()
         // Once per body, not per row: the pills of 500 rows look up one dictionary.
         let tags = TagWording.tagsByCommit(store.snapshot?.refs.tags ?? [])

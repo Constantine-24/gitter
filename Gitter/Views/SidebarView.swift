@@ -3,7 +3,8 @@ import SwiftUI
 
 /// Repository outline: the working copy, local branches, worktrees, stashes, remotes and tags.
 ///
-/// Selecting a branch or tag selects the commit it points at in the commit list. Right-clicking
+/// Selecting a branch or tag selects the commit it points at in the commit list. Any row's click
+/// ends compare mode first (B3, `selectFromSidebar`). Right-clicking
 /// one opens its menu (see `SidebarMenus.swift`), and double-clicking does the obvious thing for
 /// the kind of ref it is: a local branch is switched to, a remote branch is checked out as a
 /// local tracking branch, and a tag does nothing at all — detaching HEAD should be deliberate.
@@ -29,7 +30,7 @@ struct SidebarView: View {
         List {
             Section("Working Copy") {
                 Button {
-                    store.select(.workingCopy)
+                    store.selectFromSidebar(.workingCopy)
                 } label: {
                     HStack {
                         Label("Working Copy", systemImage: "pencil.and.list.clipboard")
@@ -103,7 +104,7 @@ struct SidebarView: View {
                 Section("Tags") {
                     ForEach(rows.tags) { tag in
                         Button {
-                            store.select(.commit(tag.sha))
+                            store.selectFromSidebar(.commit(tag.sha))
                         } label: {
                             // Filled for an annotated tag, outlined for a lightweight one; the
                             // tooltip says which, who tagged it, when, and its message.
@@ -123,7 +124,7 @@ struct SidebarView: View {
                     // section stays while any is.
                     ForEach(rows.deletedTags, id: \.self) { receipt in
                         Button {
-                            store.select(.commit(receipt.target))
+                            store.selectFromSidebar(.commit(receipt.target))
                         } label: {
                             Label(receipt.name, systemImage: TagWording.deletedRowIcon)
                                 .strikethrough()
@@ -186,7 +187,7 @@ struct SidebarView: View {
     @ViewBuilder
     private func branchRow(_ branch: Branch, showCheck: Bool) -> some View {
         Button {
-            store.select(.commit(branch.sha))
+            store.selectFromSidebar(.commit(branch.sha))
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.triangle.branch")

@@ -30,7 +30,7 @@ struct StashesSection: View {
 
     private func row(_ stash: Stash) -> some View {
         Button {
-            store.select(.stash(stash.sha))
+            store.selectFromSidebar(.stash(stash.sha))
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: Self.symbol(for: stash.kind))

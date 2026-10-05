@@ -199,11 +199,12 @@ enum CommitSelection {
     }
 
     /// What the table shows as selected for the store's state: the commit set, or the single
-    /// working copy. A stash is selected in the sidebar, so the table shows nothing.
+    /// working copy. A stash is selected in the sidebar, and a comparison's changes in compare
+    /// mode's own list (B3), so the table shows nothing for either.
     static func table(selection: Selection, commits: [String]) -> Set<Selection> {
         switch selection {
         case .workingCopy: [.workingCopy]
-        case .stash: []
+        case .stash, .comparisonChanges: []
         case .commit(let sha): commits.isEmpty ? [.commit(sha)] : Set(commits.map(Selection.commit))
         }
     }
