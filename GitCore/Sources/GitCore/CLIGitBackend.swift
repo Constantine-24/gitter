@@ -305,12 +305,32 @@ public struct CLIGitBackend: GitBackend {
         }
     }
 
+    /// Runs `diff-tree` between two explicit commits, `base` to `tip` — a comparison's changes
+    /// (`CLIGitBackend+Compare.swift`), from its merge base to B's id.
+    ///
+    /// Two **full object ids**, refused otherwise before git runs
+    /// (`BranchOperationError.invalidName`): given a 3-dot range, `diff-tree` prints nothing
+    /// and exits 0 (R6), which would read as "B brings nothing"; given a name, it reads
+    /// whatever the name holds *now*, not the id the comparison was read from (R12).
+    /// `--end-of-options` follows the caller's options, which must all come before it (R10).
+    func diffTree(
+        at root: URL, arguments: [String], from base: String, to tip: String, trailing: [String] = []
+    ) async throws -> Data {
+        for id in [base, tip] where !Self.isFullObjectID(id) {
+            throw BranchOperationError.invalidName(id)
+        }
+        return try await run(["diff-tree"] + arguments + ["--end-of-options", base, tip] + trailing, cwd: root)
+    }
+
     /// Parses `diff-tree -z --name-status` output: a flat NUL-separated token stream, one
     /// record per file — `X\0path\0` for ordinary entries, `R<score>\0old\0new\0` for
     /// renames/copies. `-z` avoids git quoting non-ASCII paths as octal escapes (which it
     /// does under `LC_ALL=C` without `-z`), keeping paths byte-identical to what
     /// `StatusParser` (which also uses `-z`) produces.
-    private func parseNameStatus(_ data: Data) -> [FileStatus] {
+    ///
+    /// Internal (not private): a comparison's files (`CLIGitBackend+Compare.swift`) are the same
+    /// `diff-tree` output.
+    func parseNameStatus(_ data: Data) -> [FileStatus] {
         let text = String(decoding: data, as: UTF8.self)
         let fields = text.split(separator: "\u{0}", omittingEmptySubsequences: true).map(String.init)
 

@@ -2166,6 +2166,66 @@ import Testing
         #expect(!ForceFlagScanner.findings(in: changed, fileName: file).isEmpty)
     }
 
+    // MARK: - Compare (B3 Task 1)
+
+    /// A **contract**: every vector `CLIGitBackend+Compare.swift` runs, spelled as it writes
+    /// them. Each tip is resolved once, by its full ref and peeled (`^{commit}`, R11), exit 1
+    /// being "gone"; every read after that takes the two ids only: the counts as one 3-dot
+    /// `rev-list` before its `--` (R1, R10), every merge base with exit 1 as "none" (R7, R8),
+    /// and the changes as `diff-tree` from the first merge base to B's id — two ids, never a
+    /// range (R5, R6) — through `CLIGitBackend.diffTree(at:arguments:from:to:trailing:)`.
+    static let compareContract = [
+        #"let data = try await run(["rev-parse", "--verify", "--quiet", "--end-of-options", "\(ref)^{commit}"], cwd: root, allowedExitCodes: [1])"#,
+        #"let data = try await run(["rev-list", "--count", "--left-right", "--end-of-options", "\(a.id)...\(b.id)", "--"], cwd: root)"#,
+        #"let data = try await run(["merge-base", "--all", "--end-of-options", a.id, b.id], cwd: root, allowedExitCodes: [1])"#,
+        #"static let comparisonFilesArguments = ["--no-commit-id", "--name-status", "-z", "-r", "-M"]"#,
+        #"static let comparisonPatchArguments = ["--no-commit-id", "-p", "-U3", "-M", "-r", "--full-index"]"#,
+    ]
+
+    @Test(arguments: compareContract + [
+        #"return try await run(["diff-tree"] + arguments + ["--end-of-options", base, tip] + trailing, cwd: root)"#,
+    ])
+    func allowsTheCompareVectorsThisMilestoneNeeds(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
+    /// Not vacuous: the compare file is clean and spells each contract vector exactly.
+    @Test func theCompareFileRunsTheContractVectors() throws {
+        let file = "CLIGitBackend+Compare.swift"
+        let source = try String(contentsOf: Self.sourcesRoot.appendingPathComponent(file), encoding: .utf8)
+        #expect(ForceFlagScanner.findings(in: source, fileName: file).isEmpty)
+        for line in Self.compareContract {
+            #expect(source.contains(line), "\(file) no longer spells \(line)")
+        }
+    }
+
+    /// `diff-tree` given a 3-dot range prints nothing and exits 0 (R6): "these branches differ
+    /// in nothing", silently. A literal holding `...` in a `diff-tree` vector — or in a
+    /// `diff-tree` argument list, which `--no-commit-id` marks — is a finding. Built in test
+    /// strings only, never in a source.
+    @Test(arguments: [
+        #"_ = try await run(["diff-tree", "--no-commit-id", "--name-status", "-z", "-r", "-M", "--end-of-options", "\(a.id)...\(b.id)"], cwd: root)"#,
+        #"_ = try await run(["diff-tree", "-r", "-p", "A...B"], cwd: root)"#,
+        #"_ = try await run(["diff-tree", "-r", "--name-status", "--end-of-options", base + "...", tip], cwd: root)"#,
+        #"let arguments = ["--no-commit-id", "-p", "-U3", "-M", "-r", "\(base)...\(tip)"]"#,
+    ])
+    func catchesADiffTreeGivenAThreeDotRange(source: String) {
+        #expect(!ForceFlagScanner.findings(in: source).isEmpty, "missed: \(source)")
+    }
+
+    /// The 3-dot rule is `diff-tree`'s alone: `rev-list`, `log` and `diff` read a symmetric
+    /// difference correctly (R1, R10).
+    @Test(arguments: [
+        #"_ = try await run(["rev-list", "--count", "--left-right", "--end-of-options", "\(a)...\(b)", "--"], cwd: root)"#,
+        #"_ = try await run(["log", "--format=%H", "--end-of-options", "\(a)...\(b)"], cwd: root)"#,
+        #"let note = "showing 500 of \(count)...""#,
+    ])
+    func theThreeDotRuleIsDiffTreesAlone(source: String) {
+        #expect(ForceFlagScanner.findings(in: source).isEmpty,
+                "false positive: \(ForceFlagScanner.findings(in: source))")
+    }
+
     /// Not vacuous: the real sources hold exactly the five parsed reads, and the rule read them.
     @Test func everyParsedDiffReadInTheSourcesIsChecked() throws {
         let sources = try ForceFlagScanner.gitCoreSources(root: Self.sourcesRoot)

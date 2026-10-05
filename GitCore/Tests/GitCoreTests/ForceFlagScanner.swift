@@ -409,6 +409,10 @@ enum ForceFlagScanner {
                     {
                         findings.append("forbidden `git \(subcommand) \(flag)`: \(leaseReason)")
                     }
+                    // A 3-dot range, which `diff-tree` answers with nothing (B3 R6). See `threeDot`.
+                    if subcommand == "diff-tree", flag.contains(threeDot) {
+                        findings.append("forbidden `git diff-tree \(flag)`: \(threeDotReason)")
+                    }
                     // A delete refspec — `:refs/heads/x`, or a bare `":"` that some expression
                     // completes — is `push --delete` written as data. It is permitted only when
                     // the same array carries a lease naming the sha the sheet showed, which is
@@ -548,6 +552,13 @@ enum ForceFlagScanner {
         result += literals.filter { $0 == "tag" }.map {
             "forbidden literal \($0.debugDescription) in an argument fragment: \(tagFragmentReason)"
         }
+        // A `diff-tree` argument list (`--no-commit-id` marks one) given a 3-dot range answers
+        // "nothing differs", silently (B3 R6) — the same rule as the classified vector's.
+        if isOneVector, literals.contains(diffTreeMarker) {
+            result += literals.filter { $0.contains(threeDot) }.map {
+                "forbidden \($0.debugDescription) in a `diff-tree` argument fragment: \(threeDotReason)"
+            }
+        }
         // Within one vector a fragment can still speak for itself: `[flag, "read-tree", "-m",
         // t]` is a `read-tree -m`. The append pool is not one vector, so this is not asked of it.
         if isOneVector, literals.contains("read-tree") {
@@ -559,6 +570,20 @@ enum ForceFlagScanner {
         }
         return result
     }
+
+    /// A symmetric-difference range, which `diff-tree` does not read: given `A...B` it prints
+    /// nothing and exits 0 (B3 R6, measured on git 2.54), so a comparison's changes would read
+    /// as "B brings nothing". `rev-list`, `log` and `diff` read the range correctly, so the rule
+    /// is `diff-tree`'s alone — in a vector classified `diff-tree`, and in an argument list
+    /// marked by `diffTreeMarker`. Any literal *containing* it counts, interpolated ids
+    /// included (`"\(a)...\(b)"`). A range built from non-literals is invisible here, which is
+    /// why `CLIGitBackend.diffTree(at:arguments:from:to:trailing:)` also refuses anything but
+    /// two full object ids at run time.
+    static let threeDot = "..."
+
+    static let threeDotReason =
+        "`diff-tree` does not read a 3-dot range: it prints nothing and exits 0, which reads as "
+        + "\"nothing differs\". Pass the merge-base id and the tip's id instead (B3 R5, R6)"
 
     /// The option that identifies a `diff-tree` argument fragment. See `fragmentFindings`.
     private static let diffTreeMarker = "--no-commit-id"

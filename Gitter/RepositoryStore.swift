@@ -244,11 +244,12 @@ final class RepositoryStore {
 
     /// Everything the store can ask git to do: reads, index and commit writes, branch,
     /// checkout and merge writes, the network, the stash, conflicts, the operation in progress
-    /// the history actions (cherry-pick, revert, rebase onto), tags and the remotes'
-    /// housekeeping (B2). Ten protocols so a fake can implement any one on its own.
+    /// the history actions (cherry-pick, revert, rebase onto), tags, the remotes'
+    /// housekeeping (B2) and comparing two branches (B3). Eleven protocols so a fake can
+    /// implement any one on its own.
     typealias Backend = any GitBackend & GitWorkingCopyBackend & GitBranchBackend & GitRemoteBackend
         & GitStashBackend & GitConflictBackend & GitOperationBackend & GitHistoryBackend
-        & GitTagBackend & GitRemoteAdminBackend
+        & GitTagBackend & GitRemoteAdminBackend & GitCompareBackend
 
     let backend: Backend
     // internal (not private): used by +Opening.swift's `checkGitAvailability()`
