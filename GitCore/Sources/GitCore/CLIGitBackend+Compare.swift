@@ -22,8 +22,8 @@ extension CLIGitBackend: GitCompareBackend {
         let tipB = try await resolveTip(b, at: root)
 
         async let counts = sideCounts(tipA, tipB, at: root)
-        async let onlyA = commits(in: tipA.id, notIn: tipB.id, limit: Comparison.listLimit, at: root)
-        async let onlyB = commits(in: tipB.id, notIn: tipA.id, limit: Comparison.listLimit, at: root)
+        async let onlyA = sideCommits(tipA, tipB, left: true, at: root)
+        async let onlyB = sideCommits(tipA, tipB, left: false, at: root)
         async let bases = mergeBases(tipA, tipB, at: root)
 
         let (left, right) = try await counts
@@ -72,6 +72,22 @@ extension CLIGitBackend: GitCompareBackend {
             throw GitError.commandFailed(exitCode: -1, stderr: "unexpected rev-list --count --left-right output: \(text)")
         }
         return (left, right)
+    }
+
+    /// The commits only on one side, newest first, at most `Comparison.listLimit`: the left
+    /// (A's) or right (B's) half of the **same** symmetric walk the count takes.
+    ///
+    /// Not `commits(in:notIn:)`'s two-dot `log`, which the plan reused (R2) and fix round 1
+    /// (I1) replaced: under clock skew — a side dated older than the commit it grew from — the
+    /// two-dot walk stops on dates before it has marked everything the other side reaches, and
+    /// lists commits the count does not count, **the merge base included** (measured, git
+    /// 2.54: `count main...big` = `0 N`, `log big..main` = the root). `--topo-order` and a
+    /// commit-graph do not fix it. The `...` walk is the count's own, so each list holds what
+    /// its count counts. `--left-only`/`--right-only` keep `LogParser`'s seven fields (no `%m`).
+    /// The range is two ids before the `--` (R10, R11).
+    private func sideCommits(_ a: RefTip, _ b: RefTip, left: Bool, at root: URL) async throws -> [Commit] {
+        let data = try await run(["log", "-n", String(Comparison.listLimit), "-z", "--format=\(Self.logFormat)", left ? "--left-only" : "--right-only", "--end-of-options", "\(a.id)...\(b.id)", "--"], cwd: root)
+        return LogParser.parse(data)
     }
 
     /// Every merge base, in git's order. Exit 1 with no output is "no shared history" (R7) — a

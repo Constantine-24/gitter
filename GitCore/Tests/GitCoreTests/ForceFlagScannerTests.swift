@@ -2171,13 +2171,17 @@ import Testing
     /// A **contract**: every vector `CLIGitBackend+Compare.swift` runs, spelled as it writes
     /// them. Each tip is resolved once, by its full ref and peeled (`^{commit}`, R11), exit 1
     /// being "gone"; every read after that takes the two ids only: the counts as one 3-dot
-    /// `rev-list` before its `--` (R1, R10), every merge base with exit 1 as "none" (R7, R8),
+    /// `rev-list` before its `--` (R1, R10), both lists from that same symmetric walk —
+    /// `--left-only` / `--right-only`, never a two-dot `log`, which under clock skew lists
+    /// commits the count does not count, the merge base included (fix round 1, I1) — every
+    /// merge base with exit 1 as "none" (R7, R8),
     /// and the changes as `diff-tree` from the first merge base to B's id — two ids, never a
     /// range (R5, R6) — through `CLIGitBackend.diffTree(at:arguments:from:to:trailing:)`.
     static let compareContract = [
         #"let data = try await run(["rev-parse", "--verify", "--quiet", "--end-of-options", "\(ref)^{commit}"], cwd: root, allowedExitCodes: [1])"#,
         #"let data = try await run(["rev-list", "--count", "--left-right", "--end-of-options", "\(a.id)...\(b.id)", "--"], cwd: root)"#,
         #"let data = try await run(["merge-base", "--all", "--end-of-options", a.id, b.id], cwd: root, allowedExitCodes: [1])"#,
+        #"let data = try await run(["log", "-n", String(Comparison.listLimit), "-z", "--format=\(Self.logFormat)", left ? "--left-only" : "--right-only", "--end-of-options", "\(a.id)...\(b.id)", "--"], cwd: root)"#,
         #"static let comparisonFilesArguments = ["--no-commit-id", "--name-status", "-z", "-r", "-M"]"#,
         #"static let comparisonPatchArguments = ["--no-commit-id", "-p", "-U3", "-M", "-r", "--full-index"]"#,
     ]

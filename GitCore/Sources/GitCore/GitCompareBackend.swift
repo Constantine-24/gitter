@@ -22,9 +22,10 @@ import Foundation
 public protocol GitCompareBackend: Sendable {
     /// Reads `a` against `b`: each tip resolved once with `rev-parse --verify --quiet
     /// --end-of-options <ref>^{commit}` (R11), then — from the two ids only — the counts
-    /// (`rev-list --count --left-right`, R1), the commits only on each side (newest first, at
-    /// most `Comparison.listLimit` each, R2, R3) and every merge base (`merge-base --all`, R7,
-    /// R8).
+    /// (`rev-list --count --left-right`, R1), the commits only on each side from that same
+    /// symmetric walk (`log --left-only`/`--right-only`; newest first, at most
+    /// `Comparison.listLimit` each, R3 — so a list never holds a commit its count does not,
+    /// clock skew included, fix round 1 I1) and every merge base (`merge-base --all`, R7, R8).
     ///
     /// `a` and `b` are full refs under `refs/heads/` or `refs/remotes/`. Refused before git
     /// runs: anything else (`CompareRefusal.notABranch`, naming it, `a` first) and the same ref

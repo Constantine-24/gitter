@@ -414,7 +414,7 @@ import Testing
         let repo = try await TestRepo.makeEmpty()
         defer { repo.cleanUp() }
         let main = try await repo.commitFile("f.txt", "one\n", "root")
-        try await repo.fastImportChain(onto: main, branch: "big", count: 520)
+        try await repo.fastImportChain(onto: main, branch: "big", count: 520, skewed: true)
         let tip = try await repo.revParse("refs/heads/big")
 
         let c = try await backend.compare("refs/heads/main", "refs/heads/big", at: repo.root)
@@ -423,10 +423,41 @@ import Testing
         #expect((c.onlyA, c.onlyB) == (0, 520))
         #expect(c.commitsOnlyB.count == 500)
         #expect(c.commitsOnlyB.first?.sha == tip)
-        let walked = try await repo.lines(["rev-list", "refs/heads/big", "^refs/heads/main"])
+        // Ground truth from one walk with nothing excluded (a two-dot walk is what the skew
+        // misleads): the chain, newest first, then `main`'s root.
+        let walked = Array(try await repo.lines(["rev-list", "refs/heads/big"]).dropLast())
         #expect(walked.count == 520)
         #expect(c.commitsOnlyB.map(\.sha) == Array(walked.prefix(500)))
         #expect(c.commitsOnlyA.isEmpty, "\(c.commitsOnlyA.map(\.summary))")
+    }
+
+    /// Fix round 1, I1: with the chain on B dated older than the root it grew from, git's
+    /// two-dot `log big..main` lists `main`'s commits **and the merge base** while `rev-list
+    /// --count --left-right` counts only `m1`. Both lists come from the count's own symmetric
+    /// walk, so each holds exactly what its count counts and never a merge base.
+    @Test func listsAgreeWithTheCountsUnderClockSkew() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        let root = try await repo.commitFile("f.txt", "one\n", "root")
+        try await repo.fastImportChain(onto: root, branch: "big", count: 9, skewed: true)
+        let m1 = try await repo.commitFile("f.txt", "two\n", "m1")
+
+        for (a, b) in [("refs/heads/main", "refs/heads/big"), ("refs/heads/big", "refs/heads/main")] {
+            let c = try await backend.compare(a, b, at: repo.root)
+            #expect(c.mergeBases == [root])
+            #expect(c.commitsOnlyA.count == c.onlyA, "\(a): \(c.commitsOnlyA.map(\.summary))")
+            #expect(c.commitsOnlyB.count == min(c.onlyB, Comparison.listLimit), "\(b): \(c.commitsOnlyB.map(\.summary))")
+            #expect(!(c.commitsOnlyA + c.commitsOnlyB).contains { c.mergeBases.contains($0.sha) })
+            #expect(Set([c.onlyA, c.onlyB]) == [1, 9])
+        }
+        let c = try await backend.compare("refs/heads/main", "refs/heads/big", at: repo.root)
+        #expect(c.commitsOnlyA.map(\.sha) == [m1])
+
+        // The control: the two-dot walk really does list the merge base here.
+        let twoDot = try await repo.lines(["log", "--format=%H", "refs/heads/big..refs/heads/main", "--"])
+        withKnownIssue("git's two-dot walk under clock skew lists the merge base") {
+            #expect(!twoDot.contains(root))
+        }
     }
 
     // MARK: - A hand-built comparison
@@ -507,13 +538,14 @@ extension TestRepo {
         ])
     }
 
-    /// `count` empty-tree-changing commits on a new `refs/heads/<branch>` from `parent`, in one
-    /// `fast-import` (one process rather than `count` commits), each a second newer than the last.
-    fileprivate func fastImportChain(onto parent: String, branch: String, count: Int) async throws {
-        // Committed after `parent`, as a real history is: with dates older than the parent's,
-        // `git log big..main` walks past the skew and lists `main`'s root (measured), while the
-        // count stays right.
-        let start = Int(Date().timeIntervalSince1970) + 60
+    /// `count` commits on a new `refs/heads/<branch>` from `parent`, in one `fast-import` (one
+    /// process rather than `count` commits), each committed a second after the last. `skewed`
+    /// dates the whole chain in 2023, older than `parent` — clock skew, which real histories
+    /// have (a machine with a wrong clock, an import). Under it git's two-dot walk lists commits
+    /// the symmetric count does not count, the merge base included; see
+    /// `listsAgreeWithTheCountsUnderClockSkew`.
+    fileprivate func fastImportChain(onto parent: String, branch: String, count: Int, skewed: Bool = false) async throws {
+        let start = skewed ? 1_700_000_000 : Int(Date().timeIntervalSince1970) + 60
         var stream = ""
         for n in 1...count {
             let message = "c\(n)\n"
