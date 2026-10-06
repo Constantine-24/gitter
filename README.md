@@ -19,7 +19,10 @@ will run — and create, delete (with **Restore Tag**), push and remotely delete
 keeps the remotes tidy: it prunes remote-tracking branches the server no longer has — naming the
 commits only they held and keeping a branch at each on request — cleans up branches whose
 upstream is gone, pushes or fast-forwards a branch that is not checked out, sets or unsets an
-upstream, and adds, renames, re-points or removes a remote.
+upstream, and adds, renames, re-points or removes a remote. And it finds its way around: a filter
+narrows the sidebar's branches and tags as you type, two branches can be compared — the commits
+only on each side and the changes one would bring — and worktrees are listed, opened, added and
+removed, a removal only behind a check of what it would delete.
 
 ![Gitter's main window: the branch button, the sidebar, the lane graph and a diff](docs/screenshots/branches.png)
 
@@ -105,6 +108,14 @@ upstream, and adds, renames, re-points or removes a remote.
   tooltip — and it never stands in your way: Fetch, Pull and Push stay available while it
   runs, and using one stops it (yours starts once the stopped fetch's git has gone — at once
   for a transport that honours the stop, about 2 s for one that ignores it)
+- **Filter** the sidebar (⌘F): branches, remote branches and tags narrowed as you type, every
+  word matching, case and accents ignored (see "Navigation" below)
+- **Compare two branches**: "Compare with "main"" on any branch, or Compare Branches… — the
+  commits only on each side with exact counts, and the changes one side brings, exactly as `git
+  diff A...B` shows them
+- **Worktrees**: a sidebar section with each worktree's branch, changes, lock and missing folder;
+  branches checked out elsewhere marked; **Open Worktree**, **Add Worktree…** and **Remove
+  Worktree…** (behind Gitter's own check of what git would delete), **Remove All Missing…**
 - Quit safely while the network is busy: a fetch or pull is stopped and Gitter quits; a push
   (or publish, force push, delete on a remote) asks first — **Wait** lets it finish and then
   quits (or stays open if it failed or has a warning, so you can read it, or if it is still
@@ -158,13 +169,16 @@ it allows `stash` only in five exact spellings — never with a pathspec, `--kee
 temporary index. For conflicts it allows `merge-file` only with `--object-id` (without it git
 writes over its first argument), `restore --ours|--theirs|--merge` and `rm -q` only on one
 path at a time, and `--skip` only as exactly `rebase --skip`, `cherry-pick --skip` or `revert
---skip`; `--quit` stays forbidden. A list of paths for `add`, `restore` or `rm --cached` goes
-in a pathspec file rather than one argument per path: past 4 096 arguments macOS's `Process`
-does not fail, it crashes the app, so every call is also checked before git starts. (Stage All
-still passes its paths as arguments, `add -- <paths>` in batches of at most 1 000; only the
-writes of a selection use the pathspec file.)
+--skip`; `--quit` stays forbidden. For worktrees it allows only `worktree list --porcelain -z`,
+`worktree add -q --end-of-options <path> <branch>` and `worktree remove --end-of-options <path>` —
+never `prune`, `move`, `repair`, `lock`, `unlock`, `-f`, `-b`, `-B`, `--orphan` or `--detach` — and
+no 3-dot range ever reaches `diff-tree`. A list of paths for `add`, `restore` or `rm --cached` goes
+in a pathspec file rather than one argument per path: past 4 096 arguments macOS's `Process` does
+not fail, it crashes the app, so every call is also checked before git starts. (Stage All still
+passes its paths as arguments, `add -- <paths>` in batches of at most 1 000; only the writes of a
+selection use the pathspec file.)
 
-Fifteen actions can lose something without being asked for by name, and each is behind a
+Sixteen actions can lose something without being asked for by name, and each is behind a
 confirmation that says what goes and what stays:
 
 | action | how it is confirmed |
@@ -183,6 +197,7 @@ confirmation that says what goes and what stays:
 | **Prune a remote** | Gitter asks the server which of the remote's branches it no longer has (a dry run that deletes nothing), then a sheet lists each remote-tracking branch with **its full id**, the commits that would be on no branch, tag or other remote afterwards — **counted once for all of them** — and a ticked "Keep … as <name>" for each ref that alone holds some. On Prune it counts again and refuses if more would be stranded, creates the kept branches first, then deletes each ref **only while it still holds the id the sheet showed** (`update-ref -d` with that id); one that moved is left alone and named. The notice lists every deleted ref with its id — a remote-tracking ref has no reflog to find it by |
 | **Clean Up Gone Branches** | a sheet lists the local branches whose upstream is gone, each "merged" or "N commits only here"; merged ones are ticked, an unmerged one carries the unmerged-branch warning when ticked, and a branch checked out in a worktree cannot be ticked. Each is deleted only at the tip the sheet showed, after a recount; the notice lists every tip with `git branch <name> <id>` |
 | **Remove a remote** | a sheet lists every remote-tracking ref git will delete with its full id, the commits that would be stranded (keepable, as for a prune), the branches that will have no upstream and the ones whose push silently goes to another remote. On Remove it reads all of that again and refuses on any difference; the notice is the only record of the deleted refs, each with its id and the `git update-ref` that brings it back |
+| **Remove a worktree** (and **Remove All Missing…**) | Gitter checks first, off the main thread, everything git's own `worktree remove` would delete without asking — ignored files and folders (listed, with the count), assume-unchanged and skip-worktree edits, a repository nested anywhere in it, untracked files hidden by `status.showUntrackedFiles=no`, an operation in progress — and refuses on any of them, or on changes, a lock or an unreadable folder, with the reason in place of the button. A detached worktree's own commits are listed with a ticked "Keep … as" branch. On Remove it makes the whole check again and refuses if anything differs — every ignored entry, not just their number — creates the kept branches, then runs git with those settings forced back. "The branch <b> stays" is said, and a half-done removal is read back and worded |
 | **Reopen a resolved conflict** | the sheet says what comes back — conflict markers; for a binary file ours' version, with no markers; for a mode conflict ours' mode — and the resolution is filed as `Reopened by Gitter: <file>` first |
 
 Three more confirmations stand before a commit rather than a loss: **Mark Resolved** when git
@@ -205,7 +220,7 @@ choose; the old tip stays in `ORIG_HEAD` and the reflog. A rebase that stops on 
 lands in the operation bar: resolve there and Continue, Skip the commit, or Abort, which puts
 everything back.
 
-Amending is the one more — fifteen confirmed actions, plus amend — and the one with no
+Amending is the one more — sixteen confirmed actions, plus amend — and the one with no
 confirmation sheet: it rewrites HEAD and leaves
 the commit it replaces reachable from no branch, tag or remote. What stands in for the sheet
 is that nothing else asks for it — you tick the Amend toggle yourself and the commit button
@@ -576,6 +591,76 @@ working tree was fetched from, and had a branch deleted by a push).
 one; editing a remote with several URLs; editing fetch refspecs; pruning on every fetch.
 Prune, clean-up, rename and remove are not yet waited for by quitting (see the backlog).
 
+### Navigation
+
+**Filter.** ⌘F (Edit › Filter Sidebar) puts the cursor in the field at the top of the sidebar.
+Local branches, remote branches and tags narrow as you type: every word you type must appear,
+case and accents ignored (`cafe` finds `Café-menu`), and a remote branch matches as
+`origin/name` too. A remote shows only with a match and opens while you filter; clear the field
+and each remote is as you left it. An empty section says "No matches", VoiceOver hears the count,
+and Working Copy, Worktrees and Stashes are never filtered. The text survives a refresh and is
+cleared when another repository opens.
+
+**Compare.** "Compare with "main"" on any local or remote branch's menu compares the branch you
+are on (A) with that one (B); **Compare Branches…** (that menu, and the Repository menu) picks
+both, from two lists filtered as the sidebar is. Each branch is read to its commit id once, and
+everything after uses those ids, so a branch that moves meanwhile cannot mix two states. The
+commit list column becomes a comparison: a bar `main ⇄ feature` with Swap and Done (Esc), the
+**Changes feature brings** row, then the commits only on B and only on A, newest first, each
+group with its exact count and "…and N more not listed" past 500. The changes are git's own `git
+diff main...feature` — from the merge base to B — and the header names that base; two branches
+with no shared history say so instead, and a criss-cross history with two merge bases says it
+shows the first, as git does. A commit row shows that commit, with only Copy Commit ID in its menu:
+compare is read-only. When a branch moves after the comparison was read, the bar says "feature
+has moved since this comparison" with **Refresh**; a deleted one leaves only Done. Compare takes
+branches only — `refs/heads/…` and `refs/remotes/…` by full name, so a tag of the same name cannot
+stand in — and a click anywhere in the sidebar ends it.
+
+![Comparing main with feature/metric-units: the bar main ⇄ feature/metric-units with Swap and Done, "Changes feature/metric-units brings (3 files)" selected, its three commits and main's two below, and the header naming the merge base above the diff of units.py](docs/screenshots/compare.png)
+
+**Worktrees.** With more than one worktree the sidebar has a **Worktrees** section: each row's
+folder (the full path as its tooltip), its branch or "detached at <id>", and marks — this window,
+changes (with a count), locked (with its reason), its folder missing, a rebase or bisect in
+progress there. A branch checked out in another worktree, or held there by a rebase or bisect, has
+an icon, and Switch, Delete and Fast-Forward say which worktree to open instead. A commit that is
+another worktree's detached HEAD carries a "worktree: <folder>" pill. **Open Worktree** (or a
+double-click) opens it in this window, titled "<folder> (worktree of <main>)"; Reveal in Finder and
+Copy Path are beside it. A linked worktree is watched like any repository: Gitter watches its own
+git directory and the shared refs, `packed-refs`, `config` and `HEAD`, so a commit, checkout or
+stash there — or a branch moved from the main worktree — shows at once.
+
+**Add Worktree…** (the section's menu, the Repository menu, or "New Worktree for "b"…" on a
+branch) checks out an existing branch that no worktree uses, a new branch made first from a start
+point, or a new branch tracking a remote branch — never a branch you did not choose: git itself,
+handed a remote-only name, would create one. The folder defaults to `<main folder>-<branch>` beside
+the main one, with Choose…, and is checked as you type: a full path, nothing there or an empty
+folder, and outside every worktree. Each partial outcome is said: a branch created and then no
+worktree (the branch stays, named), the upstream not set, or git's error after a complete worktree
+(a `post-checkout` hook that failed). The notice offers **Open**.
+
+**Remove Worktree…** shows a progress line while Gitter checks the worktree, then, in the same
+sheet, what removing it means: its folder goes with everything in it, "The branch <b> stays", the
+ignored files and folders git would delete without asking (named, with the count), and for a
+detached worktree its own commits with a ticked "Keep … as" branch. git's `worktree remove` refuses
+changes, a lock and the main worktree; it deletes ignored files, edits hidden by assume-unchanged or
+skip-worktree, a repository nested in an ignored folder, and — under `status.showUntrackedFiles=no`
+— untracked files, all without a word (measured). Gitter refuses each of those itself, before git
+runs, and shows the reason where the button would be; a worktree too large to check in 3 seconds or
+half a million entries, or with a folder it cannot read, is refused too. Confirming makes the whole
+check again — every ignored entry by name, so an ignored file swapped for another, which leaves
+their number the same, is still caught — creates the kept branches, then runs git with
+`status.showUntrackedFiles=normal` and `core.fsmonitor=false`. A removal git refuses, leaves
+half-done or whose outcome is not known is read back and worded with the kept branches. A worktree
+whose folder is gone says so; **Remove All Missing…** takes every such worktree off git's list in
+one sheet, one at a time, and reports each. `worktree prune` is never run.
+
+![Removing a detached worktree: its path, "This deletes its folder, above, and everything in it.", the one commit only its HEAD holds with a ticked box keeping a branch at it, and in orange the two ignored entries git deletes without asking; the Worktrees section behind it](docs/screenshots/worktrees.png)
+
+**What stays a terminal job.** Locking, unlocking, moving and repairing a worktree (a locked one is
+shown and left alone); `worktree prune`; per-worktree config; opening a worktree in a second
+window; commit search; tags or commits in compare; and cherry-picking from the compare list (the
+history keeps those actions).
+
 ## Design decisions
 
 | Area | Decision | Rationale |
@@ -592,7 +677,8 @@ Prune, clean-up, rename and remove are not yet waited for by quitting (see the b
 | Conflicts | Blocks rebuilt from the index stages with `git merge-file`, choices composed in memory and written once; git's own `--continue` / `--skip` with the message file written back, behind readiness checks of Gitter's own | The worktree file can hold anything (rerere, hand edits, marker-like code); git keeps the author, the date and the sequence, and Gitter refuses before git runs where git would lose something silently |
 | Remotes housekeeping | A dry-run listing on the lane, then a per-ref compare-and-delete on the ids the sheet showed; stranded commits counted once as a union and kept as branches before anything is deleted; URLs read as configured; a failed `remote rename` / `remove` read back, never assumed a no-op | `fetch --prune` deletes whatever the server lacks at that moment; remote-tracking refs have no reflog; `remote -v` shows the rewritten URL; git leaves half-done state under a held lock |
 | History actions | A plan read first (order, left out, may be skipped, replayed, already pushed), shown on a sheet, made again by the run and refused on any difference; full commit ids and `refs/…` names in every vector; tags deleted by compare-and-delete with the receipt kept in the app | A sheet is a promise only if the run checks it; a short name can mean a tag; tags have no reflog |
-| Scope | Browsing, diffs, staging, commit, branch and remote operations, stash and discard, conflict resolution and continuing an operation, cherry-pick, revert, rebase onto a commit, tags and remotes housekeeping are done | Each milestone keeps the promise before it adds the next way to lose work |
+| Navigation | Compare reads both tips to ids once and every count, list and diff from those ids (`log --left-only` / `--right-only` over the symmetric range, the changes by `diff-tree` from the merge base); worktree removal behind Gitter's own check, made again in full before git runs, with git's settings forced; worktrees added only on a branch named in full and read back | A branch can move mid-read; a two-dot `log` disagrees with the count under clock skew; `worktree remove` deletes ignored files, hidden edits and nested repositories without asking, and `worktree add` creates or detaches what it guesses |
+| Scope | Browsing, diffs, staging, commit, branch and remote operations, stash and discard, conflict resolution and continuing an operation, cherry-pick, revert, rebase onto a commit, tags, remotes housekeeping, the sidebar filter, comparing branches and worktrees are done | Each milestone keeps the promise before it adds the next way to lose work |
 
 ## Build & run
 
@@ -620,10 +706,13 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (451 tests in 28 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (560 tests in 35 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
+`CompareWording` and the compare menus' reasons, `WorktreeWording` (the rows, marks, menus' reasons,
+the Add and Remove sheets and every partial outcome), the sidebar filter (`SidebarFilter`), a linked
+worktree's watched paths and discard fingerprint,
 the no-URL gates, Copy URL's redaction, the banners' height, the commit list's set selection, the deleted tags' receipts in the store, the pull-request link extraction and
 the notices' lifetime, which files a discard is offered for and when its sheet reads git again,
 which refusals Stash and Continue answers, when the toolbar reveals a lane's activity, the
@@ -633,7 +722,7 @@ Under a test host the app reopens no repository and starts no automatic fetch (`
 no test opens a repository or touches the app's defaults, so a run never touches the repository
 you last had open.
 
-`GitCoreTests` has 1 502 tests in 133 suites. Most of them run real `git` against a temporary
+`GitCoreTests` has 1 590 tests in 137 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
 for a server, with a second clone as "the colleague" who pushes in between — including one
 that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
@@ -641,7 +730,7 @@ your git configuration (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`) 
 touches the network: the transports other than `file` (and a fake ssh one test needs) are refused,
 and an inherited `GIT_SSH_COMMAND` or `GIT_CONFIG_*` is cleared first.
 
-The run also reports **25 known issues, and they are meant to be there** — please do not
+The run also reports **53 known issues, and they are meant to be there** — please do not
 "fix" them. They are deliberate negative controls: tests that make an assertion helper fail
 on purpose, inside `withKnownIssue`, to prove it *can* fail.
 
@@ -685,15 +774,32 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   and "nothing left" under a remote's prefix, made to fail by a ref created there.
 - One comes from `NoURLRemoteTests`: git itself, handed an unconfigured remote name, pushes into
   a directory of that name — the hazard Gitter refuses — and `assertRemoteUnchanged` sees it.
+- Six come from `CompareTests`: `assertNothingRan` made to fail by a comparison that really runs
+  git (twice); the files, the diff and the count read **by name** after both branches moved, which
+  follow the moved refs where the comparison's ids do not (three); and git's two-dot `log` under
+  clock skew listing the merge base, which the symmetric walk Gitter uses does not.
+- Three come from `WorktreeAddTests`: git adding a worktree inside the main one and creating a
+  tracking branch for a remote-only name (R17) — both refused by Gitter before git runs — and the
+  launch log made to fail by a `worktree add` that really ran.
+- Nineteen come from `WorktreeRemovalTests`: for every refusal that guards a silent deletion, raw
+  `git worktree remove` deletes what Gitter protects — the worktree it is run from, one mid-rebase,
+  -merge or -bisect (one per operation), an assume-unchanged and a skip-worktree edit, a repository
+  nested in an ignored folder, one spelled `.GIT`, the contents of a `.git` folder `status` skips
+  (one per spelling), the files around an unreadable folder, an edit a lying `core.fsmonitor`
+  hides, an ignored file swapped for another of the same count (with the count-only compare that
+  misses it), and an untracked file under `status.showUntrackedFiles=no`; plus the launch log made
+  to fail by a `worktree remove` that really ran, a worktree off the list that is not a removed one
+  (a folder git could not delete, and one replaced by a link), and `rev-list --all` counting the
+  worktree being removed (R22).
 
 Deleting any of them would take the proof away and the suite would go on looking green.
 
 ## Project layout
 
-Every `.swift` file in the two product targets — 173 of them, which is what `find
+Every `.swift` file in the two product targets — 191 of them, which is what `find
 GitCore/Sources Gitter -name '*.swift' | wc -l` prints — with the ones inside `Models/`,
-`Parsers/` and `Views/` named in prose rather than one per line. The 150 test files (123 in
-`GitCore/Tests`, 27 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
+`Parsers/` and `Views/` named in prose rather than one per line. The 161 test files (128 in
+`GitCore/Tests`, 33 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
 listed, which is also why the check is that command and not a bare `find . -name '*.swift'`:
 that one reaches them too, and the generated sources under `.build` as well.
 
@@ -714,6 +820,8 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
                                 leased remote delete; TagNameProblem, TagReceipt, TagOperationError
     GitRemoteAdminBackend.swift Prune and gone branches, fast-forward and upstream of a branch,
                                 add, set-url, rename and remove a remote
+    GitCompareBackend.swift     Compare two branches: counts, lists, merge bases, the changes
+    GitWorktreeBackend.swift    List worktrees, their changes, the removal check, add and remove
     DiscardTypes.swift          DiscardRequest, DiscardReceipt, the refusals and undo outcomes
     Trasher.swift               Moving an untracked item to the Trash and back
     GitError.swift              commandFailed, launchFailed, and the two pre-flight refusals
@@ -752,6 +860,10 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
                                   worktree scan), set and unset upstream with the read-back
       +RemoteAdmin.swift          remote names, URLs as configured, add, set-url, rename, the
                                   removal impact and remove, each failure read back
+      +Compare.swift              the tips resolved once, the count, the two lists over the
+                                  symmetric range, merge bases, the changes from the merge base
+      +Worktrees.swift            the list, changes, the removal check (the walk, the forced
+                                  settings), add and remove, each read back
     ProcessRunner.swift         Process spawning with LC_ALL=C and captured stderr
       +Streaming.swift            the cancellable runner: progress, SIGTERM then SIGKILL
     GraphLayout.swift           gitk-style commit lane assignment
@@ -759,12 +871,12 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
       +Markers.swift / +Paths.swift
     Models/                     RepoSnapshot, Commit, FileStatus, Diff, Branch (and Tag), Graph,
                                 Remote, Stash, Conflict, OperationProgress, History,
-                                RemoteAdmin
+                                RemoteAdmin, Compare, Worktree (with WorktreePaths)
     Parsers/                    Status, Log, Ref, Diff (+Paths), BranchRefusal, Remote,
-                                PushPorcelain, RemoteFailure, StashList, StashFailure and
-                                Conflict parsers, and GitLines (git's output split at the
-                                newline byte)
-  Tests/GitCoreTests/           133 suites; ForceFlagScanner(+Lexing) is the force-flag grep
+                                PushPorcelain, RemoteFailure, StashList, StashFailure,
+                                Conflict and WorktreeList parsers, and GitLines (git's output
+                                split at the newline byte)
+  Tests/GitCoreTests/           137 suites; ForceFlagScanner(+Lexing) is the force-flag grep
 
 Gitter/                   macOS app (SwiftUI)
   GitterApp.swift            App entry point, the one store (`AppModel`), the Repository
@@ -795,6 +907,11 @@ Gitter/                   macOS app (SwiftUI)
                                   deleted tags' receipts
   RepositoryStore+RemoteAdmin.swift  Prune, clean-up, push / fast-forward another branch,
                                   upstream, and the remote sheets: requests, gates, notices
+  RepositoryStore+Compare.swift   Compare mode: the comparison, its staleness, Swap, Refresh,
+                                  Done, the menus' reasons
+  RepositoryStore+Worktrees.swift The worktree state, Open, Add and Remove (and Remove All
+                                  Missing), the folder check, the held-branch reasons, the title
+  SidebarFilter.swift        Which rows the sidebar filter leaves, and its words
   AutoFetchScheduler.swift   When the quiet automatic fetch runs (the store decides what it does)
   QuitGuard.swift            Quitting while the network lane is busy: stop, or ask first
   RemoteActivity.swift       What the lane is running, a refused push, the progress relay
@@ -810,10 +927,14 @@ Gitter/                   macOS app (SwiftUI)
                               (DeletedTags) and the remotes seen holding a tag (RemoteTagsSeen)
   RemoteAdminWording.swift   Every sentence of remotes housekeeping: the sheets, the menus'
                               reasons, the notices and the half-done states
+  CompareWording.swift       Every sentence of compare mode, its sheet and its menus
+  WorktreeWording.swift      Every sentence about a worktree: rows, marks, menus, the Add and
+                              Remove sheets, notices and partial outcomes
   Notice.swift               A notice's text, links and buttons, and the link extraction
   BranchSheet.swift          Which confirmation or form the store wants on screen
   CommitDraft.swift          The commit message + amend toggle being edited
-  RepositoryWatcher.swift    FSEvents-based debounced refresh trigger
+  RepositoryWatcher.swift    FSEvents-based debounced refresh trigger, with the paths a linked
+                              worktree needs (its git directory and the shared refs)
   OperationWording.swift     Every sentence the UI says about an operation in progress,
                               including the abort confirmation's five wordings
   DebugLaunchHooks.swift     Debug-only launch hooks for screenshot verification (see below),
@@ -825,21 +946,24 @@ Gitter/                   macOS app (SwiftUI)
     +Continue.swift            its operation bar and composer steps
     +History.swift             its history and tag steps
     +RemoteAdmin.swift         its remotes housekeeping steps
+    +Navigation.swift          its filter, compare and worktree steps
   DebugLaunchGuard.swift     Debug-only: a scripted launch never reaches the last repository
   Views/                     MainWindow, SidebarView, SidebarMenus, StashesSection,
                               CommitListView, CommitGraphCell, DetailView, StashDetailView,
                               WorkingCopyFileList, CommitComposerView, DiffView, DiffHunkView,
                               DiffLineSelection, Banners, BranchToolbar, BranchNameValidator,
-                              BranchSheetHost, RemoteToolbar, TrackingBadge,
+                              BranchSheetHost, RemoteToolbar, TrackingBadge, CompareListView,
+                              WorktreesSection,
                               ConflictResolverView, ConflictBlockView, OperationBar (with the
                               halted bar), KeepBranchList (with RefIDList, the ref and id list
-                              both sheets share) and the thirty-one sheets (NewBranch,
+                              both sheets share) and the thirty-four sheets (NewBranch,
                               Rename, Merge, DeleteBranch, Abort, LeaveDetached, Pull, Publish,
                               ForcePush, DeleteRemoteBranch, Stash, DropStash, Discard,
                               ReplaceHandEdited, MarkResolved, ReopenConflict, ContinueEmpty,
                               Skip, StageAll, HistoryAction, RebaseOnto, NewTag, DeleteTag,
                               DeleteRemoteTag, Prune, GoneBranches, Upstream, AddRemote,
-                              EditRemoteURL, RenameRemote, RemoveRemote)
+                              EditRemoteURL, RenameRemote, RemoveRemote, CompareBranches,
+                              AddWorktree, RemoveWorktree)
 
 GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app): wording,
                           notices and links, the discard (and its sheet's stale check) and
@@ -848,7 +972,9 @@ GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app):
                           the history and tag wording, the commit set and the deleted tags'
                           receipts, remotes housekeeping's wording and menu reasons, the
                           no-URL gates, Copy URL's redaction, the banners' height, the
-                          launch guard, and the test-host check
+                          launch guard, compare's and the worktrees' wording and menu
+                          reasons, the sidebar filter, a linked worktree's watched paths
+                          and fingerprint, and the test-host check
 ```
 
 ## Debug launch hooks
@@ -857,7 +983,8 @@ GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app):
 `DebugLaunchHooks+Branches.swift`, `DebugLaunchHooks+Stash.swift`,
 `DebugLaunchHooks+Discard.swift`, `DebugLaunchHooks+Conflicts.swift`,
 `DebugLaunchHooks+Continue.swift`, `DebugLaunchHooks+History.swift`,
-`DebugLaunchHooks+RemoteAdmin.swift` and `DebugLaunchGuard.swift` exist only in Debug builds
+`DebugLaunchHooks+RemoteAdmin.swift`, `DebugLaunchHooks+Navigation.swift` and
+`DebugLaunchGuard.swift` exist only in Debug builds
 (`#if DEBUG`, compiled out of Release) and drive the UI from environment variables, read once at
 startup. They exist because the verification environment has Screen Recording but not
 Accessibility, so nothing outside the process can click — without these, a diff can never be put
@@ -871,9 +998,12 @@ with links resolved). Before this guard (B2, Ruling 15) the app reopened the las
 a script's steps ran against whatever had loaded — measured with a scratch stand-in: a script
 with no `GITTER_DEBUG_OPEN`, or whose own open failed, force-deleted a branch of the reopened
 repository. Each refusal is logged as `BRANCH_ACTION launch guard: refused: …`, and a refused
-launch then sits idle: quit it yourself. A launcher should still write `lastRepositoryPath` and
+launch then sits idle: quit it yourself. A scripted launch does not add the repositories it opens
+to Open Recent (B3, Ruling 7). A launcher should still write `lastRepositoryPath` and
 `autoFetchEnabled=false` (and read them back) before it starts the app, export the app's
-defaults first and restore them afterwards.
+defaults first and restore them afterwards, and pass `-ApplePersistenceIgnoreState YES`, so a
+launch that has to be killed — a refused one, or one whose quit a sheet held — cannot leave your
+saved window state restoring to no window (B3 Task 4, measured).
 
 | variable | effect |
 |---|---|
@@ -971,6 +1101,17 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `editurl:<remote>` / `confirmediturl[:<key>=<value>\|…]` | Edit URL…: the read, then the sheet — each configured URL as shown, the fields' starting text, the "git connects to" line, the several-URLs notes; and **act**: its Save with the fields as `prefill` keys say |
 | `renameremote:<remote>` / `confirmrenameremote:<new>` | Rename…'s sheet; and **act**: its button |
 | `removeremote:<remote>` / `confirmremoveremote[:<keep>]` | Remove…: the impact's read, then the sheet — every ref with its id, the stranded count, the keep defaults, each sentence about upstreams, push redirects and refs left behind; and **act**: its button, `<keep>` as for `confirmprune` |
+| `filter:<text>` / `sidebar` | set the sidebar filter's text as typing would (`filter:` empties it), and log every section the sidebar draws after it — each remote group and whether it is expanded, "No matches", and the count VoiceOver hears |
+| `worktrees` / `worktreemenu` / `pills` | log every worktree row (folder, branch line, marks and their tooltips, the changes read, this window's path and both titles — and the window number a window-scoped `screencapture -l` needs, since the snapshot cannot draw the sidebar); every worktree menu and every branch's held icon with Switch, Delete and Fast-Forward and their reasons; every "worktree:" pill |
+| `openworktree:<folder>` | Open Worktree on that row, then the root and the titles. The launch guard refuses every step after it — another repository is open — so the launcher ends the app |
+| `watchloads:<seconds>` | for that long, one line per finished snapshot load (HEAD, files, stashes, every branch's tip) — how a terminal's change in a linked worktree is checked against git |
+| `comparewith:<full ref>` / `compare:<a>:<b>` | "Compare with "<current>"" on that branch, or a comparison of two full refs; then `comparestate`: the bar and its buttons, the moved line, the changes row, each group with its count and listed ids, the header, the selection, the files |
+| `comparesheet` / `comparefilter:<text>` / `confirmcompare:<a>:<b>` | Compare Branches…'s presets and options, the options a filter leaves, and its Compare with those refs |
+| `compareselect:<id\|changes>` / `comparepath:<path>` / `compareswap` / `comparerefresh` / `comparedone` / `comparemenu` / `comparecopy:<id>` | click a commit or the changes row, a file of the changes; Swap, Refresh, Done; log every branch's compare items with their reasons; Copy Commit ID onto a private pasteboard, read back |
+| `sidebarclick:<branch>` / `reload` | a sidebar branch row's click (which ends compare mode); a snapshot load, as the watcher would start one |
+| `addworktree[:<b>]` / `folderproblem:<path>` / `confirmaddworktree:existing:<b>:<path>` (or `new:<name>:<start>:<path>`, `tracking:<name>:<remote ref>:<path>`) | Add Worktree… and what it offers; the folder field's live check for that text; and **acts**: its Add with that choice — the harness cannot use the sheet's controls — then the notice or banner and the worktree list |
+| `removeworktree:<folder>` / `removeworktreestart:<folder>` / `removeallmissing` / `worktreesheet` / `confirmremoveworktree[:none\|:<name>]` | Remove Worktree… (after the check, or at once so the progress state can be shot), Remove All Missing…, the sheet's every line; and **acts**: its button with the keep boxes as they start, none, or the one kept as `<name>` |
+| `noticeopen` | the sticky notice's **Open** after an add; the launch guard then refuses the rest |
 | `tags` | log every tag row as the sidebar draws it (icon, tooltip, VoiceOver), its menu with the reasons, the deleted tags' rows, and each commit's pills beside `%D` — the snapshot cannot draw the sidebar |
 
 A step that starts network work waits for the lane to free as well, for up to 120 seconds; a
@@ -1045,10 +1186,15 @@ gone, pushes and fast-forwards a branch that is not checked out, sets, changes a
 upstream, and adds, renames, re-points and removes remotes — a half-done rename or removal read
 back and worded with how to finish.
 
-Next up (milestone B3): navigation — branch search and filter, comparing two branches, worktrees.
+Finds its way around (milestone B3): filters the sidebar's branches and tags as you type,
+compares two branches — the commits only on each side and the changes one brings, from ids read
+once — and lists, opens, adds and removes worktrees, a removal only behind Gitter's own check of
+what git would delete, made again before git runs.
+
 Everything wanted and deliberately deferred is kept in [`docs/BACKLOG.md`](docs/BACKLOG.md), with
 what is already known about each item — including what only a person at the keyboard can still
 check (real HTTPS and ssh credentials, the menus, tooltips, VoiceOver, the Trash's Put Back in
 Finder, the resolver in both appearances, a real rebase of a branch of yours, a tag pushed to and
-deleted from your own remote, and a prune, an Edit URL with your own `insteadOf` rules, a rename
-and a removal on a real repository).
+deleted from your own remote, a prune, an Edit URL with your own `insteadOf` rules, a rename
+and a removal on a real repository, and real worktrees — with LFS, and with a large ignored
+`node_modules/` — and a comparison on a large real history).
