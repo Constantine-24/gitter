@@ -751,6 +751,13 @@ extension WorktreeWording {
         case .unreadable(let path):
             return "Gitter couldn't read \(displayPath(path)), so it can't tell what removing would lose. Check its "
                 + "permissions."
+        case .perWorktreeRefs(let refs):
+            let more = refs.count >= WorktreeRemovalRefusal.pathLimit ? " or more" : ""
+            return refs.count == 1 && more.isEmpty
+                ? "The ref \(quoted(refs)) lives only in this worktree, and removing would delete it with any commit "
+                    + "only it holds. Copy it to a branch or delete it there in Terminal first."
+                : "The refs \(quoted(refs))\(more) live only in this worktree, and removing would delete them with any "
+                    + "commit only they hold. Copy them to branches or delete them there in Terminal first."
         }
     }
 
@@ -823,8 +830,10 @@ extension WorktreeWording {
                 + "removed; \(names) \(kept.count == 1 ? "stays" : "stay")."
         case WorktreeRemovalPartial.refusedByGit(let words, let kept):
             let said = RemoteWording.plain(words)
+            // Still listed: git stopped before deleting anything. A deletion that fails part-way has
+            // already taken the worktree off the list (`removedWithLeftovers`).
             return "git refused to remove the worktree at \(at)\(said.isEmpty ? "" : ": \(said)"). It is still listed, "
-                + "but git checks as it deletes, so some files may be gone — look in the folder." + keptStay(kept)
+                + "so git stopped before deleting anything: nothing was removed." + keptStay(kept)
         case WorktreeRemovalPartial.removedWithLeftovers(let words, let kept):
             let said = RemoteWording.plain(words)
             return "git took the worktree at \(at) off its list but did not finish deleting its folder"

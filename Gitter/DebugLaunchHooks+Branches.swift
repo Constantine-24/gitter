@@ -181,6 +181,9 @@
                     log("launch guard: \(refusal); step \(step) and the rest not run")
                     return
                 }
+                // The worktree state is read after a snapshot lands, in its own task (B3 final
+                // review, I2): a step acts on, and logs, the state that snapshot's read gives.
+                _ = await wait({ !store.isReadingWorktreeState }, seconds: 60)
                 log("step: \(step)")
                 let text = String(step)
                 // An automatic fetch does not count: the user's network actions stop it and go

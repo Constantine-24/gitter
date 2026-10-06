@@ -1,3 +1,4 @@
+import Foundation
 import GitCore
 import Testing
 
@@ -132,5 +133,61 @@ import Testing
         #expect(
             WorktreeWording.holderSymbol(.operation(path: "/r/a", kind: .rebase, missing: false))
                 == "arrow.triangle.2.circlepath")
+    }
+}
+
+/// B3 final review, T3 m1: a branch another worktree holds is refused with the held reason, as
+/// Gitter's banner, before `perform` runs anything — before the operation gate, the detached-HEAD
+/// question and git — whichever way the switch is asked for: the row's double-click (which has no
+/// disabled state to show the reason), the menu, the toolbar, or Stash and Continue's retry. No
+/// repository is open, so nothing past the refusal can run: a banner can only be the refusal's.
+@MainActor @Suite struct WorktreeHeldSwitchTests {
+    static let sha = "1111111111111111111111111111111111111111"
+
+    static func store() -> RepositoryStore {
+        let store = RepositoryStore()
+        store.setSnapshot(
+            RepoSnapshot(
+                root: URL(fileURLWithPath: "/nonexistent"),
+                status: WorkingCopyStatus(headSha: sha, branch: "main", upstream: nil, ahead: 0, behind: 0, files: []),
+                refs: RefCollection(
+                    localBranches: [
+                        Branch(name: "main", sha: sha, isHead: true, upstream: nil),
+                        Branch(name: "feat", sha: sha, isHead: false, upstream: nil, checkedOutAt: "/r/wt-feat"),
+                        Branch(name: "spare", sha: sha, isHead: false, upstream: nil),
+                    ],
+                    remoteBranches: [], tags: []),
+                commits: [], graph: []))
+        return store
+    }
+
+    static let reason = WorktreeWording.heldReason("feat", by: .checkedOut(path: "/r/wt-feat", missing: false))
+
+    @Test func aSwitchToABranchAnotherWorktreeHoldsIsRefusedWithItsReason() {
+        let store = Self.store()
+        #expect(store.switchBlockedReason(for: "feat") == Self.reason, "the menu's reason")
+
+        store.switchTo(branch: "feat")
+
+        #expect(store.lastError == Self.reason)
+        #expect(store.activeSheet == nil)
+        // The control: the gate `perform` had says nothing about another worktree.
+        withKnownIssue("the operation gate alone lets a held branch through") {
+            #expect(store.branchSwitchingBlockedReason != nil)
+        }
+    }
+
+    @Test func stashAndContinuesRetryIsRefusedTheSameWay() {
+        let store = Self.store()
+        store.retry(.switchTo("feat"))
+        #expect(store.lastError == Self.reason)
+        #expect(store.activeSheet == nil)
+    }
+
+    /// The baseline: a free branch puts up no banner (with no repository, `mutate` runs nothing).
+    @Test func aFreeBranchIsNotRefused() {
+        let store = Self.store()
+        store.switchTo(branch: "spare")
+        #expect(store.lastError == nil)
     }
 }

@@ -141,6 +141,14 @@ extension RepositoryStore {
     private func perform(
         _ action: PendingBranchAction, confirming warned: UnreferencedCommits? = nil
     ) {
+        // A branch another worktree holds (B3 final review, T3 m1): its menu item is off with this
+        // reason, but a double-click on its row has no disabled state, and a retry or a confirmed
+        // leave-detached arrive here too. Refused first, with the same sentence, before the
+        // detached-HEAD question — never a warning about commits for a switch git would refuse.
+        if case .switchTo(let branch) = action, let reason = worktreeHeldReason(branch) {
+            showStickyError(reason)
+            return
+        }
         if let reason = branchSwitchingBlockedReason {
             // Through `mutate` rather than straight into `lastError`: that is what makes the
             // message sticky against the reload the watcher is probably about to trigger, and

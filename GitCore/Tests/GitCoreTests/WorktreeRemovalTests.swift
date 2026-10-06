@@ -165,12 +165,17 @@ import Testing
 
         let removal = try await check(fixture, "wt")
 
-        #expect(removal.refusals == [.operationInProgress(operation)])
+        // A bisect's refs (`refs/bisect/…`) live only in the worktree too (final review, I1).
+        let bisectRefs = String(decoding: try await wt.git(["for-each-ref", "--format=%(refname)", "refs/bisect"]), as: UTF8.self)
+            .split(separator: "\n").map(String.init)
+        #expect(bisectRefs.isEmpty == (operation != "bisect"))
+        let ownRefs: [WorktreeRemovalRefusal] = bisectRefs.isEmpty ? [] : [.perWorktreeRefs(bisectRefs)]
+        #expect(removal.refusals == ownRefs + [.operationInProgress(operation)])
         #expect(removal.changes == WorktreeChanges.none, "nothing but the operation stops it")
         let git = try WorktreeLaunchLog()
         defer { git.cleanUp() }
         let error = await thrownError { _ = try await git.backend.removeWorktree(removal, keeping: [:], at: fixture.repo.root) }
-        #expect(error as? WorktreeRemovalRefusal == .operationInProgress(operation))
+        #expect(error as? WorktreeRemovalRefusal == removal.refusals.first)
         #expect(git.launches == [])
         #expect(fixture.exists("wt"))
         try await rawRemove(fixture, "wt")
@@ -563,6 +568,145 @@ import Testing
         #expect(try await fixture.isListed("wt"))
     }
 
+    // MARK: - Final review, I1: refs that live only in the worktree
+
+    /// A commit, then `refs/worktree/save` at it, then HEAD reset back: `<worktree>`'s precious
+    /// commit is held by nothing but that per-worktree ref. Returns the commit's id.
+    private func commitHeldOnlyByAWorktreeRef(_ wt: TestRepo) async throws -> String {
+        try wt.write("p.txt", "precious\n")
+        try await wt.commitAll("precious")
+        let precious = try await wt.headSha()
+        try await wt.git(["update-ref", "refs/worktree/save", precious])
+        try await wt.git(["reset", "-q", "--hard", "HEAD~1"])
+        return precious
+    }
+
+    /// Whether `fsck --unreachable --no-reflogs`, run in `repo`, calls `id` unreachable — P6's
+    /// measure (a branch's reflog in the common directory still names a commit reset away from).
+    /// Measured: run in main it does not see another worktree's own refs, so the baseline is
+    /// asked in the worktree itself, and the control, once it is gone, in main.
+    private func isUnreachable(_ id: String, in repo: TestRepo) async throws -> Bool {
+        let text = String(
+            decoding: try await repo.git(["fsck", "--unreachable", "--no-reflogs"], allowedExitCodes: [0, 1]),
+            as: UTF8.self)
+        return text.contains("unreachable commit \(id)")
+    }
+
+    /// A commit only `refs/worktree/save` holds — kept in the worktree's administrative directory,
+    /// which `remove` deletes — refuses the removal, on a branch and detached alike, naming the
+    /// ref; nothing is launched and nothing is stranded by HEAD (it is back where it began). The
+    /// control: raw git removes the worktree, and the commit is unreachable afterwards (P6).
+    @Test(arguments: [false, true])
+    func aCommitOnlyAWorktreesOwnRefHoldsIsRefused(detached: Bool) async throws {
+        let fixture = try await WorktreeFixture.make()
+        defer { fixture.cleanUp() }
+        if detached {
+            try await fixture.addRaw("wt", ["--detach", "main"])
+        } else {
+            try await fixture.addOnNewBranch("wt", "w")
+        }
+        let precious = try await commitHeldOnlyByAWorktreeRef(fixture.repo(at: "wt"))
+
+        let removal = try await check(fixture, "wt")
+
+        #expect(removal.refusals == [.perWorktreeRefs(["refs/worktree/save"])])
+        #expect(removal.stranded == .none)
+        let git = try WorktreeLaunchLog()
+        defer { git.cleanUp() }
+        let error = await thrownError { _ = try await git.backend.removeWorktree(removal, keeping: [:], at: fixture.repo.root) }
+        #expect(error as? WorktreeRemovalRefusal == .perWorktreeRefs(["refs/worktree/save"]))
+        #expect(git.launches == [])
+        #expect(try await fixture.isListed("wt"))
+        #expect(try await !isUnreachable(precious, in: fixture.repo(at: "wt")))
+
+        try await rawRemove(fixture, "wt")
+        #expect(try await !fixture.isListed("wt"))
+        let lost = try await isUnreachable(precious, in: fixture.repo)
+        withKnownIssue("git deletes the worktree's own refs, and the commit only they held is unreachable") {
+            #expect(!lost)
+        }
+    }
+
+    /// A missing worktree's refs are still in its administrative directory, read from the files:
+    /// refused the same way. The control: raw git takes it off the list and the commit is lost.
+    @Test func aMissingWorktreesOwnRefIsRefused() async throws {
+        let (fixture, wt) = try await fixtureWithWorktree()
+        defer { fixture.cleanUp() }
+        let precious = try await commitHeldOnlyByAWorktreeRef(wt)
+        #expect(try await !isUnreachable(precious, in: wt))
+        try FileManager.default.removeItem(atPath: fixture.path("wt"))
+
+        let removal = try await check(fixture, "wt")
+
+        #expect(removal.worktree.isMissing)
+        #expect(removal.refusals == [.perWorktreeRefs(["refs/worktree/save"])])
+        try await rawRemove(fixture, "wt")
+        #expect(try await !fixture.isListed("wt"))
+        let lost = try await isUnreachable(precious, in: fixture.repo)
+        withKnownIssue("git deletes a missing worktree's own refs too") {
+            #expect(!lost)
+        }
+    }
+
+    /// Every ref under the directory is named, sorted — a bisect's left behind beside the
+    /// worktree's own — and an empty folder git leaves after deleting one (`refs/worktree/`,
+    /// measured) holds nothing: deleted, the refusal goes.
+    @Test func everyWorktreeRefIsNamedAndAnEmptyFolderIsNot() async throws {
+        let (fixture, wt) = try await fixtureWithWorktree()
+        defer { fixture.cleanUp() }
+        let main = try await fixture.repo.revParse("refs/heads/main")
+        try await wt.git(["update-ref", "refs/worktree/b", main])
+        try await wt.git(["update-ref", "refs/worktree/a/deep", main])
+        try await wt.git(["update-ref", "refs/bisect/good-x", main])
+
+        #expect(try await check(fixture, "wt").refusals
+            == [.perWorktreeRefs(["refs/bisect/good-x", "refs/worktree/a/deep", "refs/worktree/b"])])
+
+        for ref in ["refs/worktree/b", "refs/worktree/a/deep", "refs/bisect/good-x"] {
+            try await wt.git(["update-ref", "-d", ref])
+        }
+        #expect(fixture.exists("main/.git/worktrees/wt/refs/worktree"), "git leaves the empty folder")
+        #expect(try await check(fixture, "wt").refusals == [])
+    }
+
+    /// A ref made after the check is a change since the sheet was drawn (RF1): nothing launched.
+    @Test func aWorktreeRefMadeAfterTheCheckIsChangedSinceShown() async throws {
+        let (fixture, wt) = try await fixtureWithWorktree()
+        defer { fixture.cleanUp() }
+        let removal = try await check(fixture, "wt")
+        #expect(removal.refusals == [])
+        try await wt.git(["update-ref", "refs/worktree/late", try await wt.headSha()])
+        let git = try WorktreeLaunchLog()
+        defer { git.cleanUp() }
+
+        let error = await thrownError { _ = try await git.backend.removeWorktree(removal, keeping: [:], at: fixture.repo.root) }
+
+        #expect(error as? WorktreeRemovalPartial == .changedSinceShown)
+        #expect(git.launches(startingWith: "worktree remove") == [])
+        #expect(try await fixture.isListed("wt"))
+    }
+
+    /// A reftable repository keeps a worktree's refs in tables Gitter does not read: refused as
+    /// unreadable, never "no refs" — its `refs/heads` placeholder is not taken for a ref either.
+    /// The control: raw git deletes the worktree's own ref there too.
+    @Test func aReftableRepositoryIsRefusedAsUnreadable() async throws {
+        let fixture = try await WorktreeFixture.make(reftable: true)
+        defer { fixture.cleanUp() }
+        try await fixture.addOnNewBranch("wt", "w")
+        let precious = try await commitHeldOnlyByAWorktreeRef(fixture.repo(at: "wt"))
+
+        let removal = try await check(fixture, "wt")
+
+        #expect(removal.refusals == [.unreadable(realPath(fixture.path("main")) + "/.git/worktrees/wt/reftable")])
+        #expect(try await !isUnreachable(precious, in: fixture.repo(at: "wt")))
+        try await rawRemove(fixture, "wt")
+        #expect(try await !fixture.isListed("wt"))
+        let lost = try await isUnreachable(precious, in: fixture.repo)
+        withKnownIssue("git deletes a reftable worktree's own refs too") {
+            #expect(!lost)
+        }
+    }
+
     // MARK: - Paths (R23)
 
     /// The one public path rule GitCore's checks and the app's live folder check share (fix round
@@ -650,6 +794,47 @@ import Testing
         try await rawRemove(fixture, "wt")
         withKnownIssue("git deletes an ignored file without asking (R21)") {
             #expect(fixture.exists("wt/important.log"))
+        }
+    }
+
+    /// RF1 for the stranded commits (final review, T2 m5b): a detached HEAD at a merge of `a1` and
+    /// `b1`, a branch `hold` at `a1` — the sheet lists the merge and `b1`. Then `hold` moves to
+    /// `b1`: the same HEAD, the same count, but `a1` is the commit lost now, which the sheet never
+    /// listed. Refused with nothing launched. The control: a count-only compare sees no change.
+    @Test func strandedCommitsSwappedForOthersOfTheSameCountAreChangedSinceShown() async throws {
+        let fixture = try await WorktreeFixture.make()
+        defer { fixture.cleanUp() }
+        try await fixture.addRaw("det", ["--detach", "main"])
+        let det = fixture.repo(at: "det")
+        try det.write("a.txt", "a\n")
+        try await det.commitAll("a1")
+        let a1 = try await det.headSha()
+        try await det.git(["checkout", "-q", "--detach", "main"])
+        try det.write("b.txt", "b\n")
+        try await det.commitAll("b1")
+        let b1 = try await det.headSha()
+        try await det.git(["merge", "-q", "--no-edit", a1])
+        let merge = try await det.headSha()
+        try await fixture.repo.git(["branch", "hold", a1])
+        let removal = try await check(fixture, "det")
+        #expect(Set(removal.stranded.commits.map(\.sha)) == [merge, b1])
+        #expect(removal.refusals == [])
+
+        try await fixture.repo.git(["branch", "-f", "hold", b1])
+        let git = try WorktreeLaunchLog()
+        defer { git.cleanUp() }
+
+        let error = await thrownError { _ = try await git.backend.removeWorktree(removal, keeping: [:], at: fixture.repo.root) }
+
+        #expect(error as? WorktreeRemovalPartial == .changedSinceShown)
+        #expect(git.launches(startingWith: "worktree remove") == [])
+        #expect(try await fixture.isListed("det"))
+
+        let now = try await check(fixture, "det")
+        #expect(Set(now.stranded.commits.map(\.sha)) == [merge, a1])
+        #expect(now.worktree == removal.worktree)
+        withKnownIssue("a count-only compare sees nothing changed") {
+            #expect(now.stranded.count != removal.stranded.count)
         }
     }
 

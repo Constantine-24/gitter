@@ -16,13 +16,14 @@ struct WorktreeFixture {
     let repo: TestRepo
     let backend = CLIGitBackend()
 
-    static func make() async throws -> WorktreeFixture {
+    /// `reftable`: the repository is made with `--ref-format=reftable` (B3 final review, I1).
+    static func make(reftable: Bool = false) async throws -> WorktreeFixture {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("gitter-wt-\(UUID().uuidString)", isDirectory: true)
         let root = base.appendingPathComponent("main", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let repo = TestRepo(root: root)
-        try await repo.git(["init", "-q", "-b", "main"])
+        try await repo.git(["init", "-q", "-b", "main"] + (reftable ? ["--ref-format=reftable"] : []))
         try await repo.git(["config", "user.email", "t@t"])
         try await repo.git(["config", "user.name", "Tester"])
         try await repo.git(["config", "commit.gpgsign", "false"])

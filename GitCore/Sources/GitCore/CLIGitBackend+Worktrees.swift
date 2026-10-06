@@ -122,6 +122,7 @@ extension CLIGitBackend: GitWorktreeBackend {
         var refusals: [WorktreeRemovalRefusal] = []
         if isOpenHere { refusals.append(.isOpenHere) }
         if let lock = current.lock { refusals.append(.locked(reason: lock.reason)) }
+        refusals += try await perWorktreeRefs(of: current, at: root)
         let stranded = try await strandedByRemoving(current, among: all, at: root)
 
         // No folder: nothing in it to lose, and nothing to read. A locked worktree whose folder
@@ -228,6 +229,56 @@ extension CLIGitBackend: GitWorktreeBackend {
         return operation.map { .operationInProgress($0) }
     }
 
+    /// Refs that live only in the worktree (B3 final review, I1): git keeps `refs/worktree/…`,
+    /// `refs/bisect/…` and `refs/rewritten/…` in its administrative directory,
+    /// `<common>/worktrees/<id>/refs/`, and `remove` deletes that directory, so a commit only one
+    /// of them holds is unreachable afterwards (measured, P6). Read from the files, as
+    /// `branchesHeld(in:)` reads a worktree's state, so a missing worktree is covered too. Fail
+    /// closed: no administrative directory found for the worktree is `.unreadable`.
+    private func perWorktreeRefs(of worktree: Worktree, at root: URL) async throws -> [WorktreeRemovalRefusal] {
+        let admin = try await worktreeAdministrativeDirectories(at: root).first { Self.samePath($0.path, worktree.path) }
+        guard let directory = admin?.directory else { return [.unreadable(worktree.path)] }
+        // `<common>/worktrees/<id>`, as `worktreeAdministrativeDirectories` builds it.
+        let common = directory.deletingLastPathComponent().deletingLastPathComponent()
+        return Self.perWorktreeRefs(in: directory, common: common).map { [$0] } ?? []
+    }
+
+    /// What the administrative directory `directory` holds under `refs/`: every entry that is
+    /// not a folder, as a full ref name (`refs/` + its path there), sorted, at most `pathLimit`,
+    /// as `.perWorktreeRefs`; nil when there is none. Measured (git 2.54): `worktree add` makes an
+    /// empty `refs/`, the refs are loose files `pack-refs --all` never packs, and deleting one
+    /// leaves its empty folder (`refs/worktree/`) — a folder holds nothing. A reftable repository
+    /// (`<common>/reftable`, or the worktree's own `reftable/`) keeps them in tables Gitter does
+    /// not read, beside a `refs/heads` placeholder file, so it refuses as `.unreadable`; so does
+    /// a `refs/` that cannot be listed.
+    static func perWorktreeRefs(in directory: URL, common: URL) -> WorktreeRemovalRefusal? {
+        for reftable in [directory.appendingPathComponent("reftable"), common.appendingPathComponent("reftable")]
+        where entryExists(reftable.path) {
+            return .unreadable(reftable.path)
+        }
+        let refs = directory.appendingPathComponent("refs", isDirectory: true)
+        guard entryExists(refs.path) else { return nil }
+        let failure = WalkFailure()
+        guard let enumerator = FileManager.default.enumerator(
+            at: refs, includingPropertiesForKeys: [.isDirectoryKey], options: [],
+            errorHandler: { url, _ in
+                failure.url = url
+                return false
+            })
+        else {
+            return .unreadable(refs.path)
+        }
+        var names: [String] = []
+        for case let url as URL in enumerator {
+            let isFolder = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard !isFolder, url.path.count > refs.path.count else { continue }
+            names.append("refs/" + url.path.dropFirst(refs.path.count + 1))
+        }
+        if let url = failure.url { return .unreadable(url.path) }
+        guard !names.isEmpty else { return nil }
+        return .perWorktreeRefs(Array(names.sorted().prefix(WorktreeRemovalRefusal.pathLimit)))
+    }
+
     /// Edits `status` cannot see (R21): index entries `ls-files -v` tags in lower case
     /// (assume-unchanged), and skip-worktree entries (`S`, `s`) whose file is present.
     private func hiddenEdits(in folder: URL) async throws -> [WorktreeRemovalRefusal] {
@@ -283,7 +334,8 @@ extension CLIGitBackend: GitWorktreeBackend {
             if visited > limit.entries || clock.now - start > deadline { return nested() + [.tooLargeToCheck] }
             guard url.lastPathComponent.caseInsensitiveCompare(".git") == .orderedSame else { continue }
             let isFile = (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) ?? false
-            // Only for a folder: called on a file, it skips the next folder's contents (measured).
+            // Only for what is not a regular file (a folder, or a link the walk does not follow):
+            // called on a file, it skips the next folder's contents (measured).
             if !isFile { enumerator.skipDescendants() }
             if enumerator.level == 1, isFile { continue }
             let parent = url.deletingLastPathComponent().path
@@ -390,8 +442,10 @@ extension CLIGitBackend: GitWorktreeBackend {
         let now = try await removalCheck(removal.worktree, at: root)
         guard now.worktree == removal.worktree, now.changes == removal.changes,
             // Every ignored entry, not their count (fix round 1, I1): one swapped for another is
-            // a file git would delete that the sheet never named.
-            now.ignored == removal.ignored, now.stranded.count == removal.stranded.count,
+            // a file git would delete that the sheet never named. The stranded commits likewise,
+            // whole (final review, T2 m5b): a branch moved between two of them keeps the count and
+            // strands a commit the sheet never listed.
+            now.ignored == removal.ignored, now.stranded == removal.stranded,
             now.refusals == removal.refusals
         else {
             throw WorktreeRemovalPartial.changedSinceShown

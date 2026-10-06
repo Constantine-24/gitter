@@ -134,8 +134,6 @@ extension RepositoryStore {
         setLoading(true)
         defer { setLoading(false) }
 
-        // The worktrees beside the snapshot, off the main actor (B3 Task 3): never a failure.
-        async let worktreeRead = Self.readWorktreeState(backend: backend, root: root)
         do {
             let newSnapshot = try await backend.snapshot(at: root)
             // The stop of the operation it shows, if any, read before either is written: the bar
@@ -145,12 +143,13 @@ extension RepositoryStore {
             // read shows nothing rather than failing the snapshot.
             let halted =
                 newSnapshot.status.operationInProgress == nil ? (try? await backend.haltedSequence(at: root)) ?? nil : nil
-            let worktreeState = await worktreeRead
             // The repository may have been switched (via `open`) while this snapshot was in
             // flight; a snapshot from before that must never overwrite the new state.
             guard generation == capturedGeneration else { return }
             setSnapshot(newSnapshot)
-            setWorktreeState(worktreeState)
+            // The worktrees after the snapshot, in their own read, never awaited here (B3 final
+            // review, I2): the state before stays until it lands. Never a failure (Task 3).
+            scheduleWorktreeStateRead()
             setOperationStop(stop, halted: halted)
             syncDraftWithOperation()
             // A mutation's own failure outranks the reload it provokes. git writes inside

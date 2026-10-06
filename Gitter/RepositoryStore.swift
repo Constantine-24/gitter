@@ -212,7 +212,8 @@ final class RepositoryStore {
     var sidebarFilter = ""
 
     /// The worktrees, their changes and this window's among them (B3, `RepositoryStore
-    /// +Worktrees`), read with every snapshot and written with it (`setWorktreeState`).
+    /// +Worktrees`), read after every snapshot and written when that read lands
+    /// (`scheduleWorktreeStateRead`, `setWorktreeState`).
     private(set) var worktreeState = WorktreeState()
 
     /// Two branches compared (B3, `RepositoryStore+Compare`): while set, the commit list column
@@ -241,6 +242,10 @@ final class RepositoryStore {
         func noteSnapshotLoad() {
             snapshotLoadCount += 1
         }
+
+        /// How many worktree states have been written, for the harness's `reloadtiming` (B3
+        /// final review, I2): the snapshot lands before the worktree state's own read.
+        private(set) var worktreeStateWrites = 0
 
         /// The harness's `autofetchfailed:<reason>` step, so the Fetch item's quiet mark can be
         /// drawn without waiting for a real automatic fetch to fail.
@@ -299,6 +304,12 @@ final class RepositoryStore {
     var conflictTask: Task<Void, Never>?
     // internal (not private), bookkeeping only, views must not touch this: used by +Compare.swift
     var compareTask: Task<Void, Never>?
+    /// The worktree state's read (B3 final review, I2), started after a snapshot lands and
+    /// cancelled by `open()`; `worktreeReadSchedule` says when one starts and whether it is written.
+    // internal (not private), bookkeeping only, views must not touch this: used by +Worktrees.swift
+    var worktreeReadTask: Task<Void, Never>?
+    // internal (not private), bookkeeping only, views must not touch this: used by +Worktrees.swift
+    var worktreeReadSchedule = WorktreeReadSchedule()
     /// The Remove Worktree sheet's check (B3 Task 5), cancelled when the sheet closes.
     // internal (not private), bookkeeping only, views must not touch this: used by +Worktrees.swift
     var worktreeCheckTask: Task<Void, Never>?
@@ -418,6 +429,10 @@ final class RepositoryStore {
         // are not this one's.
         sidebarFilter = ""
         worktreeState = WorktreeState()
+        // A worktree read in flight is the repository being left's (B3 final review, I2).
+        worktreeReadTask?.cancel()
+        worktreeReadTask = nil
+        worktreeReadSchedule.reset()
         // A comparison is of this repository's branches (B3): opening another ends it.
         comparison = nil
         comparisonFiles = nil
@@ -543,10 +558,13 @@ final class RepositoryStore {
         stagedRevertNotice = nil
     }
 
-    /// internal (not private(set) write): used by +Refresh.swift's `loadSnapshot()`, right after
-    /// `setSnapshot`, with the worktrees read for that snapshot.
+    /// internal (not private(set) write): used by +Worktrees.swift's `scheduleWorktreeStateRead()`,
+    /// when the worktrees read after a snapshot land (B3 final review, I2).
     func setWorktreeState(_ state: WorktreeState) {
         worktreeState = state
+        #if DEBUG
+            worktreeStateWrites += 1
+        #endif
     }
 
     /// Starts, replaces or (nil) ends the comparison; its files go with it.

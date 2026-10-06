@@ -194,6 +194,11 @@ public enum WorktreeRemovalRefusal: Error, Sendable, Hashable {
     /// The worktree holds more entries than Gitter walks (`WorktreeWalkLimit`), or the walk took
     /// too long: a repository inside it could not be ruled out.
     case tooLargeToCheck
+    /// Refs that live only in the worktree — `refs/worktree/…`, `refs/bisect/…`,
+    /// `refs/rewritten/…` — which git keeps in its administrative directory and `remove` deletes
+    /// with it, so a commit only they hold is unreachable afterwards (B3 final review, I1). Full
+    /// ref names, sorted, at most `pathLimit`.
+    case perWorktreeRefs([String])
     /// A folder or state file Gitter must read to make the check could not be read (B3 Task 2,
     /// carried note 4: unreadable is never "nothing there"). The path, as Gitter tried it.
     case unreadable(String)
@@ -236,7 +241,7 @@ public struct WorktreeRemoval: Sendable, Hashable {
 /// How far the nested-repository walk goes before it gives up and refuses (`.tooLargeToCheck`).
 /// Internal: the protocol's check always uses `standard`; tests lower it.
 struct WorktreeWalkLimit: Sendable, Hashable {
-    /// Entries visited, across every ignored folder.
+    /// Entries visited, across the whole worktree.
     let entries: Int
     /// Seconds since the walk began.
     let seconds: Double
@@ -283,15 +288,15 @@ public enum AddWorktreeResult: Sendable, Hashable {
 /// state as such, except `changedSinceShown`, which is thrown with nothing written.
 public enum WorktreeRemovalPartial: Error, Sendable, Hashable {
     /// The check made again just before git would run differs from the sheet's — HEAD, branch,
-    /// lock, changes, ignored count, stranded count or refusals — or the worktree is no longer
+    /// lock, changes, ignored entries, stranded commits or refusals — or the worktree is no longer
     /// listed. Nothing was created or removed.
     case changedSinceShown
     /// The kept branches `kept` were created, and then the removal could not go on (git could not
     /// be started, or a later kept branch failed): nothing was removed, and `kept` stay.
     case keptBranchesThenStopped(kept: [String], gitsWords: String)
-    /// git refused the removal and the worktree is still listed: git's own words. The kept
-    /// branches, created before git ran, stay. git checks as it deletes, so files may be gone —
-    /// read the worktree back.
+    /// git refused the removal and the worktree is still listed: git's own words. git stopped
+    /// before deleting anything — a deletion that fails part-way has already taken the worktree
+    /// off the list (`removedWithLeftovers`). The kept branches, created before git ran, stay.
     case refusedByGit(gitsWords: String, keptBranches: [String])
     /// git took the worktree out of `list` but did not finish: it exited non-zero, or its folder
     /// is still there (B3 Task 2 fix round 1, I3). Measured: `failed to delete '…': Directory not

@@ -31,6 +31,9 @@
     ///                          the app show (RF5).
     ///   firstresponder         the class of the key window's first responder (after ⌘F, through
     ///                          `menuitem:Edit:Filter Sidebar`).
+    ///   reloadtiming           a snapshot load, timed (B3 final review, I2): when `refresh()`
+    ///                          returned with the snapshot written, whether the worktree state was
+    ///                          then still the one before, and when its own read landed.
     ///
     /// B3 Task 4's compare steps. Each waits for the comparison's read and the detail it selects
     /// (files, then the diff of a selected file) before it logs, since none of them claims the
@@ -88,6 +91,7 @@
 
         static let navigationCommands: Set<String> = Set([
             "filter", "sidebar", "worktrees", "worktreemenu", "openworktree", "pills", "watchloads", "firstresponder",
+            "reloadtiming",
         ]).union(compareCommands).union(worktreeSheetCommands)
 
         private static let worktreeSheetCommands: Set<String> = [
@@ -145,6 +149,8 @@
             case "firstresponder":
                 let responder = NSApp.keyWindow?.firstResponder
                 log("firstresponder: \(responder.map { String(describing: type(of: $0)) } ?? "nil")")
+            case "reloadtiming":
+                await reloadTiming(store)
             case let compare where compareCommands.contains(compare):
                 await compareStep(command, rest: rest, store: store)
             case let sheet where worktreeSheetCommands.contains(sheet):
@@ -169,7 +175,7 @@
                 }
                 log("confirmaddworktree: \(choice) at \(flatten(path)) | sheet: \(describeWorktreeSheet(store.activeSheet) ?? "none")")
                 store.confirmAddWorktree(choice, path: path)
-                _ = await wait({ !store.isMutating }, seconds: 60)
+                _ = await wait({ !store.isMutating && !store.isReadingWorktreeState }, seconds: 60)
                 logOutcome(store)
             case "removeworktree", "removeworktreestart":
                 guard let worktree = worktree(rest, store) else { return log("\(command): no worktree \(rest)") }
@@ -247,11 +253,33 @@
             } else {
                 store.confirmRemoveMissingWorktrees(removals, keeping: keeping)
             }
-            _ = await wait({ !store.isMutating }, seconds: 60)
+            _ = await wait({ !store.isMutating && !store.isReadingWorktreeState }, seconds: 60)
             logOutcome(store)
         }
 
         /// The notices and banner after a write, and the worktrees git lists now.
+        /// `reloadtiming`: `refresh()` returns once its snapshot is written; the worktree state's
+        /// read, started then, lands later in its own task. Polled every 5 ms.
+        private static func reloadTiming(_ store: RepositoryStore) async {
+            let clock = ContinuousClock()
+            let writes = store.worktreeStateWrites
+            let loads = store.snapshotLoadCount
+            let start = clock.now
+            await store.refresh()
+            let snapshotAt = clock.now - start
+            let stateWasPrevious = store.worktreeStateWrites == writes
+            let reading = store.isReadingWorktreeState
+            while store.worktreeStateWrites == writes || store.isReadingWorktreeState, clock.now - start < .seconds(60) {
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+            let stateAt = clock.now - start
+            func ms(_ duration: Duration) -> Int { Int(duration / .milliseconds(1)) }
+            log("reloadtiming: \(store.snapshotLoadCount - loads) snapshot load landed after \(ms(snapshotAt)) ms | the "
+                + "worktree state then: \(stateWasPrevious ? "the previous one" : "already new"), its read in flight: "
+                + "\(reading) | the worktree state landed after \(ms(stateAt)) ms | worktrees: \(store.worktrees.count), "
+                + "changes read: \(store.worktreeChanges.count), unknown: \(store.worktreeState.unknownChanges.count)")
+        }
+
         private static func logOutcome(_ store: RepositoryStore) {
             let sticky = store.stickyNotice
             log("outcome notice: \(store.notice.map { flatten($0.text) } ?? "nil")")

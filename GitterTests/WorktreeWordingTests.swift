@@ -638,6 +638,15 @@ import Testing
             "It holds too many files for Gitter to check for repositories inside it. Remove it in Terminal after "
                 + "checking it yourself.")
         check(
+            .perWorktreeRefs(["refs/worktree/save"]),
+            "The ref \"refs/worktree/save\" lives only in this worktree, and removing would delete it with any "
+                + "commit only it holds. Copy it to a branch or delete it there in Terminal first.")
+        check(
+            .perWorktreeRefs(["refs/bisect/bad", "refs/worktree/a", "refs/worktree/b", "refs/worktree/c"]),
+            "The refs \"refs/bisect/bad\", \"refs/worktree/a\", \"refs/worktree/b\" and 1 more live only in this "
+                + "worktree, and removing would delete them with any commit only they hold. Copy them to branches or "
+                + "delete them there in Terminal first.")
+        check(
             .unreadable("/r/wt-feat/secret"),
             "Gitter couldn't read /r/wt-feat/secret, so it can't tell what removing would lose. Check its "
                 + "permissions.")
@@ -680,12 +689,12 @@ import Testing
         #expect(
             failure(WorktreeRemovalPartial.refusedByGit(gitsWords: "fatal: contains modified or untracked files", keptBranches: ["k"]))
                 == "git refused to remove the worktree at /r/wt-det: fatal: contains modified or untracked files. It "
-                + "is still listed, but git checks as it deletes, so some files may be gone — look in the folder. "
-                + "The kept branch \"k\" stays.")
+                + "is still listed, so git stopped before deleting anything: nothing was removed. The kept branch "
+                + "\"k\" stays.")
         #expect(
             failure(WorktreeRemovalPartial.refusedByGit(gitsWords: "", keptBranches: []))
-                == "git refused to remove the worktree at /r/wt-det. It is still listed, but git checks as it "
-                + "deletes, so some files may be gone — look in the folder.")
+                == "git refused to remove the worktree at /r/wt-det. It is still listed, so git stopped before "
+                + "deleting anything: nothing was removed.")
         #expect(
             failure(WorktreeRemovalPartial.removedWithLeftovers(gitsWords: "failed to delete 'x'", keptBranches: ["k", "k2"]))
                 == "git took the worktree at /r/wt-det off its list but did not finish deleting its folder: failed "

@@ -2,8 +2,8 @@ import AppKit
 import Foundation
 import GitCore
 
-/// What the store knows about the repository's worktrees (B3 Task 3), read with every snapshot
-/// (`RepositoryStore.readWorktreeState`) and written with it.
+/// What the store knows about the repository's worktrees (B3 Task 3), read after every snapshot
+/// (`RepositoryStore.readWorktreeState`) and written when that read lands (final review, I2).
 struct WorktreeState: Hashable, Sendable {
     /// `worktree list --porcelain -z`, the main worktree first (R13).
     var worktrees: [Worktree] = []
@@ -21,6 +21,57 @@ struct WorktreeState: Hashable, Sendable {
 
     /// How many linked worktrees' changes are read with each refresh, in parallel.
     static let changesLimit = 20
+}
+
+/// When the worktree state is read (B3 final review, I2): in its own task, after the snapshot has
+/// landed, never awaited by it — up to 20 `status` runs in other worktrees took 1.5–2.3 s on a
+/// 60 000-file repository with 8 of them, and every stage, commit and reload waited for that. The
+/// state before stays on screen until the new one arrives.
+///
+/// One read at a time. A request while one runs is kept, and runs once that one lands: the
+/// watcher reloads every 300 ms at most, and cancelling the read in flight each time would starve
+/// it. A read is written only for the generation it was started under, and `open()` resets the
+/// schedule, so a read for the repository being left is never written (its task is cancelled).
+struct WorktreeReadSchedule: Hashable, Sendable {
+    struct Outcome: Hashable, Sendable {
+        /// Write the state that was read.
+        let write: Bool
+        /// Then start another read: one was asked for while this one ran.
+        let again: Bool
+    }
+
+    /// The generation the read in flight was started under; nil when none is.
+    private var inFlight: Int?
+    /// Another read was asked for while this one ran.
+    private var pending = false
+
+    var isReading: Bool { inFlight != nil }
+
+    /// A read is wanted under `generation`: true when it starts now; false when one is running,
+    /// which is then followed by one more.
+    mutating func request(generation: Int) -> Bool {
+        guard inFlight == nil else {
+            pending = true
+            return false
+        }
+        inFlight = generation
+        pending = false
+        return true
+    }
+
+    /// The read started under `generation` came back while the store is at `current`.
+    mutating func finish(generation: Int, current: Int) -> Outcome {
+        guard inFlight == generation, generation == current else { return Outcome(write: false, again: false) }
+        inFlight = nil
+        defer { pending = false }
+        return Outcome(write: true, again: pending)
+    }
+
+    /// `open()`: nothing in flight is this repository's.
+    mutating func reset() {
+        inFlight = nil
+        pending = false
+    }
 }
 
 extension WorktreeOperationKind {
@@ -143,7 +194,29 @@ extension RepositoryStore {
 
     // MARK: - Reading
 
-    /// The worktree state for `root`, read off the main actor with each snapshot: the list, then
+    /// Reads the worktree state for the snapshot that has just landed, in its own task off the
+    /// main actor, and writes it when it arrives (`WorktreeReadSchedule`); the state before stays
+    /// until then. Called by `loadSnapshot()` after the snapshot is written.
+    func scheduleWorktreeStateRead() {
+        guard let root else { return }
+        let generation = self.generation
+        guard worktreeReadSchedule.request(generation: generation) else { return }
+        let backend = self.backend
+        worktreeReadTask = Task { [weak self] in
+            let state = await Self.readWorktreeState(backend: backend, root: root)
+            guard let self else { return }
+            let outcome = self.worktreeReadSchedule.finish(generation: generation, current: self.generation)
+            guard outcome.write, !Task.isCancelled else { return }
+            self.worktreeReadTask = nil
+            self.setWorktreeState(state)
+            if outcome.again { self.scheduleWorktreeStateRead() }
+        }
+    }
+
+    /// Whether a worktree state read is running (the harness waits for it before a step).
+    var isReadingWorktreeState: Bool { worktreeReadSchedule.isReading }
+
+    /// The worktree state for `root`, read off the main actor after each snapshot: the list, then
     /// — in parallel — the changes of at most `WorktreeState.changesLimit` linked worktrees whose
     /// folder is there, and the operation holding any worktree's branches. A list that cannot be
     /// read is an empty state (no section, no marks) and a changes read that fails is "changes
@@ -354,12 +427,31 @@ extension RepositoryStore {
     }
 
     /// The add notice's Open: this window switches to the worktree, if it is still listed.
+    /// The list is read after the add's snapshot lands (B3 final review, I2), so a click before
+    /// that read is in waits for it — and any read queued behind it — before "not listed".
     func openAddedWorktree(_ path: String) {
-        guard let worktree = worktrees.first(where: { $0.path == path }) else {
+        if let worktree = worktrees.first(where: { $0.path == path }) {
+            openWorktree(worktree)
+            return
+        }
+        guard isReadingWorktreeState else {
             showStickyError(WorktreeWording.notListedAnyMore(path))
             return
         }
-        openWorktree(worktree)
+        let generation = self.generation
+        Task { [weak self] in
+            while let self, self.generation == generation, self.isReadingWorktreeState,
+                !self.worktrees.contains(where: { $0.path == path }), let reading = self.worktreeReadTask
+            {
+                await reading.value
+            }
+            guard let self, self.generation == generation else { return }
+            guard let worktree = self.worktrees.first(where: { $0.path == path }) else {
+                self.showStickyError(WorktreeWording.notListedAnyMore(path))
+                return
+            }
+            self.openWorktree(worktree)
+        }
     }
 
     // MARK: - Remove Worktree
