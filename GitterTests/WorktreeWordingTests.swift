@@ -446,7 +446,8 @@ import Testing
     /// Ruling 3: a branch created, then no worktree.
     @Test func everyAddFailureSaysWhatWasLeft() {
         func failure(_ error: Error, _ choice: AddWorktreeChoice = .existing("feat"), created: Bool = false) -> String {
-            WorktreeWording.addFailure(error, choice: choice, path: "/r/main-feat", branchCreated: created)
+            WorktreeWording.addFailure(
+                error, choice: choice, path: "/r/main-feat", branchCreated: created, upstreamProblem: nil)
         }
         #expect(
             failure(AddWorktreeRefusal.noSuchBranch("feat"))
@@ -495,6 +496,19 @@ import Testing
                 == "The worktree at /r/main-feat is no longer listed, so there is nothing to open.")
     }
 
+    /// Fix round 1 (M1): a tracking branch created, its upstream not set, then no worktree — both
+    /// partial states are said.
+    @Test func aTrackingAddThatFailedAfterItsUpstreamDidNotSaysBoth() {
+        #expect(
+            WorktreeWording.addFailure(
+                AddWorktreeRefusal.pathExists("/r/main-strayx"), choice: .tracking(name: "strayx", remote: Self.remoteTip),
+                path: "/r/main-strayx", branchCreated: true,
+                upstreamProblem: "\"stray/x\" is not a branch a remote fetches into")
+                == "Something is at /r/main-strayx now, so no worktree was added. Choose a folder that doesn't exist "
+                + "yet, or an empty one. The branch \"strayx\" was created first and stays. Setting its upstream did "
+                + "not work either: \"stray/x\" is not a branch a remote fetches into.")
+    }
+
     @Test func aBranchThatCouldNotBeCreated() {
         #expect(
             WorktreeWording.branchNotCreated(BranchOperationError.branchExists("x"), name: "x")
@@ -527,16 +541,17 @@ import Testing
 
     @Test func theIgnoredEntriesGitDeletesWithIt() {
         #expect(
-            WorktreeWording.ignoredLine(IgnoredSummary(count: 1, topLevel: ["build/"]))
-                == "git also deletes 1 ignored entry with it — files git doesn't track, which it removes without "
-                + "asking: build/")
+            WorktreeWording.ignoredLine(IgnoredSummary(entries: ["build/"]))
+                == "git also deletes 1 ignored entry with it — files and folders git doesn't track, each folder "
+                + "with everything in it — without asking: build/")
         #expect(
-            WorktreeWording.ignoredLine(IgnoredSummary(count: 5, topLevel: ["build/", "debug.log", "sub/"]))
-                == "git also deletes 5 ignored entries with it — files git doesn't track, which it removes without "
-                + "asking: build/, debug.log, sub/")
-        let ten = (1...10).map { "d\($0)/" }
+            WorktreeWording.ignoredLine(
+                IgnoredSummary(entries: ["build/", "debug.log", "sub/a.log", "sub/b.log", "sub/c/d.log"]))
+                == "git also deletes 5 ignored entries with it — files and folders git doesn't track, each folder "
+                + "with everything in it — without asking: build/, debug.log, sub/")
+        let forty = (1...40).map { "d\($0)/x.log" }
         #expect(
-            WorktreeWording.ignoredLine(IgnoredSummary(count: 40, topLevel: ten))?.hasSuffix("d9/, d10/, …") == true)
+            WorktreeWording.ignoredLine(IgnoredSummary(entries: forty))?.hasSuffix("d9/, d10/, …") == true)
     }
 
     /// R22: a detached HEAD's own commits, and the keep box's words.
@@ -635,7 +650,7 @@ import Testing
             WorktreeWording.removed(Self.removal(Self.feat), kept: [])
                 == "Removed the worktree at /r/wt-feat. The branch \"feat\" stays.")
         #expect(
-            WorktreeWording.removed(Self.removal(Self.feat, ignored: IgnoredSummary(count: 3, topLevel: ["b/"])), kept: [])
+            WorktreeWording.removed(Self.removal(Self.feat, ignored: IgnoredSummary(entries: ["b/", "x.log", "y.log"])), kept: [])
                 == "Removed the worktree at /r/wt-feat, with the 3 ignored entries in it. The branch \"feat\" stays.")
         #expect(
             WorktreeWording.removed(

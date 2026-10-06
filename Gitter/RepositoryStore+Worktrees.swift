@@ -269,7 +269,7 @@ extension RepositoryStore {
     }
 
     /// The folder field's live check, read off the main actor: what is at the path, and which
-    /// listed worktree holds it, both sides by real path (R23).
+    /// listed worktree holds it, both sides by real path (R23, GitCore's `WorktreePaths`).
     func worktreeFolderProblem(_ text: String) async -> String? {
         let path = WorktreeWording.normalizedFolder(text)
         let listed = worktrees.map(\.path)
@@ -279,7 +279,7 @@ extension RepositoryStore {
     nonisolated static func folderProblem(_ path: String, listed: [String]) -> String? {
         guard path.hasPrefix("/") else { return WorktreeWording.folderProblem(path, state: .missing, insideWorktree: nil) }
         let inside = WorktreeWording.containingWorktree(
-            resolvedPath(path), in: listed.map { (path: $0, resolved: resolvedPath($0)) })
+            WorktreePaths.resolved(path), in: listed.map { (path: $0, resolved: WorktreePaths.resolved($0)) })
         return WorktreeWording.folderProblem(path, state: folderState(path), insideWorktree: inside)
     }
 
@@ -291,24 +291,6 @@ extension RepositoryStore {
         guard type == .typeDirectory else { return .notAFolder }
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: path) else { return .unreadable }
         return names.isEmpty ? .empty : .notEmpty
-    }
-
-    /// `path` as git compares it (R23): `..` and `.` taken out, then the deepest part that exists
-    /// resolved with `realpath(3)` and the rest put back — GitCore's rule for a path that may
-    /// not exist yet.
-    nonisolated static func resolvedPath(_ path: String) -> String {
-        var url = URL(fileURLWithPath: path).standardizedFileURL
-        var rest: [String] = []
-        while true {
-            if let real = realpath(url.path, nil) {
-                defer { free(real) }
-                let head = String(cString: real)
-                return rest.isEmpty ? head : (head == "/" ? "" : head) + "/" + rest.joined(separator: "/")
-            }
-            guard url.path != "/", !url.path.isEmpty else { return path }
-            rest.insert(url.lastPathComponent, at: 0)
-            url.deleteLastPathComponent()
-        }
     }
 
     /// Adds the worktree the Add sheet describes — only as the answer to that sheet. A branch is
@@ -355,7 +337,9 @@ extension RepositoryStore {
             result = try await backend.addWorktree(path: path, branch: choice.branch, at: root)
         } catch {
             throw RemoteBannerText(
-                WorktreeWording.addFailure(error, choice: choice, path: path, branchCreated: choice.createsBranch))
+                WorktreeWording.addFailure(
+                    error, choice: choice, path: path, branchCreated: choice.createsBranch,
+                    upstreamProblem: upstreamProblem))
         }
         return WorktreeWording.added(result, choice: choice, upstreamProblem: upstreamProblem)
     }

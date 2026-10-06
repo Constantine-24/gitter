@@ -154,7 +154,7 @@ extension CLIGitBackend: GitWorktreeBackend {
         var unique: [WorktreeRemovalRefusal] = []
         for refusal in refusals where !unique.contains(refusal) { unique.append(refusal) }
         return WorktreeRemoval(
-            worktree: current, changes: status.changes, ignored: Self.ignoredSummary(status.ignored),
+            worktree: current, changes: status.changes, ignored: IgnoredSummary(entries: status.ignored),
             stranded: stranded, refusals: unique)
     }
 
@@ -298,17 +298,6 @@ extension CLIGitBackend: GitWorktreeBackend {
         var url: URL?
     }
 
-    /// `status --ignored=matching`'s entries: how many, and their distinct first components.
-    static func ignoredSummary(_ ignored: [String]) -> IgnoredSummary {
-        var top: [String] = []
-        for path in ignored {
-            let name = path.firstIndex(of: "/").map { String(path[...$0]) } ?? path
-            if !top.contains(name) { top.append(name) }
-            if top.count == IgnoredSummary.topLevelLimit { break }
-        }
-        return IgnoredSummary(count: ignored.count, topLevel: top)
-    }
-
     /// A detached worktree's own commits (R22): those its HEAD reaches and no branch, tag,
     /// remote-tracking ref or **other** worktree's HEAD does — B2's union (`StrandedHolders`, its
     /// symbolic-ref excludes included), with this HEAD left out of the holders, since `--all` and
@@ -339,8 +328,8 @@ extension CLIGitBackend: GitWorktreeBackend {
         if Self.entryExists(path), !Self.isEmptyFolder(path) { throw AddWorktreeRefusal.pathExists(path) }
 
         let listed = try await listedWorktrees(at: root)
-        let target = Self.resolvedPath(path)
-        if listed.contains(where: { Self.isInside(target, Self.resolvedPath($0.path)) }) {
+        let target = WorktreePaths.resolved(path)
+        if listed.contains(where: { WorktreePaths.isInside(target, WorktreePaths.resolved($0.path)) }) {
             throw AddWorktreeRefusal.pathInsideWorktree(path)
         }
         if let using = listed.first(where: { $0.branch == "refs/heads/\(branch)" }) {
@@ -400,7 +389,9 @@ extension CLIGitBackend: GitWorktreeBackend {
         // The sheet's state, again, just before anything is written (RF1).
         let now = try await removalCheck(removal.worktree, at: root)
         guard now.worktree == removal.worktree, now.changes == removal.changes,
-            now.ignored.count == removal.ignored.count, now.stranded.count == removal.stranded.count,
+            // Every ignored entry, not their count (fix round 1, I1): one swapped for another is
+            // a file git would delete that the sheet never named.
+            now.ignored == removal.ignored, now.stranded.count == removal.stranded.count,
             now.refusals == removal.refusals
         else {
             throw WorktreeRemovalPartial.changedSinceShown
@@ -473,31 +464,9 @@ extension CLIGitBackend: GitWorktreeBackend {
 
     // MARK: - Paths (R23)
 
-    /// The same file system object by git's rule: equal, or equal once both are resolved.
+    /// The same file system object by git's rule (`WorktreePaths.same`).
     static func samePath(_ a: String, _ b: String) -> Bool {
-        a == b || resolvedPath(a) == resolvedPath(b)
-    }
-
-    /// `path` as git compares it: `..` and `.` taken out, then the deepest part that exists
-    /// resolved with `realpath(3)` (`/var` → `/private/var`, links followed) and the rest put back.
-    static func resolvedPath(_ path: String) -> String {
-        var url = URL(fileURLWithPath: path).standardizedFileURL
-        var rest: [String] = []
-        while true {
-            if let real = realpath(url.path, nil) {
-                defer { free(real) }
-                let head = String(cString: real)
-                return rest.isEmpty ? head : (head == "/" ? "" : head) + "/" + rest.joined(separator: "/")
-            }
-            guard url.path != "/", !url.path.isEmpty else { return path }
-            rest.insert(url.lastPathComponent, at: 0)
-            url.deleteLastPathComponent()
-        }
-    }
-
-    /// `path` is `folder` or inside it; both resolved.
-    static func isInside(_ path: String, _ folder: String) -> Bool {
-        path == folder || path.hasPrefix(folder.hasSuffix("/") ? folder : folder + "/")
+        WorktreePaths.same(a, b)
     }
 
     /// Something is at `path` — a file, a folder or a link, dangling or not (`lstat`).

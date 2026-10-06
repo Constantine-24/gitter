@@ -568,8 +568,11 @@ extension WorktreeWording {
     }
 
     /// An add that threw: nothing is listed at the path. A branch created first stays, and is
-    /// named (Ruling 3).
-    static func addFailure(_ error: Error, choice: AddWorktreeChoice, path: String, branchCreated: Bool) -> String {
+    /// named (Ruling 3) — and a tracking branch whose upstream was not set says so too (fix round
+    /// 1, M1).
+    static func addFailure(
+        _ error: Error, choice: AddWorktreeChoice, path: String, branchCreated: Bool, upstreamProblem: String?
+    ) -> String {
         let branch = choice.branch
         let at = displayPath(path)
         let text: String
@@ -593,7 +596,9 @@ extension WorktreeWording {
         default:
             text = RemoteWording.failure(error, attempt: "add a worktree at \(at)", isWrite: false)
         }
-        return branchCreated ? text + " The branch \"\(branch)\" was created first and stays." : text
+        let created = branchCreated ? " The branch \"\(branch)\" was created first and stays." : ""
+        let upstream = upstreamProblem.map { " Setting its upstream did not work either: \($0)." } ?? ""
+        return text + created + upstream
     }
 
     /// The add notice's Open, for a worktree no longer listed.
@@ -663,13 +668,15 @@ extension WorktreeWording {
         }
     }
 
-    /// R21: what git's remove deletes without asking — the count, and the top names.
+    /// R21: what git's remove deletes without asking — the count, and the top names. An ignored
+    /// folder is one entry and goes with everything in it, which the sentence says.
     static func ignoredLine(_ ignored: IgnoredSummary) -> String? {
         guard ignored.count > 0 else { return nil }
         let entries = ignored.count == 1 ? "1 ignored entry" : "\(ignored.count) ignored entries"
         let names = ignored.topLevel.map(displayPath).joined(separator: ", ")
             + (ignored.topLevel.count >= IgnoredSummary.topLevelLimit ? ", …" : "")
-        return "git also deletes \(entries) with it — files git doesn't track, which it removes without asking: \(names)"
+        return "git also deletes \(entries) with it — files and folders git doesn't track, each folder with "
+            + "everything in it — without asking: \(names)"
     }
 
     /// Ruling 1 for a worktree: its folder's name made a branch name, then `-kept`, `-kept-2`, …

@@ -45,7 +45,9 @@ import Testing
 
         #expect(removal.refusals == [])
         #expect(removal.changes == WorktreeChanges.none)
-        #expect(removal.ignored == IgnoredSummary(count: 2, topLevel: [".build/", "a.log"]))
+        #expect(removal.ignored == IgnoredSummary(entries: [".build/", "a.log"]))
+        #expect(removal.ignored.count == 2)
+        #expect(removal.ignored.topLevel == [".build/", "a.log"])
         #expect(removal.stranded == .none)
         #expect(removal.worktree.path == fixture.listedPath("wt"))
 
@@ -78,6 +80,9 @@ import Testing
         let removal = try await check(fixture, "wt")
 
         #expect(removal.ignored.count == 13)
+        // Every entry is kept, not only the ten names shown (fix round 1, I1).
+        #expect(removal.ignored.entries.count == 13)
+        #expect(removal.ignored.entries.contains("d11/x.log"))
         #expect(removal.ignored.topLevel == ["d0/", "d1/", "d10/", "d11/", "d2/", "d3/", "d4/", "d5/", "d6/", "d7/"])
         #expect(removal.refusals == [])
     }
@@ -236,7 +241,7 @@ import Testing
         let removal = try await check(fixture, "wt")
 
         #expect(removal.changes == WorktreeChanges.none)
-        #expect(removal.ignored == IgnoredSummary(count: 1, topLevel: ["build/"]))
+        #expect(removal.ignored == IgnoredSummary(entries: ["build/"]))
         #expect(removal.refusals == [.nestedRepository(["build/inner"])])
         try await rawRemove(fixture, "wt")
         withKnownIssue("git deletes a repository nested in an ignored folder (R21)") {
@@ -558,6 +563,25 @@ import Testing
         #expect(try await fixture.isListed("wt"))
     }
 
+    // MARK: - Paths (R23)
+
+    /// The one public path rule GitCore's checks and the app's live folder check share (fix round
+    /// 1, I2): `/var` is `/private/var`, a path that does not exist yet keeps its missing tail, `..`
+    /// is taken out, and inside means the folder or below it — never a sibling sharing a prefix.
+    @Test func worktreePathsResolveAsGitDoes() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("wp-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let real = WorktreePaths.resolved(base.path)
+        #expect(WorktreePaths.resolved(base.path + "/not/yet") == real + "/not/yet")
+        #expect(WorktreePaths.resolved(base.path + "/a/../b") == real + "/b")
+        #expect(WorktreePaths.resolved("/var") == "/private/var")
+        #expect(WorktreePaths.same("/var/x-missing", "/private/var/x-missing"))
+        #expect(WorktreePaths.isInside(real + "/wt/sub", real + "/wt"))
+        #expect(WorktreePaths.isInside(real + "/wt", real + "/wt"))
+        #expect(!WorktreePaths.isInside(real + "/wt-feat", real + "/wt"))
+    }
+
     // MARK: - RF1: changed since the sheet was drawn
 
     /// A commit, a lock or a rebase made after the check: the removal is refused with nothing
@@ -591,6 +615,42 @@ import Testing
         #expect(git.launches(startingWith: "worktree remove") == [])
         #expect(try await fixture.isListed("wt"))
         #expect(fixture.exists("wt/o.txt"))
+    }
+
+    /// RF1 for ignored entries (fix round 1, I1): the sheet named `debug.log`; before the confirm
+    /// it is gone and `important.log`, also ignored, is there — the same count. The removal is
+    /// refused with nothing launched, and the file the sheet never named stays. The controls: a
+    /// count-only compare sees no change, and raw git deletes the file.
+    @Test func anIgnoredEntrySwappedForAnotherOfTheSameCountIsChangedSinceShown() async throws {
+        let (fixture, wt) = try await fixtureWithWorktree()
+        defer { fixture.cleanUp() }
+        try wt.write("debug.log", "d\n")
+        let removal = try await check(fixture, "wt")
+        #expect(removal.refusals == [])
+        #expect(removal.ignored.entries == ["debug.log"])
+
+        try FileManager.default.removeItem(atPath: fixture.path("wt") + "/debug.log")
+        try wt.write("important.log", "keep me\n")
+        let git = try WorktreeLaunchLog()
+        defer { git.cleanUp() }
+
+        let error = await thrownError { _ = try await git.backend.removeWorktree(removal, keeping: [:], at: fixture.repo.root) }
+
+        #expect(error as? WorktreeRemovalPartial == .changedSinceShown)
+        #expect(git.launches(startingWith: "worktree remove") == [])
+        #expect(try await fixture.isListed("wt"))
+        #expect(fixture.exists("wt/important.log"))
+
+        // Control 1: the count the old compare used is the same.
+        let now = try await check(fixture, "wt")
+        withKnownIssue("a count-only compare sees nothing changed") {
+            #expect(now.ignored.count != removal.ignored.count)
+        }
+        // Control 2: raw git deletes the file the sheet never named (R21).
+        try await rawRemove(fixture, "wt")
+        withKnownIssue("git deletes an ignored file without asking (R21)") {
+            #expect(fixture.exists("wt/important.log"))
+        }
     }
 
     /// A worktree no longer listed has nothing to check.

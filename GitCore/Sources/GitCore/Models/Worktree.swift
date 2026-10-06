@@ -97,24 +97,71 @@ public struct WorktreeChanges: Sendable, Hashable {
 }
 
 /// The ignored entries `git worktree remove` deletes without asking (R21), as `status
-/// --ignored=matching` lists them: an ignored folder is one entry (`build/`), an ignored file
-/// inside a folder that is not is another (`sub/deep/x.log`).
+/// --ignored=matching` lists them: an ignored folder is one entry (`build/`) and goes with
+/// everything in it, an ignored file inside a folder that is not is another (`sub/deep/x.log`).
+///
+/// Every entry is kept (B3 Task 5 fix round 1, I1): the check made again before git runs compares
+/// them all, so an ignored file swapped for another of the same count is a change, never a file
+/// deleted that the sheet did not name. Equality is the entries'.
 public struct IgnoredSummary: Sendable, Hashable {
-    /// How many entries `status` listed.
-    public let count: Int
-    /// Their distinct first path components, in git's order (`build/`, `sub/`, `top.log` — a
-    /// folder keeps its `/`), at most `topLevelLimit`.
-    public let topLevel: [String]
+    /// Every entry `status` listed, in git's order.
+    public let entries: [String]
 
-    public init(count: Int, topLevel: [String]) {
-        self.count = count
-        self.topLevel = topLevel
+    public init(entries: [String]) {
+        self.entries = entries
     }
 
-    public static let none = IgnoredSummary(count: 0, topLevel: [])
+    /// How many entries `status` listed.
+    public var count: Int { entries.count }
+
+    /// Their distinct first path components, in git's order (`build/`, `sub/`, `top.log` — a
+    /// folder keeps its `/`), at most `topLevelLimit`.
+    public var topLevel: [String] {
+        var top: [String] = []
+        for path in entries {
+            let name = path.firstIndex(of: "/").map { String(path[...$0]) } ?? path
+            if !top.contains(name) { top.append(name) }
+            if top.count == Self.topLevelLimit { break }
+        }
+        return top
+    }
+
+    public static let none = IgnoredSummary(entries: [])
 
     /// How many names `topLevel` holds at most.
     public static let topLevelLimit = 10
+}
+
+/// Paths as git matches worktree paths (R23), for GitCore's own checks and the app's live folder
+/// check alike (B3 Task 5 fix round 1, I2: one rule, not two copies).
+public enum WorktreePaths {
+    /// `path` as git compares it: `..` and `.` taken out, then the deepest part that exists resolved
+    /// with `realpath(3)` (`/var` → `/private/var`, links followed) and the rest put back. A path
+    /// none of which can be resolved is returned as it is.
+    public static func resolved(_ path: String) -> String {
+        var url = URL(fileURLWithPath: path).standardizedFileURL
+        var rest: [String] = []
+        while true {
+            if let real = realpath(url.path, nil) {
+                defer { free(real) }
+                let head = String(cString: real)
+                return rest.isEmpty ? head : (head == "/" ? "" : head) + "/" + rest.joined(separator: "/")
+            }
+            guard url.path != "/", !url.path.isEmpty else { return path }
+            rest.insert(url.lastPathComponent, at: 0)
+            url.deleteLastPathComponent()
+        }
+    }
+
+    /// The same file system object by git's rule: equal, or equal once both are resolved.
+    public static func same(_ a: String, _ b: String) -> Bool {
+        a == b || resolved(a) == resolved(b)
+    }
+
+    /// `path` is `folder` or inside it; both already resolved.
+    public static func isInside(_ path: String, _ folder: String) -> Bool {
+        path == folder || path.hasPrefix(folder.hasSuffix("/") ? folder : folder + "/")
+    }
 }
 
 /// Why Gitter will not remove a worktree. Each is decided by Gitter's own check, before git
