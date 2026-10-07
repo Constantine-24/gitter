@@ -57,11 +57,20 @@ extension CLIGitBackend {
         // `--message ""` is git's own `WIP on <branch>: <sha> <subject>` (M 17).
         let m = message ?? ""
         let before = try await stashRef(at: root)
-        let result = try await runWithEnvironment(
-            includeUntracked
-                ? ["stash", "push", "-q", "--message", m, "--include-untracked"]
-                : ["stash", "push", "-q", "--message", m],
-            cwd: root, extra: [:], allowedExitCodes: [1, 128])
+        let result: ProcessRunner.StreamedResult
+        do {
+            result = try await runWithEnvironment(
+                includeUntracked
+                    ? ["stash", "push", "-q", "--message", m, "--include-untracked"]
+                    : ["stash", "push", "-q", "--message", m],
+                cwd: root, extra: [:], allowedExitCodes: [1, 128])
+        } catch where Self.wasKilledBySignal(error) {
+            // Killed part-way (E1 Task 3, fix round 2): read back, as a refusal is. An entry
+            // filed is saved with git not having finished — the entry and its Pop are reported;
+            // nothing filed is the killed git.
+            guard let after = try await stashRef(at: root), after != before else { throw error }
+            return .savedWithError(try await listedStash(after, at: root), gitsWords: Self.words(of: error))
+        }
         let after = try await stashRef(at: root)
 
         guard let after, after != before else {

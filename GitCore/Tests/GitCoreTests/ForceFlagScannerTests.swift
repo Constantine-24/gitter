@@ -1663,7 +1663,7 @@ import Testing
         #"_ = try await run(["tag", "--no-sign", "--end-of-options", name, sha], cwd: root)"#,
         #"_ = try await run(["tag", "--no-sign", "-a", "-F", file.path, "--cleanup=verbatim", "--end-of-options", name, sha], cwd: root)"#,
         #"_ = try await run(["tag", "--no-sign", "--end-of-options", receipt.name, receipt.objectID], cwd: root)"#,
-        #"let result = try await runWithEnvironment(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
+        #"result = try await runWithEnvironment(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)"#,
         #"let data = try await run(["symbolic-ref", "-q", "refs/tags/\(name)"], cwd: root, allowedExitCodes: [1])"#,
         #"let data = try await run(["remote", "-v"], cwd: root)"#,
         #"let arguments = ["push", "--porcelain", "--no-follow-tags", "--no-recurse-submodules", "--end-of-options", remote, "refs/tags/\(n):refs/tags/\(n)"]"#,

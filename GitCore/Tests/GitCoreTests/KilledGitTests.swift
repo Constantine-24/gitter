@@ -10,13 +10,16 @@ import Testing
 /// is for `CLIGitBackend(gitPath:)`.
 ///
 /// `match` is compared with the arguments joined by spaces (`"remote add"`, `"--unset-all"`).
-func hangingUpGitPath(on match: String, runFirst: Bool, in dir: URL) throws -> String {
+/// `meanwhile` is a shell command run just before the signal — another writer's change landing
+/// while git runs (`/usr/bin/git update-ref …`, which does not go through the wrapper).
+func hangingUpGitPath(on match: String, runFirst: Bool, meanwhile: String = ":", in dir: URL) throws -> String {
     precondition(!match.contains("'"), "a match with a quote would break the wrapper's quoting")
     let wrapper = dir.appendingPathComponent("git-hangup-\(UUID().uuidString)")
     let script = """
         #!/bin/bash
         if [[ " $* " == *'\(match)'* ]]; then
             \(runFirst ? "/usr/bin/git \"$@\"" : ":")
+            \(meanwhile)
             kill -HUP $$
         fi
         exec /usr/bin/git "$@"
@@ -125,17 +128,69 @@ func isKilledGit(_ error: Error?, signal: Int32 = SIGHUP) -> Bool {
         #expect(isKilledGit(error), "\(String(describing: error))")
     }
 
-    /// A tag delete whose git was killed after deleting is not "it moved, nothing was deleted".
-    @Test func aKilledTagDeleteIsThrownNotAMovedTag() async throws {
+    /// A local tag delete whose git was killed is read back, as a refused one always was (fix
+    /// round 2): the tag gone is the delete — its receipt, so Restore is offered and an
+    /// annotated tag's object is not lost; the tag as it was is nothing deleted — the killed git,
+    /// thrown; and the tag holding something else is `.tagMoved`.
+    @Test(arguments: ["deleted", "untouched", "moved"])
+    func aKilledTagDeleteIsReadBack(when: String) async throws {
         let repo = try await TagDeleteTests.makeRepo()
         defer { repo.cleanUp() }
         let tag = try await repo.listedTag("v1")
-        let gitPath = try hangingUpGitPath(on: "update-ref --no-deref -d", runFirst: true, in: repo.root.appendingPathComponent(".git"))
+        let commit = try await repo.revParse("refs/tags/v1")
+        let head = try await repo.revParse("HEAD")
+        #expect(head != commit)
+        let gitPath = try hangingUpGitPath(
+            on: "update-ref --no-deref -d", runFirst: when == "deleted",
+            meanwhile: when == "moved" ? "/usr/bin/git update-ref refs/tags/v1 \(head)" : ":",
+            in: repo.root.appendingPathComponent(".git"))
 
-        let error = await thrownError { _ = try await CLIGitBackend(gitPath: gitPath).deleteTag(tag, at: repo.root) }
+        do {
+            let receipt = try await CLIGitBackend(gitPath: gitPath).deleteTag(tag, at: repo.root)
+            #expect(when == "deleted", "read as deleted: \(receipt)")
+            #expect(receipt == TagReceipt(name: "v1", objectID: commit, target: commit))
+        } catch {
+            switch when {
+            case "untouched": #expect(isKilledGit(error), "\(error)")
+            case "moved": #expect(error as? TagOperationError == .tagMoved(name: "v1"), "\(error)")
+            default: Issue.record("git deleted the tag, yet the delete threw \(error)")
+            }
+        }
+        // The premise of each case, read from the repository.
+        let now = try await repo.tagObject("v1")
+        switch when {
+        case "deleted": #expect(now == nil)
+        case "untouched": #expect(now == commit)
+        default: #expect(now == head)
+        }
+    }
 
-        #expect(isKilledGit(error), "\(String(describing: error))")
-        #expect(try await repo.tagObject("v1") == nil, "the premise: git deleted it before the signal")
+    /// A stash push whose git was killed is read back, as one that exited with a refusal always
+    /// was (fix round 2): an entry filed is `.savedWithError` — saved, git not having finished,
+    /// in the signal's words — so the entry and its Pop are reported; nothing filed is the
+    /// killed git, thrown.
+    @Test(arguments: [true, false])
+    func aKilledStashPushIsReadBack(runFirst: Bool) async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        try repo.write("a.txt", "changed\n")
+        let gitPath = try hangingUpGitPath(on: "stash push", runFirst: runFirst, in: repo.root.appendingPathComponent(".git"))
+
+        do {
+            let outcome = try await CLIGitBackend(gitPath: gitPath).stashAll(message: "kept", includeUntracked: false, at: repo.root)
+            #expect(runFirst, "nothing was filed, yet the push was read as \(outcome)")
+            guard case .savedWithError(let stash, let words, _) = outcome else {
+                Issue.record("the filed entry was read as \(outcome)")
+                return
+            }
+            #expect(stash.index == 0)
+            #expect(words.hasPrefix("git was killed by signal 1."), "\(words)")
+        } catch {
+            #expect(!runFirst, "an entry was filed, yet the push threw \(error)")
+            #expect(isKilledGit(error), "\(error)")
+        }
+        let listed = try await repo.git(["stash", "list"])
+        #expect(listed.isEmpty != runFirst, "the premise: an entry was filed exactly when git ran")
     }
 
     /// A continue whose git was killed is a failure in the runner's words, not git's answer.

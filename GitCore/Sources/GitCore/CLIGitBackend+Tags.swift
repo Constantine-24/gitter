@@ -192,7 +192,19 @@ extension CLIGitBackend: GitTagBackend {
         // hidden (fix round 1, measured). With it, git deletes the symbolic ref itself — still
         // compared against the id it resolves to (a wrong one: "is at … but expected …") — and
         // the branch and its reflog stay.
-        let result = try await runWithEnvironment(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
+        let result: ProcessRunner.StreamedResult
+        do {
+            result = try await runWithEnvironment(["update-ref", "--no-deref", "-d", "--end-of-options", "refs/tags/\(name)", "\(expected)"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
+        } catch where Self.wasKilledBySignal(error) {
+            // Killed part-way (E1 Task 3, fix round 2): read back, as a refusal always is. Gone
+            // is the delete — its receipt, so Restore is offered and an annotated tag's object
+            // is not lost; as it was is nothing deleted — the killed git; anything else moved.
+            switch try await currentTagObject(name, at: root) {
+            case "": return TagReceipt(name: name, objectID: expected, target: tag.sha)
+            case expected: throw error
+            default: throw TagOperationError.tagMoved(name: name)
+            }
+        }
         guard result.exitCode != 0 else { return TagReceipt(name: name, objectID: expected, target: tag.sha) }
         if try await currentTagObject(name, at: root) != expected { throw TagOperationError.tagMoved(name: name) }
         // Still there, unchanged: refused for a reason of git's — a reference-transaction hook
