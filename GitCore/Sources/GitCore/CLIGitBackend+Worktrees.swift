@@ -396,12 +396,14 @@ extension CLIGitBackend: GitWorktreeBackend {
         let result: ProcessRunner.StreamedResult
         do {
             result = try await runWithEnvironment(["worktree", "add", "-q", "--end-of-options", path, branch], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
-        } catch is CancellationError {
-            // git was stopped part-way, or never started. Read back outside this cancelled task:
-            // a worktree that is there is reported, never "nothing happened".
+        } catch let error where error is CancellationError || Self.wasKilledBySignal(error) {
+            // git was stopped part-way, or never started — cancelled, or killed by a signal. Read
+            // back outside this (possibly cancelled) task: a worktree that is there is reported,
+            // never "nothing happened"; one that is not is the stop itself.
             let after = try? await Task { try await self.listedWorktrees(at: root) }.value
-            guard let found = after?.first(where: { Self.samePath($0.path, path) }) else { throw CancellationError() }
-            return Self.added(found, branch: branch, exitCode: -1, words: "")
+            guard let found = after?.first(where: { Self.samePath($0.path, path) }) else { throw error }
+            let words = error is CancellationError ? "" : Self.words(of: error)
+            return Self.added(found, branch: branch, exitCode: -1, words: words)
         }
         let words = RemoteFailureParser.gitsOwnWords(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         // Whatever the exit code (R19).
@@ -466,7 +468,7 @@ extension CLIGitBackend: GitWorktreeBackend {
         let result: ProcessRunner.StreamedResult
         do {
             result = try await runWithEnvironment(["worktree", "remove", "--end-of-options", path], cwd: root, extra: Self.forcedCheckConfig(), allowedExitCodes: Self.anyExitCode)
-        } catch is CancellationError {
+        } catch let error where error is CancellationError || Self.wasKilledBySignal(error) {
             throw WorktreeRemovalPartial.outcomeUnknown(keptBranches: kept)
         } catch {
             // Not started at all: nothing was removed.

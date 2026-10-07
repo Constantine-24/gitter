@@ -16,6 +16,17 @@ import Testing
         #expect(RemoteWording.plain(text) == "error: stophere")
     }
 
+    /// E1 promise 4: a git killed by a signal arrives as `commandFailed` with no exit code (-1)
+    /// and words that name the signal, so the banner says the signal — never "git exited with
+    /// code -1" — and, for a write, that the remote may have changed.
+    @Test func aKilledGitIsWordedAsItsSignalNeverAsAnExitCode() {
+        let text = RemoteWording.failure(
+            GitError.commandFailed(exitCode: -1, stderr: "git was killed by signal 1."),
+            attempt: "push \"v1\" to \"origin\"", isWrite: true)
+        #expect(text == "Couldn't push \"v1\" to \"origin\": git was killed by signal 1. The remote may or may not have been updated.")
+        #expect(!text.contains("exited with code"))
+    }
+
     @Test func plainRedactsAURLsPassword() {
         let shown = RemoteWording.plain("fatal: unable to access 'https://u:p@h/x'")
         #expect(shown == "fatal: unable to access 'https://h/x'")

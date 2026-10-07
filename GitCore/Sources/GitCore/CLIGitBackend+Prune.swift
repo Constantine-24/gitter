@@ -282,6 +282,11 @@ extension CLIGitBackend: GitRemoteAdminBackend {
                 outcomeUnknown.append(tip)
                 notTried = Array(plan.refs[(index + 1)...])
                 break
+            } catch where Self.wasKilledBySignal(error) {
+                // Killed part-way by a signal: whether this ref is gone is not known either. The
+                // prune itself was not stopped, so the next ref is tried.
+                outcomeUnknown.append(tip)
+                continue
             } catch {
                 // It could not be started (a launch failure): nothing ran.
                 failed.append(RefFailure(tip: tip, gitsWords: Self.words(of: error)))
@@ -324,9 +329,10 @@ extension CLIGitBackend: GitRemoteAdminBackend {
         for branch in kept {
             do {
                 try await createKeptBranch(branch.name, at: branch.tip.id, in: root)
-            } catch is CancellationError {
-                // Stopped while git created it (or before it started — the runner cannot say):
-                // whether this branch exists is unknown, the first one included (Ruling 12).
+            } catch let error where error is CancellationError || Self.wasKilledBySignal(error) {
+                // Stopped while git created it (or before it started — the runner cannot say),
+                // or killed by a signal: whether this branch exists is unknown, the first one
+                // included (Ruling 12).
                 throw RemoteAdminPartial.keptBranchesCancelled(kept: keptBranches, unknown: branch.name)
             } catch {
                 // Nothing created yet: a plain failure, and the repository is as it was. Otherwise

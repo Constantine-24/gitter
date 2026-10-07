@@ -44,6 +44,19 @@ extension ProcessRunner {
         }
     }
 
+    /// The words of a git that a signal killed, as every refusal of one reads (E1 promise 4, "a
+    /// killed git is never read as an exit code"): `git was killed by signal <n>.`, then git's own
+    /// `words` on the lines after, when it wrote any. Thrown as `GitError.commandFailed` with
+    /// **no exit code (-1)** — by this runner for a signal that is not an allowed code, and by
+    /// `CLIGitBackend`'s two seams for one that is.
+    public static func killedBySignal(_ signal: Int32, words: String) -> String {
+        killedBySignalPrefix + "\(signal)." + (words.isEmpty ? "" : "\n" + words)
+    }
+
+    /// How `killedBySignal`'s words begin, for a caller that must tell a killed git from git's
+    /// own refusal.
+    public static let killedBySignalPrefix = "git was killed by signal "
+
     /// One SIGTERM or SIGKILL a cancel made the runner send, or try to send — what
     /// `runStreaming`'s `onSignal` seam reports.
     struct SignalAttempt: Sendable, Equatable {
@@ -186,6 +199,9 @@ extension ProcessRunner {
     ///   (`isRunning` is false and its pid is free), so a test that blocks here holds the runner
     ///   in the gap between that reap and the runner's record of it — the gap where the
     ///   escalation used to be lost (E1 survey S1).
+    /// - Parameter afterRecordingTermination: called on the same thread once the runner has
+    ///   recorded the exit — and sent the SIGKILL that record may owe — before it tries to
+    ///   resume. A test that held the record waits for this before asserting what it did.
     /// - Parameter inheritedEnvironment: the environment the child's is built from, in place of
     ///   this process's own, so a test can show what the runner adds to an environment that
     ///   has, or lacks, a given variable. Production callers use the public overload.
@@ -198,6 +214,7 @@ extension ProcessRunner {
         onReapedGroupSignal: (@Sendable (pid_t, Int32) -> Void)? = nil,
         onSignal: (@Sendable (SignalAttempt) -> Void)? = nil,
         beforeRecordingTermination: (@Sendable () -> Void)? = nil,
+        afterRecordingTermination: (@Sendable () -> Void)? = nil,
         inheritedEnvironment: [String: String]? = nil,
         onStderr: @escaping @Sendable (String) -> Void
     ) async throws -> StreamedResult {
@@ -254,6 +271,14 @@ extension ProcessRunner {
                                 returning: StreamedResult(
                                     stdout: out, stderr: text, exitCode: status,
                                     terminationReason: reason))
+                        } else if reason == .uncaughtSignal {
+                            // A signal's number is not an exit code (E1 promise 4): no code,
+                            // and the signal named before git's words.
+                            continuation.resume(
+                                throwing: GitError.commandFailed(
+                                    exitCode: -1,
+                                    stderr: ProcessRunner.killedBySignal(
+                                        status, words: text.trimmingCharacters(in: .whitespacesAndNewlines))))
                         } else {
                             continuation.resume(
                                 throwing: GitError.commandFailed(
@@ -303,6 +328,7 @@ extension ProcessRunner {
                     state.recordTermination(
                         proc.terminationStatus, reason: proc.terminationReason,
                         pid: proc.processIdentifier)
+                    afterRecordingTermination?()
                     finish()
                 }
 
@@ -619,6 +645,13 @@ private final class StreamingProcessState: @unchecked Sendable {
     /// the group had a member at this reap, a pipe is still open, the call has not resumed.
     /// It goes through `signalReapedLeadersGroup`, so `onReapedGroupSignal` hears of it first,
     /// as of every signal by that number.
+    ///
+    /// **What is left (for E1's S25 backlog item):** if Foundation's termination handler runs
+    /// only after the call has resumed by the abandonment — about two graces after the cancel —
+    /// the pending kill is dropped (`takePendingKillLocked`'s `!resumed`), and a member of the
+    /// group that ignores SIGTERM survives. The call itself has returned by then, as the
+    /// abandonment promises. `aReapRecordedOnlyAfterTheCallCameBackLeavesTheHelperRunning` shows
+    /// it. Owning the reap (S25) would close it.
     func recordTermination(
         _ terminationStatus: Int32, reason: Process.TerminationReason, pid: pid_t
     ) {

@@ -182,11 +182,11 @@ public struct CLIGitBackend: GitBackend {
     /// `runner` are private to this file, and they stay private: one file owns how git is
     /// invoked. It is the single seam every remote operation in this milestone goes through.
     ///
-    /// **What it adds over `ProcessRunner.runStreaming` is the trim, and only the trim.** git
-    /// pads each progress line with spaces to erase the longer one before it
-    /// (`remote: Counting objects: 100% (12/12)        \r`, measured), and an empty segment is
-    /// not an update worth reporting. Both are dealt with here so that no caller — and no view
-    /// — has to know that git does it.
+    /// **What it adds over `ProcessRunner.runStreaming` is the trim, and the refusal of a killed
+    /// git** (`refusingAKilledGit`, E1 promise 4). git pads each progress line with spaces to
+    /// erase the longer one before it (`remote: Counting objects: 100% (12/12)        \r`,
+    /// measured), and an empty segment is not an update worth reporting. Both are dealt with here
+    /// so that no caller — and no view — has to know that git does it.
     ///
     /// **The trim is not free, and the returned stderr is where the unmodified text lives.**
     /// It takes whitespace off *both* ends, so a `remote:` line the server indented arrives at
@@ -205,12 +205,14 @@ public struct CLIGitBackend: GitBackend {
         progress: @escaping @Sendable (String) -> Void
     ) async throws -> ProcessRunner.StreamedResult {
         try Self.checkArgumentCount(arguments)
-        return try await runner.runStreaming(
+        let result = try await runner.runStreaming(
             gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes,
             onStderr: { segment in
                 let trimmed = segment.trimmingCharacters(in: .whitespaces)
                 if !trimmed.isEmpty { progress(trimmed) }
             })
+        try Self.refusingAKilledGit(result)
+        return result
     }
 
     /// `run` with variables of the caller's own added to the child's environment, for the
@@ -229,7 +231,9 @@ public struct CLIGitBackend: GitBackend {
     /// Failures are `run`'s: an exit code that is neither 0 nor in `allowedExitCodes` throws
     /// `GitError.commandFailed` with the trimmed stderr, a launch failure
     /// `GitError.launchFailed`, and more than `argumentLimit` arguments
-    /// `GitError.tooManyArguments` before anything is launched. On success the result carries stdout, the untrimmed stderr and
+    /// `GitError.tooManyArguments` before anything is launched. One more than `run`: a git killed
+    /// by a signal is `commandFailed` with no exit code (-1), whatever codes are allowed
+    /// (`refusingAKilledGit`). On success the result carries stdout, the untrimmed stderr and
     /// the exit code — which matters for an apply, where exit 1 is a conflict to report.
     ///
     /// Here rather than in `CLIGitBackend+Environment.swift` because `gitPath` and `runner`
@@ -240,9 +244,34 @@ public struct CLIGitBackend: GitBackend {
     ) async throws -> ProcessRunner.StreamedResult {
         try Self.checkArgumentCount(arguments)
         let environment = ProcessInfo.processInfo.environment.merging(extra) { _, added in added }
-        return try await runner.runStreaming(
+        let result = try await runner.runStreaming(
             gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes, onLaunch: nil,
             inheritedEnvironment: environment, onStderr: { _ in })
+        try Self.refusingAKilledGit(result)
+        return result
+    }
+
+    /// **A killed git is never read as an exit code** (E1 promise 4). For a git a signal killed,
+    /// `exitCode` is the signal's number — SIGHUP's is 1, the code of an ordinary refusal — and a
+    /// caller that allows that code, above all one that allows every code (`anyExitCode`), would
+    /// read it as git's answer. So both seams above refuse it before any caller sees the status:
+    /// `GitError.commandFailed` with no exit code (-1) and `ProcessRunner.killedBySignal`'s
+    /// words, git's own redacted after them. A signal that is not an allowed code is the
+    /// runner's own refusal, in the same words.
+    ///
+    /// A caller that treats a git stopped part-way as an outcome it cannot know — its
+    /// `CancellationError` branch — takes that branch for a killed git too
+    /// (`wasKilledBySignal`): whether the write happened is just as unknown.
+    static func refusingAKilledGit(_ result: ProcessRunner.StreamedResult) throws {
+        guard result.terminationReason == .uncaughtSignal else { return }
+        let words = RemoteFailureParser.gitsOwnWords(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        throw GitError.commandFailed(exitCode: -1, stderr: ProcessRunner.killedBySignal(result.exitCode, words: words))
+    }
+
+    /// Whether `error` is the refusal of a killed git (`refusingAKilledGit`, or the runner's own).
+    static func wasKilledBySignal(_ error: Error) -> Bool {
+        guard case GitError.commandFailed(-1, let stderr) = error else { return false }
+        return stderr.hasPrefix(ProcessRunner.killedBySignalPrefix)
     }
 
     /// Turns a path into a pathspec that means exactly that one path.

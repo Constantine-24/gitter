@@ -118,7 +118,7 @@ extension CLIGitBackend {
         do {
             // Never `-f` (R19): the caller fetches afterwards with Gitter's own fetch.
             result = try await runWithEnvironment(["remote", "add", "--end-of-options", name, url], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
-        } catch is CancellationError {
+        } catch let error where error is CancellationError || Self.wasKilledBySignal(error) {
             throw RemoteAdminPartial.urlsOutcomeUnknown(remote: name)
         }
         guard result.exitCode != 0 else { return }
@@ -146,7 +146,7 @@ extension CLIGitBackend {
             let result: ProcessRunner.StreamedResult
             do {
                 result = try await runWithEnvironment(["remote", "set-url", "--end-of-options", remote, url], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
-            } catch is CancellationError {
+            } catch let error where error is CancellationError || Self.wasKilledBySignal(error) {
                 throw RemoteAdminPartial.urlsOutcomeUnknown(remote: remote)
             }
             if result.exitCode != 0 { try await readBackFailedURLWrite(of: remote, before: before, result: result, at: root) }
@@ -156,7 +156,7 @@ extension CLIGitBackend {
             let result: ProcessRunner.StreamedResult
             do {
                 result = try await runWithEnvironment(["remote", "set-url", "--push", "--end-of-options", remote, url], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
-            } catch is CancellationError {
+            } catch let error where error is CancellationError || Self.wasKilledBySignal(error) {
                 throw RemoteAdminPartial.urlsOutcomeUnknown(remote: remote)
             }
             if result.exitCode != 0 { try await readBackFailedURLWrite(of: remote, before: before, result: result, at: root) }
@@ -168,7 +168,7 @@ extension CLIGitBackend {
             let result: ProcessRunner.StreamedResult
             do {
                 result = try await runWithEnvironment(["config", "--unset-all", "--end-of-options", "remote.\(remote).pushurl"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
-            } catch is CancellationError {
+            } catch let error where error is CancellationError || Self.wasKilledBySignal(error) {
                 throw RemoteAdminPartial.urlsOutcomeUnknown(remote: remote)
             }
             if result.exitCode != 0 { try await readBackFailedURLWrite(of: remote, before: before, result: result, at: root) }
@@ -209,7 +209,7 @@ extension CLIGitBackend {
         let result: ProcessRunner.StreamedResult
         do {
             result = try await runWithEnvironment(["remote", "rename", "--no-progress", "--end-of-options", old, new], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
-        } catch is CancellationError {
+        } catch let error where error is CancellationError || Self.wasKilledBySignal(error) {
             throw RemoteAdminPartial.renameOutcomeUnknown(old: old, new: new)
         }
         guard result.exitCode != 0 else { return }
@@ -471,7 +471,7 @@ extension CLIGitBackend {
         let result: ProcessRunner.StreamedResult
         do {
             result = try await runWithEnvironment(["remote", "remove", "--end-of-options", remote], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
-        } catch is CancellationError {
+        } catch let error where error is CancellationError || Self.wasKilledBySignal(error) {
             throw RemoteAdminPartial.removeOutcomeUnknown(remote: remote, keptBranches: keptBranches)
         }
         guard result.exitCode != 0 else { return }

@@ -88,9 +88,9 @@ extension CLIGitBackend {
         let result: ProcessRunner.StreamedResult
         do {
             result = try await runWithEnvironment(["update-ref", "--no-deref", "-m", message, "--end-of-options", "refs/heads/\(name)", "\(new)", "\(old)"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
-        } catch is CancellationError {
+        } catch let error where error is CancellationError || Self.wasKilledBySignal(error) {
             // git was stopped part-way, or never started — the runner cannot say which (Task 1's
-            // rule for a cancelled write): never "nothing changed".
+            // rule for a cancelled write): never "nothing changed". A killed git likewise.
             throw RemoteAdminPartial.fastForwardOutcomeUnknown(branch: branch, from: old, to: new)
         }
         guard result.exitCode != 0 else { return .fastForwarded(from: old, to: new) }
@@ -288,7 +288,7 @@ extension CLIGitBackend {
             case .local(let local):
                 result = try await runWithEnvironment(["branch", "--set-upstream-to=refs/heads/\(local)", "--end-of-options", branch], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
             }
-        } catch is CancellationError {
+        } catch let error where error is CancellationError || Self.wasKilledBySignal(error) {
             throw RemoteAdminPartial.upstreamOutcomeUnknown(branch: branch)
         }
         guard result.exitCode == 0 else {
@@ -324,7 +324,7 @@ extension CLIGitBackend {
         let result: ProcessRunner.StreamedResult
         do {
             result = try await runWithEnvironment(["branch", "--unset-upstream", "--end-of-options", branch], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
-        } catch is CancellationError {
+        } catch let error where error is CancellationError || Self.wasKilledBySignal(error) {
             throw RemoteAdminPartial.upstreamOutcomeUnknown(branch: branch)
         }
         guard result.exitCode == 0 else {

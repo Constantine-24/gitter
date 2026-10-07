@@ -57,6 +57,22 @@ private final class TerminationHold: @unchecked Sendable {
         lock.unlock()
         if first { gate.signal() }
     }
+
+    /// For `afterRecordingTermination`: the record has run, and with it any kill it sent.
+    func markRecorded() {
+        lock.lock()
+        isRecorded = true
+        lock.unlock()
+    }
+
+    private var isRecorded = false
+
+    /// The runner has recorded the exit since `release`.
+    var recorded: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isRecorded
+    }
 }
 
 /// `runStreaming`: the same capture guarantees as `run`, plus stderr as it arrives and a call
@@ -679,6 +695,7 @@ private final class TerminationHold: @unchecked Sendable {
         onReapedGroupSignal: (@Sendable (pid_t, Int32) -> Void)? = nil,
         onSignal: (@Sendable (ProcessRunner.SignalAttempt) -> Void)? = nil,
         beforeRecordingTermination: (@Sendable () -> Void)? = nil,
+        afterRecordingTermination: (@Sendable () -> Void)? = nil,
         sourceLocation: SourceLocation = #_sourceLocation
     ) async throws -> TrappedChild {
         let marker = FileManager.default.temporaryDirectory
@@ -695,6 +712,7 @@ private final class TerminationHold: @unchecked Sendable {
                     onReapedGroupSignal: onReapedGroupSignal,
                     onSignal: onSignal,
                     beforeRecordingTermination: beforeRecordingTermination,
+                    afterRecordingTermination: afterRecordingTermination,
                     onStderr: { _ in })
                 return nil
             } catch {
@@ -883,7 +901,8 @@ private final class TerminationHold: @unchecked Sendable {
         let started = try await startScript(
             Self.helperOutlivingTheLeader, duration: duration, killGracePeriod: .milliseconds(500),
             onReapedGroupSignal: { group, signal in reapedGroupSignals.mutate { $0.append([group, signal]) } },
-            beforeRecordingTermination: { hold.hold() })
+            beforeRecordingTermination: { hold.hold() },
+            afterRecordingTermination: { hold.markRecorded() })
         while !hold.entered { try await Task.sleep(for: .milliseconds(10)) }
         #expect(await Self.waitForExactlyOneProcess(matching: sleep))
 
@@ -899,6 +918,9 @@ private final class TerminationHold: @unchecked Sendable {
             #expect(await Self.waitForNoProcess(matching: sleep), "the TERM-ignoring helper outlived the call")
         }
         hold.release()
+        // The record has run — and with it any kill it would send — before either is checked:
+        // the helper is still running then, the group unsignalled.
+        while !hold.recorded { try await Task.sleep(for: .milliseconds(10)) }
         #expect(reapedGroupSignals.current.isEmpty)
         #expect(killLeftovers([sleep]) == [started.pid])
         #expect(await Self.waitForNoProcess(matching: sleep))
@@ -908,6 +930,13 @@ private final class TerminationHold: @unchecked Sendable {
 
     /// How late the escalation's SIGKILL may come after the grace, on the runner's own clock.
     /// See `expectEscalation`.
+    ///
+    /// Measured (E1 Task 3, 40 cancels per condition, the 2 s grace): the worst overrun was
+    /// 139 ms, under a full unbounded `swift test` plus 28 `yes` loops (load average 75); 80 ms
+    /// idle, 129 ms under 28 `yes` alone (load 24); and the reviewer saw 2.133 s — 133 ms — under
+    /// 84 `yes`. `DispatchQueue.asyncAfter` may also coalesce a 2 s timer by up to its default
+    /// leeway, a tenth of the interval: 200 ms. 500 ms covers that leeway and more than twice
+    /// the worst overrun.
     static let escalationMargin: Duration = .milliseconds(500)
 
     /// The escalation's latency **as the runner measured it**: from the cancel's SIGTERM attempt
