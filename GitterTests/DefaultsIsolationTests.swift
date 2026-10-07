@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GitCore
 import Testing
@@ -8,14 +9,13 @@ import Testing
 /// `dev.penzin.Gitter` domain, and the launch's reopen is refused under the test host and in a
 /// scripted launch.
 ///
-/// The test host is the app, so `.standard` here *is* the user's domain. The suite as a whole, and
-/// each of its tests, is checked against it (RF5, `.leavesTheRealDefaultsAlone` and
-/// `…InEachTest`): read before and after, never written. The checks' controls watch a scratch
-/// suite named like the real one.
+/// The test host is the app, so `.standard` here *is* the user's domain. Each test is checked
+/// against it (RF5, `.leavesTheRealDefaultsAlone`): read before and after, never written. The
+/// check's controls watch a scratch suite named like the real one.
 ///
 /// No git runs: the one store that opens a repository is given `/usr/bin/false` for git, and the
 /// repository is a folder with an empty `.git` in it — enough for `open(_:)` to accept it.
-@MainActor @Suite(.leavesTheRealDefaultsAlone, .leavesTheRealDefaultsAloneInEachTest)
+@MainActor @Suite(.leavesTheRealDefaultsAlone)
 struct DefaultsIsolationTests {
 
     /// A folder `open(_:)` accepts (it has a `.git`), or one it refuses (no `.git`), removed with
@@ -60,11 +60,29 @@ struct DefaultsIsolationTests {
         #expect(defaults.string(forKey: RepositoryStore.mergeModeKey) == nil)
 
         let scratch = ScratchDefaults()
-        #expect(scratch.suiteName.hasPrefix("dev.penzin.Gitter.tests."))
         scratch.defaults.set("x", forKey: "k")
         #expect(DefaultsDomainSnapshot.read(scratch.suiteName).contents.keys.sorted() == ["k"])
         scratch.remove()
         #expect(DefaultsDomainSnapshot.read(scratch.suiteName).contents.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: scratch.folder.path))
+    }
+
+    /// The suite is named by a path in a temporary folder of its own, so its file lands there and
+    /// nothing lands in `~/Library/Preferences` — undocumented behaviour, measured on macOS 27, and
+    /// checked here (read only) in case the OS changes it.
+    @Test func theScratchSuiteIsKeptInItsOwnTemporaryFolder() {
+        let scratch = ScratchDefaults()
+        defer { scratch.remove() }
+        #expect(scratch.folder.path.hasPrefix(FileManager.default.temporaryDirectory.path))
+        #expect(scratch.suiteName.hasPrefix(scratch.folder.path + "/" + ScratchDefaults.prefix))
+
+        scratch.defaults.set("x", forKey: "k")
+
+        #expect(scratch.defaults.string(forKey: "k") == "x")
+        #expect(FileManager.default.fileExists(atPath: scratch.file.path), "the suite's file is in its folder")
+        #expect(
+            !FileManager.default.fileExists(atPath: scratch.preferencesFile.path),
+            "and not in ~/Library/Preferences")
     }
 
     // MARK: - What the store writes
@@ -79,6 +97,8 @@ struct DefaultsIsolationTests {
         store.open(folder.url)
 
         #expect(store.root == folder.url.standardizedFileURL)
+        // Read only: the scratch folder is not added to the user's Open Recent list.
+        #expect(!NSDocumentController.shared.recentDocumentURLs.contains(folder.url.standardizedFileURL))
         #expect(
             defaults.string(forKey: RepositoryStore.lastRepositoryPathKey) == folder.url.standardizedFileURL.path)
         expectUnchanged(real, DefaultsDomainSnapshot.read(LeavesTheDomainUnchanged.realDomain))
@@ -131,35 +151,59 @@ struct DefaultsIsolationTests {
         #expect(after.changedKeys(since: before) == [RepositoryStore.mergeModeKey, RepositoryStore.pullModeKey])
         withKnownIssue("a store writing the watched domain fails the unchanged check") {
             expectUnchanged(before, after)
-        }
+        } matching: { Self.isTheUnchangedCheck($0) }
         // A value changed under a key that was already there counts too.
         RepositoryStore.rememberMergeMode(.alwaysMergeCommit, in: store.defaults)
         let later = DefaultsDomainSnapshot.read(watched.suiteName)
         #expect(later.changedKeys(since: after) == [RepositoryStore.mergeModeKey])
     }
 
-    /// Both scopes themselves, run by hand over a scratch suite named like the real one: a write
-    /// inside either fails it, and a scope that writes nothing passes.
-    @Test func bothScopesFailWhenTheirDomainIsWritten() async throws {
+    /// The per-test scope itself, run by hand over a scratch suite named like the real one: a
+    /// write inside it fails it, and a scope that writes nothing passes.
+    @Test func theScopeFailsWhenItsDomainIsWritten() async throws {
         let watched = ScratchDefaults()
         defer { watched.remove() }
         let test = try #require(Test.current)
         let store = RepositoryStore(backend: Self.noGit, defaults: watched.defaults)
-        let wholeSuite = LeavesTheDomainUnchanged(domain: watched.suiteName)
-        let eachTest = LeavesTheDomainUnchangedInEachTest(domain: watched.suiteName)
+        let scope = LeavesTheDomainUnchanged(domain: watched.suiteName)
 
-        await withKnownIssue("a store writing the watched domain inside the suite's scope fails it") {
-            try await wholeSuite.provideScope(for: test, testCase: nil) {
-                await MainActor.run { RepositoryStore.rememberPullMode(.rebase, in: store.defaults) }
-            }
-        }
-        await withKnownIssue("a store writing the watched domain inside a test's scope fails it") {
-            try await eachTest.provideScope(for: test, testCase: Test.Case.current) {
+        try await withKnownIssue("a store writing the watched domain inside a test's scope fails it") {
+            try await scope.provideScope(for: test, testCase: Test.Case.current) {
                 await MainActor.run { RepositoryStore.rememberMergeMode(.squash, in: store.defaults) }
             }
-        }
-        try await wholeSuite.provideScope(for: test, testCase: nil) {}
-        try await eachTest.provideScope(for: test, testCase: Test.Case.current) {}
+        } matching: { Self.isTheUnchangedCheck($0) }
+        try await scope.provideScope(for: test, testCase: Test.Case.current) {}
+    }
+
+    struct ThrownAfterTheWrite: Error {}
+
+    /// A test that writes the watched domain and then throws is still checked, and its error still
+    /// reaches the caller.
+    @Test func aWriteThenAThrowStillFailsTheScope() async throws {
+        let watched = ScratchDefaults()
+        defer { watched.remove() }
+        let test = try #require(Test.current)
+        let store = RepositoryStore(backend: Self.noGit, defaults: watched.defaults)
+        let scope = LeavesTheDomainUnchanged(domain: watched.suiteName)
+
+        var rethrown = false
+        try await withKnownIssue("a write before the throw fails the scope") {
+            do {
+                try await scope.provideScope(for: test, testCase: Test.Case.current) {
+                    await MainActor.run { RepositoryStore.rememberPullMode(.rebase, in: store.defaults) }
+                    throw ThrownAfterTheWrite()
+                }
+            } catch is ThrownAfterTheWrite {
+                rethrown = true
+            }
+        } matching: { Self.isTheUnchangedCheck($0) }
+        #expect(rethrown)
+    }
+
+    /// The issue `expectUnchanged` records, and no other: a control that passed on some other
+    /// issue would prove nothing.
+    nonisolated static func isTheUnchangedCheck(_ issue: Issue) -> Bool {
+        issue.comments.contains { $0.rawValue.contains("domain changed") }
     }
 
     // MARK: - The reopen guard

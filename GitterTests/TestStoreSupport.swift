@@ -4,30 +4,52 @@ import Testing
 
 @testable import Gitter
 
-/// A defaults suite of the test's own: `dev.penzin.Gitter.tests.<uuid>`, removed by `remove()`.
+/// A defaults suite of the test's own, removed by `remove()`.
 ///
 /// The test host is the app itself (`GitterTests` is hosted by Gitter), so `.standard` in a test
 /// is the user's real `dev.penzin.Gitter` domain: their last repository, their merge mode. A
 /// store built on one of these reads and writes only the scratch suite (E1 Task 4, S2).
+///
+/// The suite is named by an absolute path, `<tmp>/gitter-defaults-<uuid>/dev.penzin.Gitter.tests.<uuid>`,
+/// and its file is that path plus `.plist`, inside the folder. A suite named only
+/// `dev.penzin.Gitter.tests.<uuid>` left an empty plist in `~/Library/Preferences` for every suite
+/// a test wrote to, rewritten by cfprefsd when the process exits (measured). Named by a path, it
+/// writes nothing there (measured on macOS 27, and checked by
+/// `DefaultsIsolationTests.theScratchSuiteIsKeptInItsOwnTemporaryFolder`), and `remove()` takes
+/// the folder away with it.
 struct ScratchDefaults {
     static let prefix = "dev.penzin.Gitter.tests."
 
+    let folder: URL
     let suiteName: String
     let defaults: UserDefaults
 
     init() {
-        suiteName = Self.prefix + UUID().uuidString
+        folder = FileManager.default.temporaryDirectory.appending(path: "gitter-defaults-\(UUID().uuidString)")
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            preconditionFailure("no folder for a defaults suite: \(error)")
+        }
+        suiteName = folder.appending(path: Self.prefix + UUID().uuidString).path
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             preconditionFailure("no defaults suite \(suiteName)")
         }
         self.defaults = defaults
     }
 
-    /// Empties the suite. cfprefsd still leaves its file in `~/Library/Preferences`, an empty
-    /// dictionary, for every suite a test wrote to — written when this process exits, so deleting
-    /// it here does not keep it away (measured).
+    /// Where the suite is kept: in its folder.
+    var file: URL { URL(fileURLWithPath: suiteName + ".plist") }
+
+    /// Where a suite of the same last name would be kept if it were not named by a path. Only ever
+    /// checked for existence.
+    var preferencesFile: URL {
+        URL.libraryDirectory.appending(path: "Preferences/\(URL(fileURLWithPath: suiteName).lastPathComponent).plist")
+    }
+
     func remove() {
         defaults.removePersistentDomain(forName: suiteName)
+        try? FileManager.default.removeItem(at: folder)
     }
 }
 
@@ -72,7 +94,7 @@ struct DefaultsDomainSnapshot {
     }
 }
 
-/// Fails the current test (or suite) when `after` differs from `before` in any key.
+/// Fails the current test when `after` differs from `before` in any key.
 func expectUnchanged(
     _ before: DefaultsDomainSnapshot, _ after: DefaultsDomainSnapshot,
     sourceLocation: SourceLocation = #_sourceLocation
@@ -81,45 +103,33 @@ func expectUnchanged(
     #expect(changed.isEmpty, "the \(after.domain) domain changed: \(changed)", sourceLocation: sourceLocation)
 }
 
-/// Runs `function` and fails the current test or suite when `domain` is not the same afterwards.
-/// Reads the domain twice and writes nothing.
+/// Runs `function` and fails the current test when `domain` is not the same afterwards — also
+/// when `function` throws, whose error is then rethrown. Reads the domain twice and writes nothing.
 func checkingDomainUnchanged(
     _ domain: String, sourceLocation: SourceLocation = #_sourceLocation,
     _ function: @Sendable () async throws -> Void
 ) async throws {
     let before = DefaultsDomainSnapshot.read(domain)
-    try await function()
+    do {
+        try await function()
+    } catch {
+        expectUnchanged(before, DefaultsDomainSnapshot.read(domain), sourceLocation: sourceLocation)
+        throw error
+    }
     expectUnchanged(before, DefaultsDomainSnapshot.read(domain), sourceLocation: sourceLocation)
 }
 
-/// RF5: a defaults domain read before and after a whole suite and required unchanged — for
-/// `.leavesTheRealDefaultsAlone`, the user's real `dev.penzin.Gitter` domain. Read only: nothing
-/// here writes the domain it watches. Its control (`DefaultsIsolationTests`) runs the same scope
-/// over a scratch suite named like the real one, never the real one.
+/// RF5: a defaults domain read before and after each test of a suite, and required unchanged —
+/// for `.leavesTheRealDefaultsAlone`, the user's real `dev.penzin.Gitter` domain. Read only:
+/// nothing here writes the domain it watches. Its controls (`DefaultsIsolationTests`) run the same
+/// scope over a scratch suite named like the real one, never the real one.
 ///
-/// A failure here is the suite's issue: Swift Testing reports it and fails its run, but
-/// `xcodebuild test` 27 still says TEST SUCCEEDED (measured), so `LeavesTheDomainUnchangedInEachTest`
-/// checks every test as well, where a failure fails the scheme.
-struct LeavesTheDomainUnchanged: SuiteTrait, TestScoping {
+/// Per test, not around the suite: on Xcode 27 an issue recorded in a suite's own scope crashes
+/// the test host ("Recording issues for suites is not supported", found in review). The scheme
+/// run's `defaults export` and `cmp` cover the time between tests.
+struct LeavesTheDomainUnchanged: SuiteTrait, TestTrait, TestScoping {
     static let realDomain = "dev.penzin.Gitter"
 
-    let domain: String
-
-    var isRecursive: Bool { false }
-
-    func scopeProvider(for test: Test, testCase: Test.Case?) -> Self? {
-        test.isSuite ? self : nil
-    }
-
-    func provideScope(
-        for test: Test, testCase: Test.Case?, performing function: @Sendable () async throws -> Void
-    ) async throws {
-        try await checkingDomainUnchanged(domain, function)
-    }
-}
-
-/// `LeavesTheDomainUnchanged` around each test case of a suite instead of the suite as a whole.
-struct LeavesTheDomainUnchangedInEachTest: SuiteTrait, TestTrait, TestScoping {
     let domain: String
 
     var isRecursive: Bool { true }
@@ -132,11 +142,6 @@ struct LeavesTheDomainUnchangedInEachTest: SuiteTrait, TestTrait, TestScoping {
 }
 
 extension Trait where Self == LeavesTheDomainUnchanged {
-    /// The real domain, before and after the whole suite.
-    static var leavesTheRealDefaultsAlone: Self { Self(domain: LeavesTheDomainUnchanged.realDomain) }
-}
-
-extension Trait where Self == LeavesTheDomainUnchangedInEachTest {
     /// The real domain, before and after each of the suite's tests.
-    static var leavesTheRealDefaultsAloneInEachTest: Self { Self(domain: LeavesTheDomainUnchanged.realDomain) }
+    static var leavesTheRealDefaultsAlone: Self { Self(domain: LeavesTheDomainUnchanged.realDomain) }
 }
