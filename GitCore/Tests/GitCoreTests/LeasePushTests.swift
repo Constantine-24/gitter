@@ -785,7 +785,7 @@ import Testing
             call.cancel()
             guard let thrown = await call.value("attempt \(attempt)") else {
                 // The wrapper's `sleep` outlasts the limit: SIGKILLed with git's whole group.
-                _ = try? killOwnGroups(matching: sleep)
+                killLeftovers([sleep])
                 return
             }
             #expect(thrown is CancellationError, "attempt \(attempt): \(String(describing: thrown))")
@@ -829,7 +829,7 @@ import Testing
 
         call.cancel()
         guard let thrown = await call.value("the force push, cancelled for real") else {
-            _ = try? killOwnGroups(matching: sleep)
+            killLeftovers([sleep])
             return
         }
         #expect(thrown is CancellationError)

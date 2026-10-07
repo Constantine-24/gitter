@@ -343,7 +343,7 @@ private final class Locked<Value>: @unchecked Sendable {
         try await Task.sleep(for: .milliseconds(300))
         call.cancel()
         guard let error = await call.value() else {
-            Self.killLeftovers([Self.sleepToken(duration)])
+            killLeftovers([Self.sleepToken(duration)])
             return
         }
 
@@ -385,7 +385,7 @@ private final class Locked<Value>: @unchecked Sendable {
     ///
     /// `leftovers` are the markers its processes carry on their command lines — the fixture's
     /// unique file name, and its `sleep`'s unique duration where it has one. A test whose call
-    /// never came back kills them by group (`killLeftovers`), so a fixture that outlasts the
+    /// never came back kills them by group (`killLeftovers`, `RemoteTestSupport.swift`), so a fixture that outlasts the
     /// time limit does not outlive the failed test.
     private struct TrappedChild {
         let call: CallUnderTest<Error?>
@@ -437,7 +437,7 @@ private final class Locked<Value>: @unchecked Sendable {
             Issue.record("the runner never reported a launch", sourceLocation: sourceLocation)
             call.cancel()
             if await call.value("the child that never reported a launch") == nil {
-                Self.killLeftovers(leftovers)
+                killLeftovers(leftovers)
             }
             throw CancellationError()
         }
@@ -455,7 +455,7 @@ private final class Locked<Value>: @unchecked Sendable {
         try await Task.sleep(for: .milliseconds(300))
         #expect(kill(started.pid, 0) == 0, "the trapped child died on its SIGTERM")
 
-        #expect(Self.killLeftovers(started.leftovers) == [started.pid])
+        #expect(killLeftovers(started.leftovers) == [started.pid])
         #expect(await started.call.value("the call, its group killed") is CancellationError)
         #expect(await Self.groupIsGone(started.pid))
     }
@@ -487,7 +487,7 @@ private final class Locked<Value>: @unchecked Sendable {
         let cancelledAt = clock.now
         call.cancel()
         guard let error = await call.value() else {
-            Self.killLeftovers(started.leftovers)
+            killLeftovers(started.leftovers)
             return
         }
         let elapsed = clock.now - cancelledAt
@@ -524,7 +524,7 @@ private final class Locked<Value>: @unchecked Sendable {
         let cancelledAt = clock.now
         started.call.cancel()
         guard let error = await started.call.value() else {
-            Self.killLeftovers(started.leftovers)
+            killLeftovers(started.leftovers)
             return
         }
         let elapsed = clock.now - cancelledAt
@@ -549,7 +549,7 @@ private final class Locked<Value>: @unchecked Sendable {
 
         started.call.cancel()
         guard let error = await started.call.value() else {
-            Self.killLeftovers(started.leftovers)
+            killLeftovers(started.leftovers)
             return
         }
 
@@ -620,7 +620,7 @@ private final class Locked<Value>: @unchecked Sendable {
             // Never leave the script running behind a failed test.
             call.cancel()
             if await call.value("the script that never reported a launch") == nil {
-                Self.killLeftovers(leftovers)
+                killLeftovers(leftovers)
             }
             throw CancellationError()
         }
@@ -659,7 +659,7 @@ private final class Locked<Value>: @unchecked Sendable {
         let cancelledAt = clock.now
         started.call.cancel()
         guard let error = await started.call.value() else {
-            Self.killLeftovers(started.leftovers)
+            killLeftovers(started.leftovers)
             return
         }
         let elapsed = clock.now - cancelledAt
@@ -695,7 +695,7 @@ private final class Locked<Value>: @unchecked Sendable {
 
         started.call.cancel()
         guard let error = await started.call.value() else {
-            Self.killLeftovers(started.leftovers)
+            killLeftovers(started.leftovers)
             return
         }
 
@@ -734,7 +734,7 @@ private final class Locked<Value>: @unchecked Sendable {
         let cancelledAt = clock.now
         started.call.cancel()
         guard let error = await started.call.value() else {
-            Self.killLeftovers(started.leftovers)
+            killLeftovers(started.leftovers)
             return
         }
         let elapsed = clock.now - cancelledAt
@@ -744,7 +744,7 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(elapsed > .milliseconds(550), "returned before the abandonment: \(elapsed)")
         #expect(Self.processCount(matching: sleep) == 1)
         // The job's own group, which `set -m` made for it and the runner never reaches.
-        #expect(Self.killLeftovers([sleep]).count == 1)
+        #expect(killLeftovers([sleep]).count == 1)
         #expect(await Self.waitForNoProcess(matching: sleep))
     }
 
@@ -774,7 +774,7 @@ private final class Locked<Value>: @unchecked Sendable {
         let cancelledAt = clock.now
         started.call.cancel()
         guard let error = await started.call.value() else {
-            Self.killLeftovers(started.leftovers)
+            killLeftovers(started.leftovers)
             return
         }
         let elapsed = clock.now - cancelledAt
@@ -784,7 +784,7 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(elapsed > .milliseconds(550), "returned before the abandonment: \(elapsed)")
         #expect(Self.processCount(matching: sleep) == 1)
         // The reaped leader's group, read from its live `sleep`: the number still names it.
-        #expect(Self.killLeftovers([sleep]) == [started.pid])
+        #expect(killLeftovers([sleep]) == [started.pid])
         #expect(await Self.waitForNoProcess(matching: sleep))
     }
 
@@ -820,7 +820,7 @@ private final class Locked<Value>: @unchecked Sendable {
 
             started.call.cancel()
             guard let error = await started.call.value("attempt \(attempt)") else {
-                Self.killLeftovers(started.leftovers)
+                killLeftovers(started.leftovers)
                 return
             }
             #expect(error is CancellationError)
@@ -853,7 +853,7 @@ private final class Locked<Value>: @unchecked Sendable {
                 })
             started.call.cancel()
             guard let error = await started.call.value("attempt \(attempt)") else {
-                Self.killLeftovers(started.leftovers)
+                killLeftovers(started.leftovers)
                 return
             }
             #expect(error is CancellationError)
@@ -893,7 +893,7 @@ private final class Locked<Value>: @unchecked Sendable {
 
         // The group is this call's own: still alive, since its `sleep` ignores the SIGTERM.
         try #require(kill(-group, 0) == 0)
-        #expect(Self.killLeftovers(started.leftovers) == [group])
+        #expect(killLeftovers(started.leftovers) == [group])
         #expect(await started.call.value("the call, its group killed") is CancellationError)
         #expect(await Self.groupIsGone(group))
     }
@@ -939,7 +939,7 @@ private final class Locked<Value>: @unchecked Sendable {
             #expect(error == nil, "the call came back: \(String(describing: error))")
         } matching: { $0.isNeverCameBack }
 
-        #expect(Self.killLeftovers([sleep]).count == 1)
+        #expect(killLeftovers([sleep]).count == 1)
         #expect(await started.call.value("the call, its sleep killed") is CancellationError)
         #expect(await Self.waitForNoProcess(matching: sleep))
         // The leader of the `wait` fixture died on its SIGTERM; nothing of the call is left.
@@ -967,7 +967,7 @@ private final class Locked<Value>: @unchecked Sendable {
         let cancelledAt = clock.now
         started.call.cancel()
         guard let error = await started.call.value() else {
-            Self.killLeftovers(started.leftovers)
+            killLeftovers(started.leftovers)
             return
         }
         let elapsed = clock.now - cancelledAt
@@ -977,7 +977,7 @@ private final class Locked<Value>: @unchecked Sendable {
         // Out of the runner's reach, as the doc comment says — and cleaned up here, by the
         // group `set -m` made for it.
         #expect(Self.processCount(matching: sleep) == 1)
-        #expect(Self.killLeftovers([sleep]).count == 1)
+        #expect(killLeftovers([sleep]).count == 1)
         #expect(await Self.waitForNoProcess(matching: sleep))
     }
 
@@ -1037,7 +1037,7 @@ private final class Locked<Value>: @unchecked Sendable {
             try await ProcessRunner().runStreaming(
                 "/bin/sh", ["-c", "echo quick; echo noise >&2", token], cwd: Self.root, onStderr: { _ in })
         }) else {
-            Self.killLeftovers([token])
+            killLeftovers([token])
             return
         }
         // Both outcomes really did occur, so neither branch's assertions were skipped.
@@ -1303,22 +1303,6 @@ private final class Locked<Value>: @unchecked Sendable {
             try? await Task.sleep(for: .milliseconds(10))
         }
         return false
-    }
-
-    /// The failure-path cleanup: SIGKILLs, by group, every process of the test's own that
-    /// carries one of `markers` (`killOwnGroups`), and returns the groups it killed. A fixture
-    /// whose call never came back runs on past the time limit otherwise, into the next tests.
-    @discardableResult
-    private static func killLeftovers(_ markers: [String]) -> Set<pid_t> {
-        var killed: Set<pid_t> = []
-        for marker in markers {
-            do {
-                killed.formUnion(try killOwnGroups(matching: marker))
-            } catch {
-                Issue.record("could not look for the leftovers under \(marker): \(error)")
-            }
-        }
-        return killed
     }
 
     /// How many of the test's own live processes have `token` on their command line

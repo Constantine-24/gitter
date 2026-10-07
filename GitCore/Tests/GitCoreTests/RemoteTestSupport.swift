@@ -197,6 +197,25 @@ func killOwnGroups(matching marker: String) throws -> Set<pid_t> {
     return killed
 }
 
+/// The failure-path cleanup every suite shares: SIGKILLs, by group, every process of the
+/// test's own that carries one of `markers` (`killOwnGroups`), and returns the groups it
+/// killed. A query that fails is recorded, never swallowed — a cleanup that could not look
+/// leaves a fixture running past the test, and the run should say so.
+@discardableResult
+func killLeftovers(
+    _ markers: [String], sourceLocation: SourceLocation = #_sourceLocation
+) -> Set<pid_t> {
+    var killed: Set<pid_t> = []
+    for marker in markers {
+        do {
+            killed.formUnion(try killOwnGroups(matching: marker))
+        } catch {
+            Issue.record("could not look for the leftovers under \(marker): \(error)", sourceLocation: sourceLocation)
+        }
+    }
+    return killed
+}
+
 /// Whether every process of ours under `marker` is gone, polled for up to two seconds: a
 /// killed fixture's `sleep` is reaped by launchd after its parent shell died, which is prompt
 /// rather than instant.
@@ -239,10 +258,13 @@ func waitForNoOwnProcess(matching marker: String) async throws -> Bool {
     @Test(.timeLimit(.minutes(10))) func aDecoyUnderAnotherMarkerIsNeitherCountedNorKilled() async throws {
         let marker = "gitter-own-\(UUID().uuidString)"
         let decoyMarker = "gitter-decoy-\(UUID().uuidString)"
+        // Each is killed by its group on any way out — a `try` that throws included — but only
+        // while that group is surely still the test's: a defer that ran after the group was
+        // seen gone could reach a group someone has since made with the number.
         let ours = try Self.startMarked(marker)
+        var oursLeft = true
+        defer { if oursLeft { killOwnGroup(ours.group) } }
         let decoy = try Self.startMarked(decoyMarker)
-        // Only while the decoy is surely unreaped: a defer that ran after the kill below could
-        // reach a process that has since taken its number.
         var decoyLeft = true
         defer { if decoyLeft { killOwnGroup(decoy.group) } }
         try #require(isKillableOwnGroup(ours.group) && isKillableOwnGroup(decoy.group))
@@ -257,7 +279,9 @@ func waitForNoOwnProcess(matching marker: String) async throws -> Bool {
         // The leak check does not count it, and the cleanup does not kill it.
         #expect(try !ownProcesses(matching: marker).contains(decoy.pid))
         #expect(try killOwnGroups(matching: marker) == [ours.group])
-        #expect(await Self.groupIsGone(ours.group), "the test's own process survived its cleanup")
+        let oursGone = await Self.groupIsGone(ours.group)
+        oursLeft = !oursGone
+        #expect(oursGone, "the test's own process survived its cleanup")
         #expect(try await waitForNoOwnProcess(matching: marker))
         #expect(kill(decoy.pid, 0) == 0, "the cleanup killed a process that was not the test's")
         #expect(kill(-decoy.group, 0) == 0)
@@ -267,8 +291,9 @@ func waitForNoOwnProcess(matching marker: String) async throws -> Bool {
         // it made.
         #expect(kill(decoy.pid, SIGKILL) == 0)
         killOwnGroup(decoy.group)
-        decoyLeft = false
-        #expect(await Self.groupIsGone(decoy.group))
+        let decoyGone = await Self.groupIsGone(decoy.group)
+        decoyLeft = !decoyGone
+        #expect(decoyGone)
     }
 
     /// Control: a leak check finds a process that really is running under its marker, so the
@@ -276,12 +301,17 @@ func waitForNoOwnProcess(matching marker: String) async throws -> Bool {
     @Test(.timeLimit(.minutes(10))) func aLeakCheckFailsOnAProcessThatIsStillRunning() async throws {
         let marker = "gitter-leak-\(UUID().uuidString)"
         let leaked = try Self.startMarked(marker)
+        // As in the decoy proof: killed on any way out while its group is surely the test's.
+        var leakedLeft = true
+        defer { if leakedLeft { killOwnGroup(leaked.group) } }
         let found = try ownProcesses(matching: marker)
         withKnownIssue("the marked process really is running") {
             #expect(found.isEmpty, "left running: \(found)")
         }
         #expect(killOwnGroup(leaked.group))
-        #expect(await Self.groupIsGone(leaked.group))
+        let gone = await Self.groupIsGone(leaked.group)
+        leakedLeft = !gone
+        #expect(gone)
     }
 
     /// Control: the refusals that make `killOwnGroup` safe to call on a failure path. Asked of
@@ -298,6 +328,14 @@ func waitForNoOwnProcess(matching marker: String) async throws -> Bool {
     /// An empty marker would match every process the user has; it is refused, not asked.
     @Test func anEmptyMarkerIsRefused() {
         #expect(throws: OwnProcessQueryFailed.self) { try ownProcesses(matching: "") }
+    }
+
+    /// Control: the shared cleanup records a query that failed — here the refused empty
+    /// marker — rather than returning as if nothing were left.
+    @Test func aCleanupWhoseQueryFailsIsRecorded() {
+        withKnownIssue("the query for an empty marker is refused") {
+            #expect(killLeftovers([""]).isEmpty)
+        } matching: { $0.comments.contains { $0.rawValue.contains("could not look for the leftovers") } }
     }
 }
 

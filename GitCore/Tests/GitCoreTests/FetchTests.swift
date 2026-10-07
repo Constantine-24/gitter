@@ -494,7 +494,7 @@ import Testing
         /// outlasts the time limit, so it is SIGKILLed with git's whole process group — the
         /// runner's, read from the `sleep` itself.
         func killTransport() {
-            _ = try? killOwnGroups(matching: "sleep \(marker)")
+            killLeftovers(["sleep \(marker)"])
         }
     }
 

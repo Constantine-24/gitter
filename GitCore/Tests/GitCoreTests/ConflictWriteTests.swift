@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import Testing
@@ -578,8 +579,11 @@ func assertOnlyThePathChanged(
         let receipt = try await Self.backend.keep(snapshot, recordIfEdited: false, at: repo.root)
 
         #expect(receipt == ConflictReceipt(path: "ud.txt", recorded: nil))
-        let blob = String(decoding: try await repo.git(["hash-object", "--", "ud.txt"]), as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // The edit's own blob, computed from the literal bytes — not from the file after the
+        // write, which would agree with whatever the write left there.
+        let edit = Data("u EDITED\n".utf8)
+        let blob = Insecure.SHA1.hash(data: Data("blob \(edit.count)\0".utf8) + edit)
+            .map { String(format: "%02x", $0) }.joined()
         #expect(try await Self.entry(repo, "ud.txt") == "100644 \(blob) 0\tud.txt\n")
         #expect(try repo.bytes("ud.txt") == Data("u EDITED\n".utf8))
         #expect(try await repo.stashCount() == 0)
