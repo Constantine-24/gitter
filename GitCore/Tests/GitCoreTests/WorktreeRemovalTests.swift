@@ -889,7 +889,11 @@ import Testing
     /// Cancelled while git would be removing: whether the worktree is gone is not known, and
     /// the error says so — never "nothing happened". Not vacuous: uncancelled, the stall ends and
     /// git removes the worktree, and nothing is thrown.
-    @Test func aCancelledRemovalIsOutcomeUnknown() async throws {
+    ///
+    /// It waits for git's removal to start with no deadline of its own: a 60 s one stood here,
+    /// which load could exceed, and then the test cancelled too early and failed for the wrong
+    /// reason. A wait that never ends is the time limit's (`TimeLimitSupport.swift`).
+    @Test(.timeLimit(.minutes(10))) func aCancelledRemovalIsOutcomeUnknown() async throws {
         let (fixture, _) = try await fixtureWithWorktree()
         defer { fixture.cleanUp() }
         let removal = try await check(fixture, "wt")
@@ -899,14 +903,17 @@ import Testing
         let backend = git.backend
         let root = fixture.repo.root
 
-        let task = Task { try await backend.removeWorktree(removal, keeping: [:], at: root) }
-        let clock = ContinuousClock()
-        let start = clock.now
-        while !FileManager.default.fileExists(atPath: started), clock.now - start < .seconds(60) {
-            try await Task.sleep(for: .milliseconds(20))
+        let call = CallUnderTest { () -> Result<[String], Error> in
+            do {
+                return .success(try await backend.removeWorktree(removal, keeping: [:], at: root))
+            } catch {
+                return .failure(error)
+            }
         }
-        task.cancel()
-        let error = await thrownError { _ = try await task.value }
+        while !FileManager.default.fileExists(atPath: started) { try await Task.sleep(for: .milliseconds(20)) }
+        call.cancel()
+        guard let outcome = await call.value("the cancelled removal") else { return }
+        let error = await thrownError { _ = try outcome.get() }
 
         #expect(error as? WorktreeRemovalPartial == .outcomeUnknown(keptBranches: []))
     }

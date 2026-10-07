@@ -690,27 +690,20 @@ import Testing
 
     // MARK: - Cancellation
 
-    /// Twenty pushes held open by a deliberately slow `receive-pack` and cancelled as soon as
-    /// the transport is really running. Every one must throw `CancellationError` promptly; the
-    /// repository must be sound afterwards, with no `*.lock` left behind and no orphaned
-    /// transport.
+    /// Sets `remote.origin.receivepack` to a script that touches `started`, sleeps
+    /// `sleep <marker>` and only then `exec`s the real `git-receive-pack` — the push-side twin
+    /// of `FetchTests`' slow `upload-pack`. Verified on git 2.54 that the config is honoured for
+    /// a plain path remote, so this needs no ssh and no server. Returns the `sleep`'s pattern.
     ///
-    /// The wrapper is the push-side twin of `FetchTests`' slow `upload-pack`: a script set as
-    /// `remote.origin.receivepack` that touches a marker file, sleeps, and only then `exec`s
-    /// the real `git-receive-pack`. Verified on git 2.54 that the config is honoured for a
-    /// plain path remote, so this needs no ssh and no server.
-    ///
-    /// The sleep's duration carries a random suffix so `pgrep -f` finds *this* test's
-    /// grandchild and nothing else on the machine.
-    @Test func twentyCancelledPushesAllEndAtOnceAndLeaveTheRepositorySound() async throws {
-        let repo = try await TestRepo.makeBranched()
-        defer { repo.cleanUp() }
-        let origin = try await repo.addOriginWithFeatureBranch()
-        defer { try? FileManager.default.removeItem(at: origin) }
-
-        let marker = "53.\(UInt32.random(in: 100_000...999_999))"
+    /// The marker is written by the process that `exec`s into `sleep`, so the `sleep` is a member
+    /// of the push's process group before the test can see the marker. (The wrapper used to write
+    /// it and *then* fork `sleep`: a SIGTERM to the group landing in that window reached the
+    /// shell but not the child it was forking, and the orphaned `sleep` held stderr open for its
+    /// whole length — measured once at 53.2 s under load.) The sleep outlasts the ten-minute
+    /// time limit, and its random suffix lets `pgrep -f` find *this* test's grandchild alone.
+    static func installSlowReceivePack(in repo: TestRepo, started: URL) async throws -> String {
+        let marker = "66\(UInt32.random(in: 0...9)).\(UInt32.random(in: 100_000...999_999))"
         let script = ".git/slow-receive-pack.sh"
-        let started = repo.root.appendingPathComponent(".git/slow-receive-pack.started")
         try repo.writeExecutable(
             script,
             """
@@ -722,6 +715,56 @@ import Testing
         try await repo.git([
             "config", "remote.origin.receivepack", repo.root.appendingPathComponent(script).path,
         ])
+        return "sleep \(marker)"
+    }
+
+    /// Waits for a push's slow transport to be really running: cancelling a push that has not
+    /// started would prove nothing, so it waits for the transport's own marker rather than for
+    /// a duration.
+    static func waitForSlowTransport(_ started: URL, _ attempt: Int, sourceLocation: SourceLocation = #_sourceLocation)
+        async throws
+    {
+        for _ in 0..<250 where !FileManager.default.fileExists(atPath: started.path) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(FileManager.default.fileExists(atPath: started.path),
+                "attempt \(attempt): the slow transport never started", sourceLocation: sourceLocation)
+    }
+
+    /// No process matches `pattern` any more, polled for up to two seconds: a transport's
+    /// `sleep` is reaped by launchd after its parent shell died, which is not instantaneous.
+    static func expectNoTransportLeft(_ pattern: String, sourceLocation: SourceLocation = #_sourceLocation)
+        async throws
+    {
+        var leftovers = try await processesMatching(pattern)
+        for _ in 0..<20 where !leftovers.isEmpty {
+            try await Task.sleep(for: .milliseconds(100))
+            leftovers = try await processesMatching(pattern)
+        }
+        #expect(leftovers.isEmpty, "a slow transport outlived its cancel: \(leftovers)", sourceLocation: sourceLocation)
+    }
+
+    /// Twenty pushes held open by a deliberately slow `receive-pack` and cancelled as soon as
+    /// the transport is really running. Every one must throw `CancellationError`; the
+    /// repository must be sound afterwards, with no `*.lock` left behind and no orphaned
+    /// transport.
+    ///
+    /// That the cancel ended each push, rather than the push ending by itself once the
+    /// wrapper's sleep ran out, is the time limit's: the sleep outlasts it. A `< 20 s` per
+    /// attempt on the test's clock stood here, which load could exceed; the control is
+    /// `aPushTheCancelDidNotStopIsReportedOnceTheTestIsCancelled`. Since Task 7's fix round the
+    /// runner itself also kills an orphaned transport (its escalation outlives git's reap), so
+    /// neither the bound nor the limit would notice one: the `pgrep` for the `sleep`, and the
+    /// lock, fsck and state checks below, are what prove the child is gone and the
+    /// repositories intact.
+    @Test(.timeLimit(.minutes(10))) func twentyCancelledPushesAllEndAtOnceAndLeaveTheRepositorySound() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        let started = repo.root.appendingPathComponent(".git/slow-receive-pack.started")
+        let sleep = try await Self.installSlowReceivePack(in: repo, started: started)
 
         try await repo.git(["switch", "-q", "-c", "slowly"])
         try repo.write("slowly.txt", "slowly\n")
@@ -730,60 +773,28 @@ import Testing
         let before = try await RepoState.capture(repo)
         let worktreeBefore = worktreeSnapshot(repo)
         let serverBefore = try await RemoteState.capture(origin)
-        let clock = ContinuousClock()
+        let root = repo.root
 
         for attempt in 0..<20 {
             try? FileManager.default.removeItem(at: started)
-            let task = Task { () -> Error? in
+            let call = CallUnderTest { () -> Error? in
                 do {
                     _ = try await CLIGitBackend().push(
                         "slowly", to: "origin", remoteRef: "refs/heads/slowly", setUpstream: false,
-                        at: repo.root, progress: { _ in })
+                        at: root, progress: { _ in })
                     return nil
                 } catch {
                     return error
                 }
             }
+            try await Self.waitForSlowTransport(started, attempt)
 
-            // Cancelling a push that has not started would prove nothing, so wait for the
-            // transport's own marker rather than for a duration.
-            for _ in 0..<250 where !FileManager.default.fileExists(atPath: started.path) {
-                try await Task.sleep(for: .milliseconds(20))
-            }
-            #expect(FileManager.default.fileExists(atPath: started.path),
-                    "attempt \(attempt): the slow transport never started")
-
-            let cancelledAt = clock.now
-            task.cancel()
-            let thrown = await task.value
+            call.cancel()
+            guard let thrown = await call.value("attempt \(attempt)") else { return }
             #expect(thrown is CancellationError, "attempt \(attempt): \(String(describing: thrown))")
-            // The bound proves the cancel ended the push rather than the push ending by
-            // itself: the wrapper sleeps 53+ s before `receive-pack` starts, so a push the
-            // cancel did not stop cannot return in under that. 20 s is about 2.6× below the
-            // sleep (53–54 s against 20 s — not the "order of magnitude" this
-            // comment used to claim) and far above any scheduling delay; it was 3 s. The margin
-            // is enough for what the bound proves: a cancel that did not stop the push, or an
-            // orphan holding stderr for the whole sleep, fails it.
-            //
-            // **The old flake was not slowness.** Measured under load: the failing cancel took
-            // 53.2 s — the whole sleep. The wrapper used to write its marker and *then* fork
-            // `sleep`, and a SIGTERM to the process group landing in that window reached the
-            // shell but not the child it was forking; the orphaned `sleep` then held the stderr
-            // pipe open until it finished. The marker is now written by the process that
-            // `exec`s into `sleep`, so it is a member of the group before the test can see it.
-            // Since Task 7's fix round the runner itself also kills such an orphan (its
-            // escalation now outlives git's reap), so the bound alone would no longer notice
-            // one: the `pgrep` for `sleep <marker>`, and the lock, fsck and state checks
-            // below, are what prove the child is gone and the repositories intact.
-            #expect(clock.now - cancelledAt < .seconds(20), "attempt \(attempt)")
         }
 
-        var leftovers = try await processesMatching("sleep \(marker)")
-        for _ in 0..<20 where !leftovers.isEmpty {
-            try await Task.sleep(for: .milliseconds(100))
-            leftovers = try await processesMatching("sleep \(marker)")
-        }
-        #expect(leftovers.isEmpty, "a slow transport outlived its cancel: \(leftovers)")
+        try await Self.expectNoTransportLeft(sleep)
 
         #expect(try await repo.fsckComplaints() == "")
         #expect(repo.lockFiles() == [])
@@ -792,6 +803,50 @@ import Testing
         // server never heard about the push at all. That is a property of the fixture and not
         // a promise of the API: see `GitRemoteBackend.push` for why a cancelled push in general
         // says nothing about what reached the server.
+        try await assertRemoteUnchanged(origin, since: serverBefore)
+    }
+
+    /// The control for the test above's hang guard: a push the cancel did not stop — here, one
+    /// never cancelled — is still waiting on the wrapper's sleep when the time limit cancels the
+    /// test, and the test reports it. The limit is stood in for by a waiting task this test
+    /// cancels (`TimeLimitSupport.swift`); then the push is cancelled for real, and nothing is
+    /// left behind.
+    @Test func aPushTheCancelDidNotStopIsReportedOnceTheTestIsCancelled() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+        let started = repo.root.appendingPathComponent(".git/slow-receive-pack.started")
+        let sleep = try await Self.installSlowReceivePack(in: repo, started: started)
+        try await repo.git(["switch", "-q", "-c", "slowly"])
+        try repo.write("slowly.txt", "slowly\n")
+        try await repo.commitAll("slowly")
+        let serverBefore = try await RemoteState.capture(origin)
+        let root = repo.root
+
+        let call = CallUnderTest { () -> Error? in
+            do {
+                _ = try await CLIGitBackend().push(
+                    "slowly", to: "origin", remoteRef: "refs/heads/slowly", setUpstream: false,
+                    at: root, progress: { _ in })
+                return nil
+            } catch {
+                return error
+            }
+        }
+        try await Self.waitForSlowTransport(started, 0)
+
+        await withKnownIssue("the push is not cancelled, so it waits on the wrapper's sleep") {
+            let waiter = Task { await call.value("the push") }
+            try await Task.sleep(for: .milliseconds(300))
+            waiter.cancel()
+            let thrown = await waiter.value
+            #expect(thrown == nil, "the push came back: \(String(describing: thrown))")
+        }
+
+        call.cancel()
+        #expect(await call.task.value is CancellationError)
+        try await Self.expectNoTransportLeft(sleep)
         try await assertRemoteUnchanged(origin, since: serverBefore)
     }
 

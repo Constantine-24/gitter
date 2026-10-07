@@ -400,104 +400,150 @@ import Testing
 
     // MARK: - Cancellation
 
-    /// A fetch held open by a deliberately slow transport, cancelled: it must end at once, and
-    /// the repository must be exactly as sound afterwards as it was before.
+    /// A repository whose `origin` has a commit to fetch, behind a deliberately slow transport:
+    /// a shell script set as `remote.origin.uploadpack` that touches `started`, sleeps
+    /// `sleep <marker>` and only then `exec`s the real `git-upload-pack`. Verified on git 2.54
+    /// that the config is honoured for a plain path remote, so this needs no ssh and no server.
     ///
-    /// The slow transport is the design document's: a shell script set as
-    /// `remote.origin.uploadpack` that sleeps and only then `exec`s the real `git-upload-pack`.
-    /// Verified on git 2.54 that the config is honoured for a plain path remote, so this needs
-    /// no ssh and no server.
-    ///
-    /// The sleep's duration carries a random suffix so `pgrep -f` can find *this* test's
-    /// grandchild and nothing else on the machine — a developer's own `sleep 47` must neither
-    /// fail this test nor satisfy it.
+    /// The sleep outlasts the tests' ten-minute time limit, so a fetch that waits it out is a
+    /// hang the limit reports (`TimeLimitSupport.swift`); its random suffix lets `pgrep -f` find
+    /// *this* test's grandchild and nothing else on the machine — a developer's own `sleep` must
+    /// neither fail the test nor satisfy it.
+    private struct SlowFetch {
+        let repo: TestRepo
+        let origin: URL
+        let colleague: TestRepo
+        let marker: String
+        let started: URL
+
+        static func make() async throws -> SlowFetch {
+            let repo = try await TestRepo.makeBranched()
+            let origin = try await repo.addOriginWithFeatureBranch()
+            let colleague = try await repo.addColleague()
+            try colleague.write("colleague.txt", "theirs\n")
+            try await colleague.commitAll("the colleague's commit")
+            try await colleague.git(["push", "-q", "origin", "main"])
+
+            let marker = "66\(UInt32.random(in: 0...9)).\(UInt32.random(in: 100_000...999_999))"
+            let script = ".git/slow-upload-pack.sh"
+            let started = repo.root.appendingPathComponent(".git/slow-upload-pack.started")
+            // The script touches a file before it sleeps, so "has the transport started?" is a
+            // `stat` rather than a `pgrep`. That is not tidiness: polling `pgrep -f` every 20 ms
+            // spawns a process that walks the whole process table fifty times a second, and Swift
+            // Testing runs suites in parallel — the load that produced was enough to push
+            // `StreamingRunnerTests.theKillGracePeriodIsHonoured` past the tight upper bound it
+            // had then, in roughly one full-suite run in five. `pgrep` is still what answers "is
+            // it really running" and "did it outlive the cancel", but twice, not fifty times.
+            try repo.writeExecutable(
+                script,
+                """
+                #!/bin/sh
+                : > "\(started.path)"
+                sleep \(marker)
+                exec git-upload-pack "$@"
+
+                """)
+            try await repo.git([
+                "config", "remote.origin.uploadpack", repo.root.appendingPathComponent(script).path,
+            ])
+            return SlowFetch(repo: repo, origin: origin, colleague: colleague, marker: marker, started: started)
+        }
+
+        func cleanUp() {
+            colleague.cleanUp()
+            try? FileManager.default.removeItem(at: origin)
+            repo.cleanUp()
+        }
+
+        /// Starts the fetch and returns once the transport is really running: cancelling a
+        /// fetch that had not started would prove nothing.
+        func startFetch() async throws -> CallUnderTest<Error?> {
+            let root = repo.root
+            let call = CallUnderTest { () -> Error? in
+                do {
+                    try await CLIGitBackend().fetch(remote: "origin", at: root, progress: { _ in })
+                    return nil
+                } catch {
+                    return error
+                }
+            }
+            for _ in 0..<250 where !FileManager.default.fileExists(atPath: started.path) {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            let running = try await processesMatching("sleep \(marker)")
+            #expect(!running.isEmpty, "the slow transport never started, so the cancel proves nothing")
+            return call
+        }
+
+        /// The transport's `sleep` is gone. The pipes only reach EOF once every process holding
+        /// them has closed them, so it is already dead by the time the call returns; the short
+        /// wait is about it being *reaped* by launchd after its parent shell died, which is not
+        /// instantaneous.
+        func expectTransportGone(sourceLocation: SourceLocation = #_sourceLocation) async throws {
+            var leftovers = try await processesMatching("sleep \(marker)")
+            for _ in 0..<20 where !leftovers.isEmpty {
+                try await Task.sleep(for: .milliseconds(100))
+                leftovers = try await processesMatching("sleep \(marker)")
+            }
+            #expect(leftovers.isEmpty, "the slow transport outlived the cancel: \(leftovers)",
+                    sourceLocation: sourceLocation)
+        }
+    }
+
+    /// A fetch held open by a deliberately slow transport, cancelled: it must end, and the
+    /// repository must be exactly as sound afterwards as it was before.
     ///
     /// Four things are asserted after the cancel, and each is a way this could have gone wrong:
-    /// the call threw `CancellationError` promptly, the object store is sound, no `*.lock` was
-    /// left anywhere under `.git`, and the slow transport's process is gone rather than orphaned.
-    @Test func cancellingASlowFetchEndsAtOnceAndLeavesTheRepositorySound() async throws {
-        let repo = try await TestRepo.makeBranched()
-        defer { repo.cleanUp() }
-        let origin = try await repo.addOriginWithFeatureBranch()
-        defer { try? FileManager.default.removeItem(at: origin) }
-        let colleague = try await repo.addColleague()
-        defer { colleague.cleanUp() }
-
-        try colleague.write("colleague.txt", "theirs\n")
-        try await colleague.commitAll("the colleague's commit")
-        try await colleague.git(["push", "-q", "origin", "main"])
-
-        let marker = "47.\(UInt32.random(in: 100_000...999_999))"
-        let script = ".git/slow-upload-pack.sh"
-        let started = repo.root.appendingPathComponent(".git/slow-upload-pack.started")
-        // The script touches a file before it sleeps, so "has the transport started?" is a
-        // `stat` rather than a `pgrep`. That is not tidiness: polling `pgrep -f` every 20 ms
-        // spawns a process that walks the whole process table fifty times a second, and Swift
-        // Testing runs suites in parallel — the load that produced was enough to push
-        // `StreamingRunnerTests.theKillGracePeriodIsHonoured` past the tight upper bound it
-        // had then, in roughly one full-suite run in five. (That test no longer has a tight
-        // bound: what it was trying to prove is proved by a *lower* one in
-        // `aLongKillGracePeriodIsReallyWaitedOut`, which load cannot break.) `pgrep` is still
-        // what answers "is it really running" and "did it outlive the cancel", but twice, not
-        // fifty times.
-        try repo.writeExecutable(
-            script,
-            """
-            #!/bin/sh
-            : > "\(started.path)"
-            sleep \(marker)
-            exec git-upload-pack "$@"
-
-            """)
-        try await repo.git([
-            "config", "remote.origin.uploadpack", repo.root.appendingPathComponent(script).path,
-        ])
-
+    /// the call threw `CancellationError`, the object store is sound, no `*.lock` was left
+    /// anywhere under `.git`, and the slow transport's process is gone rather than orphaned.
+    ///
+    /// That the cancel ended it, rather than the transport's sleep running out, is the time
+    /// limit's: the sleep outlasts it. A `< 3 s` on the test's clock stood here, a load could
+    /// exceed it (it spans two waits for a thread of the cooperative pool), and it did not
+    /// tell the SIGTERM from the 2 s escalation either. The control is
+    /// `aFetchTheCancelDidNotStopIsReportedOnceTheTestIsCancelled`.
+    @Test(.timeLimit(.minutes(10))) func cancellingASlowFetchEndsAtOnceAndLeavesTheRepositorySound() async throws {
+        let fixture = try await SlowFetch.make()
+        defer { fixture.cleanUp() }
+        let repo = fixture.repo
         let before = try await RepoState.capture(repo)
         let worktreeBefore = worktreeSnapshot(repo)
-        let serverBefore = try await RemoteState.capture(origin)
+        let serverBefore = try await RemoteState.capture(fixture.origin)
 
-        let clock = ContinuousClock()
-        let task = Task { () -> Error? in
-            do {
-                try await CLIGitBackend().fetch(
-                    remote: "origin", at: repo.root, progress: { _ in })
-                return nil
-            } catch {
-                return error
-            }
-        }
-
-        // Wait for the transport to really be running before cancelling: without this the test
-        // could pass by cancelling a fetch that had not started, which proves nothing.
-        for _ in 0..<250 where !FileManager.default.fileExists(atPath: started.path) {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        let running = try await processesMatching("sleep \(marker)")
-        #expect(!running.isEmpty, "the slow transport never started, so the cancel proves nothing")
-
-        let cancelledAt = clock.now
-        task.cancel()
-        let thrown = await task.value
-        let elapsed = clock.now - cancelledAt
+        let call = try await fixture.startFetch()
+        call.cancel()
+        guard let thrown = await call.value("the cancelled fetch") else { return }
 
         #expect(thrown is CancellationError, "\(String(describing: thrown))")
-        #expect(elapsed < .seconds(3), "\(elapsed)")
-
-        // The pipes only reach EOF once every process holding them has closed them, so the
-        // grandchild is already dead by the time the call returns; the short wait is about it
-        // being *reaped* by launchd after its parent shell died, which is not instantaneous.
-        var leftovers = try await processesMatching("sleep \(marker)")
-        for _ in 0..<20 where !leftovers.isEmpty {
-            try await Task.sleep(for: .milliseconds(100))
-            leftovers = try await processesMatching("sleep \(marker)")
-        }
-        #expect(leftovers.isEmpty, "the slow transport outlived the cancel: \(leftovers)")
+        try await fixture.expectTransportGone()
 
         #expect(try await repo.fsckComplaints() == "")
         #expect(repo.lockFiles() == [])
         try await assertRepoUnchanged(repo, since: before, worktree: worktreeBefore)
-        try await assertRemoteUnchanged(origin, since: serverBefore)
+        try await assertRemoteUnchanged(fixture.origin, since: serverBefore)
+    }
+
+    /// The control for the test above's hang guard: a fetch the cancel did not stop — here, one
+    /// never cancelled — is still waiting on its transport's sleep when the time limit cancels
+    /// the test, and the test reports it. The limit is stood in for by a waiting task this test
+    /// cancels (`TimeLimitSupport.swift`); then the fetch is cancelled for real, and nothing is
+    /// left behind.
+    @Test func aFetchTheCancelDidNotStopIsReportedOnceTheTestIsCancelled() async throws {
+        let fixture = try await SlowFetch.make()
+        defer { fixture.cleanUp() }
+        let call = try await fixture.startFetch()
+
+        await withKnownIssue("the fetch is not cancelled, so it waits on its transport's sleep") {
+            let waiter = Task { await call.value("the fetch") }
+            try await Task.sleep(for: .milliseconds(300))
+            waiter.cancel()
+            let thrown = await waiter.value
+            #expect(thrown == nil, "the fetch came back: \(String(describing: thrown))")
+        }
+
+        call.cancel()
+        #expect(await call.task.value is CancellationError)
+        try await fixture.expectTransportGone()
     }
 }
 

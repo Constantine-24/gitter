@@ -110,26 +110,48 @@ private final class Locked<Value>: @unchecked Sendable {
     /// a wall clock around the `await` measured 12 s of waiting for an executor while the run
     /// itself took well under one.
     @Test func aLongUnterminatedStderrLineIsScannedOnceAndDeliveredInBoundedPieces() async throws {
-        let clock = ContinuousClock()
-        let arrivals = Locked<[ContinuousClock.Instant]>([])
-        let collected = Locked<[String]>([])
-        let result = try await ProcessRunner().runStreaming(
-            "/bin/sh", ["-c", "head -c 2000000 /dev/zero | tr '\\0' x >&2"], cwd: Self.root,
-            onStderr: { segment in
-                let now = clock.now
-                arrivals.mutate { $0.append(now) }
-                collected.mutate { $0.append(segment) }
-            })
-        let segments = collected.current
-        let times = arrivals.current
-        let elapsed = (times.last ?? clock.now) - (times.first ?? clock.now)
+        let (result, segments, span) = try await stderrDeliverySpan(
+            "head -c 2000000 /dev/zero | tr '\\0' x >&2")
 
         #expect(result.stderr.utf8.count == 2_000_000, "the whole stderr is still returned")
         #expect(segments.joined() == result.stderr, "the pieces together are not the line")
         #expect(segments.count > 1, "one 2 MB segment: nothing bounds a pending line")
         #expect(segments.allSatisfy { $0.utf8.count <= 65_536 },
                 "\(segments.map(\.utf8.count).max() ?? 0) bytes in one segment")
-        #expect(elapsed < .seconds(3), "\(elapsed) between the first piece and the last")
+        #expect(span < .seconds(3), "\(span) between the first piece and the last")
+    }
+
+    /// The control for the bound above, which stays an upper bound because it is taken on the
+    /// runner's own clock — the pipe's queue — not around the `await`: a line whose pieces
+    /// really are delivered more than three seconds apart fails it. So the span spans the
+    /// delivery, and a scan slow enough to matter would show in it.
+    @Test func aDeliverySpreadOverMoreThanThreeSecondsFailsTheBound() async throws {
+        let (_, segments, span) = try await stderrDeliverySpan(
+            "head -c 70000 /dev/zero | tr '\\0' x >&2; sleep 3.2; printf 'y\\n' >&2")
+        #expect(segments.count > 1)
+        withKnownIssue("the pieces are 3.2 s apart by construction") {
+            #expect(span < .seconds(3), "\(span) between the first piece and the last")
+        }
+    }
+
+    /// Runs `script` and returns the time from the first stderr segment to the last, each taken
+    /// as it arrives **on the pipe's queue**: the runner's own time, not the test's.
+    private func stderrDeliverySpan(
+        _ script: String
+    ) async throws -> (result: ProcessRunner.StreamedResult, segments: [String], span: Duration) {
+        let clock = ContinuousClock()
+        let arrivals = Locked<[ContinuousClock.Instant]>([])
+        let collected = Locked<[String]>([])
+        let result = try await ProcessRunner().runStreaming(
+            "/bin/sh", ["-c", script], cwd: Self.root,
+            onStderr: { segment in
+                let now = clock.now
+                arrivals.mutate { $0.append(now) }
+                collected.mutate { $0.append(segment) }
+            })
+        let times = arrivals.current
+        let span = (times.last ?? clock.now) - (times.first ?? clock.now)
+        return (result, collected.current, span)
     }
 
     /// The forced cut lands between characters, never inside one: one `x` and then a 1.4 MB
@@ -272,37 +294,35 @@ private final class Locked<Value>: @unchecked Sendable {
 
     // MARK: - Cancellation
 
-    /// The upper bound of every cancellation test here whose child would otherwise sleep for
-    /// 30 s or more. Under it, the call came back instead of waiting that sleep out, and that
-    /// is all an upper bound on this clock can say.
+    /// How a cancellation test here says "the call came back rather than waiting out its
+    /// child": the child sleeps **longer than the test's time limit**, so a call that waits it
+    /// out is a hang, which `.timeLimit` reports (`CallUnderTest` says why the wait goes
+    /// through it). There is no upper bound on the test's clock.
     ///
-    /// It is far above the few seconds the runner needs because the time is taken from the
-    /// cancel to the moment the *test* runs again, and that includes two waits for a thread of
-    /// Swift's cooperative pool: the call's task, resumed by the runner, and then the test,
-    /// resumed by the task. The pool is as wide as the machine has cores, and a full parallel
-    /// `swift test` keeps every thread of it busy spawning git. Measured there (inserted fix 4):
-    /// the TERM-ignoring child was SIGKILLed and reaped 2.1 s after the cancel, as it should
-    /// be, and the test ran again only at 6.5 s, because work handed to the pool then waited
-    /// 4.3 s for a thread. The 5 s bound this replaced failed that way in 3 of 3 full runs.
+    /// Such bounds were here, 20 s under `cameBackBound`, and load could exceed them. The time
+    /// was taken from the cancel to the moment the *test* ran again, and that includes waits
+    /// for a thread of Swift's cooperative pool, which a full parallel `swift test` keeps
+    /// saturated: 4.3 s measured in inserted fix 4, a fork-storm cancel at 25.6 s in the E1
+    /// survey, and `aLongKillGracePeriodIsReallyWaitedOut` past its 20 s in E1's red run. What
+    /// the runner's timing really is gets proved by lower bounds, which load cannot break.
     ///
-    /// Load can only lengthen that wait: it can make a correct call look slow, never make a
-    /// call that waited out the sleep look fast. So the bound sits well below the shortest
-    /// sleep it rules out (30 s) and well above anything load was seen to add. What the
-    /// runner's timing really is gets proved by lower bounds, which load cannot break either.
-    private static let cameBackBound: Duration = .seconds(20)
+    /// Eleven minutes: longer than the ten-minute limit every such test carries, which is far
+    /// above the seconds they take and above what load was measured to add to them
+    /// (`TimeLimitSupport.swift`); and short enough that a child left behind by a failed test
+    /// ends on its own soon after.
+    private static let outlastsTheTimeLimit = "660"
 
-    /// The child ends on the SIGTERM itself. The grace period is set far past the child's
-    /// `sleep 30`, so the escalation cannot be what ends it: with the default 2 s grace, a
-    /// SIGTERM that never arrived would still pass any bound that load cannot break.
-    @Test func cancellationTerminatesTheProcessPromptly() async throws {
+    /// The child ends on the SIGTERM itself. The grace period, like the child's sleep, outlasts
+    /// the time limit, so neither the escalation nor the sleep's end can be what ends the call:
+    /// a SIGTERM that never arrived leaves the call waiting, and the limit reports it.
+    @Test(.timeLimit(.minutes(10))) func cancellationTerminatesTheProcessPromptly() async throws {
         let runner = ProcessRunner()
         let pid = Locked<Int32?>(nil)
-        let clock = ContinuousClock()
 
-        let task = Task { () -> Error? in
+        let call = CallUnderTest { () -> Error? in
             do {
                 _ = try await runner.runStreaming(
-                    "/bin/sleep", ["30"], cwd: Self.root, killGracePeriod: .seconds(60),
+                    "/bin/sleep", [Self.outlastsTheTimeLimit], cwd: Self.root, killGracePeriod: .seconds(660),
                     onLaunch: { launched in pid.mutate { $0 = launched } },
                     onStderr: { _ in })
                 return nil
@@ -318,13 +338,10 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(kill(child, 0) == 0)
 
         try await Task.sleep(for: .milliseconds(300))
-        let cancelledAt = clock.now
-        task.cancel()
-        let error = await task.value
-        let elapsed = clock.now - cancelledAt
+        call.cancel()
+        guard let error = await call.value() else { return }
 
         #expect(error is CancellationError)
-        #expect(elapsed < Self.cameBackBound, "waited out the child's sleep: \(elapsed)")
         errno = 0
         #expect(kill(child, 0) == -1)
         #expect(errno == ESRCH)
@@ -360,11 +377,12 @@ private final class Locked<Value>: @unchecked Sendable {
 
     /// A child that has installed `trap '' TERM` and said so, with the pid the runner launched.
     private struct TrappedChild {
-        let task: Task<Error?, Never>
+        let call: CallUnderTest<Error?>
         let pid: Int32
     }
 
-    /// `/bin/sh -c "trap '' TERM; : > <marker>; sleep 30"`, returned once the marker exists.
+    /// `/bin/sh -c "trap '' TERM; : > <marker>; sleep 660"`, returned once the marker exists.
+    /// The sleep outlasts the time limit (`outlastsTheTimeLimit`).
     ///
     /// The marker is the point. The fixture's premise — that this child ignores SIGTERM — is
     /// only true *after* the trap is installed, and a test that cancels before that cancels an
@@ -383,10 +401,10 @@ private final class Locked<Value>: @unchecked Sendable {
             .appendingPathComponent("gitter-trap-\(UUID().uuidString)")
         let runner = ProcessRunner()
         let pid = Locked<Int32?>(nil)
-        let task = Task { () -> Error? in
+        let call = CallUnderTest { () -> Error? in
             do {
                 _ = try await runner.runStreaming(
-                    "/bin/sh", ["-c", "trap '' TERM; : > \"\(marker.path)\"; sleep 30"],
+                    "/bin/sh", ["-c", "trap '' TERM; : > \"\(marker.path)\"; sleep \(Self.outlastsTheTimeLimit)"],
                     cwd: Self.root, killGracePeriod: killGracePeriod,
                     onLaunch: { launched in pid.mutate { $0 = launched } },
                     onStderr: { _ in })
@@ -402,7 +420,7 @@ private final class Locked<Value>: @unchecked Sendable {
             FileManager.default.fileExists(atPath: marker.path),
             "the child never installed its trap", sourceLocation: sourceLocation)
         try? FileManager.default.removeItem(at: marker)
-        return TrappedChild(task: task, pid: try #require(pid.current))
+        return TrappedChild(call: call, pid: try #require(pid.current))
     }
 
     /// A child that ignores SIGTERM does not get to outlive its cancel. After the grace period
@@ -410,11 +428,12 @@ private final class Locked<Value>: @unchecked Sendable {
     /// shell started goes with it.
     ///
     /// `trap '' TERM` is inherited by the shell's own children, so both processes in the group
-    /// ignore the SIGTERM: without the escalation this call waits out the full `sleep 30`.
-    @Test func aChildThatIgnoresSIGTERMIsKilled() async throws {
+    /// ignore the SIGTERM: without the escalation this call waits out the full `sleep 660`,
+    /// past the time limit.
+    @Test(.timeLimit(.minutes(10))) func aChildThatIgnoresSIGTERMIsKilled() async throws {
         let clock = ContinuousClock()
         let started = try await startChildIgnoringSIGTERM()
-        let task = started.task
+        let call = started.call
         let child = started.pid
 
         // Measured, and what the escalation's `kill(-pgid, …)` rests on: the child leads a
@@ -429,16 +448,15 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(kill(-group, 0) == 0)
 
         let cancelledAt = clock.now
-        task.cancel()
-        let error = await task.value
+        call.cancel()
+        guard let error = await call.value() else { return }
         let elapsed = clock.now - cancelledAt
 
         #expect(error is CancellationError)
         // The escalation, and only it: the child ignores SIGTERM, so nothing ends it before the
-        // grace period is up. A lower bound, which load can only make truer.
+        // grace period is up. A lower bound, which load can only make truer. That it came back
+        // at all, rather than after the child's sleep: the time limit (`outlastsTheTimeLimit`).
         #expect(elapsed > .milliseconds(1_800), "ended before the grace period: \(elapsed)")
-        // Not the child's `sleep 30`. Not the 2 s it takes, either: see `cameBackBound`.
-        #expect(elapsed < Self.cameBackBound, "waited out the child's sleep: \(elapsed)")
         errno = 0
         #expect(kill(child, 0) == -1)
         #expect(errno == ESRCH)
@@ -458,42 +476,38 @@ private final class Locked<Value>: @unchecked Sendable {
     ///
     /// It costs six seconds of a suite that runs its suites in parallel, and it is the only
     /// place the parameter is proved at all.
-    @Test func aLongKillGracePeriodIsReallyWaitedOut() async throws {
+    @Test(.timeLimit(.minutes(10))) func aLongKillGracePeriodIsReallyWaitedOut() async throws {
         let clock = ContinuousClock()
         let started = try await startChildIgnoringSIGTERM(killGracePeriod: .seconds(6))
         #expect(kill(started.pid, 0) == 0)
 
         let cancelledAt = clock.now
-        started.task.cancel()
-        let error = await started.task.value
+        started.call.cancel()
+        guard let error = await started.call.value() else { return }
         let elapsed = clock.now - cancelledAt
 
         #expect(error is CancellationError)
         #expect(elapsed > .seconds(5), "the grace period was not waited out: \(elapsed)")
-        // Not the `sleep 30` the child would have run to completion without an escalation.
-        #expect(elapsed < .seconds(20), "\(elapsed)")
+        // Not the `sleep 660` the child would have run to completion without an escalation:
+        // that would be past the time limit.
         errno = 0
         #expect(kill(started.pid, 0) == -1)
         #expect(errno == ESRCH)
     }
 
     /// The short grace period, kept for what it can honestly say: with 250 ms the call comes
-    /// back rather than waiting out the child's `sleep 30`. The bound is deliberately loose —
-    /// it is a "did not hang" check, not a measurement, and a tight one here measures the
+    /// back rather than waiting out the child's `sleep 660`. It is a "did not hang" check, not
+    /// a measurement, so it is the time limit's: a bound on the test's clock measured the
     /// neighbours' load rather than the runner. `aLongKillGracePeriodIsReallyWaitedOut` is what
     /// proves the parameter is read.
-    @Test func theKillGracePeriodIsHonoured() async throws {
-        let clock = ContinuousClock()
+    @Test(.timeLimit(.minutes(10))) func theKillGracePeriodIsHonoured() async throws {
         let started = try await startChildIgnoringSIGTERM(killGracePeriod: .milliseconds(250))
         #expect(kill(started.pid, 0) == 0)
 
-        let cancelledAt = clock.now
-        started.task.cancel()
-        let error = await started.task.value
-        let elapsed = clock.now - cancelledAt
+        started.call.cancel()
+        guard let error = await started.call.value() else { return }
 
         #expect(error is CancellationError)
-        #expect(elapsed < .seconds(15), "the call did not come back: \(elapsed)")
         errno = 0
         #expect(kill(started.pid, 0) == -1)
         #expect(errno == ESRCH)
@@ -501,13 +515,14 @@ private final class Locked<Value>: @unchecked Sendable {
 
     // MARK: - Cancellation: a grandchild that survives the SIGTERM
 
-    /// A `sleep` duration unique to one test, between 41 and 49 seconds: long enough that a
-    /// call waiting for it fails every bound below by a wide margin. The script receives it as
+    /// A `sleep` duration unique to one test, between 660 and 670 seconds: longer than the time
+    /// limit (`outlastsTheTimeLimit`), so a call that waits for it is a hang the limit reports.
+    /// The script receives it as
     /// `$2` and runs `sleep "$2"`, so `pgrep -f "sleep <duration>"` (`sleepToken`) matches the
     /// `sleep` alone — never the shell, whose command line holds `sleep "$2"` and the number
     /// apart.
     private static func uniqueDuration() -> String {
-        "4\(Int.random(in: 1...8)).\(Int.random(in: 100_000...999_999))"
+        "66\(Int.random(in: 0...9)).\(Int.random(in: 100_000...999_999))"
     }
 
     private static func sleepToken(_ duration: String) -> String { "sleep \(duration)" }
@@ -527,7 +542,7 @@ private final class Locked<Value>: @unchecked Sendable {
             .appendingPathComponent("gitter-orphan-\(UUID().uuidString)")
         let runner = ProcessRunner()
         let pid = Locked<Int32?>(nil)
-        let task = Task { () -> Error? in
+        let call = CallUnderTest { () -> Error? in
             do {
                 _ = try await runner.runStreaming(
                     "/bin/sh", ["-c", script, "sh", marker.path, duration],
@@ -554,11 +569,11 @@ private final class Locked<Value>: @unchecked Sendable {
         guard let launched = pid.current else {
             Issue.record("the runner never reported a launch", sourceLocation: sourceLocation)
             // Never leave the script running behind a failed test.
-            task.cancel()
-            _ = await task.value
+            call.cancel()
+            _ = await call.task.value
             throw CancellationError()
         }
-        return TrappedChild(task: task, pid: launched)
+        return TrappedChild(call: call, pid: launched)
     }
 
     /// The leader dies on its SIGTERM; a grandchild that ignores SIGTERM does not, and it holds
@@ -578,7 +593,7 @@ private final class Locked<Value>: @unchecked Sendable {
     /// 5 s. Measured (inserted fix 4): with that queue's threads kept busy after the cancel,
     /// the escalation came 24 s late. With a 5 s window nothing was sent and the grandchild
     /// survived; with 30 s it was killed.
-    @Test func aGrandchildThatSurvivesTheLeadersSIGTERMIsKilledAfterTheGrace() async throws {
+    @Test(.timeLimit(.minutes(10))) func aGrandchildThatSurvivesTheLeadersSIGTERMIsKilledAfterTheGrace() async throws {
         let duration = Self.uniqueDuration()
         let sleep = Self.sleepToken(duration)
         let clock = ContinuousClock()
@@ -591,13 +606,12 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(await Self.waitForExactlyOneProcess(matching: sleep))
 
         let cancelledAt = clock.now
-        started.task.cancel()
-        let error = await started.task.value
+        started.call.cancel()
+        guard let error = await started.call.value() else { return }
         let elapsed = clock.now - cancelledAt
 
         #expect(error is CancellationError)
         #expect(elapsed > .milliseconds(450), "returned before the escalation could act: \(elapsed)")
-        #expect(elapsed < Self.cameBackBound, "waited for the grandchild: \(elapsed)")
         #expect(await Self.waitForNoProcess(matching: sleep), "the grandchild outlived the call")
         #expect(await Self.groupIsGone(started.pid))
     }
@@ -613,10 +627,9 @@ private final class Locked<Value>: @unchecked Sendable {
     /// window is the runner's rule, not a bug. This test is about the escalation, so it gives
     /// the machine room; that the window itself is honoured is
     /// `aReapedGroupIsNotSignalledPastTheWindow`'s job.
-    @Test func aCancelAfterTheLeaderExitedStillEndsAGrandchildHoldingThePipe() async throws {
+    @Test(.timeLimit(.minutes(10))) func aCancelAfterTheLeaderExitedStillEndsAGrandchildHoldingThePipe() async throws {
         let duration = Self.uniqueDuration()
         let sleep = Self.sleepToken(duration)
-        let clock = ContinuousClock()
         let signals = Locked<[[Int32]]>([])
         let started = try await startScript(
             "( trap '' TERM; exec sleep \"$2\" ) & : > \"$1\"; exit 0", duration: duration,
@@ -626,13 +639,10 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(await Self.waitForReap(started.pid))
         #expect(await Self.waitForExactlyOneProcess(matching: sleep))
 
-        let cancelledAt = clock.now
-        started.task.cancel()
-        let error = await started.task.value
-        let elapsed = clock.now - cancelledAt
+        started.call.cancel()
+        guard let error = await started.call.value() else { return }
 
         #expect(error is CancellationError)
-        #expect(elapsed < Self.cameBackBound, "waited for the grandchild: \(elapsed)")
         #expect(await Self.waitForNoProcess(matching: sleep), "the grandchild outlived the call")
         // What makes the seam's silence in the two tests below mean something: here, with the
         // group still holding the grandchild, it saw the SIGTERM and then the SIGKILL go out.
@@ -649,7 +659,7 @@ private final class Locked<Value>: @unchecked Sendable {
     ///
     /// The call still returns — by the abandonment, a second grace after the escalation — and
     /// the job, out of every reach, is still running; the test kills it.
-    @Test func aGroupAlreadyEmptyAtTheReapIsNeverSignalled() async throws {
+    @Test(.timeLimit(.minutes(10))) func aGroupAlreadyEmptyAtTheReapIsNeverSignalled() async throws {
         let duration = Self.uniqueDuration()
         let sleep = Self.sleepToken(duration)
         let signals = Locked<[[Int32]]>([])
@@ -665,14 +675,13 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(await Self.waitForExactlyOneProcess(matching: sleep))
 
         let cancelledAt = clock.now
-        started.task.cancel()
-        let error = await started.task.value
+        started.call.cancel()
+        guard let error = await started.call.value() else { return }
         let elapsed = clock.now - cancelledAt
 
         #expect(error is CancellationError)
         #expect(signals.current.isEmpty, "signalled a group that was empty at the reap: \(signals.current)")
         #expect(elapsed > .milliseconds(550), "returned before the abandonment: \(elapsed)")
-        #expect(elapsed < Self.cameBackBound, "\(elapsed)")
         #expect(Self.processCount(matching: sleep) == 1)
         Self.killProcesses(matching: sleep)
         #expect(await Self.waitForNoProcess(matching: sleep))
@@ -685,7 +694,7 @@ private final class Locked<Value>: @unchecked Sendable {
     /// `reapedGroupWindow` of the reap. Past it, a cancel sends nothing by that number and is
     /// ended by the abandonment — here with the group's own member still alive, which is the
     /// price, and which the test cleans up.
-    @Test func aReapedGroupIsNotSignalledPastTheWindow() async throws {
+    @Test(.timeLimit(.minutes(10))) func aReapedGroupIsNotSignalledPastTheWindow() async throws {
         let duration = Self.uniqueDuration()
         let sleep = Self.sleepToken(duration)
         let signals = Locked<[[Int32]]>([])
@@ -702,14 +711,13 @@ private final class Locked<Value>: @unchecked Sendable {
         try await Task.sleep(for: .seconds(1))
 
         let cancelledAt = clock.now
-        started.task.cancel()
-        let error = await started.task.value
+        started.call.cancel()
+        guard let error = await started.call.value() else { return }
         let elapsed = clock.now - cancelledAt
 
         #expect(error is CancellationError)
         #expect(signals.current.isEmpty, "signalled a reaped group past the window: \(signals.current)")
         #expect(elapsed > .milliseconds(550), "returned before the abandonment: \(elapsed)")
-        #expect(elapsed < Self.cameBackBound, "\(elapsed)")
         #expect(Self.processCount(matching: sleep) == 1)
         Self.killProcesses(matching: sleep)
         #expect(await Self.waitForNoProcess(matching: sleep))
@@ -717,43 +725,106 @@ private final class Locked<Value>: @unchecked Sendable {
 
     /// A leader forking helpers as fast as it can. A process that is *being forked* when the
     /// group's SIGTERM is sent misses it (measured on macOS by the reviewer: 28 in 100), so it
-    /// outlives a leader that died, holding the pipes. Every cancel must still come back within
-    /// about the grace period, and leave nothing behind.
+    /// outlives a leader that died, holding the pipes. Every cancel must still come back, and
+    /// leave nothing behind.
     ///
-    /// Non-vacuous: at least one cancel must have needed the escalation — taken longer than the
-    /// grace — or the race this test is about never happened. The race is hit in roughly 4–10
-    /// of 100 here, and once in 30 suite runs in none of them, so the loop runs a hundred
-    /// cancels and then goes on, up to five hundred, until one has.
+    /// Non-vacuous: at least one cancel must have needed the escalation to a reaped leader's
+    /// group, or the race this test is about never happened. That is **counted**, as the SIGKILLs
+    /// the runner reports through `onReapedGroupSignal` immediately before it sends them, not
+    /// inferred from a cancel taking longer than the grace: on the test's clock, a cancel waiting
+    /// for a thread of the saturated cooperative pool took longer with no orphan at all (E1
+    /// survey S9). The race is hit in a few of 100 here, so the loop runs a hundred cancels and
+    /// then goes on, up to five hundred, until one has.
     ///
     /// The orphan outlives a reaped leader, so it too is killed by the remembered group, and the
-    /// window is 30 s for the reason the grandchild test above gives.
-    @Test func aForkStormLeaderCancelledAHundredTimesNeverWaitsForAnOrphan() async throws {
+    /// window is 30 s for the reason the grandchild test above gives. An orphan nobody killed is
+    /// the `waitForNoProcess` below; a call that waited for one sleeps past the time limit.
+    @Test(.timeLimit(.minutes(10))) func aForkStormLeaderCancelledAHundredTimesNeverWaitsForAnOrphan() async throws {
         let duration = Self.uniqueDuration()
         let sleep = Self.sleepToken(duration)
-        let grace = Duration.milliseconds(300)
-        let clock = ContinuousClock()
-        var escalated = 0
-        for attempt in 0..<500 where attempt < 100 || escalated == 0 {
+        let reapedGroupKills = Locked(0)
+        for attempt in 0..<500 where attempt < 100 || reapedGroupKills.current == 0 {
             let started = try await startScript(
                 ": > \"$1\"; while :; do sleep \"$2\" & kill $! 2>/dev/null; wait $! 2>/dev/null; done",
-                duration: duration, killGracePeriod: grace, reapedGroupWindow: .seconds(30))
+                duration: duration, killGracePeriod: .milliseconds(300), reapedGroupWindow: .seconds(30),
+                onReapedGroupSignal: { _, signal in
+                    if signal == SIGKILL { reapedGroupKills.mutate { $0 += 1 } }
+                })
             #expect(kill(started.pid, 0) == 0)
             try await Task.sleep(for: .microseconds(Int.random(in: 0...20_000)))
 
-            let cancelledAt = clock.now
-            started.task.cancel()
-            let error = await started.task.value
-            let elapsed = clock.now - cancelledAt
-
+            started.call.cancel()
+            guard let error = await started.call.value("attempt \(attempt)") else { return }
             #expect(error is CancellationError)
-            if elapsed >= grace { escalated += 1 }
-            guard elapsed < Self.cameBackBound else {
-                Issue.record("attempt \(attempt) waited for an orphan: \(elapsed)")
-                break
-            }
         }
-        #expect(escalated > 0, "no cancel ever raced a fork, so nothing was proved")
+        Self.expectARaceWasProved(reapedGroupKills.current)
         #expect(await Self.waitForNoProcess(matching: sleep), "an orphan outlived its call")
+    }
+
+    /// The fork storm's proof that its race happened: a SIGKILL went to a reaped leader's group.
+    private static func expectARaceWasProved(
+        _ reapedGroupKills: Int, sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        #expect(
+            reapedGroupKills > 0, "no cancel ever raced a fork, so nothing was proved",
+            sourceLocation: sourceLocation)
+    }
+
+    /// The control for the fork storm's counted proof: a leader that forks nothing dies on its
+    /// SIGTERM and leaves no orphan, so no SIGKILL goes to a reaped group and the proof fails,
+    /// as it must when the race never happened. The proof it replaced — a cancel taking longer
+    /// than the grace on the test's clock — could be met here by load alone.
+    @Test(.timeLimit(.minutes(10))) func withoutAForkTheStormsProofFails() async throws {
+        let reapedGroupKills = Locked(0)
+        for attempt in 0..<20 {
+            let started = try await startScript(
+                ": > \"$1\"; exec sleep \"$2\"", duration: Self.uniqueDuration(),
+                killGracePeriod: .milliseconds(300), reapedGroupWindow: .seconds(30),
+                onReapedGroupSignal: { _, signal in
+                    if signal == SIGKILL { reapedGroupKills.mutate { $0 += 1 } }
+                })
+            started.call.cancel()
+            guard let error = await started.call.value("attempt \(attempt)") else { return }
+            #expect(error is CancellationError)
+        }
+        withKnownIssue("no fork, so no orphan and no SIGKILL to a reaped group") {
+            Self.expectARaceWasProved(reapedGroupKills.current)
+        }
+    }
+
+    /// The control for the hang guards above, which replaced `elapsed < cameBackBound`: what
+    /// that bound caught — a call that waited out its child's sleep — is now a call that is
+    /// still waiting when the time limit cancels the test, and the test reports it.
+    ///
+    /// Each fixture is one the tests above use, with the escalation made to never act (a grace
+    /// that outlasts the limit): the TERM-ignoring child itself, and a TERM-ignoring
+    /// grandchild in the group after the leader died. A real limit cannot be let expire here
+    /// (`TimeLimitSupport.swift`), so the test's task is stood in for by a waiting task that
+    /// this test cancels. The call's own process group — made by this call, still holding the
+    /// sleeping child — is then SIGKILLed so that nothing outlives the control.
+    @Test(arguments: [
+        "trap '' TERM; : > \"$1\"; exec sleep \"$2\"",
+        "( trap '' TERM; : > \"$1\"; exec sleep \"$2\" ) & wait",
+    ])
+    func aCallThatWaitsOutItsChildIsReportedOnceTheTestIsCancelled(script: String) async throws {
+        let started = try await startScript(
+            script, duration: Self.uniqueDuration(), killGracePeriod: .seconds(3600))
+        let group = started.pid
+        started.call.cancel()
+
+        await withKnownIssue("the escalation never acts, so the call waits out the child's sleep") {
+            let waiter = Task { await started.call.value() }
+            try await Task.sleep(for: .milliseconds(500))
+            waiter.cancel()
+            let error = await waiter.value
+            #expect(error == nil, "the call came back: \(String(describing: error))")
+        }
+
+        // The group is this call's own: still alive, since its `sleep` ignores the SIGTERM.
+        try #require(group > 1 && group != getpgid(0) && kill(-group, 0) == 0)
+        kill(-group, SIGKILL)
+        #expect(await started.call.task.value is CancellationError)
+        #expect(await Self.groupIsGone(group))
     }
 
     /// A grandchild that has **left the process group** — here a background job of a shell with
@@ -764,7 +835,7 @@ private final class Locked<Value>: @unchecked Sendable {
     ///
     /// The grandchild is then still alive, which is the honest part: the runner cannot reach
     /// it, and this test kills it itself.
-    @Test func aGrandchildOutsideTheGroupIsAbandonedAfterASecondGrace() async throws {
+    @Test(.timeLimit(.minutes(10))) func aGrandchildOutsideTheGroupIsAbandonedAfterASecondGrace() async throws {
         let duration = Self.uniqueDuration()
         let sleep = Self.sleepToken(duration)
         let clock = ContinuousClock()
@@ -775,13 +846,12 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(await Self.waitForExactlyOneProcess(matching: sleep))
 
         let cancelledAt = clock.now
-        started.task.cancel()
-        let error = await started.task.value
+        started.call.cancel()
+        guard let error = await started.call.value() else { return }
         let elapsed = clock.now - cancelledAt
 
         #expect(error is CancellationError)
         #expect(elapsed > .milliseconds(900), "abandoned before two graces: \(elapsed)")
-        #expect(elapsed < Self.cameBackBound, "waited for the grandchild: \(elapsed)")
         // Out of the runner's reach, as the doc comment says — and cleaned up here.
         #expect(Self.processCount(matching: sleep) == 1)
         Self.killProcesses(matching: sleep)
@@ -818,7 +888,13 @@ private final class Locked<Value>: @unchecked Sendable {
     /// the launch–read–exit sequence every run: before the launch, during it, mid-pipe, after
     /// the exit but before the resume. None of them may hang, resume twice, or leave a process
     /// behind.
-    @Test func threeHundredCancelsAtRandomMomentsNeitherHangNorLeak() async throws {
+    ///
+    /// A hang is the time limit's to catch. The `< 120 s` this used to assert after the loop
+    /// could not: a call that hung never let the test get that far, so it failed only runs that
+    /// did not hang but waited for the cooperative pool — 132.9 s in a full unbounded
+    /// `swift test`, against 2.3 s alone (E1 survey S15).
+    /// `aStressCallThatNeverReturnsIsReportedOnceTheTestIsCancelled` is the control.
+    @Test(.timeLimit(.minutes(10))) func threeHundredCancelsAtRandomMomentsNeitherHangNorLeak() async throws {
         let token = "gitter-cancel-stress-\(UUID().uuidString)"
         // Non-vacuous: the same probe finds a process that really is running under this token,
         // so finding none after the stress means something. The `true;` matters — `sh` execs a
@@ -855,25 +931,38 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(await Self.waitForReap(markerPID), "the marker shell outlived its SIGTERM")
         #expect(await Self.groupIsGone(markerGroup))
 
-        let clock = ContinuousClock()
-        let startedAt = clock.now
+        guard let (completed, cancelled) = try await Self.cancelAtRandomMoments(300, {
+            try await ProcessRunner().runStreaming(
+                "/bin/sh", ["-c", "echo quick; echo noise >&2", token], cwd: Self.root, onStderr: { _ in })
+        }) else { return }
+        // Both outcomes really did occur, so neither branch's assertions were skipped.
+        #expect(cancelled > 0)
+        #expect(completed > 0)
+        #expect(await Self.waitForNoProcess(matching: token))
+    }
+
+    /// The stress loop: `times` calls, each cancelled at a random moment up to 12 ms after it
+    /// starts and waited for through `CallUnderTest.value`. A call that completed must have
+    /// printed `quick`; one that did not must throw `CancellationError`. Nil once a call never
+    /// came back, which `CallUnderTest.value` has recorded.
+    private static func cancelAtRandomMoments(
+        _ times: Int, _ call: @escaping @Sendable () async throws -> ProcessRunner.StreamedResult
+    ) async throws -> (completed: Int, cancelled: Int)? {
         var cancelled = 0
         var completed = 0
-        for _ in 0..<300 {
-            let runner = ProcessRunner()
-            let task = Task { () -> Result<ProcessRunner.StreamedResult, Error> in
+        for iteration in 0..<times {
+            let stressed = CallUnderTest { () -> Result<ProcessRunner.StreamedResult, Error> in
                 do {
-                    return .success(
-                        try await runner.runStreaming(
-                            "/bin/sh", ["-c", "echo quick; echo noise >&2", token],
-                            cwd: Self.root, onStderr: { _ in }))
+                    return .success(try await call())
                 } catch {
                     return .failure(error)
                 }
             }
             try await Task.sleep(for: .microseconds(Int.random(in: 0...12_000)))
-            task.cancel()
-            switch await task.value {
+            stressed.cancel()
+            switch await stressed.value("iteration \(iteration)") {
+            case nil:
+                return nil
             case .success(let result):
                 #expect(String(decoding: result.stdout, as: UTF8.self) == "quick\n")
                 completed += 1
@@ -882,12 +971,29 @@ private final class Locked<Value>: @unchecked Sendable {
                 cancelled += 1
             }
         }
-        // Both outcomes really did occur, so neither branch's assertions were skipped.
-        #expect(cancelled > 0)
-        #expect(completed > 0)
-        // A hang would have been an unbounded wait rather than a failure; this bounds it.
-        #expect(clock.now - startedAt < .seconds(120))
-        #expect(await Self.waitForNoProcess(matching: token))
+        return (completed, cancelled)
+    }
+
+    /// The control for the stress test's hang guard: the same loop, with a call that never
+    /// returns and ignores its cancel — a runner that lost its resume. The test's time limit
+    /// cancels the test's task, which `CallUnderTest.value` turns into a recorded "iteration 0
+    /// never came back" and an end to the loop. A real limit cannot be let expire in a control
+    /// (its issue is not a known issue, and the shortest is a minute; `TimeLimitSupport.swift`),
+    /// so the loop runs in a task that this test cancels in its place.
+    @Test func aStressCallThatNeverReturnsIsReportedOnceTheTestIsCancelled() async throws {
+        let stuck = StuckCall()
+        await withKnownIssue("the call never returns, so the cancelled loop reports it") {
+            let loop = Task { try await Self.cancelAtRandomMoments(300) {
+                await stuck.wait()
+                throw CancellationError()
+            } }
+            while !stuck.waiting { try await Task.sleep(for: .milliseconds(5)) }
+            try await Task.sleep(for: .milliseconds(50))
+            loop.cancel()
+            let outcome = try await loop.value
+            #expect(outcome == nil, "the loop went on past a call that never came back")
+        }
+        stuck.release()
     }
 
     // MARK: - Parity with `run`

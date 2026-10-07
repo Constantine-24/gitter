@@ -261,39 +261,65 @@ private final class FolderTrasher: Trasher, @unchecked Sendable {
     /// commit already at `stash@{0}`, which git files by adding nothing (measured), while the
     /// files are cleaned all the same. That is a save, of the listed entry.
     ///
-    /// The second has to match, so each attempt starts on a fresh second; an attempt that
-    /// straddles one still has to report `.saved` (with a new entry), and the identical case
-    /// has to be reached at least once in five.
+    /// "The same second" is git's dates, so git runs with them pinned
+    /// (`pinnedDateGitPath`) and the case is reached by construction, at any load. It used to
+    /// be raced for: five tries to fit push, apply and push into one wall-clock second, which a
+    /// full parallel `swift test` missed 0 times in 5 (E1 survey S16).
     @Test func anIdenticalPushInTheSameSecondIsSavedAsTheListedEntry() async throws {
-        var reachedIdentical = false
-        for _ in 0..<5 where !reachedIdentical {
-            let repo = try await makeRepo()
-            defer { repo.cleanUp() }
-            try repo.write("f", "f1\nchanged\nf3\n")
-            let now = Date().timeIntervalSince1970
-            try await Task.sleep(nanoseconds: UInt64((ceil(now) - now) * 1_000_000_000) + 5_000_000)
+        let repo = try await makeRepo()
+        defer { repo.cleanUp() }
+        let pinned = CLIGitBackend(
+            gitPath: try pinnedDateGitPath(at: "2026-01-01T00:00:00Z", in: repo.root.appendingPathComponent(".git")))
+        try repo.write("f", "f1\nchanged\nf3\n")
 
-            guard case .saved(let first) = try await backend.stashAll(message: "m", includeUntracked: false, at: repo.root)
-            else {
-                Issue.record("the first push did not save")
-                return
-            }
-            #expect(try await backend.apply(first, at: repo.root) == .applied)
-            let second = try await backend.stashAll(message: "m", includeUntracked: false, at: repo.root)
-
-            guard case .saved(let stash) = second else {
-                Issue.record("expected .saved, got \(second)")
-                return
-            }
-            #expect(try repo.bytes("f") == Data("f1\nf2\nf3\n".utf8), "the files were not cleaned")
-            #expect(stash.index == 0)
-            #expect(stash.sha == (try await repo.stashRef()))
-            if stash.sha == first.sha {
-                reachedIdentical = true
-                #expect(try await repo.stashCount() == 1)
-            }
+        guard case .saved(let first) = try await pinned.stashAll(message: "m", includeUntracked: false, at: repo.root)
+        else {
+            Issue.record("the first push did not save")
+            return
         }
-        #expect(reachedIdentical, "no attempt pushed twice within one second")
+        #expect(try await pinned.apply(first, at: repo.root) == .applied)
+        let second = try await pinned.stashAll(message: "m", includeUntracked: false, at: repo.root)
+
+        guard case .saved(let stash) = second else {
+            Issue.record("expected .saved, got \(second)")
+            return
+        }
+        #expect(stash.sha == first.sha, "the second push was not the identical commit")
+        #expect(try await repo.stashCount() == 1)
+        #expect(try repo.bytes("f") == Data("f1\nf2\nf3\n".utf8), "the files were not cleaned")
+        #expect(stash.index == 0)
+        #expect(stash.sha == (try await repo.stashRef()))
+    }
+
+    /// The other side, which the raced version above used to meet whenever an attempt
+    /// straddled a second: the same push one second later is a different commit, so git lists
+    /// a new entry, and that is `.saved` of the new `stash@{0}`, files cleaned. Pinned too, a
+    /// second apart.
+    @Test func anIdenticalPushInALaterSecondIsSavedAsANewEntry() async throws {
+        let repo = try await makeRepo()
+        defer { repo.cleanUp() }
+        let gitDirectory = repo.root.appendingPathComponent(".git")
+        let early = CLIGitBackend(gitPath: try pinnedDateGitPath(at: "2026-01-01T00:00:00Z", in: gitDirectory))
+        let late = CLIGitBackend(gitPath: try pinnedDateGitPath(at: "2026-01-01T00:00:01Z", in: gitDirectory))
+        try repo.write("f", "f1\nchanged\nf3\n")
+
+        guard case .saved(let first) = try await early.stashAll(message: "m", includeUntracked: false, at: repo.root)
+        else {
+            Issue.record("the first push did not save")
+            return
+        }
+        #expect(try await early.apply(first, at: repo.root) == .applied)
+        let second = try await late.stashAll(message: "m", includeUntracked: false, at: repo.root)
+
+        guard case .saved(let stash) = second else {
+            Issue.record("expected .saved, got \(second)")
+            return
+        }
+        #expect(stash.sha != first.sha, "a second later is a new commit")
+        #expect(try await repo.stashCount() == 2)
+        #expect(try repo.bytes("f") == Data("f1\nf2\nf3\n".utf8), "the files were not cleaned")
+        #expect(stash.index == 0)
+        #expect(stash.sha == (try await repo.stashRef()))
     }
 
     /// And the other side: changes git will not save (a submodule's moved commit only, M 14)

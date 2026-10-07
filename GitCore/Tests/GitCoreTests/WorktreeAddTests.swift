@@ -282,7 +282,11 @@ import Testing
     /// Cancelled while git runs — here, after git has made the worktree: the outcome is read back
     /// outside the cancelled task, and the worktree that is there is reported, never "nothing
     /// happened". Not vacuous: uncancelled, the stalled launch exits 0 and this is `.added`.
-    @Test func aCancelledAddIsReadBack() async throws {
+    ///
+    /// It waits for git to finish adding with no deadline of its own: a 60 s one stood here,
+    /// which load could exceed, and then the test cancelled too early and failed for the wrong
+    /// reason. A wait that never ends is the time limit's (`TimeLimitSupport.swift`).
+    @Test(.timeLimit(.minutes(10))) func aCancelledAddIsReadBack() async throws {
         let fixture = try await WorktreeFixture.make()
         defer { fixture.cleanUp() }
         try await fixture.repo.git(["branch", "feat"])
@@ -292,14 +296,17 @@ import Testing
         let root = fixture.repo.root
         let path = fixture.path("wt")
 
-        let task = Task { try await backend.addWorktree(path: path, branch: "feat", at: root) }
-        let clock = ContinuousClock()
-        let start = clock.now
-        while !git.addFinished, clock.now - start < .seconds(60) {
-            try await Task.sleep(for: .milliseconds(20))
+        let call = CallUnderTest { () -> Result<AddWorktreeResult, Error> in
+            do {
+                return .success(try await backend.addWorktree(path: path, branch: "feat", at: root))
+            } catch {
+                return .failure(error)
+            }
         }
-        task.cancel()
-        let result = try await task.value
+        while !git.addFinished { try await Task.sleep(for: .milliseconds(20)) }
+        call.cancel()
+        guard let outcome = await call.value("the cancelled add") else { return }
+        let result = try outcome.get()
 
         guard case .addedWithError(let wt, _) = result else {
             Issue.record("expected .addedWithError, got \(result)")
