@@ -672,7 +672,7 @@ history keeps those actions).
 | UI | SwiftUI, AppKit where SwiftUI falls short | Most Mac-native result |
 | Git access | `/usr/bin/git` via `Process`, behind a `GitBackend` protocol | SSH agent, credential helpers, signing and hooks work for free. libgit2 can be added behind the same protocol for hot read paths |
 | Deployment | macOS 26.0 minimum, macOS 27 SDK | Dev machine runs 27 |
-| Project | xcodegen `project.yml` -> `Gitter.xcodeproj`; `GitCore` local SwiftPM package | Xcode workflow for the app; `swift test` for the core |
+| Project | xcodegen `project.yml` -> `Gitter.xcodeproj`; `GitCore` local SwiftPM package | Xcode workflow for the app; `swift test` for the core, capped by `scripts/test-gitcore.sh` |
 | Staging | Patches built in-process (`PatchBuilder`) and applied with `git apply --cached`, never a hand-rolled index writer | The same command a user would run themselves; hunk- and line-level staging fall out of the same code path as whole-file staging |
 | Dirty switch | git's default — carry non-conflicting changes, refuse otherwise. No force; the refusal offers Stash and Continue, never an automatic stash | A refusal that changes nothing is a better answer than a stash the user did not ask for |
 | Discard | Record first (a stash entry built from plumbing in a temporary index), then `git restore` or a reverse `git apply`; untracked items to the Trash | Every discard can be undone, and the copy is in a place git and the user already know |
@@ -701,8 +701,21 @@ xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -config
 ## Tests
 
 ```sh
-cd GitCore && swift test
+bash scripts/test-gitcore.sh
 ```
+
+That is the GitCore gate: `swift test` in `GitCore/` at a parallel width of 8. It prints the width
+and the run's total time, passes any arguments on to `swift test` and exits with its status
+(`GITTER_TEST_WIDTH` sets another width). It is capped because Swift Testing runs every test at
+once by default, and that saturates the cooperative thread pool inside the test process: each
+`await` then waits for a thread, and a test that times its own work fails on the queue, not on
+the work. The load comes from the run itself — 28 external `yes` loops left the flaky tests at
+their idle times. At width 8 every run was green and faster: five runs at the end of milestone
+E1 took 215–218 s, against 264–297 s for the two uncapped ones. The width is Swift Testing's
+experimental `SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH`, so nothing depends on it: a plain
+`cd GitCore && swift test` passes too, because no test asserts a wall-clock upper bound that load
+can exceed. A hang is caught by a ten-minute `.timeLimit`, a latency is measured on the runner's
+own clock, and "it did not happen" is a counted event.
 
 Or both test targets — `GitCoreTests` and the app's `GitterTests` — through the scheme:
 
@@ -710,7 +723,7 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (566 tests in 37 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (583 tests in 38 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -723,11 +736,15 @@ the notices' lifetime, which files a discard is offered for and when its sheet r
 which refusals Stash and Continue answers, when the toolbar reveals a lane's activity, the
 resolver's choices and previews (the same composition GitCore writes), and every state of the
 operation bar and the composer's prefill, and the launch guard's decisions (`DebugLaunchGuard`).
-Under a test host the app reopens no repository and starts no automatic fetch (`TestHost`), and
-no test opens a repository or touches the app's defaults, so a run never touches the repository
-you last had open.
+Under a test host the app reopens no repository, starts no automatic fetch and adds nothing to
+Open Recent (`TestHost`). Every test's store keeps its settings in a scratch defaults suite of
+its own, named by a path inside its own temporary folder and removed with it (`makeTestStore`),
+so a run never touches the repository you last had open or the app's real `dev.penzin.Gitter`
+defaults, and leaves nothing in `~/Library/Preferences`; `DefaultsIsolationTests` reads the real
+domain before and after each of its tests, never writing it, and tests the reopen and Open
+Recent decisions.
 
-`GitCoreTests` has 1 596 tests in 137 suites. Most of them run real `git` against a temporary
+`GitCoreTests` has 1 663 tests in 142 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
 for a server, with a second clone as "the colleague" who pushes in between — including one
 that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
@@ -735,7 +752,7 @@ your git configuration (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`) 
 touches the network: the transports other than `file` (and a fake ssh one test needs) are refused,
 and an inherited `GIT_SSH_COMMAND` or `GIT_CONFIG_*` is cleared first.
 
-The run also reports **58 known issues, and they are meant to be there** — please do not
+The run also reports **83 known issues, and they are meant to be there** — please do not
 "fix" them. They are deliberate negative controls: tests that make an assertion helper fail
 on purpose, inside `withKnownIssue`, to prove it *can* fail.
 
@@ -758,10 +775,11 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   every discard must leave alone, its staged layer unstaged on purpose.
 - Three come from the staging preimage check's `expectRefused`
   (`PartialStagingPreimageTests`): a patch on a fresh index, which really applies.
-- One comes from `OperationStateTests`: `assertOperationUnchanged`, the fingerprint of a
+- Two come from `OperationStateTests`: `assertOperationUnchanged`, the fingerprint of a
   stopped operation (pseudo-refs, `*_MSG`, `AUTO_MERGE`, the `rebase-merge/` and `sequencer/`
-  files, the unmerged stages, HEAD and the refs) that every conflict write, continue and skip
-  test compares, made to fail by deleting `MERGE_MSG`.
+  files, the unmerged stages, HEAD's commit and the branch it names, and the refs) that every
+  conflict write, continue and skip test compares, made to fail by deleting `MERGE_MSG` and by
+  HEAD naming another branch at the same commit.
 - Two come from `WriteBaselineTests`: `assertOnlyThePathChanged`, which lets a conflict write
   change its own path and nothing else, made to fail by another changed file and by a changed
   `MERGE_MSG`.
@@ -799,10 +817,41 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   to fail by a `worktree remove` that really ran, a worktree off the list that is not a removed one
   (a folder git could not delete, and one replaced by a link), and `rev-list --all` counting the
   worktree being removed (R22).
+- Twelve come from the hang guards that replaced wall-clock bounds (milestone E1). A
+  time-limit failure cannot itself be a known issue, so each control cancels its waiter and
+  shows the stuck call reported as "never came back". Three are `TimeLimitSupportTests`, on
+  `CallUnderTest`, the wait every guarded call goes through: a call that never returns, a wait
+  started after the cancel, and the first of two waits on one call (the second still gets the
+  answer). Nine stand for a `.timeLimit` in `StreamingRunnerTests`, `FetchTests`, `PushTests`
+  and `LeasePushTests`: the 300-cancel stress loop, a call that waits out a child ignoring
+  SIGTERM (two shapes), one the abandonment never ends (three), and a fetch, a push and a force
+  push the cancel did not stop.
+- One comes from `aDeliverySpreadOverMoreThanThreeSecondsFailsTheBound`: the stderr delivery
+  bound, measured on the pipe's own queue, fails on pieces 3.2 s apart.
+- One comes from `withoutAForkTheStormsProofFails`: the fork-storm test proves its race by
+  counting the SIGKILLs the runner sends a reaped leader's group, and a leader that forks
+  nothing gives none.
+- Three come from the runner's escalation in `StreamingRunnerTests`: a reap recorded only
+  after the call came back leaves a helper that ignores SIGTERM running (the residual the
+  backlog's "Own the reap" item names), and an escalation one grace early and one past the
+  margin each fail the latency check, which is taken on the runner's own clock.
+- Three come from the scoped process checks (`OwnProcessTests`, `StreamingRunnerTests`): a leak
+  check fails on a process of the test's still running, a cleanup whose query fails is
+  recorded rather than swallowed, and the stress marker that outlives its SIGTERM is killed by
+  its group.
+- Two come from `UpstreamStateTests`: `TestRepo.upstream(of:)` treats a branch that does not
+  exist, and one whose name is only a prefix of another's, as a failure rather than "no
+  upstream".
+- Two come from `WorkingCopyBackendTests`: a `restore` that recurses into a registered
+  submodule really loses the work inside it — the hazard the unstage's
+  `--no-recurse-submodules` keeps away, so the fixture can show it.
 
-`GitterTests` reports **one known issue** of its own, as deliberate: `WorktreeHeldSwitchTests` shows
-that the operation gate alone lets a branch another worktree holds through, which is why the switch
-asks about the hold first.
+`GitterTests` reports **four known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
+shows that the operation gate alone lets a branch another worktree holds through, which is why
+the switch asks about the hold first. Three come from `DefaultsIsolationTests`: the check that
+the real defaults are unchanged fails when a store writes the domain it watches (a scratch
+suite standing in for the real one), directly, inside a test's scope, and in a test that writes
+and then throws.
 
 Deleting any of them would take the proof away and the suite would go on looking green.
 
@@ -810,8 +859,8 @@ Deleting any of them would take the proof away and the suite would go on looking
 
 Every `.swift` file in the two product targets — 191 of them, which is what `find
 GitCore/Sources Gitter -name '*.swift' | wc -l` prints — with the ones inside `Models/`,
-`Parsers/` and `Views/` named in prose rather than one per line. The 161 test files (128 in
-`GitCore/Tests`, 33 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
+`Parsers/` and `Views/` named in prose rather than one per line. The 167 test files (131 in
+`GitCore/Tests`, 36 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
 listed, which is also why the check is that command and not a bare `find . -name '*.swift'`:
 that one reaches them too, and the generated sources under `.build` as well.
 
@@ -877,7 +926,8 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
       +Worktrees.swift            the list, changes, the removal check (the walk, the forced
                                   settings), add and remove, each read back
     ProcessRunner.swift         Process spawning with LC_ALL=C and captured stderr
-      +Streaming.swift            the cancellable runner: progress, SIGTERM then SIGKILL
+      +Streaming.swift            the cancellable runner: progress, SIGTERM then SIGKILL, and
+                                  whether git exited or was killed
     GraphLayout.swift           gitk-style commit lane assignment
     PatchBuilder.swift          Builds a hunk- or line-level patch from a parsed diff, with
       +Markers.swift / +Paths.swift
@@ -888,7 +938,7 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
                                 PushPorcelain, RemoteFailure, StashList, StashFailure,
                                 Conflict and WorktreeList parsers, and GitLines (git's output
                                 split at the newline byte)
-  Tests/GitCoreTests/           137 suites; ForceFlagScanner(+Lexing) is the force-flag grep
+  Tests/GitCoreTests/           142 suites; ForceFlagScanner(+Lexing) is the force-flag grep
 
 Gitter/                   macOS app (SwiftUI)
   GitterApp.swift            App entry point, the one store (`AppModel`), the Repository
@@ -987,7 +1037,8 @@ GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app):
                           launch guard, compare's and the worktrees' wording and menu
                           reasons, the sidebar filter, a linked worktree's watched paths
                           and fingerprint, the worktree read's schedule, a held branch's
-                          switch, and the test-host check
+                          switch, the test-host check, and the scratch defaults every test
+                          store is built on (`TestStoreSupport`, `DefaultsIsolationTests`)
 ```
 
 ## Debug launch hooks
@@ -1204,6 +1255,13 @@ Finds its way around (milestone B3): filters the sidebar's branches and tags as 
 compares two branches — the commits only on each side and the changes one brings, from ids read
 once — and lists, opens, adds and removes worktrees, a removal only behind Gitter's own check of
 what git would delete, made again before git runs.
+
+Its tests are green on their first run (milestone E1): the GitCore gate is capped and the tests
+pass uncapped too, no test has a wall-clock upper bound that load can exceed, a test signals only
+processes it started, and the app's tests never touch your real defaults. A Stop ends a helper
+of git's that ignores SIGTERM even when git itself has already exited, and a git killed by a
+signal is reported as killed, never as an exit code (the corners left are the backlog's "Own the
+reap").
 
 Everything wanted and deliberately deferred is kept in [`docs/BACKLOG.md`](docs/BACKLOG.md), with
 what is already known about each item — including what only a person at the keyboard can still
