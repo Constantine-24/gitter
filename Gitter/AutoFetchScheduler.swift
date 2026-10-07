@@ -37,7 +37,7 @@ final class AutoFetchScheduler {
 
     private var loop: Task<Void, Never>?
 
-    init(interval: Duration = defaultInterval, timeout: Duration = defaultTimeout, defaults: UserDefaults = .standard) {
+    init(interval: Duration = defaultInterval, timeout: Duration = defaultTimeout, defaults: UserDefaults) {
         self.interval = interval
         self.timeout = timeout
         self.defaults = defaults

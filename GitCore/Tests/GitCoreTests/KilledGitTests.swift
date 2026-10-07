@@ -44,7 +44,9 @@ func isKilledGit(_ error: Error?, signal: Int32 = SIGHUP) -> Bool {
 /// Where a caller already treats a git stopped part-way as an outcome it cannot know — its
 /// `CancellationError` branch — a killed git takes that branch too: the outcome is just as
 /// unknown, and the read-back that a plain failure would skip is what those callers exist to
-/// keep. Everywhere else the killed git is thrown as a failure in the runner's words.
+/// keep. Where a caller reads the repository back after git's refusal — a continue or skip, a
+/// local tag delete, a stash push — it reads a killed git back the same way. Everywhere else the
+/// killed git is thrown as a failure in the runner's words.
 @Suite struct KilledGitTests {
     // MARK: - The wrapper
 
@@ -167,8 +169,8 @@ func isKilledGit(_ error: Error?, signal: Int32 = SIGHUP) -> Bool {
 
     /// A stash push whose git was killed is read back, as one that exited with a refusal always
     /// was (fix round 2): an entry filed is `.savedWithError` — saved, git not having finished,
-    /// in the signal's words — so the entry and its Pop are reported; nothing filed is the
-    /// killed git, thrown.
+    /// in the signal's words — so the entry is reported (a banner naming it, with no Pop action);
+    /// nothing filed is the killed git, thrown.
     @Test(arguments: [true, false])
     func aKilledStashPushIsReadBack(runFirst: Bool) async throws {
         let repo = try await TestRepo.makeBranched()
@@ -193,18 +195,67 @@ func isKilledGit(_ error: Error?, signal: Int32 = SIGHUP) -> Bool {
         #expect(listed.isEmpty != runFirst, "the premise: an entry was filed exactly when git ran")
     }
 
-    /// A continue whose git was killed is a failure in the runner's words, not git's answer.
-    @Test func aKilledContinueIsThrown() async throws {
-        let repo = try await SequenceFixtures.stopped(.cherryPick, commits: 1)
+    /// A continue whose git was killed is read back, as one that exited always was (final fix
+    /// wave I1): the next stop when git got there, and otherwise a failure in the signal's words
+    /// — never git's answer, and never thrown past the read-back.
+    @Test(arguments: [true, false])
+    func aKilledContinueIsReadBack(runFirst: Bool) async throws {
+        let repo = try await SequenceFixtures.stopped(.cherryPick, commits: 2)
         defer { repo.cleanUp() }
+        let first = try #require(try await CLIGitBackend().operationProgress(at: repo.root)?.current)
         try await SequenceFixtures.resolve(repo)
-        let gitPath = try hangingUpGitPath(on: "cherry-pick --continue", runFirst: false, in: repo.root.appendingPathComponent(".git"))
+        let gitPath = try hangingUpGitPath(on: "cherry-pick --continue", runFirst: runFirst, in: repo.root.appendingPathComponent(".git"))
 
-        let error = await thrownError {
-            let outcome = try await CLIGitBackend(gitPath: gitPath).continueOperation(.cherryPick, message: nil, at: repo.root)
+        let outcome = try await CLIGitBackend(gitPath: gitPath).continueOperation(.cherryPick, message: nil, at: repo.root)
+
+        switch outcome {
+        case .stoppedAgain(let progress):
+            #expect(runFirst, "git never ran, yet the continue was read as the next stop")
+            #expect(progress.current != nil && progress.current != first)
+        case .failed(let words):
+            #expect(!runFirst, "git stopped at the next commit, yet the continue was read as failed")
+            #expect(words.hasPrefix("git was killed by signal 1."), "\(words)")
+        default:
             Issue.record("read as \(outcome)")
         }
-        #expect(isKilledGit(error), "\(String(describing: error))")
+        // The premise, read from the repository: git moved on exactly when it ran.
+        let now = try await CLIGitBackend().operationProgress(at: repo.root)?.current
+        #expect((now != first) == runFirst)
+    }
+
+    /// A skip whose git was killed is read back too (final fix wave I1; at a44c74a it was, and the
+    /// first fix round's seams made it throw): the entry Gitter filed first is still returned —
+    /// the app's "stays in the Stashes list", Show Copy and Pop, and the draft's restart all
+    /// hang on it — with the next stop when git got there, and otherwise a failure in the
+    /// signal's words.
+    @Test(arguments: [RepositoryOperation.cherryPick, .rebase], [true, false])
+    func aKilledSkipIsReadBackWithItsEntry(operation: RepositoryOperation, runFirst: Bool) async throws {
+        let repo = try await SequenceFixtures.stopped(operation, commits: 2)
+        defer { repo.cleanUp() }
+        _ = try await SkipTests.partiallyResolve(repo)
+        let first = try #require(try await CLIGitBackend().operationProgress(at: repo.root)?.current)
+        let summary = try await SkipTests.summary(repo, first.sha)
+        let match = operation == .rebase ? "rebase --skip" : "cherry-pick --skip"
+        let gitPath = try hangingUpGitPath(on: match, runFirst: runFirst, in: repo.root.appendingPathComponent(".git"))
+
+        let result = try await CLIGitBackend(gitPath: gitPath).skip(operation, stoppedAt: first.sha, at: repo.root)
+
+        let recorded = try #require(result.recorded, "the entry filed before git ran was dropped")
+        #expect(recorded.reflogSubject == "Skipped by Gitter: \(summary)")
+        switch result.outcome {
+        case .stoppedAgain(let progress):
+            #expect(runFirst, "git never ran, yet the skip was read as the next stop")
+            #expect(progress.current != nil && progress.current != first)
+        case .failed(let words):
+            #expect(!runFirst, "git stopped at the next commit, yet the skip was read as failed")
+            #expect(words.hasPrefix("git was killed by signal 1."), "\(words)")
+        default:
+            Issue.record("read as \(result.outcome)")
+        }
+        // The premise, read from the repository: git moved on exactly when it ran.
+        let now = try await CLIGitBackend().operationProgress(at: repo.root)?.current
+        #expect((now != first) == runFirst)
+        #expect(try await repo.stashCount() == 1)
     }
 
     /// A single revert whose git was killed before it did anything: HEAD and the index are where

@@ -66,8 +66,9 @@ extension CLIGitBackend {
                 cwd: root, extra: [:], allowedExitCodes: [1, 128])
         } catch where Self.wasKilledBySignal(error) {
             // Killed part-way (E1 Task 3, fix round 2): read back, as a refusal is. An entry
-            // filed is saved with git not having finished — the entry and its Pop are reported;
-            // nothing filed is the killed git.
+            // filed is saved with git not having finished — `.savedWithError`, which the app
+            // shows as a banner naming the entry, with no Pop action; nothing filed is the
+            // killed git.
             guard let after = try await stashRef(at: root), after != before else { throw error }
             return .savedWithError(try await listedStash(after, at: root), gitsWords: Self.words(of: error))
         }

@@ -11,7 +11,8 @@ import Testing
 ///
 /// The test host is the app, so `.standard` here *is* the user's domain. Each test is checked
 /// against it (RF5, `.leavesTheRealDefaultsAlone`): read before and after, never written. The
-/// check's controls watch a scratch suite named like the real one.
+/// check's controls watch a scratch suite: a path whose last component is
+/// `dev.penzin.Gitter.tests.<uuid>`.
 ///
 /// No git runs: the one store that opens a repository is given `/usr/bin/false` for git, and the
 /// repository is a folder with an empty `.git` in it — enough for `open(_:)` to accept it.
@@ -136,7 +137,8 @@ struct DefaultsIsolationTests {
     // MARK: - RF5's check can fail
 
     /// The control for `.leavesTheRealDefaultsAlone`: a store that is not isolated from the domain
-    /// being watched — here a scratch suite named like the real one, never the real one — writes
+    /// being watched — here a scratch suite, a path whose last component is
+    /// `dev.penzin.Gitter.tests.<uuid>`, never the real domain — writes
     /// its keys, and the same check fails.
     @Test func theUnchangedCheckSeesAStoreThatWritesTheWatchedDomain() {
         let watched = ScratchDefaults()
@@ -158,8 +160,9 @@ struct DefaultsIsolationTests {
         #expect(later.changedKeys(since: after) == [RepositoryStore.mergeModeKey])
     }
 
-    /// The per-test scope itself, run by hand over a scratch suite named like the real one: a
-    /// write inside it fails it, and a scope that writes nothing passes.
+    /// The per-test scope itself, run by hand over a scratch suite (a path whose last component
+    /// is `dev.penzin.Gitter.tests.<uuid>`): a write inside it fails it, and a scope that writes
+    /// nothing passes.
     @Test func theScopeFailsWhenItsDomainIsWritten() async throws {
         let watched = ScratchDefaults()
         defer { watched.remove() }

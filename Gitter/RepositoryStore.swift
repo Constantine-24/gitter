@@ -334,7 +334,7 @@ final class RepositoryStore {
         backend: Backend = CLIGitBackend(),
         gitPath: String = "/usr/bin/git",
         trasher: any Trasher = FileManagerTrasher(),
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults
     ) {
         self.backend = backend
         self.gitPath = gitPath

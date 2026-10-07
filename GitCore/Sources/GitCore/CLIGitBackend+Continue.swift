@@ -587,15 +587,19 @@ extension CLIGitBackend: GitOperationBackend {
         // scanner. It applies to a range started in a terminal as well — the commits still to
         // go get `Revert "<subject>"`; the stopped commit keeps the message git wrote for it.
         let result: ProcessRunner.StreamedResult
-        switch expected {
-        case .rebase:
-            result = try await runWithEnvironment(["rebase", "--continue"], cwd: root, extra: Self.withConfig("commit.cleanup", "scissors", over: ProcessInfo.processInfo.environment), allowedExitCodes: Self.anyExitCode)
-        case .cherryPick:
-            result = try await runWithEnvironment(["cherry-pick", "--continue"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
-        case .revert:
-            result = try await runWithEnvironment(["revert", "--continue", "--no-reference"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
-        case .merge, .squash, .applyingPatches:
-            throw OperationError.notReady(.notContinuable)
+        do {
+            switch expected {
+            case .rebase:
+                result = try await runWithEnvironment(["rebase", "--continue"], cwd: root, extra: Self.withConfig("commit.cleanup", "scissors", over: ProcessInfo.processInfo.environment), allowedExitCodes: Self.anyExitCode)
+            case .cherryPick:
+                result = try await runWithEnvironment(["cherry-pick", "--continue"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
+            case .revert:
+                result = try await runWithEnvironment(["revert", "--continue", "--no-reference"], cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
+            case .merge, .squash, .applyingPatches:
+                throw OperationError.notReady(.notContinuable)
+            }
+        } catch where Self.wasKilledBySignal(error) {
+            result = Self.killedGitsResult(error)
         }
         return try await outcome(of: result, from: before, expected: expected, at: root)
     }
@@ -632,6 +636,8 @@ extension CLIGitBackend: GitOperationBackend {
     /// revert left `sequencer/` behind (fix round 1, I2), `.finishedWithConflicts` when paths are
     /// unmerged, `.finished` on exit 0, else `.failed`. An operation: `.stoppedAgain` when its
     /// progress moved, else `.failed` with git's words.
+    ///
+    /// A killed git comes here too, as `killedGitsResult`, never as an exit code (E1 promise 4).
     private func outcome(
         of result: ProcessRunner.StreamedResult, from before: OperationProgress?, expected: RepositoryOperation,
         at root: URL
@@ -645,6 +651,16 @@ extension CLIGitBackend: GitOperationBackend {
             return result.exitCode == 0 ? .finished : .failed(gitsWords: Self.words(result))
         }
         return after != before ? .stoppedAgain(after) : .failed(gitsWords: Self.words(result))
+    }
+
+    /// A killed git's stand-in for its result (final fix wave I1): no exit code (-1) and the
+    /// runner's words — `git was killed by signal <n>.`, then git's own — as its stderr. Whether
+    /// git got anywhere is unknown, so `outcome` reads the repository as after any git that did
+    /// not exit 0: the next stop when git reached it (`.stoppedAgain`), a halted range or the
+    /// conflicts it left, and otherwise `.failed` in the signal's words — also when the
+    /// operation is gone, since a killed git did not finish.
+    private static func killedGitsResult(_ error: Error) -> ProcessRunner.StreamedResult {
+        ProcessRunner.StreamedResult(stdout: Data(), stderr: words(of: error), exitCode: -1, terminationReason: .uncaughtSignal)
     }
 
     // MARK: - Skip
@@ -708,7 +724,14 @@ extension CLIGitBackend: GitOperationBackend {
         case .revert: arguments = ["revert", "--skip", "--no-reference"]
         case .merge, .squash, .applyingPatches: throw OperationError.skipRefused(.notSkippable)
         }
-        let result = try await runWithEnvironment(arguments, cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
+        let result: ProcessRunner.StreamedResult
+        do {
+            result = try await runWithEnvironment(arguments, cwd: root, extra: [:], allowedExitCodes: Self.anyExitCode)
+        } catch where Self.wasKilledBySignal(error) {
+            // Read back, never thrown: `recorded` is filed already, and the app's "stays in the
+            // Stashes list", Show Copy, Pop and the draft's restart all hang on it.
+            result = Self.killedGitsResult(error)
+        }
         return SkipOutcome(
             outcome: try await outcome(of: result, from: before, expected: expected, at: root), recorded: recorded)
     }

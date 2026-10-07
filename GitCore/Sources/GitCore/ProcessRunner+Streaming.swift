@@ -800,7 +800,9 @@ private final class StreamingProcessState: @unchecked Sendable {
     /// the same, and nothing sent another, so a group member ignoring SIGTERM outlived the call.
     /// Now it is left pending: if the termination was recorded in the meantime, it goes to the
     /// remembered group from here; otherwise `recordTermination` sends it. Both are decided
-    /// under the lock, so exactly one of the two does. The abandonment is armed as before.
+    /// under the lock, so exactly one of the two does. The first, a record landing while the
+    /// SIGKILL was on its way, is a microsecond race: correct by reading, and untested. The
+    /// abandonment is armed as before.
     private func escalateToKill() {
         lock.lock()
         killWork = nil
@@ -899,7 +901,6 @@ private final class StreamingProcessState: @unchecked Sendable {
     /// outside it.
     ///
     /// True when the signal reached the group.
-    @discardableResult
     private func signalReapedLeadersGroup(_ group: pid_t, _ signal: Int32) -> Bool {
         guard group > 1 else { return false }
         errno = 0

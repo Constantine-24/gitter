@@ -888,10 +888,10 @@ private final class TerminationHold: @unchecked Sendable {
         Self.expectEscalation(attempts.current, after: .seconds(2))
     }
 
-    /// The control for the test above, and what the runner did before the fix: with the
-    /// record of the reap held until the call has come back — by the abandonment, a grace after
-    /// the SIGKILL that reached nothing — no kill is ever sent, and the leak check fails on the
-    /// helper that is still running. The test then kills it by its group, which is git's.
+    /// The control for the test above, with the same outcome as the old runner: no kill is
+    /// sent. The record of the reap is held until the call has come back — by the abandonment, a
+    /// grace after the SIGKILL that reached nothing — so the leak check fails on the helper that
+    /// is still running. The test then kills it by its group, which is git's.
     @Test(.timeLimit(.minutes(10))) func aReapRecordedOnlyAfterTheCallCameBackLeavesTheHelperRunning() async throws {
         let duration = Self.uniqueDuration()
         let sleep = Self.sleepToken(duration)

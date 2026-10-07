@@ -122,11 +122,15 @@ func checkingDomainUnchanged(
 /// RF5: a defaults domain read before and after each test of a suite, and required unchanged —
 /// for `.leavesTheRealDefaultsAlone`, the user's real `dev.penzin.Gitter` domain. Read only:
 /// nothing here writes the domain it watches. Its controls (`DefaultsIsolationTests`) run the same
-/// scope over a scratch suite named like the real one, never the real one.
+/// scope over a scratch suite, a path whose last component is `dev.penzin.Gitter.tests.<uuid>`,
+/// never the real domain.
 ///
 /// Per test, not around the suite: on Xcode 27 an issue recorded in a suite's own scope crashes
 /// the test host ("Recording issues for suites is not supported", found in review). The scheme
 /// run's `defaults export` and `cmp` cover the time between tests.
+///
+/// A real running Gitter that writes its domain during a test (a window of about 20 ms) can make
+/// this check fail when the test wrote nothing: a false positive.
 struct LeavesTheDomainUnchanged: SuiteTrait, TestTrait, TestScoping {
     static let realDomain = "dev.penzin.Gitter"
 
