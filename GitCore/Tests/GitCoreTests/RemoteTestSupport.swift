@@ -121,18 +121,184 @@ func writeBareHook(_ bareURL: URL, _ name: String, _ contents: String) throws {
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
 }
 
-/// Processes whose full command line contains `pattern`, as `pgrep -f` reports them.
+// MARK: - The test's own processes
+
+/// A process query that could not answer: `pgrep` would not start, or failed (exit 2 or 3), or
+/// was asked with an empty marker, which matches every process the user has.
+struct OwnProcessQueryFailed: Error, CustomStringConvertible {
+    let description: String
+}
+
+/// The pids of **this user's** live processes whose full command line contains `marker`:
+/// `pgrep -U <uid> -f <marker>`, and nothing else. Every leak check and every cleanup in the
+/// suite looks through this, never through the whole process table (E1 promise 5).
 ///
-/// `pgrep` exits 1 when nothing matches, which is the answer this asks for and not an error.
-/// The pattern a caller passes must be unique to the test that asks — a bare `sleep 47` would
-/// also match a developer's own shell — which is why the slow-transport script below sleeps
-/// for a duration nothing else would.
-func processesMatching(_ pattern: String) async throws -> [String] {
-    let runner = isolatedRunner()
-    let data = try await runner.run(
-        "/usr/bin/pgrep", ["-f", pattern], cwd: URL(fileURLWithPath: "/"), allowedExitCodes: [1])
-    return String(decoding: data, as: UTF8.self)
-        .split(separator: "\n").map(String.init)
+/// The marker must be unique to the test that asks — a UUID, or a `sleep` duration with six
+/// random digits — so that another test's process, or another run's, is never counted
+/// (`OwnProcessTests.aDecoyUnderAnotherMarkerIsNeitherCountedNorKilled`). `-U` keeps other
+/// users' processes out even of a marker that collided. `pgrep` never lists itself, and exits
+/// 1 when nothing matches, which is the answer asked for and not an error.
+///
+/// Synchronous on purpose: the probe is launched and waited for on one thread with no `await`
+/// in between — the one way `waitUntilExit` on a `Process` without a `terminationHandler`
+/// cannot hang (see `StreamingRunnerTests`' stress marker).
+func ownProcesses(matching marker: String) throws -> [pid_t] {
+    guard !marker.isEmpty else {
+        throw OwnProcessQueryFailed(description: "an empty marker matches every process")
+    }
+    let probe = Process()
+    probe.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+    probe.arguments = ["-U", String(getuid()), "-f", marker]
+    let out = Pipe()
+    probe.standardOutput = out
+    probe.standardError = FileHandle.nullDevice
+    try probe.run()
+    let data = out.fileHandleForReading.readDataToEndOfFile()
+    probe.waitUntilExit()
+    guard probe.terminationReason == .exit, [0, 1].contains(probe.terminationStatus) else {
+        throw OwnProcessQueryFailed(
+            description: "the process query for \(marker) failed: \(probe.terminationStatus)")
+    }
+    return String(decoding: data, as: UTF8.self).split(separator: "\n").compactMap { pid_t($0) }
+}
+
+/// Whether `killOwnGroup` may signal `pgid`: never 0, 1 or below — `kill(-1, …)` is every
+/// process the user owns and `kill(0, …)` is the caller's own group — and never this process's
+/// own group, which holds the test runner and whatever started it.
+func isKillableOwnGroup(_ pgid: pid_t) -> Bool {
+    pgid > 1 && pgid != getpgid(0)
+}
+
+/// SIGKILLs process group `pgid`, a group the test made: a child the runner launched leads its
+/// own, as does a `Process` the test started, and a fixture's `set -m` job. Refuses what
+/// `isKillableOwnGroup` refuses. True when the signal was delivered.
+@discardableResult
+func killOwnGroup(_ pgid: pid_t) -> Bool {
+    guard isKillableOwnGroup(pgid) else { return false }
+    return kill(-pgid, SIGKILL) == 0
+}
+
+/// The cleanup on a failure path: SIGKILLs the group of every process `ownProcesses` finds for
+/// `marker` — a fixture's `sleep` and whatever shares its group — and returns the groups it
+/// killed. The group is read from a process that matched, so it is a live group and the test's
+/// own, never one the number may name after a reap. A matched process in this process's own
+/// group (which `killOwnGroup` refuses) is killed by its own pid.
+@discardableResult
+func killOwnGroups(matching marker: String) throws -> Set<pid_t> {
+    var killed: Set<pid_t> = []
+    for pid in try ownProcesses(matching: marker) {
+        let group = getpgid(pid)
+        if killOwnGroup(group) {
+            killed.insert(group)
+        } else if group != -1 {
+            kill(pid, SIGKILL)
+        }
+    }
+    return killed
+}
+
+/// Whether every process of ours under `marker` is gone, polled for up to two seconds: a
+/// killed fixture's `sleep` is reaped by launchd after its parent shell died, which is prompt
+/// rather than instant.
+func waitForNoOwnProcess(matching marker: String) async throws -> Bool {
+    for _ in 0..<200 {
+        if try ownProcesses(matching: marker).isEmpty { return true }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    return false
+}
+
+/// The controls for the helpers above, which every leak check and cleanup now goes through
+/// (E1 RF4: a process that is not the test's own must never be counted or killed).
+@Suite struct OwnProcessTests {
+    /// `/bin/sh -c "true; sleep 660" <marker>`, started directly: Foundation puts it in a group
+    /// of its own. The `true;` keeps the shell, and the marker on its command line, from being
+    /// replaced by the `sleep`; the `sleep` carries no marker and is reached through the group.
+    private static func startMarked(_ marker: String) throws -> (pid: pid_t, group: pid_t) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "true; sleep 660", marker]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        return (process.processIdentifier, getpgid(process.processIdentifier))
+    }
+
+    private static func groupIsGone(_ group: pid_t) async -> Bool {
+        for _ in 0..<200 {
+            errno = 0
+            if kill(-group, 0) == -1, errno == ESRCH { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
+    }
+
+    /// **The decoy proof.** A second process of the very same shape, under another marker —
+    /// another test's, or another run's — is not counted by this test's leak check and survives
+    /// this test's cleanup. It is then killed by its own pid.
+    @Test(.timeLimit(.minutes(10))) func aDecoyUnderAnotherMarkerIsNeitherCountedNorKilled() async throws {
+        let marker = "gitter-own-\(UUID().uuidString)"
+        let decoyMarker = "gitter-decoy-\(UUID().uuidString)"
+        let ours = try Self.startMarked(marker)
+        let decoy = try Self.startMarked(decoyMarker)
+        // Only while the decoy is surely unreaped: a defer that ran after the kill below could
+        // reach a process that has since taken its number.
+        var decoyLeft = true
+        defer { if decoyLeft { killOwnGroup(decoy.group) } }
+        try #require(isKillableOwnGroup(ours.group) && isKillableOwnGroup(decoy.group))
+        #expect(ours.group != decoy.group)
+
+        // Baselines that can fail: each is found under its own marker, and a query loose enough
+        // to span both (the command they share) finds the decoy — so it really is a candidate.
+        #expect(try ownProcesses(matching: marker) == [ours.pid])
+        #expect(try ownProcesses(matching: decoyMarker) == [decoy.pid])
+        #expect(try ownProcesses(matching: "true; sleep 660").contains(decoy.pid))
+
+        // The leak check does not count it, and the cleanup does not kill it.
+        #expect(try !ownProcesses(matching: marker).contains(decoy.pid))
+        #expect(try killOwnGroups(matching: marker) == [ours.group])
+        #expect(await Self.groupIsGone(ours.group), "the test's own process survived its cleanup")
+        #expect(try await waitForNoOwnProcess(matching: marker))
+        #expect(kill(decoy.pid, 0) == 0, "the cleanup killed a process that was not the test's")
+        #expect(kill(-decoy.group, 0) == 0)
+        #expect(try ownProcesses(matching: decoyMarker) == [decoy.pid])
+
+        // The decoy, by its own pid; then its `sleep`, which carries no marker, by the group
+        // it made.
+        #expect(kill(decoy.pid, SIGKILL) == 0)
+        killOwnGroup(decoy.group)
+        decoyLeft = false
+        #expect(await Self.groupIsGone(decoy.group))
+    }
+
+    /// Control: a leak check finds a process that really is running under its marker, so the
+    /// "nothing is left" it is used for can fail.
+    @Test(.timeLimit(.minutes(10))) func aLeakCheckFailsOnAProcessThatIsStillRunning() async throws {
+        let marker = "gitter-leak-\(UUID().uuidString)"
+        let leaked = try Self.startMarked(marker)
+        let found = try ownProcesses(matching: marker)
+        withKnownIssue("the marked process really is running") {
+            #expect(found.isEmpty, "left running: \(found)")
+        }
+        #expect(killOwnGroup(leaked.group))
+        #expect(await Self.groupIsGone(leaked.group))
+    }
+
+    /// Control: the refusals that make `killOwnGroup` safe to call on a failure path. Asked of
+    /// the predicate it applies, never of `kill` itself — a refusal that failed would signal
+    /// every process the user owns, or the test runner's own group.
+    @Test func killOwnGroupRefusesEveryGroupThatIsNotATestsOwn() {
+        #expect(!isKillableOwnGroup(-1))
+        #expect(!isKillableOwnGroup(0))
+        #expect(!isKillableOwnGroup(1))
+        #expect(!isKillableOwnGroup(getpgid(0)))
+        #expect(isKillableOwnGroup(getpgid(0) + 1))
+    }
+
+    /// An empty marker would match every process the user has; it is refused, not asked.
+    @Test func anEmptyMarkerIsRefused() {
+        #expect(throws: OwnProcessQueryFailed.self) { try ownProcesses(matching: "") }
+    }
 }
 
 /// The refs a bare repository holds — the server's side of every remote operation.

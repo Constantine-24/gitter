@@ -21,14 +21,14 @@ import Testing
         try repo.write("topic.txt", "topic\n")
         try await repo.commitAll("topic")
         let tip = try await repo.headSha()
-        #expect(try await repo.upstream(of: "topic") == nil, "nothing to publish otherwise")
+        #expect(try await repo.upstream(of: "topic") == .none, "nothing to publish otherwise")
 
         let result = try await CLIGitBackend().push(
             "topic", to: "origin", remoteRef: "refs/heads/topic", setUpstream: true,
             at: repo.root, progress: { _ in })
 
         #expect(result.outcome == .created)
-        #expect(try await repo.upstream(of: "topic") == "origin/topic")
+        #expect(try await repo.upstream(of: "topic") == .tracking("origin/topic"))
         let server = try await RemoteState.capture(origin)
         #expect(server.refs.contains("refs/heads/topic\u{0}\(tip)"), "\(server.refs)")
     }
@@ -315,7 +315,7 @@ import Testing
         #expect(try await repo.configValue("branch.tri.remote") == "fork",
                 "-u moved the upstream, not the push remote")
         #expect(try await repo.configValue("branch.tri.pushremote") == "fork")
-        #expect(try await repo.upstream(of: "tri") == "fork/tri")
+        #expect(try await repo.upstream(of: "tri") == .tracking("fork/tri"))
     }
 
     /// `-u` is **best-effort in git**, and its failure is invisible to anything that reads only
@@ -378,7 +378,7 @@ import Testing
             $0.contains("unable to write upstream branch configuration")
         }, "\(result.errorLines)")
         #expect(result.remoteMessages == [], "git's own errors are not the server talking")
-        #expect(try await repo.upstream(of: "topic") == nil)
+        #expect(try await repo.upstream(of: "topic") == .none)
     }
 
     /// The same read-back on the path that works: `-u` really did write the configuration, so
@@ -401,7 +401,7 @@ import Testing
         #expect(result.outcome == .created)
         #expect(result.upstream == .set)
         #expect(result.errorLines == [])
-        #expect(try await repo.upstream(of: "topic") == "origin/topic")
+        #expect(try await repo.upstream(of: "topic") == .tracking("origin/topic"))
     }
 
     /// **"git did not write it" and "Gitter could not read it back" are different sentences,
@@ -700,7 +700,8 @@ import Testing
     /// it and *then* fork `sleep`: a SIGTERM to the group landing in that window reached the
     /// shell but not the child it was forking, and the orphaned `sleep` held stderr open for its
     /// whole length — measured once at 53.2 s under load.) The sleep outlasts the ten-minute
-    /// time limit, and its random suffix lets `pgrep -f` find *this* test's grandchild alone.
+    /// time limit, and its random suffix lets `ownProcesses(matching:)` find *this* test's
+    /// grandchild alone.
     static func installSlowReceivePack(in repo: TestRepo, started: URL) async throws -> String {
         let marker = "66\(UInt32.random(in: 0...9)).\(UInt32.random(in: 100_000...999_999))"
         let script = ".git/slow-receive-pack.sh"
@@ -736,10 +737,10 @@ import Testing
     static func expectNoTransportLeft(_ pattern: String, sourceLocation: SourceLocation = #_sourceLocation)
         async throws
     {
-        var leftovers = try await processesMatching(pattern)
+        var leftovers = try ownProcesses(matching: pattern)
         for _ in 0..<20 where !leftovers.isEmpty {
             try await Task.sleep(for: .milliseconds(100))
-            leftovers = try await processesMatching(pattern)
+            leftovers = try ownProcesses(matching: pattern)
         }
         #expect(leftovers.isEmpty, "a slow transport outlived its cancel: \(leftovers)", sourceLocation: sourceLocation)
     }
@@ -754,7 +755,7 @@ import Testing
     /// attempt on the test's clock stood here, which load could exceed; the control is
     /// `aPushTheCancelDidNotStopIsReportedOnceTheTestIsCancelled`. Since Task 7's fix round the
     /// runner itself also kills an orphaned transport (its escalation outlives git's reap), so
-    /// neither the bound nor the limit would notice one: the `pgrep` for the `sleep`, and the
+    /// neither the bound nor the limit would notice one: the process check for the `sleep`, and the
     /// lock, fsck and state checks below, are what prove the child is gone and the
     /// repositories intact.
     @Test(.timeLimit(.minutes(10))) func twentyCancelledPushesAllEndAtOnceAndLeaveTheRepositorySound() async throws {
@@ -790,7 +791,11 @@ import Testing
             try await Self.waitForSlowTransport(started, attempt)
 
             call.cancel()
-            guard let thrown = await call.value("attempt \(attempt)") else { return }
+            guard let thrown = await call.value("attempt \(attempt)") else {
+                // The wrapper's `sleep` outlasts the limit: SIGKILLed with git's whole group.
+                _ = try? killOwnGroups(matching: sleep)
+                return
+            }
             #expect(thrown is CancellationError, "attempt \(attempt): \(String(describing: thrown))")
         }
 
@@ -811,7 +816,7 @@ import Testing
     /// test, and the test reports it. The limit is stood in for by a waiting task this test
     /// cancels (`TimeLimitSupport.swift`); then the push is cancelled for real, and nothing is
     /// left behind.
-    @Test func aPushTheCancelDidNotStopIsReportedOnceTheTestIsCancelled() async throws {
+    @Test(.timeLimit(.minutes(10))) func aPushTheCancelDidNotStopIsReportedOnceTheTestIsCancelled() async throws {
         let repo = try await TestRepo.makeBranched()
         defer { repo.cleanUp() }
         let origin = try await repo.addOriginWithFeatureBranch()
@@ -845,7 +850,11 @@ import Testing
         } matching: { $0.isNeverCameBack }
 
         call.cancel()
-        #expect(await call.value("the push, cancelled for real") is CancellationError)
+        guard let thrown = await call.value("the push, cancelled for real") else {
+            _ = try? killOwnGroups(matching: sleep)
+            return
+        }
+        #expect(thrown is CancellationError)
         try await Self.expectNoTransportLeft(sleep)
         try await assertRemoteUnchanged(origin, since: serverBefore)
     }

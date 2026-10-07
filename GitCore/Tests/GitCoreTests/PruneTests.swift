@@ -608,7 +608,7 @@ func thrownError(
         #expect(try await repo.gitRefExists(PruneFixture.gone1Ref))
         #expect(try await repo.gitRefExists(PruneFixture.gone2Ref))
         if atTheSecond { #expect(try await repo.revParse("refs/heads/first") == fixture.gone1) }
-        #expect(try await processesMatching(sleep).isEmpty)
+        #expect(try ownProcesses(matching: sleep).isEmpty)
     }
 
     /// Fix round 1 (Minor 1): cancelled while a delete is running — git was stopped part-way, so
@@ -620,7 +620,7 @@ func thrownError(
         let repo = fixture.repo
         let plan = try await backend.prunePlan("origin", at: repo.root)
         let marker = repo.root.appendingPathComponent("hook-started")
-        // A duration nothing else on the machine sleeps for, so `pgrep -f` finds only this hook.
+        // A duration nothing else on the machine sleeps for, so `ownProcesses` finds only this hook.
         let sleep = "sleep 47.\(Int.random(in: 100_000...999_999))"
         try repo.writeExecutable(".git/hooks/reference-transaction", """
             #!/bin/sh
@@ -646,7 +646,7 @@ func thrownError(
         #expect(result.failed.isEmpty, "\(result.failed)")
         #expect(try await repo.revParse(PruneFixture.gone2Ref) == fixture.gone2)
         // The runner stopped git's whole process group: the hook is not left sleeping.
-        #expect(try await processesMatching(sleep).isEmpty)
+        #expect(try ownProcesses(matching: sleep).isEmpty)
     }
 
     /// Fix round 1 (Minor 2): one commit loses its holder while another gains one — the count is

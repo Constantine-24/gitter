@@ -287,6 +287,66 @@ import Testing
         try await assertOperationUnchanged(repo, since: operation)
     }
 
+    /// A2 gap (E1 Task 2): the `operationPaths == nil` rule on a rebase stopped at an `exec` or a
+    /// `break` — no commit is pending, no `AUTO_MERGE` is written, so nothing tells the
+    /// operation's paths: every path with a staged change is refused on the staged side, one
+    /// with none is not named, and the unstaged side runs and leaves the operation alone.
+    @Test(arguments: ["break", "exec false"])
+    func aRebaseStoppedAtAnExecOrBreakRefusesEveryStagedPath(_ step: String) async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("x.txt", Self.xBase)
+        try repo.write("y.txt", Self.yBase)
+        try repo.write("z.txt", Self.zBase)
+        try await repo.commitAll("base")
+        try repo.write("z.txt", Self.zTheirs)
+        try await repo.commitAll("z change")
+        try await SkipTests.sequenceEditor(
+            repo, "{ cat \"$1\"; echo '\(step)'; } > \"$1.new\" && mv \"$1.new\" \"$1\"")
+        try await repo.git(["rebase", "-i", "HEAD~1"], allowedExitCodes: [1])
+        // The premise, each part able to fail: a rebase in progress, stopped after its pick,
+        // with no commit pending and no `AUTO_MERGE`, so its paths cannot be told.
+        #expect(try await backend.operationInProgress(at: repo.root) == .rebase)
+        #expect(try await repo.git(["rev-parse", "-q", "--verify", "REBASE_HEAD"], allowedExitCodes: [1]).isEmpty)
+        #expect(try await repo.git(["rev-parse", "-q", "--verify", "AUTO_MERGE"], allowedExitCodes: [1]).isEmpty)
+        #expect(try await backend.operationPaths(at: repo.root) == nil)
+
+        try repo.write("x.txt", Self.xEdited)
+        try repo.write("y.txt", Self.yStaged)
+        try await repo.git(["add", "--", "y.txt"])
+        try await expectRefused(try await staged(["y.txt"], repo), .partOfOperation(["y.txt"]), in: repo)
+        try await expectRefused(try await staged(["x.txt", "y.txt"], repo), .partOfOperation(["y.txt"]), in: repo)
+
+        let trasher = try FakeTrasher()
+        defer { trasher.cleanUp() }
+        let operation = try await OperationState.capture(repo)
+        _ = try await backend.discard(try await unstaged(["x.txt"], repo), trasher: trasher, at: repo.root)
+        #expect(try text(repo, "x.txt") == Self.xBase)
+        try await assertOperationUnchanged(repo, since: operation)
+    }
+
+    /// A2 gap (E1 Task 2): a named folder that holds one of the operation's own paths is the
+    /// operation's on the staged side — refused, naming the folder as it was named, with or
+    /// without its trailing slash; a folder holding none is not named.
+    @Test func aNamedFolderHoldingAnOperationPathIsRefused() async throws {
+        let repo = try await ConflictFixtures.merge(
+            kind: .bothModified,
+            prepare: { repo in
+                try repo.write("dir/z.txt", Self.zBase)
+                try repo.write("other/o.txt", "o\n")
+            },
+            onTheirs: { repo in try repo.write("dir/z.txt", Self.zTheirs) })
+        defer { repo.cleanUp() }
+        #expect(try await backend.operationPaths(at: repo.root)?.contains("dir/z.txt") == true)
+        try repo.write("other/o.txt", "o STAGED\n")
+        try await repo.git(["add", "--", "other/o.txt"])
+
+        try await expectRefused(try await staged(["dir"], repo), .partOfOperation(["dir"]), in: repo)
+        try await expectRefused(try await staged(["dir/"], repo), .partOfOperation(["dir/"]), in: repo)
+        try await expectRefused(
+            try await staged(["other", "dir"], repo), .partOfOperation(["dir"]), in: repo)
+    }
+
     // MARK: - The stash stays refused
 
     @Test(arguments: Stop.allCases)

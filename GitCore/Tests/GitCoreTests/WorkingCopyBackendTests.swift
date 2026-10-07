@@ -68,6 +68,44 @@ import Testing
         #expect(new?.unstaged == .untracked)
     }
 
+    /// A1 gap (E1 Task 2): the unstage — `restore --no-recurse-submodules --staged` — of a
+    /// submodule whose new commit is staged, under `submodule.recurse=true`, puts HEAD's gitlink
+    /// back in the index and touches nothing inside the submodule: its checkout, an edit and
+    /// an untracked file there are kept (measured once by hand in A1 Task 3; now pinned).
+    @Test func unstagingASubmoduleUnderRecursionKeepsTheWorkInsideIt() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("a.txt", "a\n")
+        try repo.write("sub/s", "s\n")
+        let sub = TestRepo(root: repo.root.appendingPathComponent("sub"))
+        let identity = ["-c", "user.name=T", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+        try await sub.git(["init", "-q", "-b", "main"])
+        try await sub.git(["add", "s"])
+        try await sub.git(identity + ["commit", "-q", "-m", "s1"])
+        let first = try await sub.headSha()
+        try await repo.git(["add", "a.txt", "sub"])
+        try await repo.git(["commit", "-q", "-m", "with sub"])
+
+        try sub.write("s", "s\ns2\n")
+        try await sub.git(["add", "s"])
+        try await sub.git(identity + ["commit", "-q", "-m", "s2"])
+        let second = try await sub.headSha()
+        try await repo.git(["add", "sub"])
+        #expect(try await repo.indexLine("sub") == "160000 \(second) 0\tsub\n", "the new commit is not staged")
+        try sub.write("s", "s\ns2\nwork inside\n")
+        try sub.write("untracked", "u\n")
+        try await repo.git(["config", "submodule.recurse", "true"])
+        let inside = worktreeSnapshot(sub)
+
+        try await CLIGitBackend().unstage(paths: ["sub"], at: repo.root)
+
+        #expect(try await repo.indexLine("sub") == "160000 \(first) 0\tsub\n")
+        #expect(try await sub.headSha() == second, "the submodule's checkout moved")
+        assertWorktreeUnchanged(sub, since: inside)
+        #expect(try sub.bytes("s") == Data("s\ns2\nwork inside\n".utf8))
+        #expect(try sub.bytes("untracked") == Data("u\n".utf8))
+    }
+
     @Test func stageAllPicksUpModifiedUntrackedAndDeleted() async throws {
         let repo = try await TestRepo.makeEmpty()
         defer { repo.cleanUp() }

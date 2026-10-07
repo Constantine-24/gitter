@@ -27,7 +27,7 @@ private final class Locked<Value>: @unchecked Sendable {
 /// `runStreaming`: the same capture guarantees as `run`, plus stderr as it arrives and a call
 /// that ends promptly when its task is cancelled.
 ///
-/// Every child here is `/bin/sh`, `/bin/sleep` or `/usr/bin/pgrep` — deliberately never git,
+/// Every child here is `/bin/sh`, `/bin/sleep` or a process listing (`ownProcesses`) — never git,
 /// which is why the bare `ProcessRunner()`s below need no `isolatedRunner()`: there is no
 /// configuration for the developer's machine to leak in through. See `TestGitEnvironment` for
 /// the audit that says so.
@@ -318,11 +318,14 @@ private final class Locked<Value>: @unchecked Sendable {
     @Test(.timeLimit(.minutes(10))) func cancellationTerminatesTheProcessPromptly() async throws {
         let runner = ProcessRunner()
         let pid = Locked<Int32?>(nil)
+        // A duration of its own, past the limit like `outlastsTheTimeLimit`, so a hung call's
+        // child is found by it and killed, and by nothing else.
+        let duration = Self.uniqueDuration()
 
         let call = CallUnderTest { () -> Error? in
             do {
                 _ = try await runner.runStreaming(
-                    "/bin/sleep", [Self.outlastsTheTimeLimit], cwd: Self.root, killGracePeriod: .seconds(660),
+                    "/bin/sleep", [duration], cwd: Self.root, killGracePeriod: .seconds(660),
                     onLaunch: { launched in pid.mutate { $0 = launched } },
                     onStderr: { _ in })
                 return nil
@@ -339,7 +342,10 @@ private final class Locked<Value>: @unchecked Sendable {
 
         try await Task.sleep(for: .milliseconds(300))
         call.cancel()
-        guard let error = await call.value() else { return }
+        guard let error = await call.value() else {
+            Self.killLeftovers([Self.sleepToken(duration)])
+            return
+        }
 
         #expect(error is CancellationError)
         errno = 0
@@ -376,9 +382,15 @@ private final class Locked<Value>: @unchecked Sendable {
     }
 
     /// A child that has installed `trap '' TERM` and said so, with the pid the runner launched.
+    ///
+    /// `leftovers` are the markers its processes carry on their command lines — the fixture's
+    /// unique file name, and its `sleep`'s unique duration where it has one. A test whose call
+    /// never came back kills them by group (`killLeftovers`), so a fixture that outlasts the
+    /// time limit does not outlive the failed test.
     private struct TrappedChild {
         let call: CallUnderTest<Error?>
         let pid: Int32
+        let leftovers: [String]
     }
 
     /// `/bin/sh -c "trap '' TERM; : > <marker>; sleep 660"`, returned once the marker exists.
@@ -420,7 +432,32 @@ private final class Locked<Value>: @unchecked Sendable {
             FileManager.default.fileExists(atPath: marker.path),
             "the child never installed its trap", sourceLocation: sourceLocation)
         try? FileManager.default.removeItem(at: marker)
-        return TrappedChild(call: call, pid: try #require(pid.current))
+        let leftovers = [marker.lastPathComponent]
+        guard let launched = pid.current else {
+            Issue.record("the runner never reported a launch", sourceLocation: sourceLocation)
+            call.cancel()
+            if await call.value("the child that never reported a launch") == nil {
+                Self.killLeftovers(leftovers)
+            }
+            throw CancellationError()
+        }
+        return TrappedChild(call: call, pid: launched, leftovers: leftovers)
+    }
+
+    /// The control for this fixture's failure-path cleanup: a cancelled call whose escalation
+    /// never acts (a grace past the limit) is still waiting, and the markers the fixture
+    /// carries find its shell — so `killLeftovers` ends the shell's whole group, the `sleep`
+    /// with it, and the call comes back.
+    @Test(.timeLimit(.minutes(10))) func aTrappedChildIsKilledByItsLeftoversGroup() async throws {
+        let started = try await startChildIgnoringSIGTERM(killGracePeriod: .seconds(3600))
+        #expect(getpgid(started.pid) == started.pid)
+        started.call.cancel()
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(kill(started.pid, 0) == 0, "the trapped child died on its SIGTERM")
+
+        #expect(Self.killLeftovers(started.leftovers) == [started.pid])
+        #expect(await started.call.value("the call, its group killed") is CancellationError)
+        #expect(await Self.groupIsGone(started.pid))
     }
 
     /// A child that ignores SIGTERM does not get to outlive its cancel. After the grace period
@@ -449,7 +486,10 @@ private final class Locked<Value>: @unchecked Sendable {
 
         let cancelledAt = clock.now
         call.cancel()
-        guard let error = await call.value() else { return }
+        guard let error = await call.value() else {
+            Self.killLeftovers(started.leftovers)
+            return
+        }
         let elapsed = clock.now - cancelledAt
 
         #expect(error is CancellationError)
@@ -483,7 +523,10 @@ private final class Locked<Value>: @unchecked Sendable {
 
         let cancelledAt = clock.now
         started.call.cancel()
-        guard let error = await started.call.value() else { return }
+        guard let error = await started.call.value() else {
+            Self.killLeftovers(started.leftovers)
+            return
+        }
         let elapsed = clock.now - cancelledAt
 
         #expect(error is CancellationError)
@@ -505,7 +548,10 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(kill(started.pid, 0) == 0)
 
         started.call.cancel()
-        guard let error = await started.call.value() else { return }
+        guard let error = await started.call.value() else {
+            Self.killLeftovers(started.leftovers)
+            return
+        }
 
         #expect(error is CancellationError)
         errno = 0
@@ -518,9 +564,9 @@ private final class Locked<Value>: @unchecked Sendable {
     /// A `sleep` duration unique to one test, between 660 and 670 seconds: longer than the time
     /// limit (`outlastsTheTimeLimit`), so a call that waits for it is a hang the limit reports.
     /// The script receives it as
-    /// `$2` and runs `sleep "$2"`, so `pgrep -f "sleep <duration>"` (`sleepToken`) matches the
-    /// `sleep` alone — never the shell, whose command line holds `sleep "$2"` and the number
-    /// apart.
+    /// `$2` and runs `sleep "$2"`, so `ownProcesses(matching: "sleep <duration>")` (`sleepToken`)
+    /// matches the `sleep` alone — never the shell, whose command line holds `sleep "$2"` and
+    /// the number apart.
     private static func uniqueDuration() -> String {
         "66\(Int.random(in: 0...9)).\(Int.random(in: 100_000...999_999))"
     }
@@ -566,14 +612,19 @@ private final class Locked<Value>: @unchecked Sendable {
             FileManager.default.fileExists(atPath: marker.path),
             "the script never reached its marker", sourceLocation: sourceLocation)
         try? FileManager.default.removeItem(at: marker)
+        // The shell, and every subshell it forks, carries the marker's name as `$1`; the
+        // `sleep` carries its duration.
+        let leftovers = [marker.lastPathComponent, Self.sleepToken(duration)]
         guard let launched = pid.current else {
             Issue.record("the runner never reported a launch", sourceLocation: sourceLocation)
             // Never leave the script running behind a failed test.
             call.cancel()
-            _ = await call.value("the script that never reported a launch")
+            if await call.value("the script that never reported a launch") == nil {
+                Self.killLeftovers(leftovers)
+            }
             throw CancellationError()
         }
-        return TrappedChild(call: call, pid: launched)
+        return TrappedChild(call: call, pid: launched, leftovers: leftovers)
     }
 
     /// The leader dies on its SIGTERM; a grandchild that ignores SIGTERM does not, and it holds
@@ -607,7 +658,10 @@ private final class Locked<Value>: @unchecked Sendable {
 
         let cancelledAt = clock.now
         started.call.cancel()
-        guard let error = await started.call.value() else { return }
+        guard let error = await started.call.value() else {
+            Self.killLeftovers(started.leftovers)
+            return
+        }
         let elapsed = clock.now - cancelledAt
 
         #expect(error is CancellationError)
@@ -640,7 +694,10 @@ private final class Locked<Value>: @unchecked Sendable {
         #expect(await Self.waitForExactlyOneProcess(matching: sleep))
 
         started.call.cancel()
-        guard let error = await started.call.value() else { return }
+        guard let error = await started.call.value() else {
+            Self.killLeftovers(started.leftovers)
+            return
+        }
 
         #expect(error is CancellationError)
         #expect(await Self.waitForNoProcess(matching: sleep), "the grandchild outlived the call")
@@ -676,14 +733,18 @@ private final class Locked<Value>: @unchecked Sendable {
 
         let cancelledAt = clock.now
         started.call.cancel()
-        guard let error = await started.call.value() else { return }
+        guard let error = await started.call.value() else {
+            Self.killLeftovers(started.leftovers)
+            return
+        }
         let elapsed = clock.now - cancelledAt
 
         #expect(error is CancellationError)
         #expect(signals.current.isEmpty, "signalled a group that was empty at the reap: \(signals.current)")
         #expect(elapsed > .milliseconds(550), "returned before the abandonment: \(elapsed)")
         #expect(Self.processCount(matching: sleep) == 1)
-        Self.killProcesses(matching: sleep)
+        // The job's own group, which `set -m` made for it and the runner never reaches.
+        #expect(Self.killLeftovers([sleep]).count == 1)
         #expect(await Self.waitForNoProcess(matching: sleep))
     }
 
@@ -712,14 +773,18 @@ private final class Locked<Value>: @unchecked Sendable {
 
         let cancelledAt = clock.now
         started.call.cancel()
-        guard let error = await started.call.value() else { return }
+        guard let error = await started.call.value() else {
+            Self.killLeftovers(started.leftovers)
+            return
+        }
         let elapsed = clock.now - cancelledAt
 
         #expect(error is CancellationError)
         #expect(signals.current.isEmpty, "signalled a reaped group past the window: \(signals.current)")
         #expect(elapsed > .milliseconds(550), "returned before the abandonment: \(elapsed)")
         #expect(Self.processCount(matching: sleep) == 1)
-        Self.killProcesses(matching: sleep)
+        // The reaped leader's group, read from its live `sleep`: the number still names it.
+        #expect(Self.killLeftovers([sleep]) == [started.pid])
         #expect(await Self.waitForNoProcess(matching: sleep))
     }
 
@@ -754,7 +819,10 @@ private final class Locked<Value>: @unchecked Sendable {
             try await Task.sleep(for: .microseconds(Int.random(in: 0...20_000)))
 
             started.call.cancel()
-            guard let error = await started.call.value("attempt \(attempt)") else { return }
+            guard let error = await started.call.value("attempt \(attempt)") else {
+                Self.killLeftovers(started.leftovers)
+                return
+            }
             #expect(error is CancellationError)
         }
         Self.expectARaceWasProved(reapedGroupKills.current)
@@ -784,7 +852,10 @@ private final class Locked<Value>: @unchecked Sendable {
                     if signal == SIGKILL { reapedGroupKills.mutate { $0 += 1 } }
                 })
             started.call.cancel()
-            guard let error = await started.call.value("attempt \(attempt)") else { return }
+            guard let error = await started.call.value("attempt \(attempt)") else {
+                Self.killLeftovers(started.leftovers)
+                return
+            }
             #expect(error is CancellationError)
         }
         withKnownIssue("no fork, so no orphan and no SIGKILL to a reaped group") {
@@ -802,7 +873,7 @@ private final class Locked<Value>: @unchecked Sendable {
     /// (`TimeLimitSupport.swift`), so the test's task is stood in for by a waiting task that
     /// this test cancels. The call's own process group — made by this call, still holding the
     /// sleeping child — is then SIGKILLed so that nothing outlives the control.
-    @Test(arguments: [
+    @Test(.timeLimit(.minutes(10)), arguments: [
         "trap '' TERM; : > \"$1\"; exec sleep \"$2\"",
         "( trap '' TERM; : > \"$1\"; exec sleep \"$2\" ) & wait",
     ])
@@ -821,10 +892,58 @@ private final class Locked<Value>: @unchecked Sendable {
         } matching: { $0.isNeverCameBack }
 
         // The group is this call's own: still alive, since its `sleep` ignores the SIGTERM.
-        try #require(group > 1 && group != getpgid(0) && kill(-group, 0) == 0)
-        kill(-group, SIGKILL)
+        try #require(kill(-group, 0) == 0)
+        #expect(Self.killLeftovers(started.leftovers) == [group])
         #expect(await started.call.value("the call, its group killed") is CancellationError)
         #expect(await Self.groupIsGone(group))
+    }
+
+    /// The control for the three hang guards whose fixture the escalation does not end —
+    /// `aGroupAlreadyEmptyAtTheReapIsNeverSignalled`, `aReapedGroupIsNotSignalledPastTheWindow`
+    /// and `aGrandchildOutsideTheGroupIsAbandonedAfterASecondGrace` — where the abandonment, a
+    /// second grace after it, is what brings the call back. Each fixture is theirs, with that
+    /// grace made to outlast the limit: the call is still waiting when the test is cancelled,
+    /// and the test reports it.
+    ///
+    /// The `sleep` holding the pipes is then killed by its own group — `set -m` made one for
+    /// it, or the reaped leader's still holds it — read from the process `ownProcesses` finds
+    /// under the test's own duration. (Task 1 left these without a control of their own: the
+    /// only cleanup there was then a kill by command line over the whole process table.)
+    @Test(.timeLimit(.minutes(10)), arguments: [
+        ("set -m; sleep \"$2\" & : > \"$1\"; exit 0", Duration.seconds(5)),
+        ("sleep \"$2\" & : > \"$1\"; exit 0", Duration.milliseconds(200)),
+        ("set -m; sleep \"$2\" & : > \"$1\"; wait", Duration.seconds(5)),
+    ])
+    func aCallTheAbandonmentNeverEndsIsReportedOnceTheTestIsCancelled(
+        script: String, reapedGroupWindow: Duration
+    ) async throws {
+        let duration = Self.uniqueDuration()
+        let sleep = Self.sleepToken(duration)
+        let started = try await startScript(
+            script, duration: duration, killGracePeriod: .seconds(3600),
+            reapedGroupWindow: reapedGroupWindow)
+        #expect(await Self.waitForExactlyOneProcess(matching: sleep))
+        if script.hasSuffix("exit 0") {
+            // As in the tests above: the leader is reaped, and — for the in-group `sleep` —
+            // the cancel comes well past the window, so nothing signals the group.
+            #expect(await Self.waitForReap(started.pid))
+            try await Task.sleep(for: .seconds(1))
+        }
+        started.call.cancel()
+
+        await withKnownIssue("the abandonment never comes, so the call waits out the sleep") {
+            let waiter = Task { await started.call.value() }
+            try? await Task.sleep(for: .milliseconds(500))
+            waiter.cancel()
+            let error = await waiter.value
+            #expect(error == nil, "the call came back: \(String(describing: error))")
+        } matching: { $0.isNeverCameBack }
+
+        #expect(Self.killLeftovers([sleep]).count == 1)
+        #expect(await started.call.value("the call, its sleep killed") is CancellationError)
+        #expect(await Self.waitForNoProcess(matching: sleep))
+        // The leader of the `wait` fixture died on its SIGTERM; nothing of the call is left.
+        #expect(await Self.waitForNoProcess(matching: started.leftovers[0]))
     }
 
     /// A grandchild that has **left the process group** — here a background job of a shell with
@@ -847,14 +966,18 @@ private final class Locked<Value>: @unchecked Sendable {
 
         let cancelledAt = clock.now
         started.call.cancel()
-        guard let error = await started.call.value() else { return }
+        guard let error = await started.call.value() else {
+            Self.killLeftovers(started.leftovers)
+            return
+        }
         let elapsed = clock.now - cancelledAt
 
         #expect(error is CancellationError)
         #expect(elapsed > .milliseconds(900), "abandoned before two graces: \(elapsed)")
-        // Out of the runner's reach, as the doc comment says — and cleaned up here.
+        // Out of the runner's reach, as the doc comment says — and cleaned up here, by the
+        // group `set -m` made for it.
         #expect(Self.processCount(matching: sleep) == 1)
-        Self.killProcesses(matching: sleep)
+        #expect(Self.killLeftovers([sleep]).count == 1)
         #expect(await Self.waitForNoProcess(matching: sleep))
     }
 
@@ -904,40 +1027,92 @@ private final class Locked<Value>: @unchecked Sendable {
         // after an `await`. In one full `swift test` (inserted fix 4) the whole process made
         // almost no progress for about 30 s, while the system log reported heavy thermal
         // pressure; the marker's `sleep 30` had ended by then, the probe found nothing, and
-        // the premise failed. It is terminated below in every case, so the length costs nothing.
-        let marker = Process()
-        marker.executableURL = URL(fileURLWithPath: "/bin/sh")
-        marker.arguments = ["-c", "true; sleep 300", token]
-        marker.standardOutput = FileHandle.nullDevice
-        marker.standardError = FileHandle.nullDevice
-        try marker.run()
+        // the premise failed. It is ended below in every case, so the length costs nothing.
+        let marker = try Self.startStressMarker("true; sleep 300", token: token)
         try await Task.sleep(for: .milliseconds(100))
         #expect(Self.processCount(matching: token) >= 1)
-        let markerPID = marker.processIdentifier
-        let markerGroup = getpgid(markerPID)
-        marker.terminate()
-        // Not `marker.waitUntilExit()`, which hung the Xcode scheme's run for good. Foundation
-        // notes each task it launches, by raw pointer, in a list kept per launching thread and
-        // never pruned, and tells a task without a `terminationHandler` of its exit on the
-        // launching thread's run loop; `waitUntilExit` waits for that news whenever the task's
-        // address is in the *waiting* thread's list. After the `await` above this test resumes
-        // on another cooperative thread, where the address of a task launched earlier and since
-        // freed (a probe's, or a runner's) could be the marker's own: it then waited for a run
-        // loop that no one runs (measured: that list held 39 addresses, the marker's among
-        // them). So the kernel is asked, for a bounded
-        // time: the shell is reaped — Foundation reaps it off any run loop — and then its group,
-        // since the marker's own `sleep` child carries no token and would otherwise count as a
-        // process the stress left behind.
-        #expect(await Self.waitForReap(markerPID), "the marker shell outlived its SIGTERM")
-        #expect(await Self.groupIsGone(markerGroup))
+        await Self.endStressMarker(marker)
 
         guard let (completed, cancelled) = try await Self.cancelAtRandomMoments(300, {
             try await ProcessRunner().runStreaming(
                 "/bin/sh", ["-c", "echo quick; echo noise >&2", token], cwd: Self.root, onStderr: { _ in })
-        }) else { return }
+        }) else {
+            Self.killLeftovers([token])
+            return
+        }
         // Both outcomes really did occur, so neither branch's assertions were skipped.
         #expect(cancelled > 0)
         #expect(completed > 0)
+        #expect(await Self.waitForNoProcess(matching: token))
+    }
+
+    /// The stress test's marker: `/bin/sh -c <script> <token>`, started directly, so it leads a
+    /// process group of its own (Foundation makes one for every task it launches).
+    private static func startStressMarker(_ script: String, token: String) throws -> Process {
+        let marker = Process()
+        marker.executableURL = URL(fileURLWithPath: "/bin/sh")
+        marker.arguments = ["-c", script, token]
+        marker.standardOutput = FileHandle.nullDevice
+        marker.standardError = FileHandle.nullDevice
+        try marker.run()
+        return marker
+    }
+
+    /// SIGTERMs the stress marker and waits for its shell to be reaped and its group to empty.
+    /// If either fails, the failure is named and the group is SIGKILLed — the marker's
+    /// `sleep 300` must not run on into the next test (E1 survey S3).
+    ///
+    /// Not `marker.waitUntilExit()`, which hung the Xcode scheme's run for good. Foundation
+    /// notes each task it launches, by raw pointer, in a list kept per launching thread and
+    /// never pruned, and tells a task without a `terminationHandler` of its exit on the
+    /// launching thread's run loop; `waitUntilExit` waits for that news whenever the task's
+    /// address is in the *waiting* thread's list. After an `await` the test resumes on
+    /// another cooperative thread, where the address of a task launched earlier and since
+    /// freed (a probe's, or a runner's) could be the marker's own: it then waited for a run
+    /// loop that no one runs (measured: that list held 39 addresses, the marker's among
+    /// them). So the kernel is asked, for a bounded time: the shell is reaped — Foundation
+    /// reaps it off any run loop — and then its group, since the marker's own `sleep` child
+    /// carries no token and would otherwise count as a process the stress left behind.
+    private static func endStressMarker(
+        _ marker: Process, sourceLocation: SourceLocation = #_sourceLocation
+    ) async {
+        let markerPID = marker.processIdentifier
+        // Read while the shell is surely unreaped, so the number is its group's.
+        let markerGroup = getpgid(markerPID)
+        marker.terminate()
+        let reaped = await waitForReap(markerPID)
+        let groupGone = reaped ? await groupIsGone(markerGroup) : false
+        guard !(reaped && groupGone) else { return }
+        Issue.record(
+            reaped ? "the marker's group outlived its SIGTERM" : "the marker shell outlived its SIGTERM",
+            sourceLocation: sourceLocation)
+        // Read before the reap, from a shell that was alive: a group of the test's own.
+        killOwnGroup(markerGroup)
+    }
+
+    /// The control for the stress marker's failure path: a marker that ignores its SIGTERM is
+    /// not reaped, the failure is named, and the marker — shell and `sleep` — is SIGKILLed by
+    /// its group rather than left running into the next test.
+    @Test(.timeLimit(.minutes(10))) func aStressMarkerThatOutlivesItsSIGTERMIsKilledByItsGroup() async throws {
+        let token = "gitter-stress-marker-\(UUID().uuidString)"
+        let trapped = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitter-trap-\(UUID().uuidString)")
+        let marker = try Self.startStressMarker(
+            "trap '' TERM; : > \"\(trapped.path)\"; sleep \(Self.outlastsTheTimeLimit)", token: token)
+        let group = getpgid(marker.processIdentifier)
+        // The premise: the trap is set (the file is written on the line after it).
+        for _ in 0..<1000 where !FileManager.default.fileExists(atPath: trapped.path) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(FileManager.default.fileExists(atPath: trapped.path), "the marker never set its trap")
+        try? FileManager.default.removeItem(at: trapped)
+        #expect(Self.processCount(matching: token) == 1)
+
+        await withKnownIssue("the marker ignores its SIGTERM, so its reap fails") {
+            await Self.endStressMarker(marker)
+        } matching: { $0.comments.contains { $0.rawValue.contains("outlived its SIGTERM") } }
+
+        #expect(await Self.groupIsGone(group), "the marker outlived the failed reap")
         #expect(await Self.waitForNoProcess(matching: token))
     }
 
@@ -982,7 +1157,7 @@ private final class Locked<Value>: @unchecked Sendable {
     /// never came back" and an end to the loop. A real limit cannot be let expire in a control
     /// (its issue is not a known issue, and the shortest is a minute; `TimeLimitSupport.swift`),
     /// so the loop runs in a task that this test cancels in its place.
-    @Test func aStressCallThatNeverReturnsIsReportedOnceTheTestIsCancelled() async throws {
+    @Test(.timeLimit(.minutes(10))) func aStressCallThatNeverReturnsIsReportedOnceTheTestIsCancelled() async throws {
         let stuck = StuckCall()
         try await withKnownIssue("the call never returns, so the cancelled loop reports it") {
             let loop = Task { try await Self.cancelAtRandomMoments(300) {
@@ -1130,31 +1305,25 @@ private final class Locked<Value>: @unchecked Sendable {
         return false
     }
 
-    /// This probe and the one below call `waitUntilExit` on the thread that launched them, with
-    /// no `await` in between — the one way it cannot hang (see the stress test's marker). Keep
-    /// them synchronous.
-    private static func killProcesses(matching token: String) {
-        let probe = Process()
-        probe.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        probe.arguments = ["-f", token]
-        probe.standardOutput = FileHandle.nullDevice
-        probe.standardError = FileHandle.nullDevice
-        guard (try? probe.run()) != nil else { return }
-        probe.waitUntilExit()
+    /// The failure-path cleanup: SIGKILLs, by group, every process of the test's own that
+    /// carries one of `markers` (`killOwnGroups`), and returns the groups it killed. A fixture
+    /// whose call never came back runs on past the time limit otherwise, into the next tests.
+    @discardableResult
+    private static func killLeftovers(_ markers: [String]) -> Set<pid_t> {
+        var killed: Set<pid_t> = []
+        for marker in markers {
+            do {
+                killed.formUnion(try killOwnGroups(matching: marker))
+            } catch {
+                Issue.record("could not look for the leftovers under \(marker): \(error)")
+            }
+        }
+        return killed
     }
 
-    /// How many live processes have `token` on their command line. `pgrep` never matches
-    /// itself.
+    /// How many of the test's own live processes have `token` on their command line
+    /// (`ownProcesses`), or -1 when the listing failed.
     private static func processCount(matching token: String) -> Int {
-        let probe = Process()
-        probe.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        probe.arguments = ["-f", token]
-        let out = Pipe()
-        probe.standardOutput = out
-        probe.standardError = FileHandle.nullDevice
-        guard (try? probe.run()) != nil else { return -1 }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        probe.waitUntilExit()
-        return String(decoding: data, as: UTF8.self).split(separator: "\n").count
+        (try? ownProcesses(matching: token))?.count ?? -1
     }
 }

@@ -9,9 +9,9 @@ import Testing
 /// that must change only the index, is checked against it before and after.
 ///
 /// md5 of each of `pseudoFiles` that exists, md5 of every file under `rebase-merge/`,
-/// `rebase-apply/` and `sequencer/`, and md5 of `ls-files -u -s`, `rev-parse HEAD` and every
-/// ref but `refs/stash`. Paths come from `rev-parse --git-path`, so a linked worktree's own
-/// files are the ones read.
+/// `rebase-apply/` and `sequencer/`, and md5 of `ls-files -u -s`, `rev-parse HEAD`,
+/// `symbolic-ref -q HEAD` and every ref but `refs/stash`. Paths come from
+/// `rev-parse --git-path`, so a linked worktree's own files are the ones read.
 struct OperationState: Equatable {
     /// Name (`MERGE_MSG`, `rebase-merge/done`, `ls-files -u -s`, …) → md5 in hex.
     let fingerprint: [String: String]
@@ -37,6 +37,9 @@ struct OperationState: Equatable {
         }
         fingerprint["ls-files -u -s"] = md5(try await repo.git(["ls-files", "-u", "-s"]))
         fingerprint["HEAD"] = md5(try await repo.git(["rev-parse", "HEAD"], allowedExitCodes: [128]))
+        // Which branch HEAD names, as `RepoState` reads it: a switch to another branch at the
+        // same commit leaves `rev-parse HEAD` as it was (A2 Task 1's gap).
+        fingerprint["symbolic-ref HEAD"] = md5(try await repo.git(["symbolic-ref", "-q", "HEAD"], allowedExitCodes: [1]))
         let refs = try await repo.git(["for-each-ref", "--format=%(objectname) %(refname)"])
         let kept = String(decoding: refs, as: UTF8.self).split(separator: "\n")
             .filter { !$0.hasSuffix(" refs/stash") }.joined(separator: "\n")
@@ -114,6 +117,24 @@ func assertOperationUnchanged(
         try FileManager.default.removeItem(at: try await ConflictFixtures.gitPath(repo, "MERGE_MSG"))
 
         await withKnownIssue("MERGE_MSG really is gone") {
+            try await assertOperationUnchanged(repo, since: before)
+        }
+    }
+
+    /// HEAD moved to another branch at the same commit — `rev-parse HEAD` cannot see it, which
+    /// branch HEAD names can (A2 Task 1's gap): a write that switched branches during the stop
+    /// would otherwise pass every "the operation is intact" assertion.
+    @Test func failsWhenHEADNamesAnotherBranchAtTheSameCommit() async throws {
+        let repo = try await ConflictFixtures.merge(kind: .bothModified)
+        defer { repo.cleanUp() }
+        try await repo.git(["branch", "twin", "HEAD"])
+        let before = try await OperationState.capture(repo)
+        let head = try await repo.headSha()
+
+        try await repo.git(["symbolic-ref", "HEAD", "refs/heads/twin"])
+        #expect(try await repo.headSha() == head, "the commit HEAD names did not change")
+
+        await withKnownIssue("HEAD names twin now, not the branch the merge stopped on") {
             try await assertOperationUnchanged(repo, since: before)
         }
     }

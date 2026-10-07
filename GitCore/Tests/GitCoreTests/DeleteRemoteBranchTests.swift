@@ -58,17 +58,9 @@ import Testing
         #expect(try await repo.configValue("branch.topic.remote") == "origin")
         #expect(try await repo.configValue("branch.topic.merge") == "refs/heads/topic")
         // And that is what `[gone]` is made of: the configuration still names an upstream, and
-        // the ref it names is not there. Read through `%(upstream:track)`, which is where
-        // `RefParser` reads it and where Task 8's badge will.
-        //
-        // Not through `TestRepo.upstream(of:)`, which cannot tell this state from a branch with
-        // no upstream at all: `rev-parse --abbrev-ref --symbolic-full-name topic@{upstream}`
-        // exits 128 for both and, for a `[gone]` upstream only, **echoes the argument back** —
-        // so the helper answers `"topic@{upstream}"` rather than `nil` (measured on git 2.54).
-        let track = try await repo.git(
-            ["for-each-ref", "--format=%(upstream:track)", "refs/heads/topic"])
-        #expect(String(decoding: track, as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines) == "[gone]")
+        // the ref it names is not there. `TestRepo.upstream(of:)` reads it through
+        // `%(upstream:track)`, which is where `RefParser` reads it and where Task 8's badge will.
+        #expect(try await repo.upstream(of: "topic") == .gone("origin/topic"))
     }
 
     /// **A delete removes the one branch the sheet named and creates nothing.**

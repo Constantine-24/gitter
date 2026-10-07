@@ -178,7 +178,7 @@ final class StuckCall: @unchecked Sendable {
 @Suite struct TimeLimitSupportTests {
     /// Control: the stand-in for the limit (cancelling the waiting task) ends a wait that would
     /// otherwise never end, and the test then reports the call by name.
-    @Test func aCallThatNeverReturnsIsReportedOnceTheWaitingTaskIsCancelled() async throws {
+    @Test(.timeLimit(.minutes(10))) func aCallThatNeverReturnsIsReportedOnceTheWaitingTaskIsCancelled() async throws {
         let stuck = StuckCall()
         let call = CallUnderTest { () -> Int in
             await stuck.wait()
@@ -212,7 +212,7 @@ final class StuckCall: @unchecked Sendable {
     }
 
     /// The cancel can come first: a wait that starts already cancelled ends at once.
-    @Test func aWaitStartedAfterTheCancelEndsAtOnce() async throws {
+    @Test(.timeLimit(.minutes(10))) func aWaitStartedAfterTheCancelEndsAtOnce() async throws {
         let stuck = StuckCall()
         let call = CallUnderTest { () -> Int in
             await stuck.wait()
@@ -233,7 +233,7 @@ final class StuckCall: @unchecked Sendable {
     /// A wait the cancel ended spends nothing: the call can be waited for again, and that wait
     /// gets its value once it comes. (Each wait used to share one answer, so a second wait after
     /// a cancelled one installed a continuation nobody would ever resume.)
-    @Test func aCallCanBeWaitedForAgainAfterACancelledWait() async throws {
+    @Test(.timeLimit(.minutes(10))) func aCallCanBeWaitedForAgainAfterACancelledWait() async throws {
         let stuck = StuckCall()
         let call = CallUnderTest { () -> Int in
             await stuck.wait()
@@ -256,7 +256,7 @@ final class StuckCall: @unchecked Sendable {
     /// The polling waits that had a deadline of their own (`WorktreeAddTests`,
     /// `WorktreeRemovalTests`) now poll until their limit: `Task.sleep` throws on the cancel,
     /// so a condition that never comes true ends the test rather than hanging it.
-    @Test func aPollForAConditionThatNeverComesTrueEndsOnTheCancel() async throws {
+    @Test(.timeLimit(.minutes(10))) func aPollForAConditionThatNeverComesTrueEndsOnTheCancel() async throws {
         let poll = Task { () -> Error? in
             do {
                 while true { try await Task.sleep(for: .milliseconds(20)) }

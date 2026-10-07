@@ -233,4 +233,54 @@ import Testing
         }
         try await assertRepoUnchanged(repo, since: state, worktree: before)
     }
+
+    /// A2 gap (E1 Task 2): the test above is refused by the survey before the `restore` runs,
+    /// so it never shows the `restore` itself all or nothing. Here a git wrapper adds one path
+    /// git does not know to the pathspec file the discard hands `restore` — past the survey,
+    /// as a path removed between the two would be — and git refuses every path: no file is
+    /// put back, and the record made for the discard is dropped again.
+    @Test func aPathGitDoesNotKnowInTheRestoresPathspecFileRefusesThemAll() async throws {
+        let (repo, selection) = try await Self.manyFiles(staged: false)
+        defer { repo.cleanUp() }
+        let wrapperDirectory = repo.root.deletingLastPathComponent()
+            .appendingPathComponent("\(repo.root.lastPathComponent)-git", isDirectory: true)
+        try FileManager.default.createDirectory(at: wrapperDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: wrapperDirectory) }
+        let wrapper = wrapperDirectory.appendingPathComponent("git")
+        try """
+            #!/bin/bash
+            restore=
+            for a in "$@"; do
+                case "$a" in
+                    restore) restore=1 ;;
+                    --pathspec-from-file=*) file="${a#--pathspec-from-file=}" ;;
+                esac
+            done
+            if [ -n "$restore" ] && [ -n "$file" ]; then
+                printf ':(literal)many/missing.txt\\0' >> "$file"
+                : > "\(wrapperDirectory.path)/restore-ran"
+            fi
+            exec /usr/bin/git "$@"
+
+            """.write(to: wrapper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapper.path)
+        let backend = CLIGitBackend(gitPath: wrapper.path)
+        let before = worktreeSnapshot(repo)
+        let state = try await RepoState.capture(repo)
+
+        let expected = try await backend.discardExpectation(tracked: selection, includingStaged: false, at: repo.root)
+        do {
+            _ = try await backend.discard(
+                .unstaged(paths: selection, expected: expected), trasher: try FakeTrasher(), at: repo.root)
+            Issue.record("the discard ran with a path git does not know in its pathspec file")
+        } catch let error as GitError {
+            #expect("\(error)".contains("many/missing.txt"), "\(error)")
+        } catch {
+            Issue.record("expected git's own refusal, got \(error)")
+        }
+        #expect(FileManager.default.fileExists(atPath: wrapperDirectory.appendingPathComponent("restore-ran").path),
+                "the restore never ran, so this proves nothing about it")
+        try await assertRepoUnchanged(repo, since: state, worktree: before)
+        #expect(try await repo.stashRef() == nil, "the record made for the discard was kept")
+    }
 }

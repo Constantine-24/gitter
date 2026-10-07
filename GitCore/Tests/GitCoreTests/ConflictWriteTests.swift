@@ -518,6 +518,74 @@ func assertOnlyThePathChanged(
         try await assertOnlyThePathChanged(repo, since: baseline)
     }
 
+    /// A2 gap (E1 Task 2): Delete of a UU file git wrote, untouched since — `rm` removes the
+    /// path from the index and the worktree, and with git's own bytes there is nothing to file.
+    @Test func deletingAnUntouchedUURecordsNothing() async throws {
+        let repo = try await ConflictFixtures.merge(kind: .bothModified)
+        defer { repo.cleanUp() }
+        #expect(try await ConflictReadTests.document(repo, "f.txt").matchesGitsConflict)
+        let baseline = try await WriteBaseline.capture(repo, path: "f.txt")
+        let snapshot = try await Self.snapshot(repo, "f.txt")
+
+        let receipt = try await Self.backend.delete(snapshot, recordIfEdited: false, at: repo.root)
+
+        #expect(receipt == ConflictReceipt(path: "f.txt", recorded: nil))
+        #expect(try await Self.entry(repo, "f.txt") == "")
+        #expect(!Self.exists(repo, "f.txt"))
+        #expect(try await repo.stashCount() == 0)
+        try await assertOnlyThePathChanged(repo, since: baseline)
+    }
+
+    /// A2 gap (E1 Task 2): Delete of a hand-edited UU file — refused without the record, and
+    /// with it the edit is filed before `rm` takes the file.
+    @Test func deletingAHandEditedUURecordsTheEditFirst() async throws {
+        let repo = try await ConflictFixtures.merge(kind: .bothModified)
+        defer { repo.cleanUp() }
+        let edited = try Self.handEdit(repo)
+        let state = try await RepoState.capture(repo)
+        let operation = try await OperationState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+        let snapshot = try await Self.snapshot(repo, "f.txt")
+
+        await #expect(throws: ConflictError.wouldReplaceEdits("f.txt")) {
+            try await Self.backend.delete(snapshot, recordIfEdited: false, at: repo.root)
+        }
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+        try await assertOperationUnchanged(repo, since: operation)
+
+        let baseline = try await WriteBaseline.capture(repo, path: "f.txt")
+        let receipt = try await Self.backend.delete(snapshot, recordIfEdited: true, at: repo.root)
+
+        let recorded = try #require(receipt.recorded)
+        #expect(recorded.reflogSubject == "Replaced by Gitter: f.txt")
+        #expect(try await Self.newestStash(repo) == recorded)
+        #expect(try await repo.blob(recorded.sha, "f.txt") == edited)
+        #expect(try await Self.entry(repo, "f.txt") == "")
+        #expect(!Self.exists(repo, "f.txt"))
+        try await assertOnlyThePathChanged(repo, since: baseline)
+    }
+
+    /// A2 gap (E1 Task 2): Keep of a hand-edited UD file — `add` keeps what is there, so the
+    /// edit is what is staged, nothing is replaced and nothing is filed, even without the
+    /// record.
+    @Test func keepingAHandEditedUDStagesTheEditAndRecordsNothing() async throws {
+        let repo = try await ConflictFixtures.merge(kind: .deletedByThem)
+        defer { repo.cleanUp() }
+        try repo.write("ud.txt", "u EDITED\n")
+        let baseline = try await WriteBaseline.capture(repo, path: "ud.txt")
+        let snapshot = try await Self.snapshot(repo, "ud.txt")
+
+        let receipt = try await Self.backend.keep(snapshot, recordIfEdited: false, at: repo.root)
+
+        #expect(receipt == ConflictReceipt(path: "ud.txt", recorded: nil))
+        let blob = String(decoding: try await repo.git(["hash-object", "--", "ud.txt"]), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(try await Self.entry(repo, "ud.txt") == "100644 \(blob) 0\tud.txt\n")
+        #expect(try repo.bytes("ud.txt") == Data("u EDITED\n".utf8))
+        #expect(try await repo.stashCount() == 0)
+        try await assertOnlyThePathChanged(repo, since: baseline)
+    }
+
     @Test(arguments: [ConflictFixtureKind.bothModified, .bothAdded, .binary, .renameRename])
     func keepIsOnlyForADeletion(kind: ConflictFixtureKind) async throws {
         let repo = try await ConflictFixtures.merge(kind: kind)
@@ -632,6 +700,47 @@ func assertOnlyThePathChanged(
             try await write.run(snapshot, at: repo.root)
         }
 
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+        try await assertOperationUnchanged(repo, since: operation)
+        #expect(try await repo.stashCount() == 0)
+    }
+
+    /// A2 gap (E1 Task 2): a file deleted after the snapshot is a change since it was shown,
+    /// for every write — not only for Reopen — and nothing is written or filed.
+    @Test(arguments: Write.allCases)
+    func aFileDeletedAfterItWasShownIsNotWritten(write: Write) async throws {
+        let repo = try await ConflictFixtures.merge(kind: .bothModified)
+        defer { repo.cleanUp() }
+        let snapshot = try await Self.snapshot(repo, "f.txt")
+        #expect(snapshot.worktreeHash != nil)
+        try repo.remove("f.txt")
+        let state = try await RepoState.capture(repo)
+        let operation = try await OperationState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+
+        await #expect(throws: ConflictError.changedSinceShown("f.txt")) {
+            try await write.run(snapshot, at: repo.root)
+        }
+
+        try await assertRepoUnchanged(repo, since: state, worktree: worktree)
+        try await assertOperationUnchanged(repo, since: operation)
+        #expect(try await repo.stashCount() == 0)
+        #expect(!Self.exists(repo, "f.txt"))
+    }
+
+    /// The same for Keep, on a DU file git wrote and the user deleted after it was shown.
+    @Test func keepOfADUDeletedAfterItWasShownIsNotWritten() async throws {
+        let repo = try await ConflictFixtures.merge(kind: .deletedByUs)
+        defer { repo.cleanUp() }
+        let snapshot = try await Self.snapshot(repo, "du.txt")
+        try repo.remove("du.txt")
+        let state = try await RepoState.capture(repo)
+        let operation = try await OperationState.capture(repo)
+        let worktree = worktreeSnapshot(repo)
+
+        await #expect(throws: ConflictError.changedSinceShown("du.txt")) {
+            try await Self.backend.keep(snapshot, recordIfEdited: true, at: repo.root)
+        }
         try await assertRepoUnchanged(repo, since: state, worktree: worktree)
         try await assertOperationUnchanged(repo, since: operation)
         #expect(try await repo.stashCount() == 0)

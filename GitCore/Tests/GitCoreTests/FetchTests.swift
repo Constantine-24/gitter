@@ -406,9 +406,9 @@ import Testing
     /// that the config is honoured for a plain path remote, so this needs no ssh and no server.
     ///
     /// The sleep outlasts the tests' ten-minute time limit, so a fetch that waits it out is a
-    /// hang the limit reports (`TimeLimitSupport.swift`); its random suffix lets `pgrep -f` find
-    /// *this* test's grandchild and nothing else on the machine — a developer's own `sleep` must
-    /// neither fail the test nor satisfy it.
+    /// hang the limit reports (`TimeLimitSupport.swift`); its random suffix lets
+    /// `ownProcesses(matching:)` find *this* test's grandchild and nothing else on the machine —
+    /// a developer's own `sleep` must neither fail the test nor satisfy it.
     private struct SlowFetch {
         let repo: TestRepo
         let origin: URL
@@ -428,12 +428,13 @@ import Testing
             let script = ".git/slow-upload-pack.sh"
             let started = repo.root.appendingPathComponent(".git/slow-upload-pack.started")
             // The script touches a file before it sleeps, so "has the transport started?" is a
-            // `stat` rather than a `pgrep`. That is not tidiness: polling `pgrep -f` every 20 ms
+            // `stat` rather than a process listing. That is not tidiness: polling one every 20 ms
             // spawns a process that walks the whole process table fifty times a second, and Swift
             // Testing runs suites in parallel — the load that produced was enough to push
             // `StreamingRunnerTests.theKillGracePeriodIsHonoured` past the tight upper bound it
-            // had then, in roughly one full-suite run in five. `pgrep` is still what answers "is
-            // it really running" and "did it outlive the cancel", but twice, not fifty times.
+            // had then, in roughly one full-suite run in five. `ownProcesses` is still what
+            // answers "is it really running" and "did it outlive the cancel", but twice, not
+            // fifty times.
             try repo.writeExecutable(
                 script,
                 """
@@ -470,7 +471,7 @@ import Testing
             for _ in 0..<250 where !FileManager.default.fileExists(atPath: started.path) {
                 try await Task.sleep(for: .milliseconds(20))
             }
-            let running = try await processesMatching("sleep \(marker)")
+            let running = try ownProcesses(matching: "sleep \(marker)")
             #expect(!running.isEmpty, "the slow transport never started, so the cancel proves nothing")
             return call
         }
@@ -480,13 +481,20 @@ import Testing
         /// wait is about it being *reaped* by launchd after its parent shell died, which is not
         /// instantaneous.
         func expectTransportGone(sourceLocation: SourceLocation = #_sourceLocation) async throws {
-            var leftovers = try await processesMatching("sleep \(marker)")
+            var leftovers = try ownProcesses(matching: "sleep \(marker)")
             for _ in 0..<20 where !leftovers.isEmpty {
                 try await Task.sleep(for: .milliseconds(100))
-                leftovers = try await processesMatching("sleep \(marker)")
+                leftovers = try ownProcesses(matching: "sleep \(marker)")
             }
             #expect(leftovers.isEmpty, "the slow transport outlived the cancel: \(leftovers)",
                     sourceLocation: sourceLocation)
+        }
+
+        /// The failure-path cleanup for a fetch that never came back: the transport's `sleep`
+        /// outlasts the time limit, so it is SIGKILLed with git's whole process group — the
+        /// runner's, read from the `sleep` itself.
+        func killTransport() {
+            _ = try? killOwnGroups(matching: "sleep \(marker)")
         }
     }
 
@@ -512,7 +520,10 @@ import Testing
 
         let call = try await fixture.startFetch()
         call.cancel()
-        guard let thrown = await call.value("the cancelled fetch") else { return }
+        guard let thrown = await call.value("the cancelled fetch") else {
+            fixture.killTransport()
+            return
+        }
 
         #expect(thrown is CancellationError, "\(String(describing: thrown))")
         try await fixture.expectTransportGone()
@@ -528,7 +539,7 @@ import Testing
     /// the test, and the test reports it. The limit is stood in for by a waiting task this test
     /// cancels (`TimeLimitSupport.swift`); then the fetch is cancelled for real, and nothing is
     /// left behind.
-    @Test func aFetchTheCancelDidNotStopIsReportedOnceTheTestIsCancelled() async throws {
+    @Test(.timeLimit(.minutes(10))) func aFetchTheCancelDidNotStopIsReportedOnceTheTestIsCancelled() async throws {
         let fixture = try await SlowFetch.make()
         defer { fixture.cleanUp() }
         let call = try await fixture.startFetch()
@@ -542,7 +553,11 @@ import Testing
         } matching: { $0.isNeverCameBack }
 
         call.cancel()
-        #expect(await call.value("the fetch, cancelled for real") is CancellationError)
+        guard let thrown = await call.value("the fetch, cancelled for real") else {
+            fixture.killTransport()
+            return
+        }
+        #expect(thrown is CancellationError)
         try await fixture.expectTransportGone()
     }
 }

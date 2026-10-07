@@ -222,6 +222,33 @@ import Testing
         #expect(try repo.bytes("f3") == bytes(numbered(30, [3: "3 A", 15: "15 B", 27: "27 C"])))
     }
 
+    /// A1 gap (E1 Task 2): the refusal above files a record and then drops it. With stash
+    /// entries of the user's own beside it, the one dropped must be that record: the list
+    /// afterwards is exactly the neighbours, in their order, and each still holds its change.
+    @Test(arguments: ["true/lf", "input/crlf"])
+    func aFileNotInItsCheckoutFormDropsOnlyItsOwnRecord(_ shape: String) async throws {
+        let repo = try await makeDiscardLab()
+        defer { repo.cleanUp() }
+        for neighbour in ["older", "newer"] {
+            try repo.write("p", numbered(12, [6: "6 \(neighbour)"]))
+            try await repo.git(["stash", "push", "-q", "-m", neighbour, "--", "p"])
+        }
+        let neighbours = try await repo.stashShas()
+        #expect(neighbours.count == 2)
+        let (autocrlf, ending) = shape == "true/lf" ? ("true", "\n") : ("input", "\r\n")
+        try await repo.git(["config", "core.autocrlf", autocrlf])
+        func bytes(_ text: String) -> Data { Data(text.replacingOccurrences(of: "\n", with: ending).utf8) }
+        try bytes(numbered(30, [3: "3 A", 15: "15 B", 27: "27 C"])).write(to: repo.root.appendingPathComponent("f3"))
+        let file = try await loadDiff(repo, "f3")
+        let request = try linesRequest(file, hunks: [try hunkID(file, containing: "15 B")], lines: nil)
+
+        try await expectRefused(request, .needsWholeFile("f3"), in: repo)
+        #expect(try await repo.stashShas() == neighbours)
+        for (index, neighbour) in ["newer", "older"].enumerated() {
+            #expect(try await repo.blob(neighbours[index], "p") == Data(numbered(12, [6: "6 \(neighbour)"]).utf8))
+        }
+    }
+
     @Test func aBinaryARenameOrADeletionNeedsTheWholeFile() async throws {
         let repo = try await makeDiscardLab()
         defer { repo.cleanUp() }

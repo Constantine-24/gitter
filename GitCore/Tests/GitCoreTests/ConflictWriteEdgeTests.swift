@@ -197,6 +197,32 @@ extension FinalNewlineTests {
     }
 }
 
+extension FinalNewlineTests {
+    /// A2 gap (E1 Task 2): `aLastLineEndingInACarriageReturnKeepsIt` checks the worktree under
+    /// autocrlf only through `status`. All ours there must leave ours itself in the worktree —
+    /// the stage as a checkout writes it (`cat-file --filters`), which for text holding a lone
+    /// CR is its bytes unconverted — not git's conflict file, nor a CRLF rewrite.
+    @Test func allOursUnderAutocrlfLeavesOursCheckoutFormInTheWorktree() async throws {
+        let ours = "a\nb\nlast O\r"
+        let repo = try await threeWayMerge(base: "a\nb\nlast\n", ours: ours, theirs: "a\nb\nlast T\n") { repo in
+            try await repo.git(["config", "core.autocrlf", "true"])
+        }
+        defer { repo.cleanUp() }
+        let stage = try #require(try await ConflictFixtures.stages(repo)["f.txt"]?[2])
+        let document = try await ConflictReadTests.document(repo, "f.txt")
+        let blocks = try #require(ConflictReadTests.blocks(document), "\(document.presentation)")
+
+        _ = try await Self.backend.resolve(
+            document.snapshot, choices: Array(repeating: .ours, count: blocks.count), recordIfEdited: false,
+            at: repo.root)
+
+        let checkoutForm = try await repo.git(["cat-file", "--filters", "--path=f.txt", stage.blob])
+        #expect(checkoutForm == Data(ours.utf8), "a lone CR: git converts nothing")
+        #expect(try repo.bytes("f.txt") == checkoutForm)
+        #expect(try await repo.indexLine("f.txt") == "\(stage.mode) \(stage.blob) 0\tf.txt\n")
+    }
+}
+
 // MARK: - A path whose type changed
 
 /// `restore --ours|--theirs` over a directory, or under a leading component that is now a file,

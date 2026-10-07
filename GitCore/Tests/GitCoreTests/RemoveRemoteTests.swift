@@ -347,7 +347,7 @@ struct RemoveFixture {
         let error = await thrownError { try await task.value }
 
         #expect(error as? RemoteAdminPartial == .removeOutcomeUnknown(remote: "origin", keptBranches: ["kept-g2"]))
-        #expect(try await processesMatching(sleep).isEmpty)
+        #expect(try ownProcesses(matching: sleep).isEmpty)
     }
 
     /// Fix round 1, m1: what the read-back compares against is read **before** the kept branches

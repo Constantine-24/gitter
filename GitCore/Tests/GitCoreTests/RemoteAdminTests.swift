@@ -523,7 +523,7 @@ extension TestRepo {
         let error = await thrownError { try await task.value }
 
         #expect(error as? RemoteAdminPartial == .renameOutcomeUnknown(old: "origin", new: "up"))
-        #expect(try await processesMatching(sleep).isEmpty)
+        #expect(try ownProcesses(matching: sleep).isEmpty)
     }
 
     /// With `config.lock` held git renames nothing (R21, exit 1): the read-back finds the

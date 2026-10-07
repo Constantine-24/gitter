@@ -133,7 +133,7 @@ import Testing
         try await backend.trackRemoteBranch("origin/feat/x", at: repo.root)
 
         #expect(try await repo.currentBranch() == "feat/x", "only the first path component is the remote")
-        #expect(try await repo.upstream(of: "feat/x") == "origin/feat/x")
+        #expect(try await repo.upstream(of: "feat/x") == .tracking("origin/feat/x"))
         #expect(try await repo.revParse("feat/x") == (try await repo.revParse("origin/feat/x")))
         #expect(try repo.fileContents("a.txt") == "feature\n")
     }
@@ -151,7 +151,7 @@ import Testing
 
         #expect(try await repo.currentBranch() == "feat/x")
         #expect(try await repo.revParse("feat/x") == localTip, "the existing branch must not be moved")
-        #expect(try await repo.upstream(of: "feat/x") == nil, "no upstream is invented for it")
+        #expect(try await repo.upstream(of: "feat/x") == .none, "no upstream is invented for it")
     }
 
     /// A remote whose own name contains a slash is not special-cased: the first component is
@@ -167,7 +167,7 @@ import Testing
         try await backend.trackRemoteBranch("my/remote/feat/x", at: repo.root)
 
         #expect(try await repo.currentBranch() == "remote/feat/x")
-        #expect(try await repo.upstream(of: "remote/feat/x") == "my/remote/feat/x")
+        #expect(try await repo.upstream(of: "remote/feat/x") == .tracking("my/remote/feat/x"))
     }
 
     @Test(arguments: ["origin", "origin/", "", "-origin/x"])

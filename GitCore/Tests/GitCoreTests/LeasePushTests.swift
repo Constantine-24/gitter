@@ -756,7 +756,7 @@ import Testing
     /// That the cancel ended each force push, rather than the wrapper's sleep running out, is
     /// the time limit's: the sleep outlasts it. A `< 20 s` per attempt on the test's clock stood
     /// here, which load could exceed; the control is
-    /// `aForcePushTheCancelDidNotStopIsReportedOnceTheTestIsCancelled`. The `pgrep` for the
+    /// `aForcePushTheCancelDidNotStopIsReportedOnceTheTestIsCancelled`. The process check for the
     /// `sleep` and the lock, fsck and state checks prove the child gone and the repositories
     /// intact (`PushTests.twentyCancelledPushesAllEndAtOnceAndLeaveTheRepositorySound`).
     @Test(.timeLimit(.minutes(10)))
@@ -783,7 +783,11 @@ import Testing
             try await PushTests.waitForSlowTransport(started, attempt)
 
             call.cancel()
-            guard let thrown = await call.value("attempt \(attempt)") else { return }
+            guard let thrown = await call.value("attempt \(attempt)") else {
+                // The wrapper's `sleep` outlasts the limit: SIGKILLed with git's whole group.
+                _ = try? killOwnGroups(matching: sleep)
+                return
+            }
             #expect(thrown is CancellationError, "attempt \(attempt): \(String(describing: thrown))")
         }
 
@@ -800,7 +804,7 @@ import Testing
     /// cancels the test, and the test reports it. The limit is stood in for by a waiting task
     /// this test cancels (`TimeLimitSupport.swift`); then the force push is cancelled for real,
     /// and nothing is left behind.
-    @Test func aForcePushTheCancelDidNotStopIsReportedOnceTheTestIsCancelled() async throws {
+    @Test(.timeLimit(.minutes(10))) func aForcePushTheCancelDidNotStopIsReportedOnceTheTestIsCancelled() async throws {
         let repo = try await TestRepo.makeBranched()
         defer { repo.cleanUp() }
         let origin = try await repo.addOriginWithFeatureBranch()
@@ -824,7 +828,11 @@ import Testing
         } matching: { $0.isNeverCameBack }
 
         call.cancel()
-        #expect(await call.value("the force push, cancelled for real") is CancellationError)
+        guard let thrown = await call.value("the force push, cancelled for real") else {
+            _ = try? killOwnGroups(matching: sleep)
+            return
+        }
+        #expect(thrown is CancellationError)
         try await PushTests.expectNoTransportLeft(sleep)
         try await assertRemoteUnchanged(origin, since: serverBefore)
     }

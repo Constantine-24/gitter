@@ -50,8 +50,9 @@ import Testing
 ///   it in the suite operates on a `TestRepo`'s `root`, so the repository — and with it this
 ///   `setenv` — exists before git is started.
 /// - `StreamingRunnerTests` and two cases in `ProcessRunnerTests`, which start `/bin/sh`,
-///   `/bin/sleep`, `/usr/bin/pgrep` and one executable that does not exist. None of them is
-///   git, so there is no configuration for the developer's machine to leak in through.
+///   `/bin/sleep` and one executable that does not exist; `ownProcesses(matching:)` and its
+///   tests, which start the process listing and `/bin/sh`. None of them is git, so there is
+///   no configuration for the developer's machine to leak in through.
 ///
 /// What the audit caught: three cases in `ProcessRunnerTests` that really did run
 /// `/usr/bin/git` on a bare `ProcessRunner()`. They were isolated only by whichever other suite

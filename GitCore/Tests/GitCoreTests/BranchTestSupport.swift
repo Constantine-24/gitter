@@ -93,13 +93,42 @@ extension TestRepo {
             .split(separator: "\n").map(String.init).sorted()
     }
 
-    /// `git rev-parse --abbrev-ref <branch>@{upstream}`, or nil when the branch has none.
-    func upstream(of branch: String) async throws -> String? {
+    /// The upstream `branch` is configured with, read through `for-each-ref`'s
+    /// `%(upstream:short)` and `%(upstream:track)` — where `RefParser` reads them — so that a
+    /// `[gone]` upstream is `.gone`, never mistaken for no upstream at all.
+    ///
+    /// It used to ask `rev-parse --abbrev-ref --symbolic-full-name <branch>@{upstream}`, which
+    /// exits 128 for both and, for a `[gone]` upstream only, **echoes the argument back**, so
+    /// the helper answered `"<branch>@{upstream}"` (measured on git 2.54). A branch that does
+    /// not exist, or an answer of any other shape, is now a recorded issue rather than a quiet
+    /// `.none`.
+    func upstream(
+        of branch: String, sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws -> UpstreamState {
+        let ref = "refs/heads/\(branch)"
+        // `for-each-ref` matches by whole path components, so `refs/heads/feat` would also list
+        // `refs/heads/feat/x`: the line is picked by its exact refname.
         let data = try await git(
-            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "\(branch)@{upstream}"],
-            allowedExitCodes: [128])
-        let name = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty ? nil : name
+            ["for-each-ref", "--format=%(refname)%00%(upstream:short)%00%(upstream:track)", ref])
+        let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
+            .map { $0.split(separator: "\u{0}", omittingEmptySubsequences: false).map(String.init) }
+            .filter { $0.first == ref }
+        guard lines.count == 1, lines[0].count == 3 else {
+            Issue.record(
+                "no single branch \(ref) to read an upstream from: \(lines)", sourceLocation: sourceLocation)
+            return .none
+        }
+        let (name, track) = (lines[0][1], lines[0][2])
+        switch (name.isEmpty, track) {
+        case (true, ""): return .none
+        case (false, "[gone]"): return .gone(name)
+        case (false, _) where !track.hasPrefix("[gone"): return .tracking(name)
+        default:
+            Issue.record(
+                "an upstream of an unexpected shape for \(ref): \(name) \(track)",
+                sourceLocation: sourceLocation)
+            return .none
+        }
     }
 
     func fileContents(_ relativePath: String) throws -> String {
@@ -170,5 +199,55 @@ func branchError(
     } catch {
         Issue.record("expected a BranchOperationError, got \(error)", sourceLocation: sourceLocation)
         return nil
+    }
+}
+
+/// What `TestRepo.upstream(of:)` reads for a branch: no upstream configured, an upstream whose
+/// remote-tracking ref exists (`origin/x`), or one whose ref is gone — git's `[gone]`, what a
+/// branch deleted on the server and pruned here leaves behind.
+enum UpstreamState: Equatable {
+    case none
+    case tracking(String)
+    case gone(String)
+}
+
+/// The controls for `TestRepo.upstream(of:)`: each of its three answers is reached by a state
+/// git really has, so a caller's `== .none` cannot be met by a `[gone]` upstream — the case
+/// the helper it replaced answered with the echoed `"<branch>@{upstream}"` (E1 survey S12).
+@Suite struct UpstreamStateTests {
+    @Test func aDeletedRemoteBranchIsGoneAndABranchWithNoUpstreamIsNone() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        try await repo.git(["switch", "-q", "-c", "topic"])
+        try await repo.git(["push", "-q", "-u", "origin", "topic"])
+        try await repo.git(["branch", "-q", "plain"])
+        #expect(try await repo.upstream(of: "topic") == .tracking("origin/topic"))
+
+        // Deleted on the server, and the remote-tracking ref with it: `[gone]`.
+        try await repo.git(["push", "-q", "origin", "--delete", "topic"])
+        #expect(try await repo.configValue("branch.topic.merge") == "refs/heads/topic")
+        #expect(try await repo.upstream(of: "topic") == .gone("origin/topic"))
+        #expect(try await repo.upstream(of: "plain") == .none)
+        try await repo.git(["branch", "-q", "--track", "feat/x", "origin/feat/x"])
+        #expect(try await repo.upstream(of: "feat/x") == .tracking("origin/feat/x"))
+    }
+
+    /// Control: a branch that does not exist is named as a failure, never answered `.none` —
+    /// the quiet answer the old helper gave for anything it could not read.
+    @Test func aBranchThatDoesNotExistIsARecordedIssue() async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        try await withKnownIssue("there is no branch named nowhere") {
+            _ = try await repo.upstream(of: "nowhere")
+        } matching: { $0.comments.contains { $0.rawValue.contains("no single branch") } }
+        // Nor is a branch whose name is only a path prefix of one that does (`for-each-ref`
+        // lists `refs/heads/feat/x` for `refs/heads/feat`).
+        try await repo.git(["branch", "-q", "feat/x"])
+        try await withKnownIssue("there is no branch named feat, only feat/x") {
+            _ = try await repo.upstream(of: "feat")
+        } matching: { $0.comments.contains { $0.rawValue.contains("no single branch") } }
     }
 }
