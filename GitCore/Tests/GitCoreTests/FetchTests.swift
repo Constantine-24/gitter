@@ -535,14 +535,14 @@ import Testing
 
         await withKnownIssue("the fetch is not cancelled, so it waits on its transport's sleep") {
             let waiter = Task { await call.value("the fetch") }
-            try await Task.sleep(for: .milliseconds(300))
+            try? await Task.sleep(for: .milliseconds(300))
             waiter.cancel()
             let thrown = await waiter.value
             #expect(thrown == nil, "the fetch came back: \(String(describing: thrown))")
-        }
+        } matching: { $0.isNeverCameBack }
 
         call.cancel()
-        #expect(await call.task.value is CancellationError)
+        #expect(await call.value("the fetch, cancelled for real") is CancellationError)
         try await fixture.expectTransportGone()
     }
 }

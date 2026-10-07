@@ -29,24 +29,36 @@ import Testing
 // - The limit cancels only the test's own task. A call the test started in a task of its own
 //   is left running; a test that gives up on it may clean up after it.
 
+/// What `CallUnderTest.value` records when the task that waits is cancelled first. A control
+/// that expects the hang guard to fire matches this issue alone (`isNeverCameBack`), so it fails
+/// if anything else — a thrown cancel, a call that came back — is what got recorded.
+let neverCameBack = "never came back: the test was cancelled (by its time limit) while it waited"
+
+extension Issue {
+    /// The issue `CallUnderTest.value` records for a wait that the test's cancel ended.
+    var isNeverCameBack: Bool { comments.contains { $0.rawValue.contains(neverCameBack) } }
+}
+
 /// A call under test, run in a task of its own so the test can cancel it and then wait for it —
 /// and stop waiting when the test itself is cancelled, which is what `.timeLimit` does once a
 /// test runs past its limit.
 ///
-/// The call's own task hands its value to the waiter, so the wait costs no more hops of the
+/// The call's own task hands its value to the waiters, so a wait costs no more hops of the
 /// cooperative pool than `await task.value` does: the stress test makes 300 such waits, and
 /// under load each hop is a wait for a thread.
+///
+/// Every wait goes through `value`, cleanup included: a bare `await task.value` is the one wait
+/// a time limit cannot end, so the task is not exposed.
 final class CallUnderTest<Value: Sendable>: Sendable {
-    /// The call's task; `task.value` is the plain wait, for a cleanup that must outlast it.
-    let task: Task<Value, Never>
-    private let answer: FirstAnswer<Value?>
+    private let task: Task<Value, Never>
+    private let answers: Answers<Value>
 
     init(_ operation: @escaping @Sendable () async -> Value) {
-        let answer = FirstAnswer<Value?>()
-        self.answer = answer
+        let answers = Answers<Value>()
+        self.answers = answers
         task = Task {
             let value = await operation()
-            answer.give(value)
+            answers.finish(value)
             return value
         }
     }
@@ -54,63 +66,78 @@ final class CallUnderTest<Value: Sendable>: Sendable {
     func cancel() { task.cancel() }
 
     /// The call's value, whenever it comes first. If the task that waits is cancelled first,
-    /// it records that the call never came back and returns nil. Waited for once: a second
-    /// `value` would find the answer taken.
+    /// it records that the call never came back (`neverCameBack`) and returns nil. Each wait is
+    /// its own: one ended by a cancel leaves the call to be waited for again.
     func value(
         _ what: @autoclosure () -> String = "the call", sourceLocation: SourceLocation = #_sourceLocation
     ) async -> Value? {
+        let waiter = answers.newWaiter()
         let value = await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Value?, Never>) in
-                answer.install(continuation)
+                answers.install(waiter, continuation)
             }
         } onCancel: {
-            answer.give(nil)
+            answers.cancel(waiter)
         }
         if value == nil {
-            Issue.record(
-                "\(what()) never came back: the test was cancelled (by its time limit) while it waited",
-                sourceLocation: sourceLocation)
+            Issue.record("\(what()) \(neverCameBack)", sourceLocation: sourceLocation)
         }
         return value
     }
 }
 
-/// One continuation, resumed once, with whichever answer comes first — which may come before
-/// the continuation is installed: a call that finished before the test waited, or a test
-/// cancelled already.
-private final class FirstAnswer<Value: Sendable>: @unchecked Sendable {
+/// The call's value once it has one, and the waits for it: each resumed exactly once, with the
+/// value when it comes or nil when its own wait is cancelled first — which may happen before
+/// the wait's continuation is installed (a test cancelled already).
+private final class Answers<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<Value, Never>?
-    private var early: Value?
-    private var given = false
+    private var finished = false
+    private var result: Value?
+    private var nextWaiter = 0
+    private var waiting: [Int: CheckedContinuation<Value?, Never>] = [:]
+    private var cancelledBeforeInstall: Set<Int> = []
 
-    func install(_ continuation: CheckedContinuation<Value, Never>) {
+    func newWaiter() -> Int {
         lock.lock()
-        if given, let early {
-            self.early = nil
+        defer { lock.unlock() }
+        nextWaiter += 1
+        return nextWaiter
+    }
+
+    func install(_ waiter: Int, _ continuation: CheckedContinuation<Value?, Never>) {
+        lock.lock()
+        if finished {
+            let result = self.result
             lock.unlock()
-            continuation.resume(returning: early)
+            continuation.resume(returning: result)
+        } else if cancelledBeforeInstall.remove(waiter) != nil {
+            lock.unlock()
+            continuation.resume(returning: nil)
+        } else {
+            waiting[waiter] = continuation
+            lock.unlock()
+        }
+    }
+
+    func cancel(_ waiter: Int) {
+        lock.lock()
+        if let continuation = waiting.removeValue(forKey: waiter) {
+            lock.unlock()
+            continuation.resume(returning: nil)
             return
         }
-        self.continuation = continuation
+        if !finished { cancelledBeforeInstall.insert(waiter) }
         lock.unlock()
     }
 
-    func give(_ value: Value) {
+    func finish(_ value: Value) {
         lock.lock()
-        guard !given else {
-            lock.unlock()
-            return
-        }
-        given = true
-        guard let continuation else {
-            early = value
-            lock.unlock()
-            return
-        }
-        self.continuation = nil
+        finished = true
+        result = value
+        let all = waiting.values
+        waiting = [:]
         lock.unlock()
-        continuation.resume(returning: value)
+        for continuation in all { continuation.resume(returning: value) }
     }
 }
 
@@ -146,7 +173,8 @@ final class StuckCall: @unchecked Sendable {
 
 /// The controls for `CallUnderTest`, and through it for every hang guard that replaced a bound
 /// on the test's clock: a call that really never returns is reported once the waiting task is
-/// cancelled, and a call that returns is not.
+/// cancelled, and a call that returns is not. Each known issue is matched to the very issue the
+/// hang guard records (`isNeverCameBack`), so a control fails when anything else is recorded.
 @Suite struct TimeLimitSupportTests {
     /// Control: the stand-in for the limit (cancelling the waiting task) ends a wait that would
     /// otherwise never end, and the test then reports the call by name.
@@ -160,12 +188,12 @@ final class StuckCall: @unchecked Sendable {
 
         await withKnownIssue("the call never returns, so the cancelled wait reports it") {
             let waiter = Task { await call.value("the stuck call") }
-            try await Task.sleep(for: .milliseconds(100))
+            try? await Task.sleep(for: .milliseconds(100))
             waiter.cancel()
-            #expect(await waiter.value == nil)
-        }
+            #expect(await waiter.value == nil, "the stuck call came back")
+        } matching: { $0.isNeverCameBack }
         stuck.release()
-        #expect(await call.task.value == 1)
+        #expect(await call.value() == 1)
     }
 
     /// Non-vacuous the other way: a call that comes back is its value, with nothing recorded —
@@ -178,7 +206,8 @@ final class StuckCall: @unchecked Sendable {
         #expect(await slow.value() == 7)
 
         let quick = CallUnderTest { 8 }
-        _ = await quick.task.value
+        #expect(await quick.value() == 8)
+        // Finished by now: the wait is answered from what the call left.
         #expect(await quick.value() == 8)
     }
 
@@ -194,11 +223,34 @@ final class StuckCall: @unchecked Sendable {
                 withUnsafeCurrentTask { $0?.cancel() }
                 return await call.value("the stuck call")
             }
-            #expect(await waiter.value == nil)
-        }
+            #expect(await waiter.value == nil, "the stuck call came back")
+        } matching: { $0.isNeverCameBack }
         while !stuck.waiting { try await Task.sleep(for: .milliseconds(5)) }
         stuck.release()
-        _ = await call.task.value
+        #expect(await call.value() == 1)
+    }
+
+    /// A wait the cancel ended spends nothing: the call can be waited for again, and that wait
+    /// gets its value once it comes. (Each wait used to share one answer, so a second wait after
+    /// a cancelled one installed a continuation nobody would ever resume.)
+    @Test func aCallCanBeWaitedForAgainAfterACancelledWait() async throws {
+        let stuck = StuckCall()
+        let call = CallUnderTest { () -> Int in
+            await stuck.wait()
+            return 3
+        }
+        while !stuck.waiting { try await Task.sleep(for: .milliseconds(5)) }
+        await withKnownIssue("the first wait is cancelled while the call is stuck") {
+            let first = Task { await call.value("the stuck call") }
+            try? await Task.sleep(for: .milliseconds(50))
+            first.cancel()
+            #expect(await first.value == nil, "the stuck call came back")
+        } matching: { $0.isNeverCameBack }
+
+        let second = Task { await call.value("the released call") }
+        try await Task.sleep(for: .milliseconds(50))
+        stuck.release()
+        #expect(await second.value == 3)
     }
 
     /// The polling waits that had a deadline of their own (`WorktreeAddTests`,

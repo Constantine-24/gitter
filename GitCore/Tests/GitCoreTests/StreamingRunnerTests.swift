@@ -570,7 +570,7 @@ private final class Locked<Value>: @unchecked Sendable {
             Issue.record("the runner never reported a launch", sourceLocation: sourceLocation)
             // Never leave the script running behind a failed test.
             call.cancel()
-            _ = await call.task.value
+            _ = await call.value("the script that never reported a launch")
             throw CancellationError()
         }
         return TrappedChild(call: call, pid: launched)
@@ -814,16 +814,16 @@ private final class Locked<Value>: @unchecked Sendable {
 
         await withKnownIssue("the escalation never acts, so the call waits out the child's sleep") {
             let waiter = Task { await started.call.value() }
-            try await Task.sleep(for: .milliseconds(500))
+            try? await Task.sleep(for: .milliseconds(500))
             waiter.cancel()
             let error = await waiter.value
             #expect(error == nil, "the call came back: \(String(describing: error))")
-        }
+        } matching: { $0.isNeverCameBack }
 
         // The group is this call's own: still alive, since its `sleep` ignores the SIGTERM.
         try #require(group > 1 && group != getpgid(0) && kill(-group, 0) == 0)
         kill(-group, SIGKILL)
-        #expect(await started.call.task.value is CancellationError)
+        #expect(await started.call.value("the call, its group killed") is CancellationError)
         #expect(await Self.groupIsGone(group))
     }
 
@@ -958,7 +958,9 @@ private final class Locked<Value>: @unchecked Sendable {
                     return .failure(error)
                 }
             }
-            try await Task.sleep(for: .microseconds(Int.random(in: 0...12_000)))
+            // `try?`: a cancel landing here — the test's limit — still ends in the wait below,
+            // which reports it, rather than in a thrown `CancellationError` that names nothing.
+            try? await Task.sleep(for: .microseconds(Int.random(in: 0...12_000)))
             stressed.cancel()
             switch await stressed.value("iteration \(iteration)") {
             case nil:
@@ -982,7 +984,7 @@ private final class Locked<Value>: @unchecked Sendable {
     /// so the loop runs in a task that this test cancels in its place.
     @Test func aStressCallThatNeverReturnsIsReportedOnceTheTestIsCancelled() async throws {
         let stuck = StuckCall()
-        await withKnownIssue("the call never returns, so the cancelled loop reports it") {
+        try await withKnownIssue("the call never returns, so the cancelled loop reports it") {
             let loop = Task { try await Self.cancelAtRandomMoments(300) {
                 await stuck.wait()
                 throw CancellationError()
@@ -992,7 +994,7 @@ private final class Locked<Value>: @unchecked Sendable {
             loop.cancel()
             let outcome = try await loop.value
             #expect(outcome == nil, "the loop went on past a call that never came back")
-        }
+        } matching: { $0.isNeverCameBack }
         stuck.release()
     }
 

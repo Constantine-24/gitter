@@ -838,14 +838,14 @@ import Testing
 
         await withKnownIssue("the push is not cancelled, so it waits on the wrapper's sleep") {
             let waiter = Task { await call.value("the push") }
-            try await Task.sleep(for: .milliseconds(300))
+            try? await Task.sleep(for: .milliseconds(300))
             waiter.cancel()
             let thrown = await waiter.value
             #expect(thrown == nil, "the push came back: \(String(describing: thrown))")
-        }
+        } matching: { $0.isNeverCameBack }
 
         call.cancel()
-        #expect(await call.task.value is CancellationError)
+        #expect(await call.value("the push, cancelled for real") is CancellationError)
         try await Self.expectNoTransportLeft(sleep)
         try await assertRemoteUnchanged(origin, since: serverBefore)
     }
