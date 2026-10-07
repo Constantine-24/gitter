@@ -297,6 +297,97 @@ import Testing
         try await assertRemoteUnchanged(origin, since: before)
     }
 
+    // MARK: - A git killed by a signal (E1 S5)
+
+    /// A stand-in for `/usr/bin/git` whose `push` ends in a SIGHUP of its own — after running
+    /// the real push when `pushFirst`, before anything otherwise — and which is the real git
+    /// for every other command (the remote checks a tag push makes first). Written into `dir`;
+    /// the path is for `CLIGitBackend(gitPath:)`.
+    ///
+    /// SIGHUP because its number is 1: the killed push ends with `terminationStatus == 1`, the
+    /// very code of an ordinary rejection, so only `terminationReason` can tell them apart.
+    static func hangingUpGitPath(pushFirst: Bool, in dir: URL) throws -> String {
+        let wrapper = dir.appendingPathComponent("git-hangup-\(UUID().uuidString)")
+        let script = """
+            #!/bin/bash
+            if [ "$1" = push ]; then
+                \(pushFirst ? "/usr/bin/git \"$@\"" : ":")
+                kill -HUP $$
+            fi
+            exec /usr/bin/git "$@"
+
+            """
+        try script.write(to: wrapper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapper.path)
+        return wrapper.path
+    }
+
+    /// The control for `hangingUpGitPath`: its `push` dies of SIGHUP with status 1 — after the
+    /// real push, whose porcelain line and tag are there, or before anything — and every other
+    /// command is git's, exiting as git does.
+    @Test(arguments: [true, false])
+    func theHangingUpGitDiesOfItsSignalOnlyOnPush(pushFirst: Bool) async throws {
+        let (repo, origin) = try await Self.makeRepo()
+        defer { Self.cleanUp(repo, origin) }
+        let gitPath = try Self.hangingUpGitPath(pushFirst: pushFirst, in: repo.root.appendingPathComponent(".git"))
+
+        let pushed = try await isolatedRunner().runStreaming(
+            gitPath, ["push", "--porcelain", "origin", "refs/tags/ann:refs/tags/ann"], cwd: repo.root,
+            allowedExitCodes: CLIGitBackend.anyExitCode, onStderr: { _ in })
+        #expect(pushed.terminationReason == .uncaughtSignal)
+        #expect(pushed.exitCode == 1)
+        #expect(String(decoding: pushed.stdout, as: UTF8.self).contains("[new tag]") == pushFirst)
+        #expect((try await TestRepo.remoteTag(origin, "ann") != nil) == pushFirst)
+
+        let read = try await isolatedRunner().runStreaming(
+            gitPath, ["rev-parse", "--verify", "-q", "refs/tags/nosuch"], cwd: repo.root,
+            allowedExitCodes: [1], onStderr: { _ in })
+        #expect(read.exitCode == 1)
+        #expect(read.terminationReason == .exit)
+    }
+
+    /// A tag push whose git was killed is a failure, never an outcome read from what git got as
+    /// far as printing: not `.pushed` from a `[new tag]` line it printed before the signal, and
+    /// not `.failed` with a status that is really the signal's number. It is thrown, with no
+    /// exit code (-1) and words that name the signal — a write, so the banner says the remote
+    /// may or may not have been updated.
+    @Test(arguments: [true, false])
+    func aTagPushWhoseGitIsKilledIsAFailure(pushFirst: Bool) async throws {
+        let (repo, origin) = try await Self.makeRepo()
+        defer { Self.cleanUp(repo, origin) }
+        let gitPath = try Self.hangingUpGitPath(pushFirst: pushFirst, in: repo.root.appendingPathComponent(".git"))
+
+        do {
+            let outcome = try await CLIGitBackend(gitPath: gitPath).pushTag("ann", to: "origin", at: repo.root)
+            Issue.record("a killed git was read as an outcome: \(outcome)")
+        } catch GitError.commandFailed(let code, let stderr) {
+            #expect(code == -1, "the signal was read as exit code \(code)")
+            #expect(stderr.contains("git was killed by signal 1"), "\(stderr)")
+        }
+        // The premise: the push itself happened, or did not.
+        #expect((try await TestRepo.remoteTag(origin, "ann") != nil) == pushFirst)
+    }
+
+    /// The same for the leased delete, which used to report the signal as git's exit code 1 —
+    /// or, killed after the delete went through, a success.
+    @Test(arguments: [true, false])
+    func aLeasedDeleteWhoseGitIsKilledIsAFailure(pushFirst: Bool) async throws {
+        let (repo, origin) = try await Self.makeRepo()
+        defer { Self.cleanUp(repo, origin) }
+        _ = try await CLIGitBackend().pushTag("ann", to: "origin", at: repo.root)
+        let id = try #require(try await CLIGitBackend().remoteTagID("ann", on: "origin", at: repo.root))
+        let gitPath = try Self.hangingUpGitPath(pushFirst: pushFirst, in: repo.root.appendingPathComponent(".git"))
+
+        do {
+            try await CLIGitBackend(gitPath: gitPath).deleteRemoteTag("ann", on: "origin", expecting: id, at: repo.root)
+            Issue.record("a killed git was read as a delete")
+        } catch GitError.commandFailed(let code, let stderr) {
+            #expect(code == -1, "the signal was read as exit code \(code)")
+            #expect(stderr.contains("git was killed by signal 1"), "\(stderr)")
+        }
+        #expect((try await TestRepo.remoteTag(origin, "ann") == nil) == pushFirst)
+    }
+
     // MARK: - VERIFY (Task 2)
 
     /// B21 left it unexplained; measured for Task 2: `receive.denyDeletes=true` is enforced on a

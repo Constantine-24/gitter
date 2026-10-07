@@ -20,23 +20,40 @@ extension ProcessRunner {
         /// `terminationStatus` is the **signal number** and only `terminationReason` says so —
         /// measured on macOS 27 / Foundation: `SIGTERM` gives 15, `SIGHUP` gives **1**, and
         /// `exit 3` gives 3, all through this same field. So a git killed by `SIGHUP` arrives
-        /// here as `exitCode == 1`, indistinguishable from the ordinary rejection code, and a
+        /// here as `exitCode == 1`, the same number as the ordinary rejection code, and a
         /// signal whose number is not allowed is a `commandFailed` carrying that number as if
-        /// it were a status.
+        /// it were a status. `aSignalledChildsStatusIsTheSignalNumber` pins the measurement.
         ///
-        /// That is left as it is, deliberately, because nothing reads this field as a *cause*:
-        /// it is reported alongside git's stderr on a path that is already a failure whatever
-        /// ended the child (`CLIGitBackend+Push.swift`'s "no porcelain line for the ref we
-        /// asked about"). A caller that ever needs to tell a signal from an exit must have
-        /// `terminationReason` carried here too — it is not derivable from this number.
-        /// `aSignalledChildsStatusIsTheSignalNumber` pins the measurement.
+        /// So a caller that allows a code a signal can also produce must ask
+        /// `terminationReason` before it reads this as git's answer — above all one that allows
+        /// every code (`CLIGitBackend.anyExitCode`), where *every* signal arrives here.
         public let exitCode: Int32
+        /// How the child ended: `.exit`, or `.uncaughtSignal` when a signal killed it and
+        /// `exitCode` is that signal's number (E1 S5). Not derivable from `exitCode`. Defaults to
+        /// `.exit` in the initialiser, so a result built by hand says what it always meant.
+        public let terminationReason: Process.TerminationReason
 
-        public init(stdout: Data, stderr: String, exitCode: Int32) {
+        public init(
+            stdout: Data, stderr: String, exitCode: Int32,
+            terminationReason: Process.TerminationReason = .exit
+        ) {
             self.stdout = stdout
             self.stderr = stderr
             self.exitCode = exitCode
+            self.terminationReason = terminationReason
         }
+    }
+
+    /// One SIGTERM or SIGKILL a cancel made the runner send, or try to send — what
+    /// `runStreaming`'s `onSignal` seam reports.
+    struct SignalAttempt: Sendable, Equatable {
+        let signal: Int32
+        /// It reached a live process or group: `kill` returned 0, or — for the SIGTERM through
+        /// a leader not yet reaped, which `Process.terminate()` sends and does not report on —
+        /// the leader was running when it was sent.
+        let delivered: Bool
+        /// The runner's clock, read as the attempt was made.
+        let at: ContinuousClock.Instant
     }
 
     /// Runs an executable like `run`, reporting stderr as it arrives and ending when the
@@ -72,7 +89,9 @@ extension ProcessRunner {
     /// sleep 30"` kept a cancelled call waiting 29.7 s — so the cancel escalates. If the call
     /// has still not *resumed* `killGracePeriod` after the SIGTERM, SIGKILL goes to the child's
     /// process group: through the child while it is unreaped, and through the group id
-    /// remembered at launch once it is reaped but a pipe is still open.
+    /// remembered at launch once it is reaped but a pipe is still open. A SIGKILL that reached
+    /// nothing — the child already reaped by Foundation, its exit not yet recorded here — is
+    /// sent by that id when the exit is recorded (`escalateToKill`).
     ///
     /// (Within `reapedGroupWindow` of the reap, and only if the group still had a member then;
     /// `signalReapedLeadersGroup` says why and what is left.)
@@ -157,6 +176,16 @@ extension ProcessRunner {
     ///   before a reaped leader's group is signalled — the one `kill(-pgid, …)` the runner
     ///   makes by a remembered number rather than through a live child. A test records it to
     ///   prove when that call is *not* made.
+    /// - Parameter onSignal: called with every SIGTERM and SIGKILL a cancel makes the runner
+    ///   send, or try to send, as soon as the attempt is made: whether it reached a live process
+    ///   or group, and the runner's own clock reading then. A test reads the escalation's
+    ///   latency from it — the interval the runner itself took, which the test's own
+    ///   scheduling cannot stretch.
+    /// - Parameter beforeRecordingTermination: called on the termination handler's thread
+    ///   before the runner records the child's exit. Foundation has reaped the child by then
+    ///   (`isRunning` is false and its pid is free), so a test that blocks here holds the runner
+    ///   in the gap between that reap and the runner's record of it — the gap where the
+    ///   escalation used to be lost (E1 survey S1).
     /// - Parameter inheritedEnvironment: the environment the child's is built from, in place of
     ///   this process's own, so a test can show what the runner adds to an environment that
     ///   has, or lacks, a given variable. Production callers use the public overload.
@@ -167,6 +196,8 @@ extension ProcessRunner {
         reapedGroupWindow: Duration = .seconds(5),
         onLaunch: (@Sendable (Int32) -> Void)?,
         onReapedGroupSignal: (@Sendable (pid_t, Int32) -> Void)? = nil,
+        onSignal: (@Sendable (SignalAttempt) -> Void)? = nil,
+        beforeRecordingTermination: (@Sendable () -> Void)? = nil,
         inheritedEnvironment: [String: String]? = nil,
         onStderr: @escaping @Sendable (String) -> Void
     ) async throws -> StreamedResult {
@@ -175,7 +206,7 @@ extension ProcessRunner {
         // the task is cancelled already — and it has nowhere to record that but here.
         let state = StreamingProcessState(
             killGracePeriod: killGracePeriod, reapedGroupWindow: reapedGroupWindow,
-            onReapedGroupSignal: onReapedGroupSignal)
+            onReapedGroupSignal: onReapedGroupSignal, onSignal: onSignal)
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation {
@@ -216,12 +247,13 @@ extension ProcessRunner {
                         return
                     case .cancelled:
                         continuation.resume(throwing: CancellationError())
-                    case .finished(let status, let out, let err):
+                    case .finished(let status, let reason, let out, let err):
                         let text = String(decoding: err, as: UTF8.self)
                         if status == 0 || allowedExitCodes.contains(status) {
                             continuation.resume(
                                 returning: StreamedResult(
-                                    stdout: out, stderr: text, exitCode: status))
+                                    stdout: out, stderr: text, exitCode: status,
+                                    terminationReason: reason))
                         } else {
                             continuation.resume(
                                 throwing: GitError.commandFailed(
@@ -267,7 +299,10 @@ extension ProcessRunner {
                 }
 
                 process.terminationHandler = { proc in
-                    state.recordTermination(proc.terminationStatus, pid: proc.processIdentifier)
+                    beforeRecordingTermination?()
+                    state.recordTermination(
+                        proc.terminationStatus, reason: proc.terminationReason,
+                        pid: proc.processIdentifier)
                     finish()
                 }
 
@@ -319,10 +354,12 @@ extension ProcessRunner {
 /// touched only under `lock`. Signalling the child — `terminate()`, and the SIGKILL that may
 /// follow it — closing the read ends and calling `finish` are deliberately done *outside* the
 /// lock, after the decision to do them has been recorded inside. That is sound because the
-/// decision, not the act, is the shared state: `terminateSent`, `killSent`, `abandoned` and
-/// `readEndsClosed` are set under the lock by whichever thread wins, so each act happens at
-/// most once no matter how many threads raced for it, and the act itself touches nothing this
-/// class owns. Doing it the other way round would be worse than merely unnecessary:
+/// decision, not the act, is the shared state: `terminateSent`, `killWork`,
+/// `killPendingAtReap`, `abandoned` and `readEndsClosed` are set or taken under the lock by
+/// whichever thread wins, so each act happens at most once no matter how many threads raced
+/// for it, and the act itself touches nothing this class owns. (`killSent` is the one record
+/// made *after* its act, because it says the SIGKILL reached something, which only the act
+/// can tell.) Doing it the other way round would be worse than merely unnecessary:
 /// `Process.terminate()` and `kill` are kernel calls made while the termination handler, on
 /// another thread, may already be waiting on this very lock to record the exit — holding the
 /// lock across them would serialise the two for no gain — and `finish` takes the lock itself.
@@ -343,7 +380,8 @@ private final class StreamingProcessState: @unchecked Sendable {
     /// What the first caller to observe completion is told to resume with.
     enum Resumption {
         case cancelled
-        case finished(status: Int32, stdout: Data, stderr: Data)
+        case finished(
+            status: Int32, reason: Process.TerminationReason, stdout: Data, stderr: Data)
     }
 
     /// What a cancel is to signal, decided under the lock and carried out outside it.
@@ -371,6 +409,9 @@ private final class StreamingProcessState: @unchecked Sendable {
     private var stdoutFinished = false
     private var stderrFinished = false
     private var status: Int32?
+    /// How the child ended, recorded with `status`: an exit, or a signal whose number
+    /// `status` then is.
+    private var terminationReason: Process.TerminationReason = .exit
     private var resumed = false
     private var cancelled = false
     private var process: Process?
@@ -383,7 +424,13 @@ private final class StreamingProcessState: @unchecked Sendable {
     /// When the reap was recorded — the start of `reapedGroupWindow`.
     private var reapedAt: ContinuousClock.Instant?
     private var terminateSent = false
+    /// The escalation's SIGKILL **reached** a live process or group. Set only then: one that
+    /// reached nothing is `killPendingAtReap` instead.
     private var killSent = false
+    /// The escalation's SIGKILL through the leader reached nothing, because the leader had
+    /// already exited — reaped by Foundation, or a zombie — and the runner had not recorded it
+    /// yet. `recordTermination` sends it to the remembered group; see `escalateToKill`.
+    private var killPendingAtReap = false
     private var killWork: DispatchWorkItem?
     private var abandonWork: DispatchWorkItem?
     /// Readability handlers currently between `beginRead` and `endRead`.
@@ -398,14 +445,22 @@ private final class StreamingProcessState: @unchecked Sendable {
 
     private let reapedGroupWindow: Duration
     private let onReapedGroupSignal: (@Sendable (pid_t, Int32) -> Void)?
+    private let onSignal: (@Sendable (ProcessRunner.SignalAttempt) -> Void)?
 
     init(
         killGracePeriod: Duration, reapedGroupWindow: Duration,
-        onReapedGroupSignal: (@Sendable (pid_t, Int32) -> Void)?
+        onReapedGroupSignal: (@Sendable (pid_t, Int32) -> Void)?,
+        onSignal: (@Sendable (ProcessRunner.SignalAttempt) -> Void)?
     ) {
         self.killGracePeriod = killGracePeriod
         self.reapedGroupWindow = reapedGroupWindow
         self.onReapedGroupSignal = onReapedGroupSignal
+        self.onSignal = onSignal
+    }
+
+    /// Tells `onSignal` of an attempt, on the runner's clock. Called outside the lock.
+    private func report(_ signal: Int32, delivered: Bool) {
+        onSignal?(ProcessRunner.SignalAttempt(signal: signal, delivered: delivered, at: .now))
     }
 
     private var graceSeconds: Double {
@@ -555,17 +610,51 @@ private final class StreamingProcessState: @unchecked Sendable {
     /// kernel call and is made outside the lock. Anything but ESRCH (members, or members we may
     /// not signal) counts as not empty: the conservative answer is to keep the id, and the
     /// window below bounds it.
-    func recordTermination(_ terminationStatus: Int32, pid: pid_t) {
+    ///
+    /// **The escalation's SIGKILL, when it reached nothing** (`killPendingAtReap`): the
+    /// escalation fired after Foundation reaped the leader but before this record, so its
+    /// SIGKILL through the leader found no live process, and a member of the group that
+    /// ignores SIGTERM — a hook, an ssh or a credential helper — would run on (E1 S1). It is
+    /// sent from here, to the remembered group, under every guard `reapedGroupLocked` keeps:
+    /// the group had a member at this reap, a pipe is still open, the call has not resumed.
+    /// It goes through `signalReapedLeadersGroup`, so `onReapedGroupSignal` hears of it first,
+    /// as of every signal by that number.
+    func recordTermination(
+        _ terminationStatus: Int32, reason: Process.TerminationReason, pid: pid_t
+    ) {
         var emptyAtReap = true
         if pid > 1 {
             errno = 0
             emptyAtReap = kill(-pid, 0) == -1 && errno == ESRCH
         }
         lock.lock()
-        defer { lock.unlock() }
         status = terminationStatus
+        terminationReason = reason
         groupEmptyAtReap = emptyAtReap
         reapedAt = .now
+        let pendingKill = killPendingAtReap ? takePendingKillLocked() : 0
+        lock.unlock()
+        if pendingKill > 1 { sendPendingKill(to: pendingKill) }
+    }
+
+    /// The group a pending SIGKILL goes to now that the reap is recorded, or 0 when it goes
+    /// nowhere: the call has resumed, or `reapedGroupLocked` refuses the number. Clears the
+    /// pending kill either way, so it is sent at most once.
+    private func takePendingKillLocked() -> pid_t {
+        killPendingAtReap = false
+        guard !resumed else { return 0 }
+        return reapedGroupLocked()
+    }
+
+    /// Sends the pending SIGKILL by the remembered group, and records it as sent once it got
+    /// there. Called outside the lock.
+    private func sendPendingKill(to group: pid_t) {
+        let delivered = signalReapedLeadersGroup(group, SIGKILL)
+        report(SIGKILL, delivered: delivered)
+        guard delivered else { return }
+        lock.lock()
+        killSent = true
+        lock.unlock()
     }
 
     // MARK: Cancellation
@@ -632,11 +721,13 @@ private final class StreamingProcessState: @unchecked Sendable {
         guard let target else { return }
         switch target {
         case .leader(let leader):
-            if leader.isRunning { leader.terminate() }
+            let running = leader.isRunning
+            if running { leader.terminate() }
+            report(SIGTERM, delivered: running)
         case .reapedLeadersGroup(let group):
-            signalReapedLeadersGroup(group, SIGTERM)
+            report(SIGTERM, delivered: signalReapedLeadersGroup(group, SIGTERM))
         case .none:
-            break
+            report(SIGTERM, delivered: false)
         }
         armEscalation()
     }
@@ -668,6 +759,15 @@ private final class StreamingProcessState: @unchecked Sendable {
     /// signalled and so was not yet in it) keeps a pipe open after git itself has been reaped;
     /// the escalation used to stand down at the reap, and the call then waited for the
     /// grandchild to exit.
+    ///
+    /// **The kill counts as sent only once it reached something** (E1 S1). Through the leader
+    /// it can reach nothing: the escalation is decided while no termination is recorded, but
+    /// by then Foundation may have reaped the leader (`isRunning` is false, its handler not yet
+    /// run), or the leader is a zombie, whose `getpgid` is -1. That SIGKILL used to count all
+    /// the same, and nothing sent another, so a group member ignoring SIGTERM outlived the call.
+    /// Now it is left pending: if the termination was recorded in the meantime, it goes to the
+    /// remembered group from here; otherwise `recordTermination` sends it. Both are decided
+    /// under the lock, so exactly one of the two does. The abandonment is armed as before.
     private func escalateToKill() {
         lock.lock()
         killWork = nil
@@ -675,43 +775,59 @@ private final class StreamingProcessState: @unchecked Sendable {
             lock.unlock()
             return
         }
-        killSent = true
         let leader: Process? = status == nil ? process : nil
         let reapedGroup = reapedGroupLocked()
         let abandonment = DispatchWorkItem { [weak self] in self?.abandon() }
         abandonWork = abandonment
         lock.unlock()
 
+        let delivered: Bool
         if let leader {
-            Self.killLeadersGroup(leader)
-        } else if reapedGroup > 1 {
-            signalReapedLeadersGroup(reapedGroup, SIGKILL)
+            delivered = Self.killLeadersGroup(leader)
+        } else {
+            delivered = reapedGroup > 1 && signalReapedLeadersGroup(reapedGroup, SIGKILL)
         }
+        lock.lock()
+        var pendingKill: pid_t = 0
+        if delivered {
+            killSent = true
+        } else if leader != nil {
+            killPendingAtReap = true
+            // Recorded while the SIGKILL was on its way: the record has been and gone, so the
+            // pending kill is sent from here.
+            if status != nil { pendingKill = takePendingKillLocked() }
+        }
+        lock.unlock()
+        report(SIGKILL, delivered: delivered)
+        if pendingKill > 1 { sendPendingKill(to: pendingKill) }
+
         // Scheduled even if the resume cancelled it in the meantime: a cancelled work item
         // never runs.
         DispatchQueue.global(qos: .userInitiated)
             .asyncAfter(deadline: .now() + graceSeconds, execute: abandonment)
     }
 
-    /// SIGKILL for a leader not yet observed to terminate — its group, when it leads one.
-    private static func killLeadersGroup(_ leader: Process) {
-        guard leader.isRunning else { return }
+    /// SIGKILL for a leader not yet observed to terminate — its group, when it leads one. True
+    /// when the signal reached a live process or group.
+    private static func killLeadersGroup(_ leader: Process) -> Bool {
+        guard leader.isRunning else { return false }
         let pid = leader.processIdentifier
         // Nothing below may ever be reached with a pid of 0 (`kill` would signal *our* whole
         // process group) or -1 (every process we may signal). `Process` only reports a pid
         // above 1 for a running child, but the consequence of a bug here is severe enough to
         // be worth the two comparisons.
-        guard pid > 1 else { return }
+        guard pid > 1 else { return false }
         // The pgid/pid equality is re-checked here rather than assumed: if it does not hold,
         // the group is somebody else's — possibly ours — and only the child itself is
-        // signalled. `getpgid` returning -1 means the pid is already gone; nothing is
-        // signalled then.
+        // signalled. `getpgid` returning -1 means the pid is already gone, or a zombie (macOS
+        // answers -1 for an unreaped zombie leader, measured in A1); nothing is signalled then.
         let group = getpgid(pid)
         if group == pid {
-            kill(-group, SIGKILL)
+            return kill(-group, SIGKILL) == 0
         } else if group > 0 {
-            kill(pid, SIGKILL)
+            return kill(pid, SIGKILL) == 0
         }
+        return false
     }
 
     /// Signals the group a reaped leader led, by the id remembered at launch — the one signal
@@ -748,12 +864,15 @@ private final class StreamingProcessState: @unchecked Sendable {
     /// to get the pid it wanted. A cancel past the window sends nothing by number: a member
     /// of the child's group that is still alive then is left running, like a descendant
     /// outside it.
-    private func signalReapedLeadersGroup(_ group: pid_t, _ signal: Int32) {
-        guard group > 1 else { return }
+    ///
+    /// True when the signal reached the group.
+    @discardableResult
+    private func signalReapedLeadersGroup(_ group: pid_t, _ signal: Int32) -> Bool {
+        guard group > 1 else { return false }
         errno = 0
-        guard kill(group, 0) == -1, errno == ESRCH else { return }
+        guard kill(group, 0) == -1, errno == ESRCH else { return false }
         onReapedGroupSignal?(group, signal)
-        kill(-group, signal)
+        return kill(-group, signal) == 0
     }
 
     /// The second grace period is up and the call has *still* not resumed: something that is
@@ -814,7 +933,9 @@ private final class StreamingProcessState: @unchecked Sendable {
         // `abandoned` implies `cancelled`, and without it `complete` required the status.
         let resumption: Resumption =
             if !cancelled, let status {
-                .finished(status: status, stdout: outBuffer, stderr: errBuffer)
+                .finished(
+                    status: status, reason: terminationReason, stdout: outBuffer,
+                    stderr: errBuffer)
             } else {
                 .cancelled
             }

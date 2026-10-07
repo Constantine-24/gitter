@@ -24,6 +24,41 @@ private final class Locked<Value>: @unchecked Sendable {
     }
 }
 
+/// Holds the runner's record of git's exit — `beforeRecordingTermination`, on Foundation's
+/// termination-handler thread, a thread of a global overcommit queue that no other process's
+/// handler waits behind (measured) — until `release`. The hold ends on its own after eleven
+/// minutes, past every test's time limit, so a test that never released it cannot keep the
+/// thread for good.
+private final class TerminationHold: @unchecked Sendable {
+    private let lock = NSLock()
+    private let gate = DispatchSemaphore(value: 0)
+    private var isEntered = false
+    private var released = false
+
+    /// The runner has reached the record of the exit, and is being held there.
+    var entered: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isEntered
+    }
+
+    func hold() {
+        lock.lock()
+        isEntered = true
+        lock.unlock()
+        _ = gate.wait(timeout: .now() + 660)
+    }
+
+    /// Lets the record go ahead; any later call does nothing.
+    func release() {
+        lock.lock()
+        let first = !released
+        released = true
+        lock.unlock()
+        if first { gate.signal() }
+    }
+}
+
 /// `runStreaming`: the same capture guarantees as `run`, plus stderr as it arrives and a call
 /// that ends promptly when its task is cancelled.
 ///
@@ -229,15 +264,9 @@ private final class Locked<Value>: @unchecked Sendable {
     ///
     /// Measured on macOS 27 / Foundation: `Process.terminationStatus` is the signal for a child
     /// killed by one (`SIGTERM` → 15, `SIGHUP` → 1) and only `terminationReason` tells the two
-    /// apart. `runStreaming` records `terminationStatus`, so a git killed by `SIGHUP` comes
-    /// back as an ordinary `exitCode == 1` rather than throwing.
-    ///
-    /// Pinned here rather than fixed, and `StreamedResult.exitCode`'s doc comment now says so
-    /// instead of promising "the status the process really ended with". Nothing reads the field
-    /// as a cause: `push` reaches it only on the path where git printed **no** porcelain line
-    /// for the ref it was given, which is a failure however the child ended, and the number is
-    /// reported rather than interpreted. A caller that ever needs to tell a signal from an exit
-    /// must carry `terminationReason` too.
+    /// apart. `runStreaming` records `terminationStatus` as `exitCode`, so a git killed by
+    /// `SIGHUP` comes back with `exitCode == 1`; what says it was a signal is the result's
+    /// `terminationReason` (E1 S5, the test below).
     @Test func aSignalledChildsStatusIsTheSignalNumber() async throws {
         let (hangup, _) = try await runScript("kill -HUP $$", allowedExitCodes: [1])
         #expect(hangup.exitCode == 1, "SIGHUP is signal 1, and so indistinguishable from exit 1")
@@ -246,6 +275,22 @@ private final class Locked<Value>: @unchecked Sendable {
         // above is this child's status and not a default.
         let (terminated, _) = try await runScript("kill -TERM $$", allowedExitCodes: [15])
         #expect(terminated.exitCode == 15)
+    }
+
+    /// **E1 S5.** The result says how the child ended: a child killed by `SIGHUP` and one that
+    /// ran `exit 1` share `exitCode == 1`, and `terminationReason` tells them apart — so a
+    /// caller that allows every code can refuse a signal rather than read it as a status.
+    @Test func aSignalIsReportedAsASignalAndAnExitAsAnExit() async throws {
+        let (hangup, _) = try await runScript("kill -HUP $$", allowedExitCodes: [1])
+        #expect(hangup.exitCode == 1)
+        #expect(hangup.terminationReason == .uncaughtSignal)
+
+        let (exited, _) = try await runScript("echo kept; exit 1", allowedExitCodes: [1])
+        #expect(exited.exitCode == 1)
+        #expect(exited.terminationReason == .exit)
+        // `.exit` is also the initialiser's default; the `SIGHUP` case above is what shows the
+        // field is the run's own, and this one that an exit is never taken for a signal.
+        #expect(String(decoding: exited.stdout, as: UTF8.self) == "kept\n")
     }
 
     /// A code that is *not* allowed is still a throw, and the error carries the same number:
@@ -405,8 +450,15 @@ private final class Locked<Value>: @unchecked Sendable {
     /// being long enough rather than by asking. The marker asks: the shell writes it on the
     /// line after the trap, so its existence *is* "this child now ignores SIGTERM", at any load
     /// and on any machine.
+    ///
+    /// `reportsItsLaunchLate` is the control for the wait on the pid (E1 S7(3)): the launch is
+    /// handed to the fixture only once the marker exists and 200 ms more have passed, so the
+    /// marker is there first by construction — the order that was seen once under a full
+    /// parallel suite.
     private func startChildIgnoringSIGTERM(
         killGracePeriod: Duration = .seconds(2),
+        onSignal: (@Sendable (ProcessRunner.SignalAttempt) -> Void)? = nil,
+        reportsItsLaunchLate: Bool = false,
         sourceLocation: SourceLocation = #_sourceLocation
     ) async throws -> TrappedChild {
         let marker = FileManager.default.temporaryDirectory
@@ -418,14 +470,24 @@ private final class Locked<Value>: @unchecked Sendable {
                 _ = try await runner.runStreaming(
                     "/bin/sh", ["-c", "trap '' TERM; : > \"\(marker.path)\"; sleep \(Self.outlastsTheTimeLimit)"],
                     cwd: Self.root, killGracePeriod: killGracePeriod,
-                    onLaunch: { launched in pid.mutate { $0 = launched } },
+                    onLaunch: { launched in
+                        guard reportsItsLaunchLate else {
+                            pid.mutate { $0 = launched }
+                            return
+                        }
+                        Self.report(launched, to: pid, once: marker)
+                    },
+                    onSignal: onSignal,
                     onStderr: { _ in })
                 return nil
             } catch {
                 return error
             }
         }
-        for _ in 0..<1000 where !FileManager.default.fileExists(atPath: marker.path) {
+        // Both, as `startScript` waits: the shell can write its marker before the launching
+        // thread has got as far as `onLaunch` (E1 S7(3)).
+        for _ in 0..<1000
+        where !FileManager.default.fileExists(atPath: marker.path) || pid.current == nil {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(
@@ -442,6 +504,39 @@ private final class Locked<Value>: @unchecked Sendable {
             throw CancellationError()
         }
         return TrappedChild(call: call, pid: launched, leftovers: leftovers)
+    }
+
+    /// `reportsItsLaunchLate`'s hand-over: on a thread of its own, so the launching thread is
+    /// not held, once `marker` exists — polled for up to ten seconds — and 200 ms after that.
+    private static func report(_ launched: Int32, to pid: Locked<Int32?>, once marker: URL) {
+        DispatchQueue.global().async {
+            for _ in 0..<1000 where !FileManager.default.fileExists(atPath: marker.path) {
+                usleep(10_000)
+            }
+            usleep(200_000)
+            pid.mutate { $0 = launched }
+        }
+    }
+
+    /// E1 S7(3): the fixture waits for the runner's report of the launch as well as for the
+    /// trap, because the shell can write its marker before the launching thread reaches
+    /// `onLaunch`. Here that order is forced (`reportsItsLaunchLate`), and the fixture still
+    /// hands back the child it launched — a waiting on the marker alone found no pid and
+    /// recorded "the runner never reported a launch".
+    @Test(.timeLimit(.minutes(10))) func theTrappedChildIsHandedBackOnlyOnceItsLaunchIsReported() async throws {
+        let started = try await startChildIgnoringSIGTERM(
+            killGracePeriod: .milliseconds(250), reportsItsLaunchLate: true)
+        // The pid handed back is the live child, leading its own group: the runner's report.
+        #expect(kill(started.pid, 0) == 0)
+        #expect(getpgid(started.pid) == started.pid)
+
+        started.call.cancel()
+        guard let error = await started.call.value() else {
+            killLeftovers(started.leftovers)
+            return
+        }
+        #expect(error is CancellationError)
+        #expect(await Self.groupIsGone(started.pid))
     }
 
     /// The control for this fixture's failure-path cleanup: a cancelled call whose escalation
@@ -582,6 +677,8 @@ private final class Locked<Value>: @unchecked Sendable {
         _ script: String, duration: String, killGracePeriod: Duration,
         reapedGroupWindow: Duration = .seconds(5),
         onReapedGroupSignal: (@Sendable (pid_t, Int32) -> Void)? = nil,
+        onSignal: (@Sendable (ProcessRunner.SignalAttempt) -> Void)? = nil,
+        beforeRecordingTermination: (@Sendable () -> Void)? = nil,
         sourceLocation: SourceLocation = #_sourceLocation
     ) async throws -> TrappedChild {
         let marker = FileManager.default.temporaryDirectory
@@ -596,6 +693,8 @@ private final class Locked<Value>: @unchecked Sendable {
                     reapedGroupWindow: reapedGroupWindow,
                     onLaunch: { launched in pid.mutate { $0 = launched } },
                     onReapedGroupSignal: onReapedGroupSignal,
+                    onSignal: onSignal,
+                    beforeRecordingTermination: beforeRecordingTermination,
                     onStderr: { _ in })
                 return nil
             } catch {
@@ -704,6 +803,177 @@ private final class Locked<Value>: @unchecked Sendable {
         // What makes the seam's silence in the two tests below mean something: here, with the
         // group still holding the grandchild, it saw the SIGTERM and then the SIGKILL go out.
         #expect(signals.current == [[started.pid, SIGTERM], [started.pid, SIGKILL]])
+    }
+
+    // MARK: - Cancellation: the reap the runner has not recorded yet (E1 S1)
+
+    /// git's stand-in for E1 S1: a helper it started — a hook, an ssh, a credential helper —
+    /// that ignores SIGTERM and holds the pipes, and git itself exiting while it runs. The
+    /// leader waits for the helper's trap (its `$1.trap`), so the helper ignores SIGTERM from
+    /// before the leader ends.
+    private static let helperOutlivingTheLeader =
+        "( trap '' TERM; : > \"$1.trap\"; exec sleep \"$2\" ) & "
+        + "while [ ! -e \"$1.trap\" ]; do sleep 0.01; done; rm -f \"$1.trap\"; : > \"$1\"; exit 0"
+
+    /// **E1 S1.** The cancel and the escalation both land after Foundation has reaped git but
+    /// before the runner has recorded it: `isRunning` is false and the pid is free, so the
+    /// SIGKILL through the leader reaches nothing. It used to count as sent all the same; the
+    /// helper, ignoring SIGTERM, ran on, and the call came back only by the abandonment. Now a
+    /// SIGKILL that reached nothing is kept pending, and the record of the reap sends it to the
+    /// remembered group (`onReapedGroupSignal` sees it, as the fork storm's proof requires).
+    ///
+    /// The gap is held open by `beforeRecordingTermination` until the escalation has made its
+    /// attempt — A1 needed ~200 random iterations to land in it (3 in 200). The helper is gone
+    /// a grace after the cancel, on the runner's clock (`expectEscalation`).
+    @Test(.timeLimit(.minutes(10))) func anEscalationThatFindsGitReapedButNotYetRecordedStillKillsItsHelper() async throws {
+        let duration = Self.uniqueDuration()
+        let sleep = Self.sleepToken(duration)
+        let attempts = Locked<[ProcessRunner.SignalAttempt]>([])
+        let reapedGroupSignals = Locked<[[Int32]]>([])
+        let hold = TerminationHold()
+        defer { hold.release() }
+        let started = try await startScript(
+            Self.helperOutlivingTheLeader, duration: duration, killGracePeriod: .seconds(2),
+            onReapedGroupSignal: { group, signal in reapedGroupSignals.mutate { $0.append([group, signal]) } },
+            onSignal: { attempt in
+                attempts.mutate { $0.append(attempt) }
+                // The escalation has made its attempt: the runner may record the reap now.
+                if attempt.signal == SIGKILL { hold.release() }
+            },
+            beforeRecordingTermination: { hold.hold() })
+        // The premise, each part able to fail: Foundation has reaped git (the termination
+        // handler is being held, and the pid is free), its group still holds the helper, and
+        // the runner has recorded nothing.
+        while !hold.entered { try await Task.sleep(for: .milliseconds(10)) }
+        errno = 0
+        #expect(kill(started.pid, 0) == -1 && errno == ESRCH, "git is not reaped")
+        #expect(kill(-started.pid, 0) == 0, "git's group holds nothing")
+        #expect(await Self.waitForExactlyOneProcess(matching: sleep))
+
+        started.call.cancel()
+        guard let error = await started.call.value() else {
+            hold.release()
+            killLeftovers(started.leftovers)
+            return
+        }
+
+        #expect(error is CancellationError)
+        let helperIsGone = await Self.waitForNoProcess(matching: sleep)
+        #expect(helperIsGone, "the TERM-ignoring helper outlived the call")
+        if !helperIsGone { killLeftovers([sleep]) }
+        // Through the remembered group, at the record of the reap — the fork storm's seam.
+        #expect(reapedGroupSignals.current == [[started.pid, SIGKILL]])
+        // Neither the SIGTERM nor the escalation's own SIGKILL reached anything; the one that
+        // did came at the record, a grace after the cancel on the runner's clock.
+        #expect(attempts.current.map(\.signal) == [SIGTERM, SIGKILL, SIGKILL])
+        #expect(attempts.current.map(\.delivered) == [false, false, true])
+        Self.expectEscalation(attempts.current, after: .seconds(2))
+    }
+
+    /// The control for the test above, and what the runner did before the fix: with the
+    /// record of the reap held until the call has come back — by the abandonment, a grace after
+    /// the SIGKILL that reached nothing — no kill is ever sent, and the leak check fails on the
+    /// helper that is still running. The test then kills it by its group, which is git's.
+    @Test(.timeLimit(.minutes(10))) func aReapRecordedOnlyAfterTheCallCameBackLeavesTheHelperRunning() async throws {
+        let duration = Self.uniqueDuration()
+        let sleep = Self.sleepToken(duration)
+        let reapedGroupSignals = Locked<[[Int32]]>([])
+        let hold = TerminationHold()
+        defer { hold.release() }
+        let started = try await startScript(
+            Self.helperOutlivingTheLeader, duration: duration, killGracePeriod: .milliseconds(500),
+            onReapedGroupSignal: { group, signal in reapedGroupSignals.mutate { $0.append([group, signal]) } },
+            beforeRecordingTermination: { hold.hold() })
+        while !hold.entered { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(await Self.waitForExactlyOneProcess(matching: sleep))
+
+        started.call.cancel()
+        guard let error = await started.call.value() else {
+            hold.release()
+            killLeftovers(started.leftovers)
+            return
+        }
+        #expect(error is CancellationError)
+
+        await withKnownIssue("the reap is recorded only after the call came back, so nothing kills the helper") {
+            #expect(await Self.waitForNoProcess(matching: sleep), "the TERM-ignoring helper outlived the call")
+        }
+        hold.release()
+        #expect(reapedGroupSignals.current.isEmpty)
+        #expect(killLeftovers([sleep]) == [started.pid])
+        #expect(await Self.waitForNoProcess(matching: sleep))
+    }
+
+    // MARK: - The escalation's latency, on the runner's clock
+
+    /// How late the escalation's SIGKILL may come after the grace, on the runner's own clock.
+    /// See `expectEscalation`.
+    static let escalationMargin: Duration = .milliseconds(500)
+
+    /// The escalation's latency **as the runner measured it**: from the cancel's SIGTERM attempt
+    /// to the first SIGKILL that reached a process, both read by the runner as it made them
+    /// (`onSignal`). At least the grace, and at most the grace plus `escalationMargin`.
+    ///
+    /// The upper bound is on the runner's interval, not the test's: no wait of the test for a
+    /// thread is in it, only the escalation's own timer and the `kill` behind it.
+    private static func expectEscalation(
+        _ attempts: [ProcessRunner.SignalAttempt], after grace: Duration,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        guard let sigterm = attempts.first(where: { $0.signal == SIGTERM }),
+            let sigkill = attempts.first(where: { $0.signal == SIGKILL && $0.delivered })
+        else {
+            Issue.record("escalation: no SIGTERM, or no SIGKILL that reached anything: \(attempts)", sourceLocation: sourceLocation)
+            return
+        }
+        let latency = sigkill.at - sigterm.at
+        #expect(latency >= grace, "escalation: the SIGKILL came before the grace was up, \(latency)", sourceLocation: sourceLocation)
+        #expect(
+            latency <= grace + escalationMargin,
+            "escalation: the SIGKILL came \(latency) after the SIGTERM, against a grace of \(grace)",
+            sourceLocation: sourceLocation)
+    }
+
+    /// The escalation comes a grace after the SIGTERM, measured inside the runner — the latency
+    /// claim the test's own clock could not make once load was let into it (E1 Task 1).
+    @Test(.timeLimit(.minutes(10))) func theEscalationComesOneGraceAfterTheSIGTERMOnTheRunnersClock() async throws {
+        let attempts = Locked<[ProcessRunner.SignalAttempt]>([])
+        let started = try await startChildIgnoringSIGTERM(
+            onSignal: { attempt in attempts.mutate { $0.append(attempt) } })
+
+        started.call.cancel()
+        guard let error = await started.call.value() else {
+            killLeftovers(started.leftovers)
+            return
+        }
+
+        #expect(error is CancellationError)
+        // The ordinary path: the SIGTERM reached the live child, the SIGKILL its group.
+        #expect(attempts.current.map(\.signal) == [SIGTERM, SIGKILL])
+        #expect(attempts.current.map(\.delivered) == [true, true])
+        Self.expectEscalation(attempts.current, after: .seconds(2))
+    }
+
+    /// The control for `expectEscalation`: an escalation that really comes early (a 1 s grace)
+    /// or late (past the margin) against the 2 s it is checked for fails it.
+    @Test(.timeLimit(.minutes(10)), arguments: [
+        Duration.seconds(1), Duration.seconds(2) + StreamingRunnerTests.escalationMargin + .seconds(1),
+    ])
+    func anEscalationOutsideTheGraceFailsTheLatencyCheck(realGrace: Duration) async throws {
+        let attempts = Locked<[ProcessRunner.SignalAttempt]>([])
+        let started = try await startChildIgnoringSIGTERM(
+            killGracePeriod: realGrace, onSignal: { attempt in attempts.mutate { $0.append(attempt) } })
+
+        started.call.cancel()
+        guard let error = await started.call.value() else {
+            killLeftovers(started.leftovers)
+            return
+        }
+
+        #expect(error is CancellationError)
+        withKnownIssue("the escalation came \(realGrace) after the SIGTERM, checked against 2 s") {
+            Self.expectEscalation(attempts.current, after: .seconds(2))
+        } matching: { issue in issue.comments.contains { $0.rawValue.hasPrefix("escalation: the SIGKILL came") } }
     }
 
     /// The reviewer's case, in-suite. The leader backgrounds a job **out of its group**

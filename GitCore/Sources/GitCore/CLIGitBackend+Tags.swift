@@ -262,6 +262,7 @@ extension CLIGitBackend: GitTagBackend {
         try await requireRemoteURL(remote, forPushing: true, at: root)
         let arguments = ["push", "--porcelain", "--no-follow-tags", "--no-recurse-submodules", "--end-of-options", remote, "refs/tags/\(n):refs/tags/\(n)"]
         let streamed = try await runStreaming(arguments, cwd: root, allowedExitCodes: Self.anyExitCode, progress: { _ in })
+        try Self.refusingASignalledGit(streamed)
 
         let stdout = String(decoding: streamed.stdout, as: UTF8.self)
         guard let result = PushPorcelainParser.resultLine(stdout: stdout, destinationRef: "refs/tags/\(n)") else {
@@ -294,6 +295,7 @@ extension CLIGitBackend: GitTagBackend {
         try await requireRemoteURL(remote, forPushing: true, at: root)
         let arguments = ["push", "--porcelain", "--no-follow-tags", "--no-recurse-submodules", "--force-with-lease=refs/tags/\(n):\(id)", "--end-of-options", remote, ":refs/tags/\(n)"]
         let streamed = try await runStreaming(arguments, cwd: root, allowedExitCodes: Self.anyExitCode, progress: { _ in })
+        try Self.refusingASignalledGit(streamed)
 
         let stdout = String(decoding: streamed.stdout, as: UTF8.self)
         let destination = "refs/tags/\(n)"
@@ -328,6 +330,17 @@ extension CLIGitBackend: GitTagBackend {
             last[name] = String(value)
         }
         return last.filter { $0.value == "--no-tags" }.keys.sorted()
+    }
+
+    /// Throws when git did not end on its own: a push killed by a signal is a failure, whatever
+    /// it printed before (E1 S5). Both pushes here allow every exit code so that git's porcelain
+    /// survives a rejection, and `exitCode` is then the **signal's number** — SIGHUP's is 1,
+    /// the code of an ordinary rejection — so the reason is asked before anything is read.
+    /// Thrown as `commandFailed` with no exit code (-1), git's words after the signal's.
+    private static func refusingASignalledGit(_ streamed: ProcessRunner.StreamedResult) throws {
+        guard streamed.terminationReason == .uncaughtSignal else { return }
+        throw GitError.commandFailed(
+            exitCode: -1, stderr: words("git was killed by signal \(streamed.exitCode).", streamed.stderr))
     }
 
     /// git's words, redacted (a remote URL can carry a credential): the lines given, in order,
