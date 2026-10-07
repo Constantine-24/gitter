@@ -228,7 +228,7 @@
                     + "| pushHelp: \(store.pushHelp) "
                     + "| pullMode: \(store.rememberedPullMode.rawValue) "
                     + "| loads: \(store.snapshotLoadCount) "
-                    + "| autoFetch: \(AutoFetchScheduler.isEnabled ? "on" : "off"), "
+                    + "| autoFetch: \(store.autoFetchScheduler.isEnabled ? "on" : "off"), "
                     + "failure: \(store.lastAutoFetchFailure ?? "nil") "
                     + "| stores: \(RepositoryStore.storesBuilt)")
         }

@@ -188,7 +188,8 @@ import Testing
 
     /// No repository and no document: a choice goes nowhere, and nothing is offered.
     @MainActor @Test func aStoreWithNoConflictKeepsNoChoices() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         store.chooseBlock(0, .ours)
         #expect(store.blockChoices.isEmpty)
         #expect(store.conflictDocument == nil)

@@ -20,8 +20,12 @@ final class AutoFetchScheduler {
     /// The defaults key "Fetch Automatically" is bound to. Absent means on.
     static let enabledKey = "autoFetchEnabled"
 
-    static var isEnabled: Bool {
-        UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true
+    /// Where the toggle is read: the store's own defaults (`RepositoryStore.defaults`) —
+    /// `.standard` in the app, a scratch suite under test.
+    let defaults: UserDefaults
+
+    var isEnabled: Bool {
+        defaults.object(forKey: Self.enabledKey) as? Bool ?? true
     }
 
     /// Ten minutes and two minutes: the design's numbers.
@@ -33,14 +37,15 @@ final class AutoFetchScheduler {
 
     private var loop: Task<Void, Never>?
 
-    init(interval: Duration = defaultInterval, timeout: Duration = defaultTimeout) {
+    init(interval: Duration = defaultInterval, timeout: Duration = defaultTimeout, defaults: UserDefaults = .standard) {
         self.interval = interval
         self.timeout = timeout
+        self.defaults = defaults
     }
 
     /// The production schedule — or, in a DEBUG build, `GITTER_DEBUG_AUTOFETCH=<interval>[,<timeout>]`
     /// in seconds, so the harness can watch several ticks in a minute.
-    static func fromEnvironment() -> AutoFetchScheduler {
+    static func fromEnvironment(defaults: UserDefaults) -> AutoFetchScheduler {
         #if DEBUG
             if let spec = ProcessInfo.processInfo.environment["GITTER_DEBUG_AUTOFETCH"] {
                 let numbers = spec.split(separator: ",").compactMap { Double($0) }
@@ -48,11 +53,12 @@ final class AutoFetchScheduler {
                     let timeout = numbers.count > 1 && numbers[1] > 0 ? numbers[1] : 120
                     return AutoFetchScheduler(
                         interval: .milliseconds(Int(seconds * 1000)),
-                        timeout: .milliseconds(Int(timeout * 1000)))
+                        timeout: .milliseconds(Int(timeout * 1000)),
+                        defaults: defaults)
                 }
             }
         #endif
-        return AutoFetchScheduler()
+        return AutoFetchScheduler(defaults: defaults)
     }
 
     /// Starts `store`'s schedule for the repository open right now, replacing any other. The

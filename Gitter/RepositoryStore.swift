@@ -131,8 +131,9 @@ final class RepositoryStore {
     private(set) var lastAutoFetchFailure: String?
 
     /// Fetches every remote now and then, quietly. Started by `open()` once the repository's
-    /// first snapshot is in, stopped by the next `open()` and by quitting.
-    let autoFetchScheduler = AutoFetchScheduler.fromEnvironment()
+    /// first snapshot is in, stopped by the next `open()` and by quitting. Reads "Fetch
+    /// Automatically" from `defaults`.
+    let autoFetchScheduler: AutoFetchScheduler
 
     /// Set once the user has decided to quit while the lane was busy (`QuitGuard`): from then on
     /// nothing new is started on the lane — not the automatic fetch, not a cancelled write's
@@ -292,6 +293,12 @@ final class RepositoryStore {
     /// Where a discard puts untracked items: the user's Trash. A seam, like `backend`.
     // internal (not private): used by +Discard.swift
     let trasher: any Trasher
+    /// Where everything the app remembers is read and written — the last repository, the merge
+    /// and pull modes, "Fetch Automatically" (through `autoFetchScheduler`). `.standard` in the
+    /// app (`AppModel`); a scratch suite under test, so a test never touches the user's own.
+    // internal (not private): used by +Opening.swift, +BranchState.swift, +Branches.swift,
+    // +RemoteSheets.swift and the DEBUG hooks
+    let defaults: UserDefaults
 
     private var watcher: RepositoryWatcher?
     // internal (not private), bookkeeping only, views must not touch this: used by +Refresh.swift
@@ -326,11 +333,14 @@ final class RepositoryStore {
     init(
         backend: Backend = CLIGitBackend(),
         gitPath: String = "/usr/bin/git",
-        trasher: any Trasher = FileManagerTrasher()
+        trasher: any Trasher = FileManagerTrasher(),
+        defaults: UserDefaults = .standard
     ) {
         self.backend = backend
         self.gitPath = gitPath
         self.trasher = trasher
+        self.defaults = defaults
+        autoFetchScheduler = AutoFetchScheduler.fromEnvironment(defaults: defaults)
         #if DEBUG
             Self.storesBuilt += 1
             debugSerial = Self.storesBuilt
@@ -447,17 +457,19 @@ final class RepositoryStore {
         generation += 1
 
         root = standardized
-        UserDefaults.standard.set(standardized.path, forKey: Self.lastRepositoryPathKey)
-        #if DEBUG
-            // A harness's scratch fixture is not one of the user's recent repositories (B3 Ruling 7).
-            if DebugLaunchGuard.notesRecentDocuments(ProcessInfo.processInfo.environment) {
-                NSDocumentController.shared.noteNewRecentDocumentURL(standardized)
-            } else {
+        defaults.set(standardized.path, forKey: Self.lastRepositoryPathKey)
+        // Neither a test's scratch folder nor a harness's fixture is one of the user's recent
+        // repositories (B3 Ruling 7): that list lives outside the defaults.
+        let environment = ProcessInfo.processInfo.environment
+        switch Self.openRecentRefusal(testHost: TestHost.isRunningTests, environment: environment) {
+        case nil: NSDocumentController.shared.noteNewRecentDocumentURL(standardized)
+        case .testHost: break
+        case .scriptedLaunch:
+            #if DEBUG
                 DebugLaunchHooks.log("launch guard: \(standardized.lastPathComponent) is not added to Open Recent")
-            }
-        #else
-            NSDocumentController.shared.noteNewRecentDocumentURL(standardized)
-        #endif
+            #endif
+            break
+        }
 
         // A linked worktree's HEAD, index and refs are outside its root (R28): the watcher is
         // given where they are (`RepositoryWatcher.paths`).

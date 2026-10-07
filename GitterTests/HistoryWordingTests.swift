@@ -496,7 +496,8 @@ import Testing
     /// "The revert's changes are staged …" is true until they are not: committed or discarded
     /// (nothing staged any more), and the notice goes with them.
     @Test func theStagedRevertNoticeEndsWhenNothingIsStaged() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         store.showStagedRevertNotice(Notice(text: "staged"))
         store.setSnapshot(Self.snapshot(staged: true))
         #expect(store.stickyNotice?.text == "staged")
@@ -506,7 +507,8 @@ import Testing
 
     /// Another sticky notice replaced it: that one is not the revert's to end.
     @Test func aReplacedStagedRevertNoticeIsLeftAlone() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         store.showStagedRevertNotice(Notice(text: "staged"))
         store.showStickyNotice(Notice(text: "other"))
         store.setSnapshot(Self.snapshot(staged: false))

@@ -157,6 +157,8 @@ extension RepositoryStore {
             return
         }
 
+        // Where a merge or a pull's merge records its mode (`rememberMergeMode`).
+        let defaults = defaults
         mutate(result: { backend, root -> BranchActionResult in
             if let warned {
                 // Answering a warning: it named a sha and a count, and both must still hold.
@@ -176,7 +178,7 @@ extension RepositoryStore {
                 }
             }
             do {
-                return .acted(try await Self.run(action, backend: backend, at: root))
+                return .acted(try await Self.run(action, backend: backend, at: root, defaults: defaults))
             } catch {
                 // A refusal over local changes goes up with Stash and Continue beside it.
                 throw StashAndContinue.offering(error, for: action)
@@ -232,7 +234,7 @@ extension RepositoryStore {
     }
 
     private static func run(
-        _ action: PendingBranchAction, backend: Backend, at root: URL
+        _ action: PendingBranchAction, backend: Backend, at root: URL, defaults: UserDefaults
     ) async throws -> String? {
         switch action {
         case .switchTo(let branch):
@@ -268,7 +270,7 @@ extension RepositoryStore {
             // outcomes including `.conflicts` (a half-done merge is in the worktree) and
             // `.alreadyUpToDate` (nothing to do, but the mode was accepted and the user's choice
             // was a real one — silently declining to remember it would be its own small lie).
-            rememberMergeMode(mode)
+            rememberMergeMode(mode, in: defaults)
             return notice(for: outcome, branch: branch)
         case .pull(let upstream, let mode):
             let outcome = try await reporting(.merge, upstream) {
@@ -278,7 +280,7 @@ extension RepositoryStore {
             // pull that fast-forwarded asked the user nothing. Here for the reason
             // `rememberMergeMode` is above — every refusal is a throw, so reaching this line
             // means the merge ran.
-            if mode == .alwaysMergeCommit { rememberPullMode(.merge) }
+            if mode == .alwaysMergeCommit { rememberPullMode(.merge, in: defaults) }
             return notice(for: outcome, branch: upstream)
         case .history, .rebaseOnto:
             // Never performed here: `retry` sends both to their own request (`+History`), which

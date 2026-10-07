@@ -26,7 +26,8 @@ import Testing
     }
 
     @Test func deletingTwoTagsLeavesBothRestorable() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         store.recordTagDeleted(Self.r1)
         store.recordTagDeleted(Self.r2)
         #expect(store.deletedTags.receipts == [Self.r1, Self.r2])
@@ -36,7 +37,8 @@ import Testing
     /// Another sticky notice replaces the slot, not the receipts; the next delete's notice names
     /// both again.
     @Test func anotherStickyNoticeInBetweenLosesNothing() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         store.recordTagDeleted(Self.r1)
         let other = Notice(text: "Discarded f.txt.")
         store.showStickyNotice(other)
@@ -48,7 +50,8 @@ import Testing
 
     /// × on the notice: the receipts stay, and a later restore does not bring the notice back.
     @Test func aDismissedNoticeLeavesTheReceipts() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         store.recordTagDeleted(Self.r1)
         store.recordTagDeleted(Self.r2)
         store.dismissStickyNotice()
@@ -59,7 +62,8 @@ import Testing
     }
 
     @Test func restoringOneRemovesOnlyIt() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         store.recordTagDeleted(Self.r1)
         store.recordTagDeleted(Self.r2)
         store.finishTagRestore([(Self.r1, .success(()))])
@@ -73,7 +77,8 @@ import Testing
 
     /// A tag of that name exists again: refused, and the receipt — the only way back — stays.
     @Test func aRefusedRestoreKeepsTheReceipt() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         store.recordTagDeleted(Self.r1)
         let refusal = TagOperationError.nameProblem(.exists)
         store.finishTagRestore([(Self.r1, .failure(refusal))])
@@ -84,7 +89,8 @@ import Testing
 
     /// One back, one refused: each says its own, and only the restored one goes.
     @Test func aPartRestoreSaysBoth() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         store.recordTagDeleted(Self.r1)
         store.recordTagDeleted(Self.r2)
         let refusal = TagOperationError.nameProblem(.exists)
@@ -97,7 +103,8 @@ import Testing
     /// A fetch brought the tag back exactly: its receipt ends, and the notice with it; a tag of
     /// that name at another object leaves it.
     @Test func aTagBackAsItWasEndsItsReceiptAndNotice() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         store.recordTagDeleted(Self.r1)
         store.setSnapshot(Self.snapshot(tags: [Tag(name: "v1", sha: Self.other, isAnnotated: false)]))
         #expect(store.deletedTags.receipts == [Self.r1])
@@ -114,7 +121,8 @@ import Testing
     /// the answer can be given again. It used to close the sheet first, and the refusal (or,
     /// with no lane to ask, nothing at all) came after.
     @Test func aRefusedRemoteDeleteKeepsItsSheet() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         let sheet = BranchSheet.deleteRemoteTag(name: "v1", remote: "origin", id: Self.object)
         store.activeSheet = sheet
         store.beginTerminating()

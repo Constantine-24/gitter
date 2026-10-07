@@ -13,7 +13,9 @@ import SwiftUI
 /// an open event that arrives at launch before the window's `onAppear`.
 @MainActor
 enum AppModel {
-    static let store = RepositoryStore()
+    /// The composition root of the app's defaults: the user's own domain, here and nowhere else.
+    /// Everything the store and its schedule remember goes through `store.defaults`.
+    static let store = RepositoryStore(defaults: UserDefaults.standard)
 
     /// The main window's scene id, for `openWindow`.
     static let windowID = "main"
@@ -28,9 +30,10 @@ enum AppModel {
 /// person launched: Xcode's test runner sets `XCTestConfigurationFilePath` in the host's
 /// environment.
 ///
-/// Under a test host the app reopens no repository (`reopenLastRepository`) and starts no
-/// automatic fetch (`AutoFetchScheduler.start`), so a test run never opens, let alone fetches,
-/// whatever repository the user last had open.
+/// Under a test host the app reopens no repository (`reopenLastRepository`), starts no
+/// automatic fetch (`AutoFetchScheduler.start`) and adds nothing to Open Recent (`open(_:)`), so
+/// a test run never opens, let alone fetches, whatever repository the user last had open, and
+/// leaves the user's list alone. Its stores are on scratch defaults (GitterTests' `makeTestStore`).
 enum TestHost {
     static var isRunningTests: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -53,7 +56,8 @@ private struct RemembersHowToOpenTheWindow: ViewModifier {
 struct GitterApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     private var store: RepositoryStore { AppModel.store }
-    /// "Fetch Automatically". Read by the schedule at every tick (`AutoFetchScheduler.isEnabled`).
+    /// "Fetch Automatically". Read by the schedule at every tick (`AutoFetchScheduler.isEnabled`)
+    /// from `AppModel.store.defaults`, which is `.standard` — the domain this binds to.
     @AppStorage(AutoFetchScheduler.enabledKey) private var autoFetchEnabled = true
 
     var body: some Scene {

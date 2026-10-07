@@ -225,7 +225,8 @@ import Testing
 
     /// Nothing was refused, so nothing is offered, and the action does nothing and says nothing.
     @Test func aStoreWithNoRefusalOffersNothing() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         #expect(store.stashAndContinueOffer == nil)
         #expect(store.offeredStashAndContinue == nil)
         #expect(store.stashAndContinueBlockedReason == nil)

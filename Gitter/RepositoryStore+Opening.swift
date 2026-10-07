@@ -3,8 +3,8 @@ import GitCore
 
 /// Checking for `git` itself, and reopening the last repository at launch.
 ///
-/// Neither needs anything `private` to `RepositoryStore.swift`: `gitPath` and
-/// `lastRepositoryPathKey` are internal for exactly these two functions, and every write here
+/// Neither needs anything `private` to `RepositoryStore.swift`: `gitPath`, `defaults` and
+/// `lastRepositoryPathKey` are internal for exactly these functions, and every write here
 /// goes through a mutator defined next to the state it touches.
 extension RepositoryStore {
 
@@ -40,21 +40,59 @@ extension RepositoryStore {
 
     // MARK: - Reopening
 
+    /// Why this launch leaves the user's own state alone: a test host (`TestHost`), or a scripted
+    /// DEBUG launch (`DebugLaunchGuard`). Never `.scriptedLaunch` in Release, where launches are
+    /// never scripted.
+    enum LaunchRefusal: Equatable {
+        case testHost
+        case scriptedLaunch
+    }
+
     /// Never under a test host: the path is the user's, and a test run must not open it. Nor in
-    /// a scripted DEBUG launch (`DebugLaunchGuard`), which opens its own fixture instead.
-    func reopenLastRepository() {
-        guard !TestHost.isRunningTests else { return }
+    /// a scripted DEBUG launch, which opens its own fixture instead. Pure: the answer comes from
+    /// the flag and the environment it is handed.
+    static func reopenRefusal(testHost: Bool, environment: [String: String]) -> LaunchRefusal? {
+        if testHost { return .testHost }
         #if DEBUG
-            guard DebugLaunchGuard.reopensLastRepository(ProcessInfo.processInfo.environment) else {
-                DebugLaunchHooks.log("launch guard: the last repository is not reopened")
-                return
-            }
+            if !DebugLaunchGuard.reopensLastRepository(environment) { return .scriptedLaunch }
         #endif
-        guard let path = UserDefaults.standard.string(forKey: Self.lastRepositoryPathKey) else { return }
+        return nil
+    }
+
+    /// Whether `open(_:)` adds what it opens to Open Recent: not under a test host, whose folders
+    /// are scratch ones, nor in a scripted DEBUG launch (B3 Ruling 7). That list is the user's,
+    /// kept outside the defaults, so no scratch suite stands in for it.
+    static func openRecentRefusal(testHost: Bool, environment: [String: String]) -> LaunchRefusal? {
+        if testHost { return .testHost }
+        #if DEBUG
+            if !DebugLaunchGuard.notesRecentDocuments(environment) { return .scriptedLaunch }
+        #endif
+        return nil
+    }
+
+    /// The repository `reopenLastRepository` would open: the last path in `defaults`, if it is
+    /// still a folder.
+    static func lastRepositoryToReopen(in defaults: UserDefaults) -> URL? {
+        guard let path = defaults.string(forKey: lastRepositoryPathKey) else { return nil }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return nil
+        }
+        return URL(fileURLWithPath: path)
+    }
+
+    func reopenLastRepository() {
+        let environment = ProcessInfo.processInfo.environment
+        switch Self.reopenRefusal(testHost: TestHost.isRunningTests, environment: environment) {
+        case nil: break
+        case .testHost: return
+        case .scriptedLaunch:
+            #if DEBUG
+                DebugLaunchHooks.log("launch guard: the last repository is not reopened")
+            #endif
             return
         }
-        open(URL(fileURLWithPath: path))
+        guard let url = Self.lastRepositoryToReopen(in: defaults) else { return }
+        open(url)
     }
 }

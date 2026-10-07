@@ -133,7 +133,7 @@
                 log(
                     "openworktree: open recent first: "
                         + "\(NSDocumentController.shared.recentDocumentURLs.first?.path ?? "nil") | lastRepositoryPath: "
-                        + "\(UserDefaults.standard.string(forKey: RepositoryStore.lastRepositoryPathKey) ?? "nil")")
+                        + "\(store.defaults.string(forKey: RepositoryStore.lastRepositoryPathKey) ?? "nil")")
             case "pills":
                 let heads = store.detachedWorktreeHeads
                 for commit in store.snapshot?.commits ?? [] {

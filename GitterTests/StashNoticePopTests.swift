@@ -56,7 +56,8 @@ import Testing
     /// No entry with the offered sha: the notice with the dead button is replaced by the sentence,
     /// and nothing is attempted (no refusal, no busy line).
     @Test func popOnANoticeWhoseStashIsGoneSaysSoAndEndsTheNotice() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         #expect(store.root == nil)
         #expect(store.stashes.isEmpty)
         store.showStickyNotice(Notice(text: "Stashed.", actions: [.popStash(Self.offered)]))

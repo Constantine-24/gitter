@@ -93,7 +93,8 @@ import Testing
     // MARK: - The store
 
     @Test func theStoreKeepsSelectedCommitsInStepWithTheSelection() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         #expect(store.selectedCommits == [])
         store.selectRows([.commit(Self.c), .commit(Self.a)], shown: Self.shown)
         #expect(store.selection == .commit(Self.a))
@@ -109,7 +110,8 @@ import Testing
     }
 
     @Test func theStoreOrdersAGivenListAsShown() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         store.selectCommits([Self.d, Self.b], shown: [Self.a, Self.b, Self.c, Self.d])
         #expect(store.selectedCommits == [Self.b, Self.d])
         #expect(store.selection == .commit(Self.b))

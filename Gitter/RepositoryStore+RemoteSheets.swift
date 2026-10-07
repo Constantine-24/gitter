@@ -66,7 +66,7 @@ extension RepositoryStore {
                     error, for: .pull(upstream: upstream, mode: .alwaysMergeCommit))
             }
         }, onSuccess: { [self] outcome in
-            Self.rememberPullMode(.rebase)
+            Self.rememberPullMode(.rebase, in: defaults)
             select(.workingCopy)
             if let notice = RemoteWording.rebaseNotice(outcome, branch: name, upstream: upstream) {
                 showNotice(notice)

@@ -355,7 +355,7 @@ extension RepositoryStore {
     /// then skipped and `lastAutoFetchFailure` says so) — and holds only the lane, like the
     /// manual one.
     var autoFetchSkipReason: String? {
-        guard AutoFetchScheduler.isEnabled else { return "turned off" }
+        guard autoFetchScheduler.isEnabled else { return "turned off" }
         guard !isTerminating else { return "quitting" }
         guard root != nil, let snapshot else { return "no repository" }
         if let remoteActivity { return "the lane is busy (\(remoteActivity.kind))" }

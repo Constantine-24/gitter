@@ -190,7 +190,7 @@ extension RepositoryStore {
     /// The mode the merge sheet comes up on: whatever was chosen last, or a plain
     /// fast-forward-if-possible merge, which is what `git merge` does with no flags at all.
     var rememberedMergeMode: MergeMode {
-        UserDefaults.standard.string(forKey: Self.mergeModeKey)
+        defaults.string(forKey: Self.mergeModeKey)
             .flatMap(MergeMode.init(rawValue:)) ?? .fastForwardIfPossible
     }
 
@@ -199,13 +199,14 @@ extension RepositoryStore {
     /// behind the detached-HEAD confirmation, and — the case this used to get wrong — one git
     /// itself refused over a dirty worktree or a staged change all leave the remembered mode
     /// alone. Every refusal is a throw, so "the call returned" is exactly the line between them;
-    /// see `+Branches`' `run(_:backend:at:)` for which outcomes that covers.
+    /// see `+Branches`' `run(_:backend:at:defaults:)` for which outcomes that covers.
     ///
     /// `static` because that is where it is called from — the merge's own argument vector, in
-    /// `+Branches`' `run` — and because it touches nothing but `UserDefaults`.
-    // internal (not private): used by +Branches.swift's `run(_:backend:at:)`
-    static func rememberMergeMode(_ mode: MergeMode) {
-        UserDefaults.standard.set(mode.rawValue, forKey: Self.mergeModeKey)
+    /// `+Branches`' `run` — and because it touches nothing but `defaults`, the store's own
+    /// (`RepositoryStore.defaults`), which `run` is handed.
+    // internal (not private): used by +Branches.swift's `run(_:backend:at:defaults:)`
+    static func rememberMergeMode(_ mode: MergeMode, in defaults: UserDefaults) {
+        defaults.set(mode.rawValue, forKey: Self.mergeModeKey)
     }
 
     // MARK: - Remembered pull mode
@@ -216,14 +217,14 @@ extension RepositoryStore {
     /// What the pull sheet comes up on: whatever last ran, or Merge — the answer that rewrites
     /// nothing.
     var rememberedPullMode: PullMode {
-        UserDefaults.standard.string(forKey: Self.pullModeKey)
+        defaults.string(forKey: Self.pullModeKey)
             .flatMap(PullMode.init(rawValue:)) ?? .merge
     }
 
     /// Recorded once the pull's merge or rebase has really run, exactly as `rememberMergeMode`
     /// is: a sheet the user cancelled, or a rebase refused over a dirty tree, leaves it alone.
     // internal (not private): used by +Branches.swift's `run` and +RemoteSheets.swift
-    static func rememberPullMode(_ mode: PullMode) {
-        UserDefaults.standard.set(mode.rawValue, forKey: Self.pullModeKey)
+    static func rememberPullMode(_ mode: PullMode, in defaults: UserDefaults) {
+        defaults.set(mode.rawValue, forKey: Self.pullModeKey)
     }
 }

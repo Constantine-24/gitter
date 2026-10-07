@@ -4,8 +4,8 @@ import Testing
 
 @testable import Gitter
 
-/// The two notice slots, on a store with **no repository**: nothing here opens one or touches
-/// `UserDefaults` (`open()` writes the user's last path and Recent Documents, test host or not).
+/// The two notice slots, on a store with **no repository**: nothing here opens one, and the
+/// store's defaults are a scratch suite (`makeTestStore`), never the user's.
 @MainActor @Suite struct NoticeLifetimeTests {
 
     private let link = URL(string: "https://example.invalid/o/r/pull/new/b")!
@@ -15,14 +15,16 @@ import Testing
     }
 
     @Test func aStoreStartsWithNeitherSlot() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         #expect(store.root == nil)
         #expect(store.notice == nil)
         #expect(store.stickyNotice == nil)
     }
 
     @Test func aTransientNoticeLeavesTheStickyOne() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         let sticky = linkNotice()
         store.showStickyNotice(sticky)
         store.showNotice("Fetched from \"origin\".")
@@ -31,7 +33,8 @@ import Testing
     }
 
     @Test func dismissingTheTransientNoticeLeavesTheStickyOne() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         let sticky = linkNotice()
         store.showStickyNotice(sticky)
         store.showNotice("Fetched.")
@@ -41,7 +44,8 @@ import Testing
     }
 
     @Test func aSecondStickyNoticeReplacesTheFirst() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         store.showStickyNotice(linkNotice("first"))
         let second = Notice.linked(
             text: "second", links: [URL(string: "https://example.invalid/2")!])
@@ -50,7 +54,8 @@ import Testing
     }
 
     @Test func dismissingTheStickyNoticeClearsIt() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         store.showStickyNotice(linkNotice())
         #expect(store.stickyNotice != nil)
         store.dismissStickyNotice()
@@ -59,7 +64,8 @@ import Testing
 
     /// A private, named pasteboard: the test never touches the user's clipboard.
     @Test func copyLinkPutsTheWholeURLOnThePasteboard() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.tests.\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
         pasteboard.clearContents()
@@ -73,7 +79,8 @@ import Testing
 
     /// Opening goes through the injected opener only, so no browser starts under test.
     @Test func openLinkOpensHTTPAndHTTPSOnly() {
-        let store = RepositoryStore()
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
         let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.tests.\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
         var opened: [URL] = []

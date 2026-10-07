@@ -144,8 +144,9 @@ import Testing
 @MainActor @Suite struct WorktreeHeldSwitchTests {
     static let sha = "1111111111111111111111111111111111111111"
 
-    static func store() -> RepositoryStore {
-        let store = RepositoryStore()
+    /// On a scratch defaults suite (`makeTestStore`); the caller runs `cleanup`.
+    static func store() -> (RepositoryStore, cleanup: () -> Void) {
+        let (store, _, cleanup) = makeTestStore()
         store.setSnapshot(
             RepoSnapshot(
                 root: URL(fileURLWithPath: "/nonexistent"),
@@ -158,13 +159,14 @@ import Testing
                     ],
                     remoteBranches: [], tags: []),
                 commits: [], graph: []))
-        return store
+        return (store, cleanup)
     }
 
     static let reason = WorktreeWording.heldReason("feat", by: .checkedOut(path: "/r/wt-feat", missing: false))
 
     @Test func aSwitchToABranchAnotherWorktreeHoldsIsRefusedWithItsReason() {
-        let store = Self.store()
+        let (store, cleanup) = Self.store()
+        defer { cleanup() }
         #expect(store.switchBlockedReason(for: "feat") == Self.reason, "the menu's reason")
 
         store.switchTo(branch: "feat")
@@ -178,7 +180,8 @@ import Testing
     }
 
     @Test func stashAndContinuesRetryIsRefusedTheSameWay() {
-        let store = Self.store()
+        let (store, cleanup) = Self.store()
+        defer { cleanup() }
         store.retry(.switchTo("feat"))
         #expect(store.lastError == Self.reason)
         #expect(store.activeSheet == nil)
@@ -186,7 +189,8 @@ import Testing
 
     /// The baseline: a free branch puts up no banner (with no repository, `mutate` runs nothing).
     @Test func aFreeBranchIsNotRefused() {
-        let store = Self.store()
+        let (store, cleanup) = Self.store()
+        defer { cleanup() }
         store.switchTo(branch: "spare")
         #expect(store.lastError == nil)
     }
