@@ -744,7 +744,7 @@ defaults, and leaves nothing in `~/Library/Preferences`; `DefaultsIsolationTests
 domain before and after each of its tests, never writing it, and tests the reopen and Open
 Recent decisions.
 
-`GitCoreTests` has 1 663 tests in 142 suites. Most of them run real `git` against a temporary
+`GitCoreTests` has 1 664 tests in 142 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
 for a server, with a second clone as "the colleague" who pushes in between — including one
 that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
