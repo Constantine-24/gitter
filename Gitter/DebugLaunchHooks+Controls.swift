@@ -55,16 +55,29 @@
                 + (control.kind == .picker ? " [options: \(control.options.joined(separator: "|"))]" : "")
         }
 
+        /// The target's registered controls in the sheet it shows now (`activeSheet`), never those
+        /// of a sheet still being dismissed.
+        static func liveControls(_ store: RepositoryStore) -> [HarnessControls.Control] {
+            HarnessControls.shared.controls(store: ObjectIdentifier(store), sheet: store.activeSheet?.id)
+        }
+
+        /// `request` on `store`'s sheet on screen (`HarnessControls.act`), or why not.
+        static func controlAct(_ request: ControlRequest, store: RepositoryStore) -> HarnessControls.Refusal? {
+            HarnessControls.shared.act(
+                request.label, value: request.value, kind: request.kind, store: ObjectIdentifier(store),
+                sheet: store.activeSheet?.id)
+        }
+
         static func controlStep(_ command: String, step: String, store: RepositoryStore) async {
             let rest = step.count > command.count ? String(step.dropFirst(command.count + 1)) : ""
-            let key = ObjectIdentifier(store)
-            let registry = HarnessControls.shared
-            // A frame, so the sheet has drawn — and registered — what the step before changed.
+            // Time for the sheet to draw — and register — what the step before changed: a new
+            // sheet's controls, a binding's effect on another control's `isEnabled`. (Which sheet
+            // an entry belongs to is not left to this: `liveControls` takes the one on screen.)
             try? await Task.sleep(for: .milliseconds(300))
 
             guard command != "controls" else {
-                _ = await settled({ !registry.controls(store: key).isEmpty })
-                let controls = registry.controls(store: key)
+                _ = await settled({ !liveControls(store).isEmpty })
+                let controls = liveControls(store)
                 if controls.isEmpty { log("control: none (store \(store.debugSerial))") }
                 for control in controls { log(controlLine(control)) }
                 return
@@ -74,13 +87,13 @@
             }
             // Present once, and enabled: what a user waits for before clicking.
             _ = await settled({
-                let matches = registry.controls(store: key).filter { $0.kind == request.kind && $0.label == request.label }
+                let matches = liveControls(store).filter { $0.kind == request.kind && $0.label == request.label }
                 return matches.count == 1 && matches[0].isEnabled
             })
-            if let refusal = registry.act(request.label, value: request.value, kind: request.kind, store: key) {
+            if let refusal = controlAct(request, store: store) {
                 let offered =
                     if case .invalid = refusal, request.kind == .picker {
-                        registry.controls(store: key).first { $0.kind == .picker && $0.label == request.label }
+                        liveControls(store).first { $0.kind == .picker && $0.label == request.label }
                             .map { " [options: \($0.options.joined(separator: "|"))]" } ?? ""
                     } else { "" }
                 return log("control refused: \(request.kind.rawValue) \(refusal)\(offered)")

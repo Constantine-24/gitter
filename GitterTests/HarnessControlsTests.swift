@@ -154,11 +154,54 @@ import Testing
         withExtendedLifetime(owner) {}
     }
 
+    /// Fix round 1 (RF4): an entry belongs to the sheet it was drawn in. While `activeSheet` goes
+    /// from A to B, A's content stays in the tree until its dismissal ends (M1.5), so its entries
+    /// are still registered: only the sheet on screen now is acted on.
+    @Test func aControlOfAnotherSheetIsMissingAndDoesNotRun() {
+        let (controls, key, owner) = Self.registry()
+        let a = BranchSheet.newBranch(startPoint: nil, startLabel: "main").id
+        let b = BranchSheet.stash(selectedPaths: []).id
+        var ran: [String] = []
+        controls.update(.button("Create", sheet: a) { ran.append("A create") }, store: key)
+        controls.update(.button("Cancel", sheet: a) { ran.append("A cancel") }, store: key)
+        controls.update(.button("Cancel", sheet: b) { ran.append("B cancel") }, store: key)
+
+        #expect(controls.act("Create", value: nil, kind: .button, store: key, sheet: b) == .missing("Create"))
+        #expect(controls.act("Create", value: nil, kind: .button, store: key, sheet: nil) == .missing("Create"))
+        #expect(controls.controls(store: key, sheet: b).map(\.label) == ["Cancel"])
+        #expect(controls.act("Cancel", value: nil, kind: .button, store: key, sheet: b) == nil, "not a duplicate of A's")
+        #expect(ran == ["B cancel"], "A's Cancel, which would close B, never runs")
+        #expect(controls.act("Create", value: nil, kind: .button, store: key, sheet: a) == nil)
+        #expect(ran == ["B cancel", "A create"])
+        withExtendedLifetime(owner) {}
+    }
+
+    /// Ruling 15: an option label two options share is refused, as two controls with one label are.
+    @Test func anOptionLabelTwoOptionsShareIsAmbiguousAndChoosesNothing() {
+        let (controls, key, owner) = Self.registry()
+        let selection = Box<String?>(nil)
+        controls.update(
+            .picker(
+                "Branch A", selection: selection.binding,
+                options: [
+                    (label: "origin/x", value: "refs/heads/origin/x"), (label: "origin/x", value: "refs/remotes/origin/x"),
+                    (label: "main", value: "refs/heads/main"),
+                ]),
+            store: key)
+
+        #expect(controls.act("Branch A", value: "origin/x", kind: .picker, store: key) == .ambiguous("Branch A", "origin/x"))
+        #expect(selection.value == nil)
+        #expect(controls.act("Branch A", value: "main", kind: .picker, store: key) == nil)
+        #expect(selection.value == "refs/heads/main")
+        withExtendedLifetime(owner) {}
+    }
+
     // MARK: - The steps' grammar and lines
 
     @Test func theStepsSplitTheLabelFromTheValueAtTheFirstEquals() {
         typealias Request = DebugLaunchHooks.ControlRequest
         #expect(DebugLaunchHooks.controlRequest("press", "Add Worktree") == Request(kind: .button, label: "Add Worktree", value: nil))
+        #expect(DebugLaunchHooks.controlRequest("press", "a=b") == Request(kind: .button, label: "a=b", value: nil), "the whole rest")
         #expect(DebugLaunchHooks.controlRequest("tick", "Keep \"x\" as") == Request(kind: .toggle, label: "Keep \"x\" as", value: "on"))
         #expect(DebugLaunchHooks.controlRequest("tick", "Include untracked files=off") == Request(kind: .toggle, label: "Include untracked files", value: "off"))
         #expect(DebugLaunchHooks.controlRequest("fill", "Folder=/tmp/a=b") == Request(kind: .field, label: "Folder", value: "/tmp/a=b"))
@@ -205,8 +248,11 @@ import Testing
 
         var controls: [Control] { HarnessControls.shared.controls(store: ObjectIdentifier(store)) }
 
-        func close() {
+        /// Removes the view and waits for its entries to leave `HarnessControls.shared`, so a later
+        /// test's store — which may reuse this one's `ObjectIdentifier` — cannot inherit them.
+        func close() async {
             window.contentView = nil
+            await waitUntil("the hosted view's controls leaving the registry") { self.controls.isEmpty }
             window.close()
             cleanup()
         }
@@ -218,35 +264,38 @@ import Testing
                 Button("Off") {}.harnessButton("Off") {}.disabled(true)
                 Button("On") {}.harnessButton("On") {}
             })
-        defer { hosted.close() }
-        await waitUntil("both buttons registered") { hosted.controls.count == 2 }
+        await waitUntil("both buttons registered") { hosted.controls.count >= 2 }
+        #expect(hosted.controls.count == 2)
 
         #expect(hosted.controls.first { $0.label == "Off" }?.isEnabled == false)
         #expect(hosted.controls.first { $0.label == "On" }?.isEnabled == true)
         #expect(
             HarnessControls.shared.act("Off", value: nil, kind: .button, store: ObjectIdentifier(hosted.store))
                 == .disabled("Off"))
+        await hosted.close()
     }
 
     /// The control for the test above: applied outside `.disabled`, the modifier cannot see it.
     @Test(.timeLimit(.minutes(10))) func theModifierOutsideDisabledReadsEnabled() async {
         let hosted = Hosted(Button("Off") {}.disabled(true).harnessButton("Off") {})
-        defer { hosted.close() }
-        await waitUntil("the button registered") { hosted.controls.count == 1 }
+        await waitUntil("the button registered") { hosted.controls.count >= 1 }
+        #expect(hosted.controls.count == 1)
 
         withKnownIssue("outside .disabled the environment the modifier reads is enabled") {
             #expect(hosted.controls.first?.isEnabled == false)
         }
+        await hosted.close()
     }
 
     @Test(.timeLimit(.minutes(10))) func aHostedControlLeavesTheRegistryWhenItsViewGoes() async {
         let hosted = Hosted(Button("Go") {}.harnessButton("Go") {})
-        defer { hosted.close() }
-        await waitUntil("the button registered") { hosted.controls.count == 1 }
+        await waitUntil("the button registered") { hosted.controls.count >= 1 }
+        #expect(hosted.controls.count == 1)
 
         hosted.window.contentView = nil
         await waitUntil("the button gone") { hosted.controls.isEmpty }
         #expect(hosted.controls.isEmpty)
+        await hosted.close()
     }
 
     /// Keep All, Keep None, each box and each name field of the shared keep list, by the labels
@@ -262,7 +311,6 @@ import Testing
             KeepBranchList(
                 holders: [kept, dropped], loaded: true, ticked: ticked.binding, names: names.binding,
                 problems: [:], checked: nil))
-        defer { hosted.close() }
         let key = ObjectIdentifier(hosted.store)
         let keptBox = RemoteAdminWording.keepLabel(kept.ref)
         let keptName = RemoteAdminWording.keepNameLabel(kept.ref)
@@ -270,7 +318,8 @@ import Testing
         let droppedName = RemoteAdminWording.keepNameLabel(dropped.ref)
         #expect(keptBox == "Keep \"origin/feature\" as")
         #expect(keptName == "Name for \"origin/feature\"")
-        await waitUntil("the keep list's six controls") { hosted.controls.count == 6 }
+        await waitUntil("the keep list's six controls") { hosted.controls.count >= 6 }
+        #expect(hosted.controls.count == 6)
 
         #expect(
             hosted.controls.map(\.label).sorted()
@@ -283,5 +332,30 @@ import Testing
         #expect(ticked.value[dropped.ref] == true)
         #expect(HarnessControls.shared.act(droppedName, value: "x", kind: .field, store: key) == .disabled(droppedName))
         #expect(names.value[dropped.ref] == "old")
+        await hosted.close()
+    }
+
+    /// The step's own lookup (`controlAct`): the registered entries of the store's sheet on screen
+    /// only. Sheet A's view stays hosted and registered while `activeSheet` becomes B — as during
+    /// a dismissal — and its Cancel is then missing and does not run.
+    @Test(.timeLimit(.minutes(10))) func theStepsActOnlyOnTheSheetOnScreen() async {
+        let a = BranchSheet.newBranch(startPoint: nil, startLabel: "main")
+        let b = BranchSheet.stash(selectedPaths: [])
+        var cancelled = 0
+        let hosted = Hosted(Button("Cancel") {}.harnessButton("Cancel") { cancelled += 1 }.harnessSheet(a.id))
+        await waitUntil("the button registered") { hosted.controls.count >= 1 }
+        #expect(hosted.controls.first?.sheet == a.id)
+        let cancel = DebugLaunchHooks.ControlRequest(kind: .button, label: "Cancel", value: nil)
+
+        hosted.store.activeSheet = b
+        #expect(DebugLaunchHooks.liveControls(hosted.store).isEmpty)
+        #expect(DebugLaunchHooks.controlAct(cancel, store: hosted.store) == .missing("Cancel"))
+        #expect(cancelled == 0)
+        hosted.store.activeSheet = a
+        #expect(DebugLaunchHooks.liveControls(hosted.store).count == 1)
+        #expect(DebugLaunchHooks.controlAct(cancel, store: hosted.store) == nil)
+        #expect(cancelled == 1)
+        hosted.store.activeSheet = nil
+        await hosted.close()
     }
 }

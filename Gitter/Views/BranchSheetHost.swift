@@ -18,6 +18,12 @@ struct BranchSheetHost: View {
     let sheet: BranchSheet
 
     var body: some View {
+        // Every control in it is registered as this sheet's (`HarnessControls`); identity in Release.
+        content.harnessSheet(sheet.id)
+    }
+
+    @ViewBuilder
+    private var content: some View {
         switch sheet {
         case .newBranch(let startPoint, let startLabel):
             NewBranchSheet(startPoint: startPoint, startLabel: startLabel)
