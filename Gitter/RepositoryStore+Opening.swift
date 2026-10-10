@@ -1,7 +1,7 @@
 import Foundation
 import GitCore
 
-/// Checking for `git` itself, and reopening the last repository at launch.
+/// Checking for `git` itself, and reopening the repositories that were open at launch.
 ///
 /// Neither needs anything `private` to `RepositoryStore.swift`: `gitPath`, `defaults` and
 /// `lastRepositoryPathKey` are internal for exactly these functions, and every write here
@@ -81,18 +81,25 @@ extension RepositoryStore {
         return URL(fileURLWithPath: path)
     }
 
-    func reopenLastRepository() {
+    /// Opens the first of `launchPaths` — the window registry's (`WindowRegistry.launchPaths`):
+    /// the open-repositories list, else `lastRepositoryToReopen` — and returns the rest, for windows
+    /// of their own, in order. Under a test host and in a scripted launch nothing is opened and
+    /// `launchPaths` is never called, so the list it would rewrite is not read either.
+    @discardableResult
+    func reopenLastRepository(launchPaths: () -> [URL]) -> [URL] {
         let environment = ProcessInfo.processInfo.environment
         switch Self.reopenRefusal(testHost: TestHost.isRunningTests, environment: environment) {
         case nil: break
-        case .testHost: return
+        case .testHost: return []
         case .scriptedLaunch:
             #if DEBUG
                 DebugLaunchHooks.log("launch guard: the last repository is not reopened")
             #endif
-            return
+            return []
         }
-        guard let url = Self.lastRepositoryToReopen(in: defaults) else { return }
-        open(url)
+        let urls = launchPaths()
+        guard let first = urls.first else { return [] }
+        open(first)
+        return Array(urls.dropFirst())
     }
 }

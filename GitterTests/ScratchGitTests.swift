@@ -247,4 +247,48 @@ import Testing
         stuck.release()
         #expect(await call.value() == 1)
     }
+
+    // MARK: - HeldTransport (E2 Task 3, Ruling 2)
+
+    /// The hold holds: a push through a held `receive-pack` keeps the lane, and the remote's
+    /// branch where it was, until `letGo()`; then the push lands.
+    @Test(.timeLimit(.minutes(10))) func aHeldPushLandsOnlyOnceLetGo() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        let held = try HeldTransport.heldPush(in: repo)
+        defer { held.letGo() }
+        let bare = repo.directory.appending(path: "origin.git")
+        let before = try repo.git("-C", bare.path, "rev-parse", "main")
+        let local = try repo.git("rev-parse", "main")
+        #expect(before != local)
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+
+        store.push()
+        #expect(await held.waitUntilHeld())
+        #expect(store.remoteActivity?.kind == .push)
+        #expect(try repo.git("-C", bare.path, "rev-parse", "main") == before)
+
+        held.letGo()
+        await waitUntilIdle(store)
+        #expect(store.remoteActivity == nil)
+        #expect(store.lastError == nil)
+        #expect(try repo.git("-C", bare.path, "rev-parse", "main") == local)
+    }
+
+    /// Control: a transport that never starts is caught by the hang guard, which is what the
+    /// test's time limit is in a real hang.
+    @Test(.timeLimit(.minutes(10))) func aTransportThatNeverStartsIsCaughtByTheTimeLimit() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        let held = try HeldTransport.heldPush(in: repo)
+        defer { held.letGo() }
+
+        await withKnownIssue("nothing ever pushes, so the transport never starts") {
+            let waiter = Task { @MainActor in await held.waitUntilHeld() }
+            try? await Task.sleep(for: .milliseconds(150))
+            waiter.cancel()
+            #expect(await waiter.value == false)
+        } matching: { $0.isNeverCameBack }
+    }
 }

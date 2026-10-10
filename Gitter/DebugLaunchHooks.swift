@@ -50,8 +50,10 @@
             }
         }
 
+        /// Called once, for the first window's store (`RepositoryWindowView`, E2 Task 3): every
+        /// hook and step acts on that store.
         static func run(store: RepositoryStore) {
-            RepositoryStore.logStores("the window's store is store \(store.debugSerial)")
+            RepositoryStore.logStores("the first window's store is store \(store.debugSerial)")
             let env = ProcessInfo.processInfo.environment
             let path = env["GITTER_DEBUG_SELECT_PATH"]
             let commit = env["GITTER_DEBUG_SELECT_COMMIT"]
@@ -130,7 +132,9 @@
         /// Why a hook must not act on the repository on screen now, or nil (`DebugLaunchGuard`).
         // internal (not private): used by DebugLaunchHooks+Branches.swift before every step
         static func guardRefusal(_ store: RepositoryStore) -> String? {
-            DebugLaunchGuard.stepRefusal(root: store.root, ProcessInfo.processInfo.environment)
+            // A closed window's store is acted on no more (RF3), whatever it shows.
+            if store.isClosed { return "refused: the window is closed" }
+            return DebugLaunchGuard.stepRefusal(root: store.root, ProcessInfo.processInfo.environment)
         }
 
         /// Makes the window `<width>x<height>`, anchored at its current top-left corner.

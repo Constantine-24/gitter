@@ -1,33 +1,43 @@
 import AppKit
 import SwiftUI
 
-/// The one `RepositoryStore` of the app, built once, outside `GitterApp`.
+/// The app's composition root: the window registry, built once, outside `GitterApp`.
 ///
 /// SwiftUI runs `GitterApp.init` more than once and keeps only the first `@State` value — two
-/// stores were measured being built (Task 11) — so a store made there, or captured there, may be
-/// one nobody sees. It was worse than idle: `open()` starts the automatic fetch, so the discarded
-/// store that `onOpenURL` had captured fetched a repository nobody could see every interval,
-/// unseen by Stop, by "Fetch Automatically" and by `QuitGuard` (measured in Task 11's review:
-/// a Finder open logged two schedules 76 ms apart and paired ticks). A static is built once, on
-/// first use, and the window, the menus and both delegate hooks read this same one — including
-/// an open event that arrives at launch before the window's `onAppear`.
+/// stores were measured being built (Task 11) — so nothing is built there. Each window builds its
+/// own store, once, through the registry (`RepositoryWindowView`, M3.1), and the menus, the
+/// delegate, `QuitFlow` and `QuitGuard` find the stores here.
 @MainActor
 enum AppModel {
     /// The composition root of the app's defaults: the user's own domain, here and nowhere else.
-    /// Everything the store and its schedule remember goes through `store.defaults`.
-    static let store = RepositoryStore(defaults: UserDefaults.standard)
+    /// Everything a store and its schedule remember goes through `store.defaults`, which is this.
+    ///
+    /// Neither the test host nor a scripted launch writes the open-repositories list into it
+    /// (Ruling 4): the one is not the user's launch, and the other opens scratch fixtures — as
+    /// neither adds to Open Recent (B3 Ruling 7).
+    static let windows = WindowRegistry(defaults: UserDefaults.standard, recordsOpenList: recordsOpenList)
 
-    /// The main window's scene id, for `openWindow`.
+    private static var recordsOpenList: Bool {
+        #if DEBUG
+            !(TestHost.isRunningTests || DebugLaunchGuard.isScripted(ProcessInfo.processInfo.environment))
+        #else
+            !TestHost.isRunningTests
+        #endif
+    }
+
+    /// The repository windows' scene id, for `openWindow(id:)`: an empty window.
     static let windowID = "main"
 
-    /// Opens a main window: set by the first window to appear, from its `openWindow`, so that
-    /// `AppDelegate` — which has no SwiftUI environment — can show the repository a Finder open
-    /// has just opened when every window has been closed.
-    static var openWindow: (() -> Void)?
+    /// Opens a repository window — on the repository given, fronting the window that already shows
+    /// it (M2.2), or an empty one for nil. Set by the first window to appear, from its `openWindow`,
+    /// which still works once that window has closed (M2.4), so that `AppDelegate` — which has no
+    /// SwiftUI environment — and the launch can open windows.
+    static var openWindow: ((RepositoryWindow?) -> Void)?
 
     /// Every store a quit takes with it: the ones `QuitFlow` closes the sheets of and `QuitGuard`
-    /// checks the lane of. The one store until the window registry (E2 Task 3).
-    static func quitStores() -> [RepositoryStore] { [store] }
+    /// checks the lane of — every registered store, a closed window's whose write is still running
+    /// included.
+    static func quitStores() -> [RepositoryStore] { windows.stores }
 }
 
 /// Whether this process is the host of a test bundle (`GitterTests`) rather than the app a
@@ -44,48 +54,30 @@ enum TestHost {
     }
 }
 
-/// Hands the window's `openWindow` action to `AppModel.openWindow`.
-private struct RemembersHowToOpenTheWindow: ViewModifier {
-    @Environment(\.openWindow) private var openWindow
-
-    func body(content: Content) -> some View {
-        content.onAppear {
-            let openWindow = openWindow
-            AppModel.openWindow = { openWindow(id: AppModel.windowID) }
-        }
-    }
-}
-
 @main
 struct GitterApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    private var store: RepositoryStore { AppModel.store }
+    /// The store the menus act on: the first window's that is open, until the menus follow the
+    /// front window (E2 Task 4). Nil with no window open.
+    private var store: RepositoryStore? { AppModel.windows.liveStores.first }
     /// "Fetch Automatically". Read by the schedule at every tick (`AutoFetchScheduler.isEnabled`)
-    /// from `AppModel.store.defaults`, which is `.standard` — the domain this binds to.
+    /// from each store's `defaults`, which is `.standard` (`AppModel.windows`) — the domain this
+    /// binds to.
     @AppStorage(AutoFetchScheduler.enabledKey) private var autoFetchEnabled = true
 
     var body: some Scene {
-        WindowGroup(id: AppModel.windowID) {
-            MainWindow()
-                .environment(store)
-                .modifier(RemembersHowToOpenTheWindow())
-                .onAppear {
-                    Task {
-                        await store.checkGitAvailability()
-                        // Not over a repository a Finder open at launch has already opened.
-                        if store.root == nil { store.reopenLastRepository() }
-                        #if DEBUG
-                            DebugLaunchHooks.run(store: store)
-                        #endif
-                    }
-                }
+        // One store per window (`RepositoryWindowView`). Gitter reopens its windows itself, from
+        // its own list (`WindowRegistry.launchPaths`), so macOS restoration is off: no killed launch
+        // can leave saved state that restores no window.
+        WindowGroup(id: AppModel.windowID, for: RepositoryWindow.self) { $value in
+            RepositoryWindowView(value: $value)
         }
         .defaultSize(width: 1200, height: 760)
-        // A Finder open (or "Open Recent") is opened in the one store by `AppDelegate`, which
-        // also brings a window back if none is open. Left to itself the scene answered the same
-        // event with new windows onto that same store — two per open, measured in Task 11's
-        // review.
+        // A Finder open (or "Open Recent") is opened by `AppDelegate`, which also brings a window
+        // back if none is open. Left to itself the scene answered the same event with new windows
+        // onto that same store — two per open, measured in Task 11's review.
         .handlesExternalEvents(matching: [])
+        .restorationBehavior(.disabled)
         .commands {
             // AppKit refuses every quit while a sheet is attached (M1.4), the stock Quit's too;
             // this one closes the sheets first (`QuitFlow`) and stays enabled with a sheet up,
@@ -100,9 +92,9 @@ struct GitterApp: App {
                     .keyboardShortcut("o")
             }
             CommandGroup(after: .toolbar) {
-                Button("Refresh") { Task { await store.refresh() } }
+                Button("Refresh") { Task { await store?.refresh() } }
                     .keyboardShortcut("r")
-                    .disabled(store.root == nil)
+                    .disabled(store?.root == nil)
             }
             // The toolbar's three network items and Stop. Disabled for the same reasons as
             // the toolbar, but the reasons are not spelled out here: a menu item shows no
@@ -114,48 +106,53 @@ struct GitterApp: App {
             // review: ⇧⌘P under an open merge sheet pushed `main` to `origin` while the sheet
             // was still asking. Stop is included so that no key pressed while a sheet has the
             // user's attention acts on the network lane behind it.
+            //
+            // Empty with no window open, until the menus follow the front window (E2 Task 4).
             CommandMenu("Repository") {
-                Button("Fetch") { store.fetch() }
-                    .keyboardShortcut("f", modifiers: [.command, .shift])
-                    .disabled(store.activeSheet != nil || store.fetchBlockedReason != nil)
-                Button("Pull") { store.pull() }
-                    .keyboardShortcut("l", modifiers: [.command, .shift])
-                    .disabled(store.activeSheet != nil || store.pullBlockedReason != nil)
-                Button(store.pushButtonTitle) { store.push() }
-                    .keyboardShortcut("p", modifiers: [.command, .shift])
-                    .disabled(store.activeSheet != nil || store.pushBlockedReason != nil)
-                Button("Stop") { store.cancelRemoteActivity() }
-                    .keyboardShortcut(".", modifiers: .command)
-                    .disabled(store.activeSheet != nil || store.remoteActivity == nil)
-                Divider()
-                // Off while a sheet is up for the same reason as the four above;
-                // `stashBlockedReason` says so itself, and why otherwise.
-                Button("Stash Changes…") { store.requestStash() }
-                    .keyboardShortcut("s", modifiers: [.command, .option])
-                    .disabled(store.activeSheet != nil || store.stashBlockedReason != nil)
-                Divider()
-                // B3: two pickers, A preset to the current branch.
-                Button(CompareWording.compareBranchesTitle) { store.requestCompareBranches(a: nil, b: nil) }
-                    .disabled(
-                        store.activeSheet != nil || store.root == nil || store.compareBranchesBlockedReason != nil)
-                // B3 Task 5: the Worktrees section shows only with a second worktree, so the first
-                // one is added from here (or a branch's menu).
-                Button(WorktreeWording.addTitle) { store.requestAddWorktree(branch: nil) }
-                    .disabled(store.activeSheet != nil || store.addWorktreeBlockedReason != nil)
-                Divider()
-                // Off also stops an automatic fetch that is running; on waits for the next tick.
+                if let store {
+                    Button("Fetch") { store.fetch() }
+                        .keyboardShortcut("f", modifiers: [.command, .shift])
+                        .disabled(store.activeSheet != nil || store.fetchBlockedReason != nil)
+                    Button("Pull") { store.pull() }
+                        .keyboardShortcut("l", modifiers: [.command, .shift])
+                        .disabled(store.activeSheet != nil || store.pullBlockedReason != nil)
+                    Button(store.pushButtonTitle) { store.push() }
+                        .keyboardShortcut("p", modifiers: [.command, .shift])
+                        .disabled(store.activeSheet != nil || store.pushBlockedReason != nil)
+                    Button("Stop") { store.cancelRemoteActivity() }
+                        .keyboardShortcut(".", modifiers: .command)
+                        .disabled(store.activeSheet != nil || store.remoteActivity == nil)
+                    Divider()
+                    // Off while a sheet is up for the same reason as the four above;
+                    // `stashBlockedReason` says so itself, and why otherwise.
+                    Button("Stash Changes…") { store.requestStash() }
+                        .keyboardShortcut("s", modifiers: [.command, .option])
+                        .disabled(store.activeSheet != nil || store.stashBlockedReason != nil)
+                    Divider()
+                    // B3: two pickers, A preset to the current branch.
+                    Button(CompareWording.compareBranchesTitle) { store.requestCompareBranches(a: nil, b: nil) }
+                        .disabled(
+                            store.activeSheet != nil || store.root == nil || store.compareBranchesBlockedReason != nil)
+                    // B3 Task 5: the Worktrees section shows only with a second worktree, so the first
+                    // one is added from here (or a branch's menu).
+                    Button(WorktreeWording.addTitle) { store.requestAddWorktree(branch: nil) }
+                        .disabled(store.activeSheet != nil || store.addWorktreeBlockedReason != nil)
+                    Divider()
+                }
+                // Off also stops an automatic fetch that is running, in every window; on waits for
+                // the next tick.
                 Toggle(
                     "Fetch Automatically",
                     isOn: Binding(
                         get: { autoFetchEnabled },
                         set: { enabled in
                             autoFetchEnabled = enabled
-                            store.autoFetchSettingChanged(enabled: enabled)
+                            for store in AppModel.windows.stores { store.autoFetchSettingChanged(enabled: enabled) }
                         }))
             }
             // B2: housekeeping of the remotes. Each item says why it is off (`MenuReasons`).
             CommandMenu("Remotes") {
-                RemotesMenuContent(store: store)
+                if let store { RemotesMenuContent(store: store) }
             }
             // B3: ⌘F into the sidebar's filter (⇧⌘F is Fetch).
             SidebarFilterCommands()
@@ -206,17 +203,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Opened in the first open window's store, which comes to the front; with no window open, in a
+    /// new window; and before any window has a store, by the first window (`pendingOpen`). Routing
+    /// every open to its own window is E2 Task 4's.
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let url = urls.first else { return }
         MainActor.assumeIsolated {
             #if DEBUG
                 RepositoryStore.logStores("open event: \(url.path)")
             #endif
-            AppModel.store.open(url)
-            // The scene no longer makes a window for the event (`handlesExternalEvents`), so
-            // when none is open, one is asked for here — else the open would happen unseen.
-            if !NSApp.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) {
-                AppModel.openWindow?()
+            let registry = AppModel.windows
+            if let store = registry.liveStores.first {
+                store.open(url)
+                // The scene makes no window for the event (`handlesExternalEvents`): a window that
+                // is hidden or in the Dock is brought back, else the open would happen unseen.
+                registry.window(of: store)?.makeKeyAndOrderFront(nil)
+            } else if let openWindow = AppModel.openWindow {
+                openWindow(RepositoryWindow(url: url))
+            } else {
+                registry.pendingOpen = url
             }
         }
     }
@@ -225,7 +230,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// The "Open Repository…" panel, shared by the menu command and the empty state.
 @MainActor
 enum RepositoryOpener {
-    static func run(store: RepositoryStore) {
+    /// Opens the chosen repository in `store`, or — with no window open — in a new window.
+    static func run(store: RepositoryStore?) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -233,6 +239,10 @@ enum RepositoryOpener {
         panel.prompt = "Open"
         panel.message = "Choose a Git repository"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        store.open(url)
+        if let store {
+            store.open(url)
+        } else {
+            AppModel.openWindow?(RepositoryWindow(url: url))
+        }
     }
 }

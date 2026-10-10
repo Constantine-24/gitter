@@ -73,6 +73,17 @@ final class AutoFetchScheduler {
                 RepositoryStore.logAutoFetch("launch guard: no schedule in a scripted launch")
                 return
             }
+        #endif
+        startLoop(for: store)
+    }
+
+    /// The schedule itself, past `start(for:)`'s refusals: the test host's way to see that a
+    /// closed store's schedule stops and never starts again (E2 Task 3). Never for a closed store.
+    // internal (not private): used by `start(for:)` and by GitterTests
+    func startLoop(for store: RepositoryStore) {
+        stop()
+        guard !store.isClosed else { return }
+        #if DEBUG
             RepositoryStore.logAutoFetch(
                 "schedule: every \(interval), stopped after \(timeout) (store \(store.debugSerial))")
         #endif
@@ -92,4 +103,7 @@ final class AutoFetchScheduler {
         loop?.cancel()
         loop = nil
     }
+
+    /// Whether a schedule is running: from `start(for:)` until `stop()`.
+    var isRunning: Bool { loop != nil }
 }

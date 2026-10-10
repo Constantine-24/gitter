@@ -240,7 +240,7 @@
                     + "| loads: \(store.snapshotLoadCount) "
                     + "| autoFetch: \(store.autoFetchScheduler.isEnabled ? "on" : "off"), "
                     + "failure: \(store.lastAutoFetchFailure ?? "nil") "
-                    + "| stores: \(RepositoryStore.storesBuilt)")
+                    + "| stores: \(RepositoryStore.storesBuilt), registered: \(RepositoryStore.storesRegistered)")
         }
 
         private static func describeStashContinue(_ store: RepositoryStore) -> String {

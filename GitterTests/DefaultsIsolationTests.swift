@@ -270,7 +270,7 @@ struct DefaultsIsolationTests {
         defaults.set(folder.url.path, forKey: RepositoryStore.lastRepositoryPathKey)
         #expect(RepositoryStore.lastRepositoryToReopen(in: store.defaults) != nil, "only the guard is in the way")
 
-        store.reopenLastRepository()
+        store.reopenLastRepository { RepositoryStore.lastRepositoryToReopen(in: store.defaults).map { [$0] } ?? [] }
 
         #expect(store.root == nil)
         #expect(store.lastError == nil)

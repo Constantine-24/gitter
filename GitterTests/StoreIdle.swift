@@ -42,7 +42,16 @@ func openedTestStore(
     _ repo: ScratchRepo, sourceLocation: SourceLocation = #_sourceLocation
 ) async -> (RepositoryStore, cleanup: () -> Void) {
     let (store, _, cleanup) = makeTestStore()
-    store.open(repo.url)
+    await open(store, repo.url, sourceLocation: sourceLocation)
+    return (store, cleanup)
+}
+
+/// Opens `url` in `store` and returns once the first snapshot is in and the store is idle — or at
+/// once, with an issue at `sourceLocation`, if `open` fails (`lastError`). What `openedTestStore`
+/// does for its own store, for a store made elsewhere (a `WindowRegistry`'s, E2 Task 3).
+@MainActor
+func open(_ store: RepositoryStore, _ url: URL, sourceLocation: SourceLocation = #_sourceLocation) async {
+    store.open(url)
     // `open` starts its first load in a task of its own; it is idle only once a snapshot is in.
     let first = CallUnderTest { @MainActor () -> Bool in
         while store.snapshot == nil, store.lastError == nil, !Task.isCancelled {
@@ -54,8 +63,7 @@ func openedTestStore(
     if opened == nil { first.cancel() }
     if let error = store.lastError {
         Issue.record("open failed: \(error)", sourceLocation: sourceLocation)
-        return (store, cleanup)
+        return
     }
     await waitUntilIdle(store, sourceLocation: sourceLocation)
-    return (store, cleanup)
 }

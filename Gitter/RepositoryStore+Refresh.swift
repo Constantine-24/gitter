@@ -9,6 +9,9 @@ extension RepositoryStore {
     // internal (not private): used by RepositoryStore.swift's `open()`, which schedules this
     // from the file-system watcher's callback
     func scheduleRefresh(changed paths: [String] = []) {
+        // A closed window's store reloads nothing (RF3): its watcher is stopped, and an event
+        // already on its way is dropped here.
+        guard !isClosed else { return }
         // While the network lane is busy a fetch rewrites `FETCH_HEAD` and refs continuously,
         // and every write would schedule a reload. They are dropped here; the lane's own work
         // reloads exactly once, while it still holds the lane, before it frees it (see
@@ -105,7 +108,8 @@ extension RepositoryStore {
     /// that chaining: nothing reachable from inside a chained load may `await refresh()`, as
     /// it would then be waiting on itself forever.
     func refresh() async {
-        guard root != nil else { return }
+        // Nor does a closed one (RF3): a write it lets finish frees its lane without one.
+        guard root != nil, !isClosed else { return }
         await chainedRefresh().value
     }
 

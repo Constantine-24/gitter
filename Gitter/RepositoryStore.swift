@@ -98,7 +98,26 @@ final class RepositoryStore {
     /// Which confirmation or form is on screen. The one piece of store state views are meant to
     /// write: a `.sheet(item:)` binding puts nil back on dismissal. Opening one still goes
     /// through `+BranchSheets`, so the store decides which question gets asked.
-    var activeSheet: BranchSheet?
+    ///
+    /// Never on a closed store (`close()`, E2 Task 3): its window is gone but its view tree is not
+    /// (M3.2), and a sheet attached there would be one nobody can see or answer — while AppKit
+    /// refuses every quit over it (M1.4).
+    var activeSheet: BranchSheet? {
+        didSet {
+            if isClosed, activeSheet != nil { activeSheet = nil }
+        }
+    }
+
+    /// Set once by `close()`, when the store's window has closed (E2 Task 3), and never cleared: a
+    /// closed window's view tree lives on (M3.2), so nothing may act for its store again — `open()`,
+    /// `refresh()`, `scheduleRefresh`, the automatic fetch, a claim of the lane and the harness's
+    /// steps all honour it. A write already on the lane still finishes (`close()`).
+    private(set) var isClosed = false
+
+    /// Told at the end of every `open()` that opened something, with the root before and after (the
+    /// same one again for a reopen): the window registry's open-repositories list
+    /// (`WindowRegistry.makeStore`). Not observed.
+    @ObservationIgnored var onRootChange: ((_ old: URL?, _ new: URL?) -> Void)?
 
     /// A short, non-error message about something that just succeeded ("Fast-forwarded to
     /// feature."). Unlike `lastError` it is never sticky and clears itself after a few seconds.
@@ -254,16 +273,33 @@ final class RepositoryStore {
             lastAutoFetchFailure = reason
         }
 
-        /// How many stores this process has built. One — `AppModel.store` — is the only right
-        /// answer: a second one is a store nobody sees, and it would still fetch (Task 11).
+        /// How many stores this process has built. Every one must be a registered one
+        /// (`storesRegistered`, E2 Task 3): a store built anywhere else is one nobody sees, and it
+        /// would still fetch (Task 11).
         private(set) static var storesBuilt = 0
+
+        /// How many of those a `WindowRegistry` made (`makeStore`): one per window, in the app.
+        private(set) static var storesRegistered = 0
+
+        // internal (not private): used by WindowRegistry.swift's `makeStore`
+        static func noteRegistered() {
+            storesRegistered += 1
+        }
+
+        /// The DEBUG check, "every store the app builds is a registered one": nil when it holds,
+        /// otherwise what is wrong. Pure, so a test can check it over the counts it made.
+        static func storeCheck(built: Int, registered: Int) -> String? {
+            built == registered ? nil : "\(built - registered) store(s) built outside the window registry"
+        }
 
         /// Which store this is, 1 for the first built: in the `AUTOFETCH` lines, so two
         /// schedules from two stores can be told apart in a log.
         let debugSerial: Int
 
         static func logStores(_ event: String) {
-            FileHandle.standardError.write(Data("STORES built: \(storesBuilt) | \(event)\n".utf8))
+            let problem = storeCheck(built: storesBuilt, registered: storesRegistered).map { " | \($0)" } ?? ""
+            FileHandle.standardError.write(
+                Data("STORES built: \(storesBuilt), registered: \(storesRegistered)\(problem) | \(event)\n".utf8))
         }
     #endif
 
@@ -327,7 +363,7 @@ final class RepositoryStore {
     // internal (not private), bookkeeping only, views must not touch this: used by +Refresh.swift
     var refreshIsQueued = false
 
-    // internal (not private): used by RepositoryStore+Opening.swift's `reopenLastRepository()`
+    // internal (not private): used by RepositoryStore+Opening.swift's `lastRepositoryToReopen(in:)`
     static let lastRepositoryPathKey = "lastRepositoryPath"
 
     init(
@@ -350,6 +386,8 @@ final class RepositoryStore {
     // MARK: - Opening
 
     func open(_ url: URL) {
+        // A closed window's store opens nothing again (RF3): its window is gone.
+        guard !isClosed else { return }
         // Once git itself is confirmed missing, no repository can be opened. Keep the banner
         // up instead of letting a reopen quietly clear it — and if the user dismissed it since,
         // put it back so "Open Repository…" doesn't silently do nothing.
@@ -374,6 +412,7 @@ final class RepositoryStore {
         }
 
         let standardized = url.standardizedFileURL
+        let previousRoot = root
         let dotGit = standardized.appending(path: ".git")
         guard FileManager.default.fileExists(atPath: dotGit.path) else {
             lastError = "Not a Git repository: \(standardized.path)"
@@ -482,10 +521,49 @@ final class RepositoryStore {
         let openedGeneration = generation
         Task {
             await refresh()
-            guard generation == openedGeneration, !isTerminating else { return }
+            guard generation == openedGeneration, !isTerminating, !isClosed else { return }
             autoFetchScheduler.start(for: self)
         }
+
+        onRootChange?(previousRoot, standardized)
     }
+
+    /// The window showing this store has closed (`WindowRegistry.windowClosed`, E2 Task 3). A
+    /// closed window keeps its view tree and its store (M3.2), so everything that would go on
+    /// working for it is stopped here: the file watcher, the automatic fetch's schedule, every read
+    /// in flight — the reloads, the detail, diff, conflict, comparison and worktree reads, a read on
+    /// the network lane — and the sheet and the notices go. From here on `isClosed` stops anything
+    /// new.
+    ///
+    /// **A write on the lane is let finish** (a push, a publish, a delete on a remote): cancelling
+    /// it would leave the server in a state nobody is told about. Nor is `generation` bumped while
+    /// one runs — the write's own completion must still free the lane (`finishRemote` drops a stale
+    /// lane's release), or the store would never leave the registry and `QuitGuard` would wait on it
+    /// for good. With the lane free, the bump makes anything else in flight drop its result.
+    func close() {
+        guard !isClosed else { return }
+        isClosed = true
+        watcher?.stop()
+        watcher = nil
+        refreshTask?.cancel()
+        refreshTask = nil
+        detailTask?.cancel()
+        diffTask?.cancel()
+        conflictTask?.cancel()
+        compareTask?.cancel()
+        worktreeReadTask?.cancel()
+        worktreeReadTask = nil
+        worktreeCheckTask?.cancel()
+        autoFetchScheduler.stop()
+        activeSheet = nil
+        dismissNotice()
+        stickyNotice = nil
+        if let remoteActivity, !remoteActivity.isWrite { cancelRemoteActivity() }
+        if remoteActivity == nil { generation += 1 }
+    }
+
+    /// Whether the file watcher is running: from `open()` until the next one, or `close()`.
+    var isWatching: Bool { watcher != nil }
 
     // MARK: - Selection
 
@@ -755,7 +833,7 @@ final class RepositoryStore {
         followUpHeldForQuit = nil
         // First, so the schedule's immediate tick finds the lane busy with it and skips.
         if let held, held.generation == generation { held.run() }
-        if root != nil { autoFetchScheduler.start(for: self) }
+        if root != nil, !isClosed { autoFetchScheduler.start(for: self) }
     }
 
     /// Keeps a lane ending's follow-up for `endTerminating` instead of starting it while quitting.
@@ -810,7 +888,8 @@ final class RepositoryStore {
     func beginRemote(
         _ kind: RemoteActivity.Kind, remote: String?, holdingMutation: Bool, quiet: Bool = false
     ) -> (lane: RemoteLane, preempted: Task<Void, Never>?)? {
-        guard root != nil else { return nil }
+        // A closed window's store claims nothing, and says nothing: nobody would see it.
+        guard root != nil, !isClosed else { return nil }
         guard !isTerminating else {
             if !quiet, kind != .autoFetch { showStickyError(RemoteWording.refusedWhileQuitting) }
             return nil

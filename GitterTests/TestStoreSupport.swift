@@ -151,3 +151,37 @@ extension Trait where Self == LeavesTheDomainUnchanged {
     /// The real domain, before and after each of the suite's tests.
     static var leavesTheRealDefaultsAlone: Self { Self(domain: LeavesTheDomainUnchanged.realDomain) }
 }
+
+/// A `WindowRegistry` for a test (E2 Task 3): on a fresh `ScratchDefaults` suite, never `.standard`,
+/// under `GitterTestEnvironment.isolated`. `remove()` closes every store it made — stopping their
+/// watchers — and removes the suite.
+@MainActor
+struct TestRegistry {
+    let scratch = ScratchDefaults()
+    let registry: WindowRegistry
+
+    init(recordsOpenList: Bool = true) {
+        precondition(GitterTestEnvironment.isolated)
+        registry = WindowRegistry(defaults: scratch.defaults, recordsOpenList: recordsOpenList)
+    }
+
+    var defaults: UserDefaults { scratch.defaults }
+
+    /// What the suite holds under the open list's key, as written: nil when nothing was ever written.
+    var storedList: Any? { defaults.object(forKey: WindowRegistry.openRepositoriesKey) }
+
+    /// A new registered store with `repo` open and idle (`open(_:_:sourceLocation:)`).
+    func opened(_ repo: ScratchRepo, sourceLocation: SourceLocation = #_sourceLocation) async -> RepositoryStore {
+        let store = registry.makeStore()
+        await open(store, repo.url, sourceLocation: sourceLocation)
+        return store
+    }
+
+    func remove() {
+        for store in registry.stores { store.close() }
+        scratch.remove()
+    }
+}
+
+/// The path a window shows for `repo`: what the open list holds.
+func shownPath(_ repo: ScratchRepo) -> String { RepositoryWindow(url: repo.url).path }
