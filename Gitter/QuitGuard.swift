@@ -181,12 +181,15 @@ enum QuitGuard {
         let timer = Timer(timeInterval: 0.05, repeats: true) { timer in
             let replied = MainActor.assumeIsolated { () -> Bool in
                 let waited = ContinuousClock.now - started
-                if let before, let store = storeCallingOff(stores, before: before) {
+                if let before,
+                    let calling = callingOff(stores, before: before, hasWindow: { AppModel.windows.window(of: $0) != nil })
+                {
                     log(
                         "quit: called off, the lane ended with something to read: "
-                            + (store.lastLaneMessageToRead ?? "?"))
+                            + (calling.store.lastLaneMessageToRead ?? "?"))
                     for store in stores { store.endTerminating() }
                     callOff()
+                    if let text = calling.windowlessAlert { tell(text) }
                     return true
                 }
                 let busy = stores.compactMap { store in store.remoteActivity.map { (store, $0) } }
@@ -240,6 +243,40 @@ enum QuitGuard {
             guard let count else { return false }
             return store.remoteActivity == nil && store.laneMessagesToRead != count
         }?.0
+    }
+
+    /// A held quit called off by a store's lane: which store, and — when that store has no window,
+    /// its window having closed while its write ran — the alert that says what its banner would
+    /// have said, so that no quit is called off silently (Ruling 10). Nil while no store calls it
+    /// off (`storeCallingOff`).
+    struct CallOff {
+        let store: RepositoryStore
+        let windowlessAlert: String?
+    }
+
+    static func callingOff(
+        _ stores: [RepositoryStore], before: [Int?], hasWindow: (RepositoryStore) -> Bool
+    ) -> CallOff? {
+        guard let store = storeCallingOff(stores, before: before) else { return nil }
+        guard !hasWindow(store) else { return CallOff(store: store, windowlessAlert: nil) }
+        // Always set with the count that moved (`noteLaneMessageToRead`).
+        let told = store.lastLaneMessageToRead ?? "(no message was kept)"
+        return CallOff(
+            store: store,
+            windowlessAlert: RemoteWording.quitCalledOffInClosedWindow(
+                repository: store.root?.lastPathComponent, told: told))
+    }
+
+    /// The call-off's message for a store with no window: app-modal, one OK, after the reply.
+    private static func tell(_ text: String) {
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = RemoteWording.quitCalledOffTitle
+            alert.informativeText = text
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
     }
 
     /// The quit goes ahead: from here on a window's close is part of it, and leaves the

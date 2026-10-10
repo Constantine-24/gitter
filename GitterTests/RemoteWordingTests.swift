@@ -132,4 +132,17 @@ import Testing
         for text in [noUpstream, gone] { #expect(!text.contains("terminal"), "\(text)") }
         #expect(!noURL.contains("Edit the remote's URLs"))
     }
+
+    /// Ruling 10: the alert of a held quit called off by a closed window's lane names the
+    /// repository and quotes what the lane ended with, word for word.
+    @Test func aQuitCalledOffInAClosedWindowNamesTheRepositoryAndQuotesItsMessage() {
+        let told = "The push to \"origin\" was rejected."
+        let named = RemoteWording.quitCalledOffInClosedWindow(repository: "app", told: told)
+        #expect(named.contains("\"app\""))
+        #expect(named.contains(told))
+        let unnamed = RemoteWording.quitCalledOffInClosedWindow(repository: nil, told: told)
+        #expect(unnamed.contains(told))
+        #expect(!unnamed.contains("\"\""))
+        #expect(!RemoteWording.quitCalledOffTitle.isEmpty)
+    }
 }

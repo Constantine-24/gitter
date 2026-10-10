@@ -53,17 +53,52 @@ func openedTestStore(
 func open(_ store: RepositoryStore, _ url: URL, sourceLocation: SourceLocation = #_sourceLocation) async {
     store.open(url)
     // `open` starts its first load in a task of its own; it is idle only once a snapshot is in.
-    let first = CallUnderTest { @MainActor () -> Bool in
-        while store.snapshot == nil, store.lastError == nil, !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(20))
-        }
-        return store.snapshot != nil
+    await waitUntil("the first snapshot", sourceLocation: sourceLocation) {
+        store.snapshot != nil || store.lastError != nil
     }
-    let opened = await first.value("the first snapshot", sourceLocation: sourceLocation)
-    if opened == nil { first.cancel() }
     if let error = store.lastError {
         Issue.record("open failed: \(error)", sourceLocation: sourceLocation)
         return
     }
     await waitUntilIdle(store, sourceLocation: sourceLocation)
+}
+
+/// Returns once `condition` holds, polled every 20 ms on the main actor, and says whether it does.
+/// No bound of its own: a condition that never comes is the test's `.timeLimit`, ending the wait
+/// through `CallUnderTest`, which records `neverCameBack` with `what` in it (E1 pattern). The one
+/// poll the waits below are made of.
+@MainActor
+@discardableResult
+func waitUntil(
+    _ what: String, sourceLocation: SourceLocation = #_sourceLocation,
+    _ condition: @escaping @MainActor () -> Bool
+) async -> Bool {
+    let call = CallUnderTest { @MainActor () -> Bool in
+        while !condition(), !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return condition()
+    }
+    guard let met = await call.value(what, sourceLocation: sourceLocation) else {
+        // The wait was cancelled: stop the poll it left behind.
+        call.cancel()
+        return false
+    }
+    return met
+}
+
+/// Returns once `store`'s network lane is free (E2 Task 3).
+@MainActor
+func waitUntilLaneFree(_ store: RepositoryStore, sourceLocation: SourceLocation = #_sourceLocation) async {
+    await waitUntil("the lane freeing", sourceLocation: sourceLocation) { store.remoteActivity == nil }
+}
+
+/// Returns once `store` has left `registry.stores` (E2 Task 3).
+@MainActor
+func waitUntilGone(
+    _ store: RepositoryStore, from registry: WindowRegistry, sourceLocation: SourceLocation = #_sourceLocation
+) async {
+    await waitUntil("the closed store leaving the registry", sourceLocation: sourceLocation) {
+        !registry.stores.contains { $0 === store }
+    }
 }

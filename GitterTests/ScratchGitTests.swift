@@ -291,4 +291,82 @@ import Testing
             #expect(await waiter.value == false)
         } matching: { $0.isNeverCameBack }
     }
+
+    /// The scratch directory going while a push is held — `letGo()` and then `repo.remove()`, the
+    /// order every test's `defer`s run in — ends the push: the script gives up when its directory
+    /// is gone instead of waiting for a release file that can no longer appear.
+    @Test(.timeLimit(.minutes(10))) func aHeldPushEndsWhenItsDirectoryIsRemoved() async throws {
+        let repo = try ScratchRepo()
+        let held = try HeldTransport.heldPush(in: repo)
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        store.push()
+        #expect(await held.waitUntilHeld())
+
+        held.letGo()
+        repo.remove()
+
+        await waitUntilLaneFree(store)
+        #expect(store.remoteActivity == nil)
+        store.close()
+    }
+
+    // MARK: - The waits (E2 Task 3 fix round 1)
+
+    @Test(.timeLimit(.minutes(10))) func waitUntilReturnsOnceTheConditionHolds() async {
+        var looks = 0
+        let met = await waitUntil("the third look") {
+            looks += 1
+            return looks >= 3
+        }
+        #expect(met)
+        #expect(looks >= 3)
+    }
+
+    /// Control: a condition that never holds is caught by the hang guard.
+    @Test(.timeLimit(.minutes(10))) func aConditionThatNeverHoldsIsCaughtByTheTimeLimit() async {
+        await withKnownIssue("the condition never holds") {
+            let waiter = Task { @MainActor in await waitUntil("a condition that never holds") { false } }
+            try? await Task.sleep(for: .milliseconds(150))
+            waiter.cancel()
+            #expect(await waiter.value == false)
+        } matching: { $0.isNeverCameBack }
+    }
+
+    /// Control: a lane held by a push that is never let go is caught by the hang guard.
+    @Test(.timeLimit(.minutes(10))) func aLaneThatNeverFreesIsCaughtByTheTimeLimit() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        let held = try HeldTransport.heldPush(in: repo)
+        defer { held.letGo() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        store.push()
+        await held.waitUntilHeld()
+
+        await withKnownIssue("the push is held, so the lane never frees") {
+            let waiter = Task { @MainActor in await waitUntilLaneFree(store) }
+            try? await Task.sleep(for: .milliseconds(150))
+            waiter.cancel()
+            await waiter.value
+        } matching: { $0.isNeverCameBack }
+        held.letGo()
+        await waitUntilIdle(store)
+    }
+
+    /// Control: a store whose window never closes never leaves its registry, and the wait for it
+    /// is caught by the hang guard.
+    @Test(.timeLimit(.minutes(10))) func aStoreThatNeverLeavesIsCaughtByTheTimeLimit() async {
+        let test = TestRegistry()
+        defer { test.remove() }
+        let store = test.registry.makeStore()
+
+        await withKnownIssue("the store's window never closes") {
+            let waiter = Task { @MainActor in await waitUntilGone(store, from: test.registry) }
+            try? await Task.sleep(for: .milliseconds(150))
+            waiter.cancel()
+            await waiter.value
+        } matching: { $0.isNeverCameBack }
+        #expect(test.registry.stores.contains { $0 === store })
+    }
 }

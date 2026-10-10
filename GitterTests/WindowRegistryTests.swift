@@ -206,17 +206,45 @@ import Testing
         #expect(a.laneMessagesToRead == messagesBefore[0], "the push ended with something to read")
         #expect(QuitGuard.storeCallingOff(stores, before: compared) == nil)
     }
-}
 
-/// Returns once `store`'s network lane is free, however long that takes; a hang is the test's
-/// `.timeLimit`, through `CallUnderTest`.
-@MainActor
-func waitUntilLaneFree(_ store: RepositoryStore, sourceLocation: SourceLocation = #_sourceLocation) async {
-    let call = CallUnderTest { @MainActor () -> Bool in
-        while store.remoteActivity != nil, !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(20))
-        }
-        return store.remoteActivity == nil
+    /// Ruling 10: a held quit that a store's lane calls off is never called off silently. With its
+    /// window open the message is on screen there; with the window closed — a closed window's
+    /// write still runs — the call-off says it in an app-modal alert instead.
+    @Test(.timeLimit(.minutes(10))) func aCallOffFromAWindowlessStoreSaysWhyInAnAlert() async throws {
+        let quiet = try ScratchRepo("quiet")
+        defer { quiet.remove() }
+        try quiet.commit("a.txt", "one\n", "first")
+        let failing = try ScratchRepo("failing")
+        defer { failing.remove() }
+        try failing.commit("a.txt", "one\n", "first")
+        try failing.git("remote", "add", "broken", failing.directory.appending(path: "nowhere.git").path)
+        let test = TestRegistry()
+        defer { test.remove() }
+        let a = await test.opened(quiet)
+        let b = await test.opened(failing)
+        let stores = test.registry.stores
+        let before: [Int?] = stores.map(\.laneMessagesToRead)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled, .closable],
+            backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        test.registry.attach(window, to: b)
+
+        #expect(QuitGuard.callingOff(stores, before: before, hasWindow: { _ in true }) == nil, "nothing ended yet")
+        b.fetch(remote: "broken")
+        await waitUntilIdle(b)
+        let told = try #require(b.lastLaneMessageToRead)
+
+        // With its window: the store that ended is the one, and its banner is the message.
+        let shown = try #require(QuitGuard.callingOff(stores, before: before) { test.registry.window(of: $0) != nil })
+        #expect(shown.store === b)
+        #expect(shown.windowlessAlert == nil)
+
+        // Its window closed: the same call-off, said in an alert naming the repository.
+        test.registry.windowClosed(b)
+        let alerted = try #require(QuitGuard.callingOff(stores, before: before) { test.registry.window(of: $0) != nil })
+        #expect(alerted.store === b)
+        #expect(alerted.windowlessAlert == RemoteWording.quitCalledOffInClosedWindow(repository: "failing", told: told))
+        #expect(a.laneMessagesToRead == before[0])
     }
-    if await call.value("the lane freeing", sourceLocation: sourceLocation) == nil { call.cancel() }
 }

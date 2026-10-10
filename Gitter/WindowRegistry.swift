@@ -52,7 +52,7 @@ final class WindowRegistry {
     @ObservationIgnored var launchHandled = false
 
     /// A Finder open that arrived before any window had a store to open it in: the first window
-    /// opens it instead of the launch's repositories (as a Finder open at launch always has).
+    /// opens it first, and the launch's other repositories after it (`launchPlan`).
     @ObservationIgnored var pendingOpen: URL?
 
     @ObservationIgnored private var windows: [ObjectIdentifier: WeakWindow] = [:]
@@ -183,6 +183,25 @@ final class WindowRegistry {
             return RepositoryStore.lastRepositoryToReopen(in: defaults).map { [$0] } ?? []
         }
         return clean.map { URL(fileURLWithPath: $0) }
+    }
+
+    /// What launch opens: the first window's repository, and one window each for the rest, in order.
+    struct LaunchPlan: Equatable {
+        var first: URL?
+        var rest: [URL]
+    }
+
+    /// The launch, decided (Ruling 9). `pending` is a Finder open that came with the launch — the
+    /// one the first window already shows, or `pendingOpen`. It comes first, and the list's
+    /// repositories follow, each once (`RepositoryWindow`), so that every repository left in the
+    /// list has a window and none lingers there unseen. A refused launch (`reopenRefusal`: a test
+    /// host, a scripted launch) opens the Finder open alone and never reads the list.
+    static func launchPlan(pending: URL?, refused: Bool, launchPaths: () -> [URL]) -> LaunchPlan {
+        if refused { return LaunchPlan(first: pending, rest: []) }
+        let paths = launchPaths()
+        guard let pending else { return LaunchPlan(first: paths.first, rest: Array(paths.dropFirst())) }
+        let shown = RepositoryWindow(url: pending)
+        return LaunchPlan(first: pending, rest: paths.filter { RepositoryWindow(url: $0) != shown })
     }
 
     /// A folder with a `.git` in it — a directory, or a linked worktree's file.

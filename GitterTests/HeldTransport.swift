@@ -13,7 +13,11 @@ import Testing
 /// (the runner's escalation) ends it. Nothing here kills anything: `letGo()` only creates a file.
 ///
 /// Every test that holds one calls `letGo()` in a `defer`, so a failing test never leaves a
-/// transport waiting.
+/// transport waiting. The wait also ends when the scratch directory is gone: a test's
+/// `repo.remove()` right after `letGo()` can delete the release file before the script's next look,
+/// and a script left waiting for it would hold its `git push` — re-parented to launchd, in a
+/// process group of its own — for good (found in Task 3's review, and once in this task's own
+/// mutation runs).
 struct HeldTransport {
     enum Side {
         case receivePack, uploadPack
@@ -46,7 +50,7 @@ struct HeldTransport {
         try """
             #!/bin/sh
             : > "\(started.path)"
-            while [ ! -e "\(release.path)" ]; do sleep 0.05; done
+            while [ ! -e "\(release.path)" ]; do [ -d "\(repo.directory.path)" ] || exit 1; sleep 0.05; done
             exec \(side.program) "$@"
 
             """.write(to: script, atomically: true, encoding: .utf8)
@@ -54,23 +58,15 @@ struct HeldTransport {
         try repo.git("config", "remote.\(remote).\(side.key)", script.path)
     }
 
-    /// Whether the transport has started and is waiting. Polls the marker every 20 ms, with no bound
-    /// of its own: a transport that never starts is the test's `.timeLimit`, ending the wait through
-    /// `CallUnderTest`, which records `neverCameBack`.
+    /// Whether the transport has started and is waiting (`waitUntil`, so a transport that never
+    /// starts is the test's `.timeLimit`, recorded as `neverCameBack`).
+    @MainActor
     @discardableResult
     func waitUntilHeld(sourceLocation: SourceLocation = #_sourceLocation) async -> Bool {
         let path = started.path
-        let call = CallUnderTest { () -> Bool in
-            while !FileManager.default.fileExists(atPath: path), !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(20))
-            }
-            return FileManager.default.fileExists(atPath: path)
+        return await waitUntil("the held transport starting", sourceLocation: sourceLocation) {
+            FileManager.default.fileExists(atPath: path)
         }
-        guard let held = await call.value("the held transport starting", sourceLocation: sourceLocation) else {
-            call.cancel()
-            return false
-        }
-        return held
     }
 
     /// Lets the transport go on. Safe to call more than once.

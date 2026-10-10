@@ -374,6 +374,15 @@ enum RemoteWording {
         + "updated, and Gitter would not be here to find out. Wait lets it finish and then "
         + "quits — unless it fails or has something to tell you, in which case Gitter stays "
         + "open so you can read it."
+    /// A held quit called off by a lane whose window has closed (`QuitGuard`, Ruling 10): its
+    /// banner is on a window nobody can see, so the alert says what it would have said.
+    static let quitCalledOffTitle = "Gitter did not quit."
+
+    static func quitCalledOffInClosedWindow(repository: String?, told: String) -> String {
+        let whose = repository.map { "The work in the closed window of \"\($0)\"" } ?? "The work in a closed window"
+        return "\(whose) ended with something to read:\n\n\(told)"
+    }
+
     static let quitWait = "Wait"
     static let quitStop = "Stop and Quit"
     static let quitCancel = "Don't Quit"

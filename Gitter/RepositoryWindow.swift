@@ -21,9 +21,9 @@ struct RepositoryWindow: Codable, Hashable, Sendable {
 /// - The store follows the value: a value set from outside — `openWindow(value:)` made this window
 ///   for a path, at creation or later (M2.1) — is opened, and a value that cannot be opened goes
 ///   back to what is shown.
-/// - The first window to appear takes the launch (`WindowRegistry.launchHandled`): the first of the
-///   launch's repositories here, a window each for the rest; then, in DEBUG, the harness's hooks
-///   run for its store, once.
+/// - The first window to appear takes the launch (`WindowRegistry.launchHandled`, `launchPlan`): a
+///   Finder open that came with it, or else the first of the list's repositories, here, and a
+///   window each for the rest; then, in DEBUG, the harness's hooks run for its store, once.
 struct RepositoryWindowView: View {
     @Binding var value: RepositoryWindow?
     // The initializer form, never `State(initialValue:)` in an `init` (M3.1): exactly one store per
@@ -84,18 +84,18 @@ struct RepositoryWindowView: View {
         if shown != wanted { value = shown }
     }
 
-    /// The launch's repositories (`WindowRegistry.launchPaths`), unless the launch is refused
-    /// (`reopenRefusal`: a test host, a scripted launch) or a Finder open got here first.
+    /// The launch (`WindowRegistry.launchPlan`, Ruling 9): a Finder open that came with it first —
+    /// already in this store (`application(_:open:)`), or waiting in `pendingOpen` — then the
+    /// list's other repositories, a window each. A refused launch (a test host, a scripted launch)
+    /// opens only the Finder open.
     private func launch() {
         let registry = AppModel.windows
-        if let pending = registry.pendingOpen {
-            registry.pendingOpen = nil
-            store.open(pending)
+        let pending = registry.pendingOpen ?? store.root
+        registry.pendingOpen = nil
+        let rest = store.reopenLastRepository { refused in
+            WindowRegistry.launchPlan(pending: pending, refused: refused) { registry.launchPaths() }
         }
-        if store.root == nil {
-            let rest = store.reopenLastRepository(launchPaths: { registry.launchPaths() })
-            for url in rest { AppModel.openWindow?(RepositoryWindow(url: url)) }
-        }
+        for url in rest { AppModel.openWindow?(RepositoryWindow(url: url)) }
         #if DEBUG
             DebugLaunchHooks.run(store: store)
         #endif

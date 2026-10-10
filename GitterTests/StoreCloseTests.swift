@@ -136,19 +136,4 @@ import Testing
         #expect(try repo.git("-C", bare.path, "rev-parse", "main") == repo.git("rev-parse", "main"))
         #expect(test.registry.openRepositoryPaths == [shownPath(other)])
     }
-
-    /// Returns once `store` has left `registry.stores`; a hang is the test's `.timeLimit`.
-    private func waitUntilGone(
-        _ store: RepositoryStore, from registry: WindowRegistry, sourceLocation: SourceLocation = #_sourceLocation
-    ) async {
-        let call = CallUnderTest { @MainActor () -> Bool in
-            while registry.stores.contains(where: { $0 === store }), !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(20))
-            }
-            return !registry.stores.contains { $0 === store }
-        }
-        if await call.value("the closed store leaving the registry", sourceLocation: sourceLocation) == nil {
-            call.cancel()
-        }
-    }
 }

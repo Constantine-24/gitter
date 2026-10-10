@@ -210,13 +210,75 @@ import Testing
         let store = test.registry.makeStore()
         var asked = 0
 
-        let rest = store.reopenLastRepository {
-            asked += 1
-            return [a.url, b.url]
+        let rest = store.reopenLastRepository { refused in
+            #expect(refused, "this process is a test host")
+            return WindowRegistry.launchPlan(pending: nil, refused: refused) {
+                asked += 1
+                return [a.url, b.url]
+            }
         }
 
         #expect(asked == 0)
         #expect(rest.isEmpty)
         #expect(store.root == nil)
+    }
+
+    // MARK: - The launch plan with a Finder open (Ruling 9)
+
+    /// What launch opens, as a pure decision: the first window's repository and, in order, one
+    /// window for each of the rest — so that every repository left in the list has a window, and
+    /// the next launch reopens only what this one showed.
+    @Test func withNoFinderOpenTheListIsTheLaunch() {
+        let a = URL(fileURLWithPath: "/repos/a"), b = URL(fileURLWithPath: "/repos/b")
+        #expect(WindowRegistry.launchPlan(pending: nil, refused: false) { [a, b] } == .init(first: a, rest: [b]))
+        #expect(WindowRegistry.launchPlan(pending: nil, refused: false) { [] } == .init(first: nil, rest: []))
+    }
+
+    @Test func aFinderOpenComesFirstAndTheListFollows() {
+        let a = URL(fileURLWithPath: "/repos/a"), b = URL(fileURLWithPath: "/repos/b")
+        let p = URL(fileURLWithPath: "/repos/p")
+        #expect(WindowRegistry.launchPlan(pending: p, refused: false) { [a, b] } == .init(first: p, rest: [a, b]))
+    }
+
+    @Test func aFinderOpenOfAListedRepositoryIsNotOpenedTwice() {
+        let a = URL(fileURLWithPath: "/repos/a"), b = URL(fileURLWithPath: "/repos/b")
+        let c = URL(fileURLWithPath: "/repos/c")
+        // The same repository however it was spelled (`RepositoryWindow`).
+        let alsoB = URL(fileURLWithPath: "/repos/x/../b/")
+        #expect(
+            WindowRegistry.launchPlan(pending: alsoB, refused: false) { [a, b, c] } == .init(first: alsoB, rest: [a, c]))
+    }
+
+    @Test func aRefusedLaunchOpensTheFinderOpenAloneAndReadsNoList() {
+        let p = URL(fileURLWithPath: "/repos/p")
+        var asked = 0
+        let list = { () -> [URL] in
+            asked += 1
+            return [URL(fileURLWithPath: "/repos/a")]
+        }
+        #expect(WindowRegistry.launchPlan(pending: p, refused: true, launchPaths: list) == .init(first: p, rest: []))
+        #expect(WindowRegistry.launchPlan(pending: nil, refused: true, launchPaths: list) == .init(first: nil, rest: []))
+        #expect(asked == 0)
+    }
+
+    /// The wiring, on a real store: a Finder open already in the first window's store when the
+    /// launch runs is kept there, and the list's other repositories each get a window — none is
+    /// left listed without one. (Under the test host the reopen is refused, so the plan is handed
+    /// `refused: false` directly here.)
+    @Test(.timeLimit(.minutes(10))) func aFinderOpenAtLaunchLeavesNoListedRepositoryWithoutAWindow() async throws {
+        let (a, b, c) = try Self.repos()
+        defer { [a, b, c].forEach { $0.remove() } }
+        let test = TestRegistry()
+        defer { test.remove() }
+        test.defaults.set([a.url.path, b.url.path], forKey: WindowRegistry.openRepositoriesKey)
+        let first = await test.opened(c)
+
+        let plan = WindowRegistry.launchPlan(pending: first.root, refused: false) { test.registry.launchPaths() }
+        #expect(plan.first.map(RepositoryWindow.init(url:)) == RepositoryWindow(url: c.url))
+        for url in plan.rest { await open(test.registry.makeStore(), url) }
+
+        #expect(Set(test.registry.openRepositoryPaths) == [shownPath(a), shownPath(b), shownPath(c)])
+        let shown = Set(test.registry.liveStores.compactMap { $0.root.map { RepositoryWindow(url: $0).path } })
+        #expect(shown == Set(test.registry.openRepositoryPaths))
     }
 }

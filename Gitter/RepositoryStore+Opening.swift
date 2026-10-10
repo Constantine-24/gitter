@@ -81,25 +81,21 @@ extension RepositoryStore {
         return URL(fileURLWithPath: path)
     }
 
-    /// Opens the first of `launchPaths` — the window registry's (`WindowRegistry.launchPaths`):
-    /// the open-repositories list, else `lastRepositoryToReopen` — and returns the rest, for windows
-    /// of their own, in order. Under a test host and in a scripted launch nothing is opened and
-    /// `launchPaths` is never called, so the list it would rewrite is not read either.
+    /// The launch's reopen: asks `plan` — `WindowRegistry.launchPlan` — whether this launch is
+    /// refused (`reopenRefusal`: a test host, a scripted launch), opens the plan's first repository
+    /// unless this store shows it already, and returns the rest, for windows of their own, in order.
+    /// A refused plan never reads the list, so a test host or a scripted launch never rewrites it.
     @discardableResult
-    func reopenLastRepository(launchPaths: () -> [URL]) -> [URL] {
+    func reopenLastRepository(plan: (_ refused: Bool) -> WindowRegistry.LaunchPlan) -> [URL] {
         let environment = ProcessInfo.processInfo.environment
-        switch Self.reopenRefusal(testHost: TestHost.isRunningTests, environment: environment) {
-        case nil: break
-        case .testHost: return []
-        case .scriptedLaunch:
-            #if DEBUG
-                DebugLaunchHooks.log("launch guard: the last repository is not reopened")
-            #endif
-            return []
+        let refusal = Self.reopenRefusal(testHost: TestHost.isRunningTests, environment: environment)
+        #if DEBUG
+            if refusal == .scriptedLaunch { DebugLaunchHooks.log("launch guard: the last repository is not reopened") }
+        #endif
+        let decided = plan(refusal != nil)
+        if let first = decided.first, root.map(RepositoryWindow.init(url:)) != RepositoryWindow(url: first) {
+            open(first)
         }
-        let urls = launchPaths()
-        guard let first = urls.first else { return [] }
-        open(first)
-        return Array(urls.dropFirst())
+        return decided.rest
     }
 }
