@@ -78,7 +78,8 @@ extension CLIGitBackend {
             "rev-list", "--count", ref, "--not", "--exclude=" + ref, "--exclude=refs/stash",
             "--all",
         ]
-        Self.insertExcludes(local.branches.map { "refs/heads/" + $0 } + local.tags, before: "--all", in: &arguments)
+        Self.insertExcludes(
+            local.branches.map { "refs/heads/" + $0 } + local.tags, before: "--all", in: &arguments)
         return try await revListCount(arguments, at: root)
     }
 

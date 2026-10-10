@@ -26,6 +26,9 @@ import Testing
         ("\u{0B}1", 1), ("\u{0C}1", 1), ("\r1", 1), ("\r\n1", 1), ("\u{A0}1", nil),
         ("+", nil), ("-", nil), ("+-1", nil),
         ("2147483648", nil), ("18446744073709551617", nil),
+        // `strtoul` negates modulo 2^64, so a negative near -2^64 wraps back to a small count
+        // (fix round 1, measured): -(2^64 - 1) is git's 1, and -2^64 overflows to "too many".
+        ("-18446744073709551615", 1), ("-18446744073709551616", nil),
     ]
 
     @Test(arguments: table)
@@ -64,21 +67,18 @@ import Testing
         }
     }
 
-    /// The cross-check's control: it does catch a parse that is not git's. Swift's `Int(_:)` —
-    /// `withConfig`'s parse before E3 — disagrees with git on every leading space.
+    /// The cross-check's control: `gitsReading` does catch a parse that is not git's. Swift's
+    /// `Int(_:)` — `withConfig`'s parse before E3 — disagrees with git's own answer on every
+    /// leading space, a count over `INT_MAX` and a negative that wraps.
     @Test func theCrossCheckCatchesAParseThatIsNotGits() async throws {
         let repo = try await TestRepo.makeEmpty()
         defer { repo.cleanUp() }
 
-        withKnownIssue("Int(_:) reads a leading space as unparsable, git skips it") {
-            #expect(Int(" 1") == 1)
-        }
-        let git = try await Self.gitsReading(of: " 1", in: repo)
-        #expect(git == 1)
-        withKnownIssue("Int(_:) is not git's reading") {
+        await withKnownIssue("Int(_:) is not git's reading") {
             for row in Self.table {
                 let swift = row.value.flatMap { Int($0) }.map { max($0, 0) } ?? 0
-                #expect(swift == row.reading ?? 0, "\(String(reflecting: row.value))")
+                let git = try await Self.gitsReading(of: row.value, in: repo)
+                #expect(git.map { $0 ?? 0 } == swift, "\(String(reflecting: row.value))")
             }
         }
     }

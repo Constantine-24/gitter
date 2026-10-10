@@ -381,11 +381,12 @@ import Testing
         // Not vacuous: the old single call's answer really is broken by the newline (eight
         // lines for four paths), and git's answer for the worktree really is in a rebase.
         let fourPaths = try await repo.git(
-            ["-C", linked.path, "rev-parse", "--git-path", "rebase-apply/applying", "--git-path", "rebase-merge",
-             "--git-path", "rebase-apply", "--git-path", "SQUASH_MSG"])
+            ["-C", linked.path, "rev-parse", "--git-path", "rebase-apply/applying",
+             "--git-path", "rebase-merge", "--git-path", "rebase-apply", "--git-path", "SQUASH_MSG"])
         #expect(fourPaths.filter { $0 == 0x0A }.count == (newline.isEmpty ? 4 : 8))
         let rebaseMerge = String(
-            decoding: try await repo.git(["-C", linked.path, "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"]),
+            decoding: try await repo.git(
+                ["-C", linked.path, "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"]),
             as: UTF8.self)
         #expect(FileManager.default.fileExists(atPath: String(rebaseMerge.dropLast())))
 

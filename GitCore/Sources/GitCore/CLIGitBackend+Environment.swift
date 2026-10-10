@@ -56,17 +56,20 @@ extension CLIGitBackend {
     }
 
     /// git's reading of `GIT_CONFIG_COUNT`: leading C-isspace skipped, an optional sign, decimal
-    /// digits, nothing after; nil when git would refuse it. A negative reads as nil (git's "too
-    /// many"). An absent count is git's zero.
+    /// digits, nothing after; nil when git would refuse it. A negative is wrapped as `strtoul`
+    /// wraps it, so almost every one reads as nil (git's "too many"). An absent count is git's
+    /// zero.
     ///
     /// Measured on git 2.54 (E3 B4.1, and `ConfigCountTests` against the real git, row by row):
     /// git reads the count with `strtoul(…, 10)` and refuses it when anything is left after the
-    /// digits (`bogus count`) or the value is over `INT_MAX` (`too many entries`), which is where
-    /// a negative lands, since `strtoul` wraps it — `-0` is 0. So `" 1"`, `"\t1"` and `" +1"` are
-    /// 1, `""` is 0 (no digits, nothing left over), and `"1 "`, `"1\n"`, `" "`, `"0x1"` and `"-1"`
-    /// are refused. The bytes skipped are C's six spaces (git runs under `LC_ALL=C`, so `U+00A0`
-    /// is not one, measured), read as bytes: `"\r\n"` is one `Character` in Swift and two
-    /// spaces to git.
+    /// digits (`bogus count`) or the value is over `INT_MAX` (`too many entries`). `strtoul`
+    /// saturates a magnitude past 2^64 − 1 to `ULONG_MAX` and negates a negative modulo 2^64, so
+    /// `-1` is `ULONG_MAX` (refused) and `-0` is 0, while a negative near −2^64 wraps back into
+    /// range: `-18446744073709551615` is git's 1 (fix round 1, measured). So `" 1"`, `"\t1"` and
+    /// `" +1"` are 1, `""` is 0 (no digits, nothing left over), and `"1 "`, `"1\n"`, `" "`,
+    /// `"0x1"`, `"-1"` and `"-18446744073709551616"` are refused. The bytes skipped are C's six
+    /// spaces (git runs under `LC_ALL=C`, so `U+00A0` is not one, measured), read as bytes:
+    /// `"\r\n"` is one `Character` in Swift and two spaces to git.
     static func configCount(_ raw: String?) -> Int? {
         guard let raw else { return 0 }
         var bytes = Substring(raw).utf8[...]
@@ -81,14 +84,17 @@ extension CLIGitBackend {
         // `strtoul` with no digits at all consumes nothing, so what is left is the whole value:
         // empty for `""` (git's 0), and anything else refused — a lone sign or space included.
         guard !bytes.isEmpty else { return raw.utf8.isEmpty ? 0 : nil }
-        var value = 0
+        var magnitude: UInt64 = 0
         for byte in bytes {
             guard (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) else { return nil }
-            value = value * 10 + Int(byte - UInt8(ascii: "0"))
-            // Past `INT_MAX` git refuses, whatever follows, and stopping here keeps `value` from
-            // overflowing on a long run of digits.
-            if value > Int(Int32.max) { return nil }
+            let (times10, over1) = magnitude.multipliedReportingOverflow(by: 10)
+            let (next, over2) = times10.addingReportingOverflow(UInt64(byte - UInt8(ascii: "0")))
+            // Past 2^64 − 1 `strtoul` answers `ULONG_MAX`, sign or no sign: git's "too many" —
+            // or its "bogus count" if a non-digit follows. A refusal either way.
+            if over1 || over2 { return nil }
+            magnitude = next
         }
-        return negative && value != 0 ? nil : value
+        let value = negative ? 0 &- magnitude : magnitude
+        return value > UInt64(Int32.max) ? nil : Int(value)
     }
 }
