@@ -54,11 +54,13 @@ struct ScratchDefaults {
 }
 
 /// A store for a test: its defaults are a fresh `ScratchDefaults` suite, never `.standard`, and
-/// `cleanup` removes that suite. Every store GitterTests build comes from here.
+/// `cleanup` removes that suite. Every store GitterTests build comes from here, and with it the
+/// git environment of `GitterTestEnvironment.isolated` (E2 Task 1).
 @MainActor
 func makeTestStore(
     backend: RepositoryStore.Backend = CLIGitBackend()
 ) -> (RepositoryStore, UserDefaults, cleanup: () -> Void) {
+    precondition(GitterTestEnvironment.isolated)
     let scratch = ScratchDefaults()
     let store = RepositoryStore(backend: backend, defaults: scratch.defaults)
     return (store, scratch.defaults, { scratch.remove() })
