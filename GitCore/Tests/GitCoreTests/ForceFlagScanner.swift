@@ -1968,6 +1968,13 @@ enum ForceFlagScanner {
     ///   That carve-out is narrower than this subtraction but cannot replace it, because the
     ///   sweep has no array to look at.
     ///
+    ///   That count is fix round 1's and the tree has moved on (`--all` is six hits, `--tags`
+    ///   three, at E3 Task 4). Two of the new hits are no array element at all: the `before:`
+    ///   argument of `insertExcludes(_:before:in:)` in `commitsOnlyOn` (`"--all"`) and
+    ///   `commitsOnlyOnRemoteBranch` (`"--tags"`), which names a selector already inside that
+    ///   function's classified `["rev-list", …]` literal so that the symref excludes go in just
+    ///   before it — the literal is what the rules read.
+    ///
     /// Say the consequence plainly, because these subtractions are the sweep's price and it
     /// is not zero: `let flag = "--abort"`, `"--merge"`, `"-M"`, `"-p"`, `"-d"`, `"--all"` or
     /// `"--tags"`, used as a non-literal array element, is seen by **no rule at all** — the

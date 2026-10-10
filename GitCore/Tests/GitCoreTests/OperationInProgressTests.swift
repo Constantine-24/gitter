@@ -24,6 +24,16 @@ import Testing
         return repo
     }
 
+    /// `makeDivergent`, moved to `<parent>/main` before any worktree is added, so the main
+    /// checkout's path can hold a character `temporaryDirectory` never does.
+    private static func makeDivergent(movedTo parent: URL) async throws -> TestRepo {
+        let made = try await makeDivergent()
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        let main = parent.appendingPathComponent("main", isDirectory: true)
+        try FileManager.default.moveItem(at: made.root, to: main)
+        return TestRepo(root: main)
+    }
+
     private static func operation(in repo: TestRepo) async throws -> RepositoryOperation? {
         try await operation(at: repo.root)
     }
@@ -351,5 +361,52 @@ import Testing
 
         #expect(try await Self.operation(at: linked) == .rebase)
         #expect(try await Self.operation(in: repo) == nil)
+    }
+
+    /// A raw newline (E3 B4.2), the one byte a line split cannot get around: with the main
+    /// checkout at `par\nent/main`, the one `rev-parse --git-path ×4` a linked worktree asked
+    /// printed eight lines, and its rebase was reported as none. git sanitises the worktree's
+    /// own admin name (`wt\nree` → `wt-ree`), so only the main checkout's path reaches the
+    /// answer. `""` is the plain-path control, the same fixture with no newline anywhere.
+    @Test(arguments: ["\n", ""])
+    func aRebaseInALinkedWorktreeIsSeenWhenTheMainCheckoutsParentHoldsANewline(newline: String) async throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitter-nl-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let repo = try await Self.makeDivergent(movedTo: base.appendingPathComponent("par\(newline)ent"))
+        let linked = base.appendingPathComponent("wt\(newline)ree", isDirectory: true)
+        try await repo.git(["worktree", "add", "-q", linked.path, "side"])
+        try await repo.git(["-C", linked.path, "rebase", "main"], allowedExitCodes: [1])
+
+        // Not vacuous: the old single call's answer really is broken by the newline (eight
+        // lines for four paths), and git's answer for the worktree really is in a rebase.
+        let fourPaths = try await repo.git(
+            ["-C", linked.path, "rev-parse", "--git-path", "rebase-apply/applying", "--git-path", "rebase-merge",
+             "--git-path", "rebase-apply", "--git-path", "SQUASH_MSG"])
+        #expect(fourPaths.filter { $0 == 0x0A }.count == (newline.isEmpty ? 4 : 8))
+        let rebaseMerge = String(
+            decoding: try await repo.git(["-C", linked.path, "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge"]),
+            as: UTF8.self)
+        #expect(FileManager.default.fileExists(atPath: String(rebaseMerge.dropLast())))
+
+        #expect(try await Self.operation(at: linked) == .rebase)
+        #expect(try await Self.operation(in: repo) == nil)
+    }
+
+    /// The main checkout's own answers hold the newline too once they are absolute (as
+    /// `--absolute-git-dir`'s are): a rebase there is still seen, and only there.
+    @Test func aRebaseInTheMainCheckoutIsSeenWhenItsParentHoldsANewline() async throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitter-nl-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let repo = try await Self.makeDivergent(movedTo: base.appendingPathComponent("par\nent"))
+        let linked = base.appendingPathComponent("linked", isDirectory: true)
+        try await repo.git(["worktree", "add", "-q", "-b", "other", linked.path, "main"])
+        try await repo.git(["rebase", "side"], allowedExitCodes: [1])
+        let gitDir = String(decoding: try await repo.git(["rev-parse", "--absolute-git-dir"]), as: UTF8.self)
+        #expect(gitDir.dropLast().contains("\n"), "the git dir must hold the newline: \(gitDir)")
+
+        #expect(try await Self.operation(in: repo) == .rebase)
+        #expect(try await Self.operation(at: linked) == nil)
     }
 }

@@ -389,6 +389,50 @@ import Testing
                 "a pointer at the branch is not a second holder of its commits")
     }
 
+    /// The same rule under `refs/heads` and `refs/tags` (E3 B4.3): `--branches` and `--tags`
+    /// list a symref there as a ref of its own, so one pointing at the remote branch being
+    /// deleted covered its commits and the count came back **0** where three would be stranded.
+    /// A symref to a real local branch holds nothing the branch does not, and changes nothing.
+    @Test(arguments: ["refs/heads/y", "refs/tags/s"])
+    func aLocalSymrefAtTheRemoteBranchIsStillNotAHolder(symref: String) async throws {
+        let repo = try await TestRepo.makeBranched()
+        defer { repo.cleanUp() }
+        let origin = try await repo.addOriginWithFeatureBranch()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        try await repo.git(["switch", "-q", "-c", "topic"])
+        for step in 1...3 {
+            try repo.write("t\(step).txt", "\(step)\n")
+            try await repo.commitAll("topic \(step)")
+        }
+        try await repo.git(["push", "-q", "origin", "refs/heads/topic:refs/heads/topic"])
+        try await repo.git(["fetch", "-q", "origin"])
+        try await repo.git(["switch", "-q", "main"])
+        try await repo.git(["branch", "-q", "-D", "topic"])
+
+        let backend = CLIGitBackend()
+        #expect(try await backend.commitsOnlyOnRemoteBranch("origin/topic", at: repo.root) == 3)
+
+        // A symref to a local branch: harmless before and after.
+        try await repo.git(["symbolic-ref", "refs/heads/x", "refs/heads/main"])
+        #expect(try await repo.symbolicRef("refs/heads/x") == "refs/heads/main")
+        #expect(try await backend.commitsOnlyOnRemoteBranch("origin/topic", at: repo.root) == 3)
+
+        try await repo.git(["symbolic-ref", symref, "refs/remotes/origin/topic"])
+        #expect(try await repo.symbolicRef(symref) == "refs/remotes/origin/topic")
+        #expect(try await backend.commitsOnlyOnRemoteBranch("origin/topic", at: repo.root) == 3,
+                "a pointer at the branch is not a second holder of its commits")
+
+        // And a real holder in the same namespace still is one: the exclusion names the
+        // symref, not the namespace.
+        if symref.hasPrefix("refs/heads/") {
+            try await repo.git(["branch", "keep", "refs/remotes/origin/topic"])
+        } else {
+            try await repo.git(["tag", "keep", "refs/remotes/origin/topic"])
+        }
+        #expect(try await backend.commitsOnlyOnRemoteBranch("origin/topic", at: repo.root) == 0)
+    }
+
     /// A name that would be read as an option, or as a glob the exclusion cannot mean. `*`,
     /// `?` and `[` cannot occur in a real ref name (git's own `check-ref-format` forbids them),
     /// and one of them in the `--exclude=` argument would exclude refs nobody named — which

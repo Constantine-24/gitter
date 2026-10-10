@@ -130,6 +130,41 @@ import Testing
         #expect(try await backend.commitsOnlyOn(branch: "feature", at: repo.root) == 0)
     }
 
+    /// A symbolic ref under `refs/heads` or `refs/tags` is not a place a commit is kept (E3
+    /// B4.3): `--all` lists it as a ref of its own, so one pointing at the branch being deleted
+    /// covered its commits and the count came back **0** where three would be lost. Deleting
+    /// the branch leaves the symref dangling. One pointing at another branch changes nothing.
+    @Test(arguments: ["refs/heads/z", "refs/tags/t"])
+    func aSymrefAtTheBranchIsNotAHolder(symref: String) async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("a.txt", "one\n")
+        try await repo.commitAll("root")
+        try await repo.git(["switch", "-q", "-c", "ltopic"])
+        for step in 1...3 {
+            try repo.write("t\(step).txt", "\(step)\n")
+            try await repo.commitAll("ltopic \(step)")
+        }
+        try await repo.git(["switch", "-q", "main"])
+        #expect(try await backend.commitsOnlyOn(branch: "ltopic", at: repo.root) == 3)
+
+        try await repo.git(["symbolic-ref", "refs/heads/x", "refs/heads/main"])
+        #expect(try await backend.commitsOnlyOn(branch: "ltopic", at: repo.root) == 3)
+
+        try await repo.git(["symbolic-ref", symref, "refs/heads/ltopic"])
+        #expect(try await repo.symbolicRef(symref) == "refs/heads/ltopic")
+        #expect(try await backend.commitsOnlyOn(branch: "ltopic", at: repo.root) == 3,
+                "a pointer at the branch is not a second holder of its commits")
+
+        // A real holder in the same namespace still is one.
+        if symref.hasPrefix("refs/heads/") {
+            try await repo.git(["branch", "keep", "ltopic"])
+        } else {
+            try await repo.git(["tag", "keep", "ltopic"])
+        }
+        #expect(try await backend.commitsOnlyOn(branch: "ltopic", at: repo.root) == 0)
+    }
+
     @Test func rejectsAnInvalidNameBeforeGitRuns() async throws {
         let repo = try await TestRepo.makeBranched()
         defer { repo.cleanUp() }

@@ -203,7 +203,10 @@ extension CLIGitBackend: GitRemoteAdminBackend {
 
     /// Every symbolic ref under `refs/heads/` (short, as `--branches` reads an exclude) and under
     /// `refs/tags/` (full, as `--glob=refs/tags` reads one). A dangling one is not listed by
-    /// `for-each-ref`, and holds nothing.
+    /// `for-each-ref`, and holds nothing. Read once per call by the stranded counts here and in
+    /// `CLIGitBackend+Worktrees.swift`, and since E3 by `commitsOnlyOnRemoteBranch` (which strips
+    /// `refs/tags/`, as `--tags` reads an exclude) and `commitsOnlyOn` (which spells the branches
+    /// in full, as `--all` does).
     func symbolicBranchAndTagRefs(at root: URL) async throws -> (branches: [String], tags: [String]) {
         let data = try await run(["for-each-ref", "--format=%(refname)%00%(symref)", "--end-of-options", "refs/heads", "refs/tags"], cwd: root)
         var branches: [String] = []
@@ -218,6 +221,16 @@ extension CLIGitBackend: GitRemoteAdminBackend {
             }
         }
         return (branches, tags)
+    }
+
+    /// `--exclude=<name>` for each of `names`, inserted just before `selector` in `arguments` —
+    /// an exclude applies to the next selector only. The selector stays in its classified
+    /// `rev-list` literal, where the scanner can see what it belongs to.
+    static func insertExcludes(_ names: [String], before selector: String, in arguments: inout [String]) {
+        guard let index = arguments.firstIndex(of: selector) else {
+            preconditionFailure("\(selector) is not in the vector")
+        }
+        arguments.insert(contentsOf: names.map { "--exclude=" + $0 }, at: index)
     }
 
     private static let remoteTrackingPrefix = "refs/remotes/"

@@ -249,10 +249,23 @@ extension CLIGitBackend: GitRemoteBackend {
         // The symbolic refs are excluded too, and they are **named** rather than globbed. See
         // `symbolicRemoteRefs` for why a symref must be excluded at all and what the `*/HEAD`
         // glob that used to stand here got wrong in both directions.
+        //
+        // **Under `refs/heads` and `refs/tags` as well** (E3, measured on git 2.54, B4.3):
+        // `--branches` and `--tags` list a symref there as a ref of their own, so
+        // `refs/heads/y → refs/remotes/origin/topic` covered `origin/topic` and the count came
+        // back 0 where three commits would be stranded. Each is excluded before its own selector
+        // in that selector's namespace — `y` before `--branches`, `s` (not `refs/tags/s`) before
+        // `--tags`, as `--remotes` reads `origin/HEAD`; `--exclude=refs/heads/y` before
+        // `--branches` excludes nothing (measured: 0). A symref to a real local branch or tag
+        // loses nothing by it: the target is listed itself.
+        let local = try await symbolicBranchAndTagRefs(at: root)
         var arguments = [
             "rev-list", "--count", "refs/remotes/" + remoteBranch, "--not", "--branches",
             "--tags", "--exclude=" + remoteBranch,
         ]
+        Self.insertExcludes(local.branches, before: "--branches", in: &arguments)
+        Self.insertExcludes(
+            local.tags.map { String($0.dropFirst("refs/tags/".count)) }, before: "--tags", in: &arguments)
         for symref in try await symbolicRemoteRefs(at: root) {
             arguments.append("--exclude=" + symref)
         }

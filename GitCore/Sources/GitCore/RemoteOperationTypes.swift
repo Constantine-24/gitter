@@ -10,7 +10,7 @@ import Foundation
 ///
 /// **This is not `BranchOperationError`, and the difference matters.** Every case of that type
 /// is a refusal: git did nothing, and the UI may say so. Here, only the cases thrown *before
-/// git runs* (`.noRemote` for a name Gitter will not pass on, `.noUpstream`, `.invalidLease`,
+/// git runs* (`.noRemote` for a name Gitter will not pass on, `.invalidLease`,
 /// and `.unsafeFetchRefspec` for a *named* remote — see its own comment for `--all`) carry
 /// that guarantee. The rest are reports of a failure that happened somewhere in the middle of a
 /// transfer, and a fetch that failed **may still have updated refs** — measured on git 2.54:
@@ -53,14 +53,10 @@ public enum RemoteOperationError: Error, Equatable, Sendable {
     case repositoryNotFound
     /// There is no remote to work with: a name Gitter will not hand to git (empty, whitespace,
     /// beginning with `-`, or `.`), or — for the store, later in this milestone — a repository
-    /// with no remote configured at all. Thrown **before git runs**, so it is the one case here
-    /// besides `.noUpstream` that really does mean nothing changed. See `GitRemoteBackend.fetch`
-    /// for what each refused name would otherwise have meant to git.
+    /// with no remote configured at all. Thrown **before git runs**, so it really does mean
+    /// nothing changed. See `GitRemoteBackend.fetch` for what each refused name would otherwise
+    /// have meant to git.
     case noRemote
-    /// The branch has no upstream, so there is nothing for the operation to work against. Not
-    /// thrown by `fetch`, which does not need one; it is here for the operations in the tasks
-    /// that follow, which do.
-    case noUpstream
     /// The remote is configured but git has no URL for what was asked — none at all, or (for a
     /// fetch or a read of the remote's refs) only a push URL. git would use the remote's **name
     /// as a path** (fix round 1, I1, measured: a nested checkout called `vendor` was fetched

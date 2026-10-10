@@ -21,8 +21,8 @@ extension CLIGitBackend {
     /// actually *resolves*, where a stat would accept a truncated or half-written leftover,
     /// and it keeps working under ref backends that do not store refs as loose files. Each
     /// call is a few milliseconds, and the common answer — "none" — needs all of them anyway.
-    /// `SQUASH_MSG` has no pseudo-ref to verify that way, so it rides along in the one
-    /// `--git-path` call instead — see `gitPaths`.
+    /// `SQUASH_MSG` has no pseudo-ref to verify that way, so it rides along with the sequencer
+    /// directories in `gitPaths`' one `--absolute-git-dir` call instead.
     func operationInProgress(at root: URL) async throws -> RepositoryOperation? {
         async let paths = gitPaths(at: root)
         async let merge = hasPseudoRef("MERGE_HEAD", at: root)
@@ -59,8 +59,8 @@ extension CLIGitBackend {
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// What the sequencer directories — and a pending squash's message file — say, in one
-    /// `rev-parse` call.
+    /// What the sequencer directories — and a pending squash's message file — say, from one
+    /// `rev-parse --absolute-git-dir` call.
     ///
     /// Neither a rebase nor `git am` has a pseudo-ref; both keep a directory. `rebase-merge/`
     /// belongs to the merge backend (and `rebase -i`), `rebase-apply/` to the older `am`
@@ -68,40 +68,49 @@ extension CLIGitBackend {
     /// apart. Git's own `wt-status` discriminates on the file `rebase-apply/applying`, and so
     /// does this: `git rebase --apply` leaves that file out, `git am` writes it. `SQUASH_MSG`
     /// has nothing to discriminate — a pending squash is a pending squash — so it is just a
-    /// stat, folded into the same call because it costs nothing extra to ask for.
+    /// stat, read from the same answer because it costs nothing extra to ask for.
+    ///
+    /// **One value, composed, rather than four `--git-path` answers** (E3, measured on git 2.54,
+    /// B4.2). The four came back one per line, and a raw newline in the main checkout's path —
+    /// which a linked worktree's absolute answers hold — made eight lines of them, so the count
+    /// check failed and a rebase in progress read as none. `-z` is not an option there (git
+    /// echoes it as an argument), and `--path-format=absolute` only made the main checkout's own
+    /// answers break the same way. `--absolute-git-dir` prints one path, so stripping exactly one
+    /// trailing `\n` gives it back exactly, and for all four names `<absolute-git-dir>/<name>`
+    /// equals `rev-parse --path-format=absolute --git-path <name>`, in a linked worktree and in
+    /// the main checkout alike. All four are per-worktree files, so the common directory is not
+    /// needed. A worktree's own admin name cannot hold a newline (git sanitises `wt\nree` to
+    /// `wt-ree`). **Not measured:** `GIT_DIR` or `GIT_COMMON_DIR` set in Gitter's environment,
+    /// where `--git-path` could answer differently from the composition.
+    ///
+    /// An empty answer — nothing git would print for a repository — is read as no operation, the
+    /// fallback the four-line count check had.
     private func gitPaths(at root: URL) async throws -> (rebase: RebaseState, hasSquashMsg: Bool) {
-        let data = try await run(
-            [
-                "rev-parse", "--git-path", "rebase-apply/applying", "--git-path", "rebase-merge",
-                "--git-path", "rebase-apply", "--git-path", "SQUASH_MSG",
-            ], cwd: root)
-        // One path per line, cut at the `\n` byte only: a linked worktree's answers are
-        // absolute and hold the main checkout's directory name, which may contain a character
-        // `isNewline` would cut at (see `GitLines`).
-        let paths = GitLines.split(data)
-        guard paths.count == 4 else { return (.none, false) }
+        var data = try await run(["rev-parse", "--absolute-git-dir"], cwd: root)
+        if data.last == 0x0A { data.removeLast() }
+        guard !data.isEmpty else { return (.none, false) }
+        let gitDir = String(decoding: data, as: UTF8.self)
         let rebase: RebaseState
-        if exists(paths[0], relativeTo: root, directory: false) {
+        if exists(gitDir, "rebase-apply/applying", directory: false) {
             rebase = .applyingPatches
-        } else if exists(paths[1], relativeTo: root, directory: true)
-            || exists(paths[2], relativeTo: root, directory: true) {
+        } else if exists(gitDir, "rebase-merge", directory: true)
+            || exists(gitDir, "rebase-apply", directory: true) {
             rebase = .rebase
         } else {
             rebase = .none
         }
-        return (rebase, exists(paths[3], relativeTo: root, directory: false))
+        return (rebase, exists(gitDir, "SQUASH_MSG", directory: false))
     }
 
     private enum RebaseState {
         case none, rebase, applyingPatches
     }
 
-    /// `--git-path` answers relative to the current directory (`.git/rebase-merge`) for an
-    /// ordinary checkout and absolutely for a linked worktree, so both forms are handled.
-    private func exists(_ path: String, relativeTo root: URL, directory: Bool) -> Bool {
-        let url = path.hasPrefix("/") ? URL(fileURLWithPath: path) : root.appendingPathComponent(path)
+    /// Whether `<gitDir>/<name>` is there, as a directory or as a file. `gitDir` is absolute:
+    /// `--absolute-git-dir`'s answer.
+    private func exists(_ gitDir: String, _ name: String, directory: Bool) -> Bool {
         var isDirectory: ObjCBool = false
-        let found = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        let found = FileManager.default.fileExists(atPath: gitDir + "/" + name, isDirectory: &isDirectory)
         return found && isDirectory.boolValue == directory
     }
 }

@@ -66,12 +66,20 @@ extension CLIGitBackend {
         //
         // `--exclude=refs/stash` too: a stash entry is not a place a commit is kept (see the
         // protocol's doc comment), and both exclusions apply to the one `--all` after them.
+        //
+        // So is every symbolic ref under `refs/heads` and `refs/tags` (E3, measured on git 2.54,
+        // B4.3): `--all` lists one as a ref of its own, so `refs/heads/z → refs/heads/<branch>`
+        // covered the branch's commits and the count came back 0 where three would be lost —
+        // and deleting the branch leaves `z` dangling. Spelled in full, as `--all` reads an
+        // exclude. A symref to another branch or tag loses nothing by it: the target is listed.
         let ref = "refs/heads/" + branch
-        return try await revListCount(
-            [
-                "rev-list", "--count", ref, "--not", "--exclude=" + ref, "--exclude=refs/stash",
-                "--all",
-            ], at: root)
+        let local = try await symbolicBranchAndTagRefs(at: root)
+        var arguments = [
+            "rev-list", "--count", ref, "--not", "--exclude=" + ref, "--exclude=refs/stash",
+            "--all",
+        ]
+        Self.insertExcludes(local.branches.map { "refs/heads/" + $0 } + local.tags, before: "--all", in: &arguments)
+        return try await revListCount(arguments, at: root)
     }
 
     public func commitCount(in branch: String, notIn base: String, at root: URL) async throws -> Int {

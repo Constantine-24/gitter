@@ -1056,8 +1056,6 @@ enum RemoteWording {
                 + "access to it."
         case .noRemote:
             "Couldn't \(attempt): there is no such remote."
-        case .noUpstream:
-            "Couldn't \(attempt): the branch has no upstream."
         case .noURL(let remote):
             "Couldn't \(attempt): \"\(plain(remote))\" has no URL for that, so nothing was run — git "
                 + "would have used the name as a path."

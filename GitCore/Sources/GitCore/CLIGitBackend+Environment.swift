@@ -17,10 +17,13 @@ extension CLIGitBackend {
     /// parameter of the user's own setting it to `true`
     /// (`gitReadsTheAddedParameterAsTheLastWord`).
     ///
-    /// An absent, empty or unreadable `GIT_CONFIG_COUNT` counts as zero. git itself refuses to
-    /// run with an unreadable or negative one (measured: `error: bogus count in
-    /// GIT_CONFIG_COUNT`, `error: too many entries in GIT_CONFIG_COUNT`, both exit 128), so
-    /// nothing that worked before is lost by replacing it.
+    /// The count is read as git reads it (`configCount`): `" 1"` is git's 1, so the user's
+    /// `GIT_CONFIG_KEY_0` is kept and this parameter goes at index 1 (E3; before it, Swift's
+    /// `Int(_:)` read that count as 0 and this parameter replaced the user's). A count git
+    /// refuses counts as zero. git itself refuses to run with one (measured: `error: bogus count
+    /// in GIT_CONFIG_COUNT`, `error: too many entries in GIT_CONFIG_COUNT`, both exit 128), so
+    /// nothing that worked before is lost by replacing it, and the git this hands back runs
+    /// (`ConfigCountTests`, every row of the measured table).
     ///
     /// **`GIT_CONFIG_PARAMETERS` outranks all of that.** It is how `git -c` hands its
     /// parameters to a child — so it is in Gitter's environment when Gitter was started from a
@@ -39,7 +42,7 @@ extension CLIGitBackend {
     /// is the last word on `key` for this one command. `key` and `value` are Gitter's own
     /// constants, never user input: neither is quoted for `GIT_CONFIG_PARAMETERS`.
     static func withConfig(_ key: String, _ value: String, over inherited: [String: String]) -> [String: String] {
-        let count = inherited["GIT_CONFIG_COUNT"].flatMap { Int($0) }.map { max($0, 0) } ?? 0
+        let count = configCount(inherited["GIT_CONFIG_COUNT"]) ?? 0
         var environment = inherited
         environment["GIT_CONFIG_KEY_\(count)"] = key
         environment["GIT_CONFIG_VALUE_\(count)"] = value
@@ -50,5 +53,42 @@ extension CLIGitBackend {
             environment["GIT_CONFIG_PARAMETERS"] = parameters + " '\(key)'='\(value)'"
         }
         return environment
+    }
+
+    /// git's reading of `GIT_CONFIG_COUNT`: leading C-isspace skipped, an optional sign, decimal
+    /// digits, nothing after; nil when git would refuse it. A negative reads as nil (git's "too
+    /// many"). An absent count is git's zero.
+    ///
+    /// Measured on git 2.54 (E3 B4.1, and `ConfigCountTests` against the real git, row by row):
+    /// git reads the count with `strtoul(…, 10)` and refuses it when anything is left after the
+    /// digits (`bogus count`) or the value is over `INT_MAX` (`too many entries`), which is where
+    /// a negative lands, since `strtoul` wraps it — `-0` is 0. So `" 1"`, `"\t1"` and `" +1"` are
+    /// 1, `""` is 0 (no digits, nothing left over), and `"1 "`, `"1\n"`, `" "`, `"0x1"` and `"-1"`
+    /// are refused. The bytes skipped are C's six spaces (git runs under `LC_ALL=C`, so `U+00A0`
+    /// is not one, measured), read as bytes: `"\r\n"` is one `Character` in Swift and two
+    /// spaces to git.
+    static func configCount(_ raw: String?) -> Int? {
+        guard let raw else { return 0 }
+        var bytes = Substring(raw).utf8[...]
+        while let first = bytes.first, [0x20, 0x09, 0x0A, 0x0B, 0x0C, 0x0D].contains(first) {
+            bytes = bytes.dropFirst()
+        }
+        var negative = false
+        if let sign = bytes.first, sign == UInt8(ascii: "+") || sign == UInt8(ascii: "-") {
+            negative = sign == UInt8(ascii: "-")
+            bytes = bytes.dropFirst()
+        }
+        // `strtoul` with no digits at all consumes nothing, so what is left is the whole value:
+        // empty for `""` (git's 0), and anything else refused — a lone sign or space included.
+        guard !bytes.isEmpty else { return raw.utf8.isEmpty ? 0 : nil }
+        var value = 0
+        for byte in bytes {
+            guard (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) else { return nil }
+            value = value * 10 + Int(byte - UInt8(ascii: "0"))
+            // Past `INT_MAX` git refuses, whatever follows, and stopping here keeps `value` from
+            // overflowing on a long run of digits.
+            if value > Int(Int32.max) { return nil }
+        }
+        return negative && value != 0 ? nil : value
     }
 }
