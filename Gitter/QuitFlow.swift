@@ -23,6 +23,11 @@ import AppKit
 /// - AppKit dropping the terminate anyway, without asking the delegate within `bound` (a sheet
 ///   that came back between the last look and the terminate; RF1): logged, and the flow ends.
 ///
+/// **The quit event's reply** (E3, `QuitEventReplies.swift`): a quit Apple Event is held from its
+/// handler on (`holdCurrentQuitEvent`) and answered once, with the quit's outcome
+/// (`answerHeldQuitEvents`): −128 when either bound gives up or `QuitGuard` calls the quit off, 0
+/// when it goes ahead. A request ignored as under way leaves its event held for that outcome.
+///
 /// The stores come from `AppModel.quitStores()`, the one provider `QuitGuard` uses too.
 @MainActor
 enum QuitFlow {
@@ -99,6 +104,7 @@ enum QuitFlow {
                 QuitGuard.log("quit: a sheet did not close")
                 environment.beep()
                 isUnderWay = false
+                answerHeldQuitEvents(quitting: false)
                 return .sheetsStillAttached
             }
             try? await Task.sleep(for: environment.poll)
@@ -112,6 +118,7 @@ enum QuitFlow {
             guard clock.now - terminated < environment.bound else {
                 QuitGuard.log("quit: AppKit did not ask")
                 isUnderWay = false
+                answerHeldQuitEvents(quitting: false)
                 return .terminateCalled
             }
             try? await Task.sleep(for: environment.poll)

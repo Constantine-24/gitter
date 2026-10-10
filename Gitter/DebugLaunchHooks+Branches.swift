@@ -31,6 +31,7 @@
     ///     open:<path>                  menu:<title>        views[:<class>]     badges
     ///     autofetchfailed:<reason>     copyurls
     ///     quit                         alert               alertbutton:<title>
+    ///     quitevent
     ///     menuitem:<menu>:<title>
     ///     notice                       openlink
     ///     newwindow:<path>             inwindow:<n>
@@ -150,17 +151,24 @@
     /// (`perform(_:with:afterDelay: 0)`) — not from a main-queue block, where a held quit would
     /// starve every MainActor job — so that the steps after it still run while `QuitGuard` holds
     /// the quit (`.terminateLater`): `start:push;wait:1;quit;wait:1;alert;alertbutton:Wait`. With
-    /// a quit already under way it is ignored, and says so (`QUIT … ignored`). A step the launch
-    /// guard refuses ends the script and quits the same way. `alertbutton:<title>` clicks
-    /// that button of an alert on screen (`performClick`, the button's own action — the alert's
-    /// completion handler runs as it would for a pointer). `menuitem:<menu>:<title>` fires a main
-    /// menu item through `NSMenu.performActionForItem(at:)`, which is what choosing it does —
+    /// a quit already under way it is ignored, and says so (`QUIT … ignored`). `quitevent` quits the
+    /// way the Dock, a logout or a shutdown does: it sends the quit Apple Event to the app's own
+    /// Apple Event Mach port from a background thread and logs the reply it gets back,
+    /// `quit event reply: <keyErrorNumber>` — −128 once a quit is called off, 0 when it goes ahead —
+    /// or `quit event send failed: <error>` (`DebugLaunchHooks+Quit`); the steps after it go on
+    /// without waiting for the reply: `start:push;wait:1;quitevent;wait:1;alert;alertbutton:Don't
+    /// Quit`. A step the launch guard refuses ends the script and quits the way `quit` does.
+    /// `alertbutton:<title>` clicks that button of an alert on screen (`performClick`, the
+    /// button's own action — the alert's completion handler runs as it would for a pointer).
+    /// `menuitem:<menu>:<title>` fires a main menu item through `NSMenu.performActionForItem(at:)`,
+    /// which is what choosing it does —
     /// how "Fetch Automatically" is toggled — and `menu:<title>` then shows its state, and which
     /// window's store the menus act on (the front one's, `menu <title>: front window: …`). Both
     /// make the app frontmost first when none of its windows is key (`bringToFront`). None of
-    /// the three waits for a step's work to finish. `alert` logs every text and button (with its key
-    /// equivalent) of each sheet on screen: the snapshot draws an alert's frame and its tinted
-    /// buttons but not its text, which is drawn with vibrancy (the sidebar's problem, below).
+    /// the three waits for a step's work to finish, nor does `quitevent`. `alert` logs every text
+    /// and button (with its key equivalent) of each sheet on screen: the snapshot draws an alert's
+    /// frame and its tinted buttons but not its text, which is drawn with vibrancy (the sidebar's
+    /// problem, below).
     ///
     /// `notice` logs both notice slots — each one's text, links and button titles:
     /// `notice transient: <…> | links: [...] | actions: [...]` and the same for `sticky`.
@@ -217,8 +225,8 @@
                 // `mutate` and the lane are both claimed synchronously, so by now `isMutating` or
                 // `remoteActivity` is already set for anything that runs git; a step that only
                 // opens a sheet sets neither and this returns at once.
-                if started || text.hasPrefix("wait:") || text == "quit" || text == "alert"
-                    || text.hasPrefix("alertbutton:") || text.hasPrefix("menuitem:")
+                if started || text.hasPrefix("wait:") || text == "quit" || text == "quitevent"
+                    || text == "alert" || text.hasPrefix("alertbutton:") || text.hasPrefix("menuitem:")
                 {
                     // Nothing to wait for: the point is to carry on while it runs.
                 } else if laneWasBusy && text != "cancel" && text != "idle" {
@@ -398,6 +406,7 @@
                 // until none is attached — AppKit refuses a quit while one is (M1.4) — and then
                 // terminates from the run loop (`QuitFlow.Environment.live`).
                 QuitFlow.request(.harness)
+            case "quitevent": sendQuitEvent()
             case "alert":
                 for window in NSApp.windows where window.sheetParent != nil && window.isVisible {
                     logControls(in: window.contentView, window: "\(type(of: window))")

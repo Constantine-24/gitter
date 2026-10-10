@@ -30,7 +30,8 @@ import AppKit
 ///
 /// A second quit (⌘Q again) while one is held does nothing: `QuitFlow` ignores a request while a
 /// quit is under way, and AppKit does not ask `applicationShouldTerminate` again until the first
-/// is answered. Every answer of false ends the quit for `QuitFlow` (`quitEnded`).
+/// is answered. Every answer of false ends the quit for `QuitFlow` (`quitEnded`). Every ending
+/// answers the quit Apple Events held meanwhile (`wentAhead`, `calledOff`): 0, or −128.
 ///
 /// **Not covered:** a SIGTERM (`kill`, a logout that force-quits) never reaches
 /// `applicationShouldTerminate`, and git is left running as before; and a mutation that is not
@@ -91,7 +92,8 @@ enum QuitGuard {
         switch decision(lanes) {
         case .now:
             log("quit: the lane is free, quitting now")
-            AppModel.windows.beginAppTermination()
+            // No reply to AppKit: `.terminateNow` is the answer.
+            wentAhead(reply: { _ in })
             return .terminateNow
         case .stopReads:
             let kinds = lanes.compactMap { $0.map { "\($0.kind)" } }
@@ -129,7 +131,7 @@ enum QuitGuard {
         let cancel = alert.addButton(withTitle: RemoteWording.quitCancel)
         cancel.keyEquivalent = "\u{1b}"
 
-        let answer: (NSApplication.ModalResponse) -> Void = { response in
+        let answer: @MainActor (NSApplication.ModalResponse) -> Void = { response in
             switch response {
             case .alertFirstButtonReturn:
                 log("quit: Wait")
@@ -152,11 +154,12 @@ enum QuitGuard {
         }
         // As a sheet on the window showing the store with the write (or on the sheet it already
         // has), like every other question Gitter asks; app-modal when that window is closed — a
-        // closed window's write still runs (`WindowRegistry.windowClosed`) — or not on screen.
+        // closed window's write still runs (`WindowRegistry.windowClosed`) — or not on screen,
+        // raised from the run loop so that every other window's work goes on under it (C3).
         if let window = AppModel.windows.window(of: writing), window.isVisible {
             alert.beginSheetModal(for: window.attachedSheet ?? window, completionHandler: answer)
         } else {
-            DispatchQueue.main.async { answer(alert.runModal()) }
+            ModalAlert.raise(alert, then: answer)
         }
     }
 
@@ -267,31 +270,51 @@ enum QuitGuard {
                 repository: store.root?.lastPathComponent, told: told))
     }
 
-    /// The call-off's message for a store with no window: app-modal, one OK, after the reply.
+    /// The call-off's message for a store with no window: app-modal, one OK, after the reply —
+    /// raised from the run loop, so that every other window's work goes on under it (C3).
     private static func tell(_ text: String) {
-        DispatchQueue.main.async {
-            let alert = NSAlert()
-            alert.alertStyle = .warning
-            alert.messageText = RemoteWording.quitCalledOffTitle
-            alert.informativeText = text
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = RemoteWording.quitCalledOffTitle
+        alert.informativeText = text
+        alert.addButton(withTitle: "OK")
+        ModalAlert.raise(alert, then: { _ in })
     }
 
     /// The quit goes ahead: from here on a window's close is part of it, and leaves the
     /// open-repositories list alone (`WindowRegistry.beginAppTermination`).
     private static func quit() {
-        AppModel.windows.beginAppTermination()
-        NSApp.reply(toApplicationShouldTerminate: true)
+        wentAhead(reply: replyToAppKit)
     }
 
-    /// The quit is called off: AppKit is told, and so is `QuitFlow`, so that the next ⌘Q starts
-    /// afresh, and the window registry, whose closes count again.
+    /// The quit goes ahead (`.terminateNow`, which passes a `reply` that does nothing, and every
+    /// `reply(true)`): the window registry's closes are part of it from here, and every held quit
+    /// event is answered 0 — before the reply, after which the process may end (A2b).
+    static func wentAhead(reply: (Bool) -> Void) {
+        AppModel.windows.beginAppTermination()
+        QuitFlow.answerHeldQuitEvents(quitting: true)
+        reply(true)
+    }
+
     private static func callOff() {
+        calledOff(reply: replyToAppKit)
+    }
+
+    /// The quit is called off: every held quit event is answered `userCanceledErr` (−128), so a
+    /// logout learns that the user's Don't Quit cancelled it; AppKit is told, and so is
+    /// `QuitFlow`, so that the next ⌘Q starts afresh, and the window registry, whose closes count
+    /// again.
+    static func calledOff(reply: (Bool) -> Void) {
         AppModel.windows.endAppTermination()
-        NSApp.reply(toApplicationShouldTerminate: false)
+        QuitFlow.answerHeldQuitEvents(quitting: false)
+        reply(false)
         QuitFlow.quitEnded()
+    }
+
+    /// The live reply to a `.terminateLater`; the tests pass their own to `wentAhead` and
+    /// `calledOff`.
+    private static func replyToAppKit(_ quitting: Bool) {
+        NSApp.reply(toApplicationShouldTerminate: quitting)
     }
 
     /// A `QUIT <time> …` line on stderr, DEBUG only. Internal: `QuitFlow` writes its lines here too.

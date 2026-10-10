@@ -198,6 +198,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `_shouldTerminate`, past the menu, and is swallowed with a sheet up (M1.6). A handler
     /// installed here, before launch finishes, sees it first and quits through `QuitFlow`, which
     /// closes the sheets and then terminates — where AppKit's own handler would have ended up.
+    /// The handler holds the event's reply until the quit's outcome (`QuitEventReplies`), as
+    /// AppKit's own handler does (A1), so that the sender learns whether Gitter quit.
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSAppleEventManager.shared().setEventHandler(
             self, andSelector: #selector(handleQuit(_:withReplyEvent:)),
@@ -206,7 +208,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func handleQuit(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
         MainActor.assumeIsolated {
+            // Here, in the handler, while the event is current: nothing later can (A2).
+            QuitFlow.holdCurrentQuitEvent()
             QuitFlow.request(.appleEvent)
+        }
+    }
+
+    /// The net: a quit event still held when the app goes is answered 0 before exit (A2b).
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            QuitFlow.answerHeldQuitEvents(quitting: true)
         }
     }
 
