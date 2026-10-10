@@ -365,8 +365,9 @@
                 try? await Task.sleep(for: .milliseconds(800))
                 first.map { snapshot(named: $0, store: store) }
             // "Open Repository…" mid-script, e.g. while a push is on the lane. The path is the
-            // rest of the step, colons and all. Once another repository is open, the launch
-            // guard refuses every step after this one.
+            // rest of the step, colons and all. Once this window shows another repository, the
+            // launch guard refuses every step after this one, unless that repository is one
+            // GITTER_DEBUG_ALSO_OPEN lists (the guard then accepts it as a window's own).
             case "open":
                 let path = step.dropFirst("open:".count)
                 if !path.isEmpty { store.open(URL(fileURLWithPath: String(path))) }

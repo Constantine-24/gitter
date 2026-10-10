@@ -661,9 +661,45 @@ one sheet, one at a time, and reports each. `worktree prune` is never run.
 ![Removing a detached worktree: its path, "This deletes its folder, above, and everything in it.", the one commit only its HEAD holds with a ticked box keeping a branch at it, and in orange the two ignored entries git deletes without asking; the Worktrees section behind it](docs/screenshots/worktrees.png)
 
 **What stays a terminal job.** Locking, unlocking, moving and repairing a worktree (a locked one is
-shown and left alone); `worktree prune`; per-worktree config; opening a worktree in a second
-window; commit search; tags or commits in compare; and cherry-picking from the compare list (the
+shown and left alone); `worktree prune`; per-worktree config; commit search; tags or commits in compare; and cherry-picking from the compare list (the
 history keeps those actions).
+
+### Windows and quitting
+
+**One repository per window.** File › New Window (⌘N) opens an empty window of its own: each
+window has its own repository, sheets, selection, network lane and automatic fetch, and the
+menus (Refresh, Repository, Remotes, Stop) act on the front window — they are off with no window,
+or while the front window's sheet is up. Fetch Automatically is the one app-wide setting, so it
+stays reachable with no window and tells every window.
+
+**Every open goes to a window.** A repository that a window already shows is brought to the front,
+by whatever spelling of its path; nothing opens twice, so two windows never share an index. Open
+Repository… (⌘O) uses the front window if it shows nothing and opens a new one otherwise; Open
+Recent and a Finder open each get a new window; a click on the Dock icon with no window open
+shows one empty window. Open Worktree switches the window it is asked in, unless another window
+already shows that worktree, which comes to the front instead. **Open in New Window**, beside it
+in a worktree's menu, opens a worktree this window does not show (the main one too) in a window
+of its own.
+
+**The reopen list.** Gitter keeps its own list of the repositories that have a window
+(`openRepositoryPaths`) and reopens each in its own window at the next launch, in order — macOS
+window restoration is off, so no killed launch can leave saved state that restores no window. A
+Finder open at launch comes first, then the list. Closing a window takes its repository off the
+list, except while the app is quitting, so the list survives a quit. A path that no longer opens
+is dropped. Window frames and sidebar state are not kept across launches. Closing a window
+stops its automatic fetch and file watcher and cancels its reads; a **write** that is running
+finishes first, git is never killed mid-write, and the window's store stays in sight of the quit
+check until it is done. If that write fails with nobody looking, a held quit is called off and an
+alert says why.
+
+**Quit with a sheet up.** ⌘Q, the Dock's Quit and a logout's quit all go through one path: every
+window's sheet is closed (what was typed in it is lost), Gitter waits until AppKit shows none —
+AppKit refuses to quit while a sheet is attached — and then quits through the same question as
+before. If a push, pull or other write is running in **any** window, the alert asks whether to
+Wait, Stop and Quit or not quit; reads are cancelled and waited for. If a sheet has not closed
+after 2 seconds the quit is dropped with a beep (`quit: a sheet did not close`), and a second ⌘Q
+during a quit is ignored. The quit Apple Event is answered at once, so a logout does not learn
+that a quit was called off.
 
 ## Design decisions
 
@@ -682,6 +718,8 @@ history keeps those actions).
 | Remotes housekeeping | A dry-run listing on the lane, then a per-ref compare-and-delete on the ids the sheet showed; stranded commits counted once as a union and kept as branches before anything is deleted; URLs read as configured; a failed `remote rename` / `remove` read back, never assumed a no-op | `fetch --prune` deletes whatever the server lacks at that moment; remote-tracking refs have no reflog; `remote -v` shows the rewritten URL; git leaves half-done state under a held lock |
 | History actions | A plan read first (order, left out, may be skipped, replayed, already pushed), shown on a sheet, made again by the run and refused on any difference; full commit ids and `refs/…` names in every vector; tags deleted by compare-and-delete with the receipt kept in the app | A sheet is a promise only if the run checks it; a short name can mean a tag; tags have no reflog |
 | Navigation | Compare reads both tips to ids once and every count, list and diff from those ids (`log --left-only` / `--right-only` over the symmetric range, the changes by `diff-tree` from the merge base); worktree removal behind Gitter's own check, made again in full before git runs, with git's settings forced; worktrees added only on a branch named in full and read back | A branch can move mid-read; a two-dot `log` disagrees with the count under clock skew; `worktree remove` deletes ignored files, hidden edits and nested repositories without asking, and `worktree add` creates or detaches what it guesses |
+| Windows | `WindowGroup(for: RepositoryWindow.self)`, one `RepositoryStore` per window made by `@State private var store = AppModel.windows.makeStore()`; a `WindowRegistry` routes every open; Gitter's own reopen list, restoration off | A store per window keeps sheets, lanes and fetch schedules apart; routing keeps one index to one store; restoration cannot be told what Gitter's list knows, and a killed launch could leave state that restores no window |
+| Quit | One `QuitFlow` (menu, quit Apple Event, harness), which closes every sheet and waits for AppKit to show none before terminating through `QuitGuard`, which checks every window | AppKit does not ask the app whether it may quit while a window has a sheet attached |
 | Scope | Browsing, diffs, staging, commit, branch and remote operations, stash and discard, conflict resolution and continuing an operation, cherry-pick, revert, rebase onto a commit, tags, remotes housekeeping, the sidebar filter, comparing branches and worktrees are done | Each milestone keeps the promise before it adds the next way to lose work |
 
 ## Build & run
@@ -723,7 +761,7 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (583 tests in 38 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (694 tests in 55 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -737,12 +775,31 @@ which refusals Stash and Continue answers, when the toolbar reveals a lane's act
 resolver's choices and previews (the same composition GitCore writes), and every state of the
 operation bar and the composer's prefill, and the launch guard's decisions (`DebugLaunchGuard`).
 Under a test host the app reopens no repository, starts no automatic fetch and adds nothing to
-Open Recent (`TestHost`). Every test's store keeps its settings in a scratch defaults suite of
+Open Recent, and keeps no list of open repositories (`TestHost`). Every test's store keeps its settings in a scratch defaults suite of
 its own, named by a path inside its own temporary folder and removed with it (`makeTestStore`),
 so a run never touches the repository you last had open or the app's real `dev.penzin.Gitter`
 defaults, and leaves nothing in `~/Library/Preferences`; `DefaultsIsolationTests` reads the real
 domain before and after each of its tests, never writing it, and tests the reopen and Open
 Recent decisions.
+
+**GitterTests runs on isolated real git.** Every git a GitterTest causes runs under
+`GitterTestEnvironment.isolated`, a word-for-word copy of GitCore's `TestGitEnvironment.isolated`
+(your git configuration and system configuration are not read, no ssh agent or askpass, only the
+`file` transport): `makeTestStore`, `ScratchRepo` and the scratch registries refuse to run without
+it, and a control reads `git config --show-origin --list` through a store's own backend and
+asserts that nothing comes from outside the repository. `ScratchRepo` makes a temporary
+repository (with an optional local bare remote) and removes only its own directory.
+`waitUntilIdle` waits for a store's lane, mutation, worktree read and scheduled refresh to settle,
+bounded by a ten-minute `.timeLimit` through a `CallUnderTest` (a copy of GitCore's, kept
+identical to its source by a test that reads both files). Store-level flows run on that real git:
+a stash pop that conflicts, applies partly or is kept after a failed drop, Stash and Continue after
+a refused `track`, `detach` and create-and-switch, and a Continue refusal, its sheet and the retry
+(including the index changing between the sheet and Continue, and everything unstaged). Two
+windows' stores, `WindowRegistry` routing and the reopen list, `QuitFlow` and `QuitGuard` over
+several stores, and a closed window's store whose write is still running (a push held by a
+`receivepack` script until the test lets it go) are tested the same way. The cases that need git
+to change state between one backend call's internal steps wait for a fake backend (the backlog's
+E3 items).
 
 `GitCoreTests` has 1 664 tests in 142 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
@@ -846,21 +903,35 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   submodule really loses the work inside it — the hazard the unstage's
   `--no-recurse-submodules` keeps away, so the fixture can show it.
 
-`GitterTests` reports **four known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
+`GitterTests` reports **eighteen known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
 shows that the operation gate alone lets a branch another worktree holds through, which is why
 the switch asks about the hold first. Three come from `DefaultsIsolationTests`: the check that
 the real defaults are unchanged fails when a store writes the domain it watches (a scratch
 suite standing in for the real one), directly, inside a test's scope, and in a test that writes
-and then throws.
+and then throws. The other fourteen are the controls of the helpers added in milestone E2:
+- Nine come from `ScratchGitTests`: a config include from outside the repository is caught by the
+  isolation check; `waitUntilIdle` on a store held busy and on a stuck refresh is reported as
+  "never came back" instead of freezing; a failed open is recorded instead of hanging; the copied
+  hang guard reports a stuck call; a transport that never starts, a condition that never holds, a
+  lane that never frees and a store that never leaves the registry are each caught by the waits
+  built on `waitUntil`.
+- Two come from `CopiedSupportGuardTests`: a one-character drift in either copied GitCore helper
+  is caught by the comparison.
+- One comes from `HarnessControlsTests`: the control modifier applied outside the control's
+  `.disabled` reads the control as enabled.
+- One comes from `DebugLaunchGuardTests`: a `linkedRepo` that is a plain directory and not a link
+  to the repository is another path.
+- One comes from `OpenRoutingTests`: before the launch has taken it, an open is held, not handed to
+  the window opener.
 
 Deleting any of them would take the proof away and the suite would go on looking green.
 
 ## Project layout
 
-Every `.swift` file in the two product targets — 191 of them, which is what `find
+Every `.swift` file in the two product targets — 196 of them, which is what `find
 GitCore/Sources Gitter -name '*.swift' | wc -l` prints — with the ones inside `Models/`,
-`Parsers/` and `Views/` named in prose rather than one per line. The 167 test files (131 in
-`GitCore/Tests`, 36 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
+`Parsers/` and `Views/` named in prose rather than one per line. The 184 test files (131 in
+`GitCore/Tests`, 53 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
 listed, which is also why the check is that command and not a bare `find . -name '*.swift'`:
 that one reaches them too, and the generated sources under `.build` as well.
 
@@ -941,8 +1012,13 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
   Tests/GitCoreTests/           142 suites; ForceFlagScanner(+Lexing) is the force-flag grep
 
 Gitter/                   macOS app (SwiftUI)
-  GitterApp.swift            App entry point, the one store (`AppModel`), the Repository
-                              menu, Open Recent and the quit hook (`AppDelegate`)
+  GitterApp.swift            App entry point, `AppModel` (the window registry), the menus
+                              (File, Repository, Remotes, Quit), Open Recent, the quit Apple
+                              Event and the Finder and Dock hooks (`AppDelegate`)
+  RepositoryWindow.swift     What a window shows (`RepositoryWindow`) and the window's view,
+                              which owns its store and takes the launch
+  WindowRegistry.swift       Every window's store: open routing, the reopen list, closing a
+                              window, the launch plan
   RepositoryStore.swift      @Observable @MainActor store: snapshot + selection state
   RepositoryStore+Opening.swift   Opening a repository, checking git is there
   RepositoryStore+Refresh.swift   Debounced, coalesced snapshot reloading
@@ -975,7 +1051,9 @@ Gitter/                   macOS app (SwiftUI)
                                   Missing), the folder check, the held-branch reasons, the title
   SidebarFilter.swift        Which rows the sidebar filter leaves, and its words
   AutoFetchScheduler.swift   When the quiet automatic fetch runs (the store decides what it does)
-  QuitGuard.swift            Quitting while the network lane is busy: stop, or ask first
+  QuitGuard.swift            Quitting while a lane is busy, in any window: stop, or ask first
+  QuitFlow.swift             The one way to quit: close every sheet, wait for AppKit to show
+                              none, then terminate
   RemoteActivity.swift       What the lane is running, a refused push, the progress relay
   RemoteWording.swift        Every sentence about the network, and making server text plain
   StashWording.swift         Every sentence about a stash and Stash and Continue
@@ -1008,7 +1086,10 @@ Gitter/                   macOS app (SwiftUI)
     +Continue.swift            its operation bar and composer steps
     +History.swift             its history and tag steps
     +RemoteAdmin.swift         its remotes housekeeping steps
-    +Navigation.swift          its filter, compare and worktree steps
+    +Navigation.swift          its filter, compare, worktree and window steps
+    +Controls.swift            its sheet-control steps (`controls`, `press:`, `tick:`, `fill:`,
+                               `choose:`)
+  HarnessControls.swift      Debug-only: the registry sheets put their controls in, by label
   DebugLaunchGuard.swift     Debug-only: a scripted launch never reaches the last repository
   Views/                     MainWindow, SidebarView, SidebarMenus, StashesSection,
                               CommitListView, CommitGraphCell, DetailView, StashDetailView,
@@ -1038,7 +1119,11 @@ GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app):
                           reasons, the sidebar filter, a linked worktree's watched paths
                           and fingerprint, the worktree read's schedule, a held branch's
                           switch, the test-host check, and the scratch defaults every test
-                          store is built on (`TestStoreSupport`, `DefaultsIsolationTests`)
+                          store is built on (`TestStoreSupport`, `DefaultsIsolationTests`);
+                          and on isolated real git (`GitterTestEnvironment`, `ScratchRepo`,
+                          `StoreIdle`, `HeldTransport`): the stash and continue flows, the
+                          window registry, open routing and the reopen list, closing a window,
+                          `QuitFlow` and `QuitGuard`, and the harness's control registry
 ```
 
 ## Debug launch hooks
@@ -1047,7 +1132,8 @@ GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app):
 `DebugLaunchHooks+Branches.swift`, `DebugLaunchHooks+Stash.swift`,
 `DebugLaunchHooks+Discard.swift`, `DebugLaunchHooks+Conflicts.swift`,
 `DebugLaunchHooks+Continue.swift`, `DebugLaunchHooks+History.swift`,
-`DebugLaunchHooks+RemoteAdmin.swift`, `DebugLaunchHooks+Navigation.swift` and
+`DebugLaunchHooks+RemoteAdmin.swift`, `DebugLaunchHooks+Navigation.swift`,
+`DebugLaunchHooks+Controls.swift`, `HarnessControls.swift` and
 `DebugLaunchGuard.swift` exist only in Debug builds
 (`#if DEBUG`, compiled out of Release) and drive the UI from environment variables, read once at
 startup. They exist because the verification environment has Screen Recording but not
@@ -1061,11 +1147,19 @@ selection, staging, click, key or step unless the repository on screen is that p
 with links resolved). Before this guard (B2, Ruling 15) the app reopened the last repository and
 a script's steps ran against whatever had loaded — measured with a scratch stand-in: a script
 with no `GITTER_DEBUG_OPEN`, or whose own open failed, force-deleted a branch of the reopened
-repository. Each refusal is logged as `BRANCH_ACTION launch guard: refused: …`, and a refused
-launch then sits idle: quit it yourself. A scripted launch does not add the repositories it opens
-to Open Recent (B3, Ruling 7). A launcher should still write `lastRepositoryPath` and
+repository. Each refusal is logged as `BRANCH_ACTION launch guard: refused: …`, and the app then quits
+by itself, through the same quit as ⌘Q (a refused step does the same), so a refused launch no
+longer waits for a watchdog. A scripted launch does not add the repositories it opens
+to Open Recent (B3, Ruling 7). A scripted launch also keeps its windows out of the reopen list (`openRepositoryPaths`) and, in
+a second window, acts only on a repository the launcher named (`GITTER_DEBUG_ALSO_OPEN`, below).
+A launcher should still write `lastRepositoryPath` and
 `autoFetchEnabled=false` (and read them back) before it starts the app, export the app's
-defaults first and restore them afterwards, and pass `-ApplePersistenceIgnoreState YES`, so a
+defaults first and restore them afterwards — `defaults import` only merges, so the restore step
+is: import the export, compare the key sets of the export and of the domain after the run, run
+`defaults delete dev.penzin.Gitter <key>` for each key that was absent before (never delete the
+domain), export again and `cmp` the two exports. The keys are not only the launcher's own:
+AppKit writes its own, and a second window adds
+`NSSplitView Subview Frames main-AppWindow-2, SidebarNavigationSplitView`. The launcher also passes `-ApplePersistenceIgnoreState YES`, so a
 launch that has to be killed — a refused one, or one whose quit a sheet held — cannot leave your
 saved window state restoring to no window (B3 Task 4, measured).
 
@@ -1077,15 +1171,16 @@ saved window state restoring to no window (B3 Task 4, measured).
 | `GITTER_DEBUG_SELECT_LINES=3,4` | pre-select those line ids in the first hunk |
 | `GITTER_DEBUG_APPLY=hunk:0` or `lines` | then stage/unstage that hunk, or those lines |
 | `GITTER_DEBUG_WINDOW=1400x1400` | resize the window, past the screen if asked |
-| `GITTER_DEBUG_OPEN=<path>` | the fixture: opened first, as "Open Repository…" would, and the only repository any hook acts on (the launch guard above). A failed open leaves nothing to act on, so every step is refused |
+| `GITTER_DEBUG_OPEN=<path>` | the fixture: opened first, as "Open Repository…" would, and the only repository any hook acts on (the launch guard above), apart from the ones `GITTER_DEBUG_ALSO_OPEN` names. A failed open leaves nothing to act on, so every step is refused |
+| `GITTER_DEBUG_ALSO_OPEN=<path>[:<path>…]` | the other windows' repositories: the only paths a `newwindow:` step may open, and, once a window shows one of them, repositories the guard accepts as that window's own. Any other path is refused |
 | `GITTER_DEBUG_APPEARANCE=light\|dark` | force the app's appearance, so a screenshot pass can shoot both without changing the machine's setting |
 | `GITTER_DEBUG_CLICK=x,y[:2\|:shift\|:right][;…]` | click those points, in points from the top-left of the *frontmost* window's content area — the sheet's own, while one is up; `:2` double-clicks, `:shift` shift-clicks, a `type=text` step types between two clicks, and `:right` posts a right-click, which is kept as a recorded negative result: it does not open a SwiftUI `.contextMenu` |
-| `GITTER_DEBUG_KEYS=space,return,cmd+return` | then press those keys (`space`, `return`, `tab`, `escape`, `up`, `down`, `period`, `f`, `l`, `p`, `r`, `delete` (⌫), with `cmd+`/`shift+`/`opt+`/`ctrl+`). A key with `cmd+` is dispatched as AppKit dispatches one — the window's views, then the main menu — because a *posted* command key never reaches a menu's key equivalent (measured: a posted ⌘R ran no Refresh) |
+| `GITTER_DEBUG_KEYS=space,return,cmd+return` | then press those keys (`space`, `return`, `tab`, `escape`, `up`, `down`, `period`, `f`, `l`, `p`, `r`, `delete` (⌫), `q`, with `cmd+`/`shift+`/`opt+`/`ctrl+`; `cmd+q` reaches Gitter's own Quit Gitter item and quits as ⌘Q does, with a sheet up as well). A key with `cmd+` is dispatched as AppKit dispatches one — the window's views, then the main menu — because a *posted* command key never reaches a menu's key equivalent (measured: a posted ⌘R ran no Refresh) |
 | `GITTER_DEBUG_TYPE=text` | then type that text into whatever has focus |
 | `GITTER_DEBUG_DUMP_RESPONDER=1` | print the first-responder chain, the window geometry and whether the window is key to stderr, after every click and key; a count instead of `1` repeats the final dump that many times, 200 ms apart, which is how you tell "never focused" from "focused, then lost it" |
 | `GITTER_DEBUG_BRANCH_ACTION=<step>[;<step>…]` | run branch actions and open their sheets (see below) — the sidebar's context menus are AppKit menus that in-process clicks cannot open |
 | `GITTER_DEBUG_THEN=<step>[;<step>…]` | more branch steps, run **after** the clicks and keys — what a click on a toolbar button did: `idle;snapshot:after-click` |
-| `GITTER_DEBUG_AUTOFETCH=<interval>[,<timeout>]` | run the automatic fetch every `<interval>` seconds instead of 10 minutes, stopping each one after `<timeout>` seconds (default 120) instead of 2 minutes — so a script sees several ticks. Every tick and every ending prints an `AUTOFETCH …` line, naming the store (`store 1`); `STORES built: <n>` lines at launch and on every open event say how many stores exist — one is the only right answer |
+| `GITTER_DEBUG_AUTOFETCH=<interval>[,<timeout>]` | run the automatic fetch every `<interval>` seconds instead of 10 minutes, stopping each one after `<timeout>` seconds (default 120) instead of 2 minutes — so a script sees several ticks. Every tick and every ending prints an `AUTOFETCH …` line, naming the store (`store 1`); `STORES built: <n>, registered: <m>` lines at launch and on every open event say how many stores were built and how many the window registry made — each window has one, so built and registered must be equal, and the line says so when a store was built outside the registry |
 | `GITTER_DEBUG_QUIT_WAIT=<seconds>` | how long **Wait**, in the quit alert, waits for a write before calling the quit off with a banner, instead of 10 minutes — so a script can reach the bound with a slow scratch transport |
 | `GITTER_DEBUG_SNAPSHOT_DIR=<dir>` | where a `snapshot:<name>` step writes `<name>.png`: the window and any sheet on it, drawn by the app itself — no Screen Recording needed, and it works for a window on a Space nobody is looking at |
 
@@ -1109,17 +1204,19 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `forcepush` / `confirmforcepush` | open the force push sheet (only possible after a rejected `push`), and answer it |
 | `deleteremote:<remote>/<branch>` / `confirmdeleteremote` | open the delete-on-remote sheet, and answer it |
 | `cancel` | stop what the network lane is running, and wait for it to say so |
-| `start:<step>` / `idle` | run a step without waiting for its network lane, so the next steps run *during* it; `idle` then waits for the lane to free |
+| `start:<step>` / `idle` | run a step without waiting for its network lane, so the next steps run *during* it; `idle` then waits for the lane to free — a lane an automatic fetch holds does not count (below) |
 | `stageall` / `commit:<subject>` | stage everything — during an operation, when files outside it would be added, it opens Stage All's question instead (`confirmstageall`) — and commit through the composer's own path |
 | `snapshot:<name>` | draw the window into `GITTER_DEBUG_SNAPSHOT_DIR/<name>.png` |
-| `open:<path>` | open that repository as "Open Repository…" does — mid-script, e.g. while a push is running |
-| `menu:<title>` | log every item of that main-menu menu — title, shortcut, enabled — as it would be when opened; a script cannot open a menu. As the **very first** step it can read stale state (seen: every item `enabled=false` before the first snapshot had loaded), so put `wait:1` before it |
+| `open:<path>` | open that repository in this window as "Open Repository…" does — mid-script, e.g. while a push is running. The launch guard refuses every step after it unless the path is one `GITTER_DEBUG_ALSO_OPEN` names |
+| `newwindow:<path>` / `inwindow:<n>` | open `<path>` in a window of its own, as Open Recent or a Finder open does (or bring the window already showing it to the front), wait for its first snapshot and list every registered store with `[target]` and `[key]` marks; refused, and the app quits, unless `<path>` is one of `GITTER_DEBUG_ALSO_OPEN`'s. `inwindow:` makes the n-th store (1-based, in the order made) the **target**. Every step acts on the target — the first window's store until `inwindow:` — and its guard, wait and result line are the target's; so are `snapshot:`, `views` and the title lines, which draw and read the target's window. The menus act on the **front** window, and `menu:` says which |
+| `controls` / `press:<label>` / `tick:<label>[=on\|off]` / `fill:<label>=<text>` / `choose:<label>=<option>` | drive the target's sheet through its own controls: each sheet registers its buttons, toggles, fields and pickers by the label on screen (a field's or picker's without its colon) in a Debug-only registry, so a step runs exactly what the control does. `controls` logs `control: <kind> "<label>" = "<state>" [enabled\|disabled]` for each (a picker's with `[options: a\|b]`) in the order their views registered, `control: none (store N)` when there are none; the others split the label from the value at the first `=` (a `fill:` text may hold `=` and `:`, never `;`; a bare `tick:` is on). Each waits a frame, then up to 5 seconds for exactly one enabled control of that kind and label — a sheet still appearing, a name still being checked — and logs `control: pressed "…"`, `ticked "…" on`, `filled "…" = "…"` or `chose "…" = "…"`, or `control refused: <kind> <why>` (not on screen, more than one, disabled, or a value it does not take; an option label two options share is ambiguous) and runs nothing. A control is the sheet's it was drawn in, so one still being dismissed cannot be pressed. Every sheet registers Cancel and its default or destructive button; Keep All, Keep None and each keep box and name (Prune, Remove Remote, Remove Worktree), Add Worktree's kind, branch, name and folder, Compare's branch lists, Stash's options, Clean Up Gone Branches' rows, and Add Remote, Edit URL and Rename Remote's fields are fully covered. A Choose… folder panel stays the panel's: fill the folder field instead. The `confirm…` steps and `prefill:` stay |
+| `menu:<title>` | log every item of that main-menu menu — title, shortcut, enabled — as it would be when opened, then `front window: store N <repo>[, sheet up]` (the window the menus act on); a script cannot open a menu. The menus follow the front window, so when no Gitter window is key the step first brings the app to the front, as the click hooks do — a scripted launch with `menu:` or `menuitem:` comes to the front on your screen. As the **very first** step it can read stale state (seen: every item `enabled=false` before the first snapshot had loaded), so put `wait:1` before it |
 | `views[:<class>]` | log the window's view tree with frames in click coordinates; a toolbar item is a `ToolbarItemHostingView`, above the content area (negative y) — the centre of its frame is where `GITTER_DEBUG_CLICK` aims |
 | `badges` | log what each local branch's tracking badge draws, its tooltip and its VoiceOver text — the snapshot cannot draw the sidebar |
 | `copyurls` | for every configured remote, take the items its sidebar menu offers ("Copy URL", "Copy Push URL"), copy each through the menu's own call onto a *private* pasteboard and log `copy <remote> "<title>": <raw address> -> <what was copied>` — how the credential redaction is checked. It prints the raw address, so point it only at scratch remotes |
 | `autofetchfailed:<reason>` | set the failure the Fetch item's quiet mark stands for, without waiting for a real automatic fetch to fail |
-| `menuitem:<menu>:<title>` | choose that main-menu item (`NSMenu.performActionForItem`) — how "Fetch Automatically" is toggled; `menu:<title>` a second later shows its tick as `state=on` |
-| `quit` | quit as ⌘Q does, from the run loop, so the steps after it run while the quit is held: `start:push;wait:1;quit;wait:1;start:snapshot:alert;alert;alertbutton:Wait`. `QUIT …` lines say what was decided and when |
+| `menuitem:<menu>:<title>` | choose that main-menu item (`NSMenu.performActionForItem`) — how "Fetch Automatically" is toggled; `menu:<title>` a second later shows its tick as `state=on`. Like `menu:` it brings the app to the front first, and the item acts on the **front** window's store, while the step's wait and result line describe the target |
+| `quit` | quit as ⌘Q does (`QuitFlow`, so with a sheet up the sheets are closed first and the quit then goes ahead), from the run loop, so the steps after it run while the quit is held: `start:push;wait:1;quit;wait:1;start:snapshot:alert;alert;alertbutton:Wait`. `QUIT …` lines say what was decided and when |
 | `notice` | log both notice slots, the transient one and the sticky one: each one's text, links and button titles |
 | `openlink` | press the sticky notice's **Open** through the store's own call, with an opener that only logs `openlink: <url>` — the harness never starts a browser |
 | `stash:<msg>[:u]` / `stashpaths:<p,p>:<msg>` | **acts**: Stash Changes… with every change (`:u` ticks "Include untracked files"), or as if those files were selected with "Selected files" — the sheet, then its Stash. An empty `<msg>` is git's default (all changes) or the files' names (selected) |
@@ -1140,7 +1237,7 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `resolve` / `take:ours\|theirs:<path>` / `keep:<path>` / `deletefile:<path>` / `markresolved:<path>` | **act**: Resolve File, Take Ours / Theirs, Keep … Version, Delete the File (`delete:` is the branch step), Mark Resolved — each through the resolver's own entry point, which logs the offer first, so a refused one shows |
 | `confirmreplace` / `confirmmarkers` | answer the "changed since the conflict" sheet and the leftover-markers sheet |
 | `reopen:<path>` / `confirmreopen` | open Reopen Conflict… for a resolved file (logs `reopen: not offered` when it is not), and answer it |
-| `noticeshow` / `cancelsheet` | press the sticky notice's **Show Copy**; close the sheet on screen as its Cancel does — `quit` does nothing while a sheet is attached, so write `cancelsheet;wait:1;quit` |
+| `noticeshow` / `cancelsheet` | press the sticky notice's **Show Copy**; close the sheet on screen as its Cancel does — `quit` closes a sheet itself now, so this is only for a script that wants the sheet gone before it goes on |
 | `bar` | log the operation bar: its sentence, Continue's and Skip's state and reason, the stop as read, the halted or stale list, the draft and the composer's note |
 | `message:<text>` | replace the composer's draft (`\n` for a line break) |
 | `continue` / `confirmempty` / `confirmothers` | **acts**: the bar's Continue, which runs or opens the sheet the stop needs; answer the empty-result sheet and the other-staged-files sheet |
@@ -1155,31 +1252,31 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `deletetag:<n>` / `confirmdeletetag` | open Delete Tag… for that tag (it opens after a config read, and the step waits for it), and **act**: its Delete Tag |
 | `restoretag[:<n>]` | **acts**: the sticky notice's Restore Tag(s), or with a name that deleted tag's row's Restore Tag |
 | `pushtag:<n>:<r>` / `deleteremotetag:<n>:<r>` / `confirmdeleteremotetag` | **act**: Push Tag to <r>; Delete from <r>…'s read, then its sheet (the id it is leased on, or "no such tag"), and its button |
-| `prune:<remote>` / `confirmprune[:none\|:<ref>=<name>,…]` | Prune <remote>…: the listing on the lane, then the sheet — every ref with its id, the stranded count and commits, the holders, the default keep boxes with their names and verdicts, `<remote>/HEAD`'s target — or the notice; and **act**: its Prune with the default boxes, none, or those (each ref in full). The harness cannot tick a box or press Keep All / Keep None inside a sheet |
+| `prune:<remote>` / `confirmprune[:none\|:<ref>=<name>,…]` | Prune <remote>…: the listing on the lane, then the sheet — every ref with its id, the stranded count and commits, the holders, the default keep boxes with their names and verdicts, `<remote>/HEAD`'s target — or the notice; and **act**: its Prune with the default boxes, none, or those (each ref in full). A box, Keep All and Keep None are `tick:`, `press:` steps now |
 | `cleanup` / `confirmcleanup[:<b,…>]` | Clean Up Gone Branches…: the rows (detail, ticked, where checked out, the unmerged warning) or the notice; and **act**: its button with the default ticks or those names |
 | `pushbranch:<b>` / `confirmpublish:<remote>` / `ffbranch:<b>` | **act**: Push / Publish… / Re-publish of a branch from its menu, the publish sheet's button with that remote, and Fast-Forward |
 | `upstream:<b>` / `setupstream:<b>:<ref>` / `unsetupstream:<b>` | Set / Change Upstream…'s sheet and its choices; **act**: the sheet's button with that full ref, and Unset Upstream |
 | `adminmenu` | log every local branch's and remote's housekeeping items as their menus build them, with the reasons the disabled ones show, each remote's sidebar badge and tooltip ("no URL"), and the menu bar's Remotes menu |
-| `prefill:<key>=<value>` / `prefill:clear` | what the next remote sheet's fields start with (`name`, `url`, `fetch`, `push`, `own` = 0\|1) — the harness cannot type into a sheet; `bannerAnchor=bottom` starts a scrolling banner at its end |
+| `prefill:<key>=<value>` / `prefill:clear` | what the next remote sheet's fields start with (`name`, `url`, `fetch`, `push`, `own` = 0\|1) — kept for old scripts, since `fill:` now types into a sheet; `bannerAnchor=bottom` starts a scrolling banner at its end |
 | `addremote` / `confirmaddremote:<name>=<url>[=nofetch]` | Add Remote…'s sheet; and **act**: its button, fetching the new remote after unless `nofetch` |
 | `editurl:<remote>` / `confirmediturl[:<key>=<value>\|…]` | Edit URL…: the read, then the sheet — each configured URL as shown, the fields' starting text, the "git connects to" line, the several-URLs notes; and **act**: its Save with the fields as `prefill` keys say |
 | `renameremote:<remote>` / `confirmrenameremote:<new>` | Rename…'s sheet; and **act**: its button |
 | `removeremote:<remote>` / `confirmremoveremote[:<keep>]` | Remove…: the impact's read, then the sheet — every ref with its id, the stranded count, the keep defaults, each sentence about upstreams, push redirects and refs left behind; and **act**: its button, `<keep>` as for `confirmprune` |
 | `filter:<text>` / `sidebar` | set the sidebar filter's text as typing would (`filter:` empties it), and log every section the sidebar draws after it — each remote group and whether it is expanded, "No matches", and the count VoiceOver hears |
 | `worktrees` / `worktreemenu` / `pills` | log every worktree row (folder, branch line, marks and their tooltips, the changes read, this window's path and both titles — and the window number a window-scoped `screencapture -l` needs, since the snapshot cannot draw the sidebar); every worktree menu and every branch's held icon with Switch, Delete and Fast-Forward and their reasons; every "worktree:" pill |
-| `openworktree:<folder>` | Open Worktree on that row, then the root and the titles. The launch guard refuses every step after it — another repository is open — so the launcher ends the app |
+| `openworktree:<folder>` | Open Worktree on that row, then the root and the titles. It is routed like any open: a window already showing that worktree comes to the front, otherwise this window switches. The launch guard refuses every step after it — another repository is open — and the app quits |
 | `watchloads:<seconds>` | for that long, one line per finished snapshot load (HEAD, files, stashes, every branch's tip) — how a terminal's change in a linked worktree is checked against git |
 | `reloadtiming` | a snapshot load, timed: when it landed, whether the worktree state was then still the one before, and when the worktree state's own read landed. Every step waits for a worktree read in flight before it runs |
 | `comparewith:<full ref>` / `compare:<a>:<b>` | "Compare with "<current>"" on that branch, or a comparison of two full refs; then `comparestate`: the bar and its buttons, the moved line, the changes row, each group with its count and listed ids, the header, the selection, the files |
 | `comparesheet` / `comparefilter:<text>` / `confirmcompare:<a>:<b>` | Compare Branches…'s presets and options, the options a filter leaves, and its Compare with those refs |
 | `compareselect:<id\|changes>` / `comparepath:<path>` / `compareswap` / `comparerefresh` / `comparedone` / `comparemenu` / `comparecopy:<id>` | click a commit or the changes row, a file of the changes; Swap, Refresh, Done; log every branch's compare items with their reasons; Copy Commit ID onto a private pasteboard, read back |
 | `sidebarclick:<branch>` / `reload` | a sidebar branch row's click (which ends compare mode); a snapshot load, as the watcher would start one |
-| `addworktree[:<b>]` / `folderproblem:<path>` / `confirmaddworktree:existing:<b>:<path>` (or `new:<name>:<start>:<path>`, `tracking:<name>:<remote ref>:<path>`) | Add Worktree… and what it offers; the folder field's live check for that text; and **acts**: its Add with that choice — the harness cannot use the sheet's controls — then the notice or banner and the worktree list |
+| `addworktree[:<b>]` / `folderproblem:<path>` / `confirmaddworktree:existing:<b>:<path>` (or `new:<name>:<start>:<path>`, `tracking:<name>:<remote ref>:<path>`) | Add Worktree… and what it offers; the folder field's live check for that text; and **acts**: its Add with that choice — the sheet's own controls are `press:`, `tick:`, `fill:` and `choose:` — then the notice or banner and the worktree list |
 | `removeworktree:<folder>` / `removeworktreestart:<folder>` / `removeallmissing` / `worktreesheet` / `confirmremoveworktree[:none\|:<name>]` | Remove Worktree… (after the check, or at once so the progress state can be shot), Remove All Missing…, the sheet's every line; and **acts**: its button with the keep boxes as they start, none, or the one kept as `<name>` |
-| `noticeopen` | the sticky notice's **Open** after an add; the launch guard then refuses the rest |
+| `noticeopen` | the sticky notice's **Open** after an add (routed like Open Worktree); the launch guard then refuses the rest, and the app quits |
 | `tags` | log every tag row as the sidebar draws it (icon, tooltip, VoiceOver), its menu with the reasons, the deleted tags' rows, and each commit's pills beside `%D` — the snapshot cannot draw the sidebar |
 
-A step that starts network work waits for the lane to free as well, for up to 120 seconds; a
+A step that starts network work waits for the lane to free as well, for up to 120 seconds, and a wait that runs out logs `BRANCH_ACTION wait timed out after <s>s: <what>`; a
 step taken while the lane is already busy waits only for the mutation slot, so a second
 network action is refused and logged at once. After each step a second line reports the lane
 (its kind, remote and progress line), whether the banner offers Force Push and Stash and
@@ -1187,7 +1284,7 @@ Continue (with the stash's message, `-u` and the reason it is off), the three bl
 tracking, the counts the Push and Pull buttons draw (`pushCount`, `pullCount`), the Push
 tooltip, the remembered pull mode, how many snapshot loads have run, whether "Fetch
 Automatically" is on and the last automatic fetch's failure. An automatic fetch on the lane
-does not count as busy for this: the user's actions stop it and go ahead. A step that starts **no** network work, though, waits for the lane to be empty, the automatic fetch included — so `snapshot:` taken during one waits for it to end; write `start:snapshot:<name>` to shoot it running. And `quit` while a sheet is on screen does nothing at all: AppKit does not ask the app whether it may quit while a window has a sheet attached (seen with the new-branch sheet and the delete-on-remote sheet alike), so answer or close the sheet first. A click on the
+does not count as busy for this: the user's actions stop it and go ahead. Nor does a step wait it out: the default wait (S11) is for no blocking network activity and no write running, so `idle` and a `snapshot:` taken during an automatic fetch return at once (they used to wait for it to end); `start:snapshot:<name>` still shoots a running push or fetch. `quit` with a sheet on screen quits: AppKit does not ask the app whether it may quit while a window has a sheet attached (seen with the new-branch sheet and the delete-on-remote sheet alike), so `QuitFlow` closes every window's sheet and waits until AppKit shows none (0.27–0.29 s measured), then terminates. A refused launch or step quits the same way. If a write is running the quit is held and asked about. A click on the
 toolbar's Stop that the double-click guard drops logs `stop click ignored`.
 
 A slow transport, for cancelling and for working during a fetch, is configuration in the
@@ -1262,6 +1359,13 @@ processes it started, and the app's tests never touch your real defaults. A Stop
 of git's that ignores SIGTERM even when git itself has already exited, and a git killed by a
 signal is reported as killed, never as an exit code (the corners left are the backlog's "Own the
 reap").
+
+Works in several windows and quits with a sheet up (milestone E2): File › New Window opens a
+second, independent repository window, each with its own sheets, lane and automatic fetch;
+every open is routed to a window and a repository is never open twice; the open windows come
+back at the next launch; and ⌘Q, the Dock's Quit and a logout close every sheet and quit, asking
+first when a write is running in any window. The debug harness drives the controls inside
+sheets and a second window, and the app's own tests run its store flows on isolated real git.
 
 Everything wanted and deliberately deferred is kept in [`docs/BACKLOG.md`](docs/BACKLOG.md), with
 what is already known about each item — including what only a person at the keyboard can still
