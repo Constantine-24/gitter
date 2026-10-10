@@ -70,6 +70,18 @@ extension RepositoryStore {
         return nil
     }
 
+    /// The banner for a folder `open(_:)` cannot open — no `.git` in it, neither a repository's
+    /// folder nor a linked worktree's file — or nil when it has one. The one test of "is this a
+    /// repository" an open makes: `open(_:)` refuses with it, and the routing asks it before it
+    /// makes a window for a folder that would only show this banner (`WindowRegistry.route`,
+    /// Ruling 17).
+    static func notARepository(_ url: URL) -> String? {
+        let standardized = url.standardizedFileURL
+        let dotGit = standardized.appending(path: ".git")
+        guard !FileManager.default.fileExists(atPath: dotGit.path) else { return nil }
+        return "Not a Git repository: \(standardized.path)"
+    }
+
     /// The repository `reopenLastRepository` would open: the last path in `defaults`, if it is
     /// still a folder.
     static func lastRepositoryToReopen(in defaults: UserDefaults) -> URL? {

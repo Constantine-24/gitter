@@ -11,8 +11,9 @@ import Observation
 /// (`AppModel.quitStores()`); the menus act on the front window's (`FocusedValues.repositoryStore`).
 ///
 /// **Every open is routed here** (`route`, `open`, E2 Task 4): a repository a window already shows
-/// comes to the front; Open Repository… takes an empty front window; everything else gets a
-/// window of its own (`openWindow`). No open happens unseen.
+/// comes to the front; Open Repository… takes an empty front window; a folder that is not a
+/// repository is refused in the front window's banner; everything else gets a window of its own
+/// (`openWindow`). No open happens unseen.
 ///
 /// **A closed window lingers** (M3.2): its `NSWindow` stays in `NSApp.windows` and its view tree —
 /// with its store — is not released. So a close is told here explicitly (`windowClosed`, from the
@@ -111,6 +112,10 @@ final class WindowRegistry {
     /// - shown in an open window, by any spelling (RF2) → `.front`, whatever asked;
     /// - Open Repository… with a front window that shows nothing → `.useFront`;
     /// - Open Worktree with its window open → `.useFront`: that window switches to it;
+    /// - a folder that is not a repository (`RepositoryStore.notARepository`), with a front window
+    ///   open and the launch taken → `.refused`: the front window says so and no window is made
+    ///   for a banner, as before E2 (Ruling 17). With no front window the open makes one, which
+    ///   shows the banner; before the launch it is held for the first window, as any open is;
     /// - otherwise — Open Recent, a Finder open, Open in New Window, or a front window that shows a
     ///   repository — `.newWindow`.
     func route(_ url: URL, kind: OpenKind, front: RepositoryStore?) -> OpenRoute {
@@ -120,12 +125,14 @@ final class WindowRegistry {
             case .openPanel where front.root == nil, .worktreeHere: return .useFront(front)
             default: break
             }
+            if launchTookPendingOpen, RepositoryStore.notARepository(url) != nil { return .refused(front) }
         }
         return .newWindow(RepositoryWindow(url: url))
     }
 
     /// Opens `url` where `route` says: brings its window to the front (made key, out of the Dock
-    /// if it was there), opens it in the empty front window, or asks for a new window — held in
+    /// if it was there), opens it in the empty front window, shows the front window's banner for a
+    /// folder that is not a repository, or asks for a new window — held in
     /// `pendingOpen` for the first window while the launch has not taken it yet (Ruling 9), so a
     /// Finder open at launch comes first and the open list's repositories follow it.
     @discardableResult
@@ -134,6 +141,8 @@ final class WindowRegistry {
         switch route {
         case .front(let store): window(of: store)?.makeKeyAndOrderFront(nil)
         case .useFront(let store): store.open(url)
+        case .refused(let store):
+            if let refusal = RepositoryStore.notARepository(url) { store.showStickyError(refusal) }
         case .newWindow(let value):
             if launchTookPendingOpen, let openWindow {
                 openWindow(value)
@@ -341,12 +350,17 @@ enum OpenRoute: Equatable {
     case front(RepositoryStore)
     /// The front window, which shows nothing: it opens there.
     case useFront(RepositoryStore)
+    /// Not a repository (`RepositoryStore.notARepository`): the front window says so in its banner
+    /// and keeps what it shows; no window is made (Ruling 17).
+    case refused(RepositoryStore)
     /// A window of its own, for this value.
     case newWindow(RepositoryWindow)
 
     static func == (lhs: OpenRoute, rhs: OpenRoute) -> Bool {
         switch (lhs, rhs) {
-        case (.front(let a), .front(let b)), (.useFront(let a), .useFront(let b)): a === b
+        case (.front(let a), .front(let b)), (.useFront(let a), .useFront(let b)),
+            (.refused(let a), .refused(let b)):
+            a === b
         case (.newWindow(let a), .newWindow(let b)): a == b
         default: false
         }

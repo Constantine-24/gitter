@@ -673,13 +673,18 @@ or while the front window's sheet is up. Fetch Automatically is the one app-wide
 stays reachable with no window and tells every window.
 
 **Every open goes to a window.** A repository that a window already shows is brought to the front,
-by whatever spelling of its path; nothing opens twice, so two windows never share an index. Open
-Repository… (⌘O) uses the front window if it shows nothing and opens a new one otherwise; Open
-Recent and a Finder open each get a new window; a click on the Dock icon with no window open
-shows one empty window. Open Worktree switches the window it is asked in, unless another window
-already shows that worktree, which comes to the front instead. **Open in New Window**, beside it
-in a worktree's menu, opens a worktree this window does not show (the main one too) in a window
-of its own.
+by whatever spelling of its path; nothing opens twice in open windows, so two open windows never
+share an index. (A window closed while its push or other write is still running keeps that
+repository until the write ends without showing it, and a new window may open it meanwhile; a
+second write there then races the first on the same refs and git fails one of them — see the
+backlog.) Open Repository… (⌘O) uses the front window if it shows nothing and opens a new one
+otherwise; Open Recent and a Finder open each get a new window; a folder that is not (or is no
+longer) a repository makes no window: the front window says "Not a Git repository" in its banner
+and keeps what it shows, and only with no window in front does the open make one to say it in; a
+click on the Dock icon with no window open shows one empty window. Open Worktree switches the
+window it is asked in, unless another window already shows that worktree, which comes to the
+front instead. **Open in New Window**, beside it in a worktree's menu, opens a worktree this
+window does not show (the main one too) in a window of its own.
 
 **The reopen list.** Gitter keeps its own list of the repositories that have a window
 (`openRepositoryPaths`) and reopens each in its own window at the next launch, in order — macOS
@@ -695,10 +700,11 @@ alert says why.
 **Quit with a sheet up.** ⌘Q, the Dock's Quit and a logout's quit all go through one path: every
 window's sheet is closed (what was typed in it is lost), Gitter waits until AppKit shows none —
 AppKit refuses to quit while a sheet is attached — and then quits through the same question as
-before. If a push, pull or other write is running in **any** window, the alert asks whether to
-Wait, Stop and Quit or not quit; reads are cancelled and waited for. If a sheet has not closed
-after 2 seconds the quit is dropped with a beep (`quit: a sheet did not close`), and a second ⌘Q
-during a quit is ignored. The quit Apple Event is answered at once, so a logout does not learn
+before. If a push or another write (publish, force push, a tag pushed, a delete on a remote) is
+running in **any** window, the alert asks whether to Wait, Stop and Quit or not quit; a fetch or
+pull is stopped and waited for without asking. If a sheet has not closed after 2 seconds the
+quit is dropped with a beep (`quit: a sheet did not close`), and a second ⌘Q during a quit is
+ignored. The quit Apple Event is answered at once, so a logout does not learn
 that a quit was called off.
 
 ## Design decisions
@@ -761,7 +767,7 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (694 tests in 55 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (698 tests in 56 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -1148,8 +1154,9 @@ with links resolved). Before this guard (B2, Ruling 15) the app reopened the las
 a script's steps ran against whatever had loaded — measured with a scratch stand-in: a script
 with no `GITTER_DEBUG_OPEN`, or whose own open failed, force-deleted a branch of the reopened
 repository. Each refusal is logged as `BRANCH_ACTION launch guard: refused: …`, and the app then quits
-by itself, through the same quit as ⌘Q (a refused step does the same), so a refused launch no
-longer waits for a watchdog. A scripted launch does not add the repositories it opens
+by itself, through the same quit as ⌘Q (a refused step does the same, and so does a launch
+whose repository has no snapshot loaded before the steps or before `GITTER_DEBUG_THEN`), so a
+refused launch no longer waits for a watchdog. A scripted launch does not add the repositories it opens
 to Open Recent (B3, Ruling 7). A scripted launch also keeps its windows out of the reopen list (`openRepositoryPaths`) and, in
 a second window, acts only on a repository the launcher named (`GITTER_DEBUG_ALSO_OPEN`, below).
 A launcher should still write `lastRepositoryPath` and

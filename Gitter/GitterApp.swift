@@ -102,7 +102,7 @@ struct RepositoryCommands: Commands {
         CommandGroup(after: .toolbar) {
             Button("Refresh") { Task { await store?.refresh() } }
                 .keyboardShortcut("r")
-                .disabled(store?.root == nil)
+                .disabled(Self.refreshIsOff(store))
         }
         // The toolbar's three network items and Stop. Disabled for the same reasons as the
         // toolbar, but the reasons are not spelled out here: a menu item shows no tooltip, and
@@ -159,11 +159,19 @@ struct RepositoryCommands: Commands {
         }
     }
 
-    /// Whether an item is off: with no window open, while the front window's sheet is up, or for
-    /// the store's own reason.
-    private func isOff(_ reason: (RepositoryStore) -> String?) -> Bool {
+    private func isOff(_ reason: (RepositoryStore) -> String?) -> Bool { Self.isOff(store, reason) }
+
+    /// Whether a Repository item is off: with no window open, while the front window's sheet is
+    /// up, or for the store's own reason.
+    static func isOff(_ store: RepositoryStore?, _ reason: (RepositoryStore) -> String?) -> Bool {
         guard let store else { return true }
         return store.activeSheet != nil || reason(store) != nil
+    }
+
+    /// Whether Refresh is off: with no window open, no repository in the front window, or while
+    /// that window's sheet is up — like the Repository items (Ruling 17).
+    static func refreshIsOff(_ store: RepositoryStore?) -> Bool {
+        store?.root == nil || store?.activeSheet != nil
     }
 }
 
@@ -211,8 +219,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// A Finder open or an Open Recent choice, routed (`WindowRegistry.open`, `.recentOrFinder`):
-    /// the window already showing it comes to the front — out of the Dock or from behind — and
-    /// otherwise it gets a window of its own; before the first window has taken the launch, that
+    /// the window already showing it comes to the front — out of the Dock or from behind — a
+    /// folder that is not a repository is refused in the front window's banner, and otherwise it
+    /// gets a window of its own; before the first window has taken the launch, that
     /// window opens it first (`pendingOpen`). The front is the key window's store — a sheet's
     /// parent's, with a sheet up.
     func application(_ application: NSApplication, open urls: [URL]) {

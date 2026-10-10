@@ -118,7 +118,13 @@
                 // Before the clicks, so a sheet one of them opens is on screen for them (and for
                 // a screenshot). Each step checks the guard again (`runBranchActions`).
                 if let branchAction {
-                    guard await wait({ store.snapshot != nil }, what: "a snapshot before the steps") else { return }
+                    // A wait that runs out is refused like every refusal (Ruling 17): logged, then
+                    // the app quits, instead of idling until the watchdog.
+                    guard await wait({ store.snapshot != nil }, what: "a snapshot before the steps") else {
+                        log("launch guard: refused: no snapshot before the steps; the steps not run")
+                        QuitFlow.request(.launchRefusal)
+                        return
+                    }
                     guard await runBranchActions(branchAction) else { return }
                 }
                 // Last, so a click lands on a list that has finished loading its rows. In the
@@ -137,6 +143,8 @@
                 }
                 if let then {
                     guard await wait({ target?.snapshot != nil }, what: "a snapshot before GITTER_DEBUG_THEN") else {
+                        log("launch guard: refused: no snapshot before GITTER_DEBUG_THEN; its steps not run")
+                        QuitFlow.request(.launchRefusal)
                         return
                     }
                     await runBranchActions(then)

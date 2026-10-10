@@ -614,6 +614,7 @@
             switch route {
             case .front(let store): log("newwindow: \(path) -> shown already, fronted: \(describeStore(store))")
             case .useFront(let store): log("newwindow: \(path) -> opened in the front window: \(describeStore(store))")
+            case .refused(let store): log("newwindow: \(path) -> not a repository, refused in: \(describeStore(store))")
             case .newWindow(let value): log("newwindow: \(path) -> a new window for \(value.path)")
             }
             _ = await wait(

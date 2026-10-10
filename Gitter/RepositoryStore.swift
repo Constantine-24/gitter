@@ -417,9 +417,8 @@ final class RepositoryStore {
 
         let standardized = url.standardizedFileURL
         let previousRoot = root
-        let dotGit = standardized.appending(path: ".git")
-        guard FileManager.default.fileExists(atPath: dotGit.path) else {
-            lastError = "Not a Git repository: \(standardized.path)"
+        if let refusal = Self.notARepository(url) {
+            lastError = refusal
             errorIsSticky = true
             return
         }
