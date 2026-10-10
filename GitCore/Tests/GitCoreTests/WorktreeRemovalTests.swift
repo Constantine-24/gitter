@@ -1,4 +1,5 @@
 import Foundation
+import GitCoreTestSupport
 import Testing
 
 @testable import GitCore
@@ -454,7 +455,7 @@ import Testing
     }
 
     /// The walk gives up when its task is cancelled, rather than walking on to the cap.
-    @Test func theWalkStopsWhenCancelled() async throws {
+    @Test(.timeLimit(.minutes(10))) func theWalkStopsWhenCancelled() async throws {
         let (fixture, wt) = try await fixtureWithWorktree()
         defer { fixture.cleanUp() }
         for n in 0..<5_000 {
@@ -462,11 +463,11 @@ import Testing
         }
         let folder = URL(fileURLWithPath: fixture.listedPath("wt"), isDirectory: true)
 
-        let task = Task {
+        let call = CallUnderTest { () -> Error? in
             withUnsafeCurrentTask { $0?.cancel() }
-            return try CLIGitBackend.walkForNestedRepositories(in: folder, limit: .standard)
+            return await thrownError { _ = try CLIGitBackend.walkForNestedRepositories(in: folder, limit: .standard) }
         }
-        let error = await thrownError { _ = try await task.value }
+        guard let error = await call.value("the cancelled walk") else { return }
 
         #expect(error is CancellationError)
     }

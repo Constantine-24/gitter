@@ -1,5 +1,6 @@
 import Foundation
 import GitCore
+import GitCoreTestSupport
 import Testing
 
 @testable import Gitter
@@ -63,8 +64,18 @@ import Testing
         } matching: { $0.comments.contains { $0.rawValue.contains("configuration reached the store from file:") } }
     }
 
+    /// E3 Task 2: the isolation and the hang guard are GitCore's own, from the one shared
+    /// test-support target, not copies kept here. Named by module, so a copy in GitterTests would
+    /// not stand in for them.
+    @Test func theIsolationAndTheHangGuardComeFromGitCoreTestSupport() {
+        #expect(GitCoreTestSupport.TestGitEnvironment.isolated)
+        #expect(ProcessInfo.processInfo.environment["GIT_CONFIG_GLOBAL"] == "/dev/null")
+        let stuck = GitCoreTestSupport.StuckCall()
+        #expect(!stuck.waiting)
+    }
+
     @Test func theNetworkGuardsAreSetInTheTestProcess() {
-        #expect(GitterTestEnvironment.isolated)
+        #expect(TestGitEnvironment.isolated)
         let environment = ProcessInfo.processInfo.environment
         #expect(environment["GIT_CONFIG_GLOBAL"] == "/dev/null")
         #expect(environment["GIT_CONFIG_NOSYSTEM"] == "1")
@@ -230,8 +241,8 @@ import Testing
         } matching: { $0.comments.contains { $0.rawValue.contains("open failed: Not a Git repository") } }
     }
 
-    /// The copy of GitCore's hang guard behaves as its original does.
-    @Test(.timeLimit(.minutes(10))) func theCopiedHangGuardReportsAStuckCall() async throws {
+    /// The shared hang guard behaves here, on the main actor, as it does in GitCoreTests.
+    @Test(.timeLimit(.minutes(10))) func theSharedHangGuardReportsAStuckCall() async throws {
         let stuck = StuckCall()
         let call = CallUnderTest { () -> Int in
             await stuck.wait()

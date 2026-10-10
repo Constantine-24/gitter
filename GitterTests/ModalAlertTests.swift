@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import GitCoreTestSupport
 import Synchronization
 import Testing
 

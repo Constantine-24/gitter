@@ -1,4 +1,5 @@
 import Foundation
+import GitCoreTestSupport
 @testable import GitCore
 
 /// A throwaway git repository in a temp directory, driven by real `git` commands via

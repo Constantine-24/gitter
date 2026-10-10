@@ -1,10 +1,11 @@
 import Foundation
+import GitCoreTestSupport
 
 /// A real repository in a temporary directory of its own, for the store-flow tests (E2 Task 1).
 ///
 /// `directory` is a fresh `mktemp`-style folder; the repository is `directory/<name>` and the bare
 /// remotes `makeBareRemote` makes are its siblings, so `remove()` takes everything the test made
-/// and nothing else. Every git runs under `GitterTestEnvironment.isolated` (a `precondition` in
+/// and nothing else. Every git runs under `TestGitEnvironment.isolated` (a `precondition` in
 /// `init`), as `/usr/bin/git -C <url>`, with a fixed identity, no signing, no automatic gc or
 /// maintenance, and no editor.
 struct ScratchRepo {
@@ -12,7 +13,7 @@ struct ScratchRepo {
     let url: URL
 
     init(_ name: String = "repo") throws {
-        precondition(GitterTestEnvironment.isolated)
+        precondition(TestGitEnvironment.isolated)
         directory = FileManager.default.temporaryDirectory
             .appending(path: "gitter-scratch-\(UUID().uuidString)").standardizedFileURL
         url = directory.appending(path: name)
@@ -34,7 +35,7 @@ struct ScratchRepo {
     }
 
     private func run(_ arguments: [String], in directory: URL? = nil) throws -> (status: Int32, output: String, errors: String) {
-        precondition(GitterTestEnvironment.isolated)
+        precondition(TestGitEnvironment.isolated)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["-C", (directory ?? url).path] + arguments

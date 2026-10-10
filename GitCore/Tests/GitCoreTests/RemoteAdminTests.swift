@@ -1,4 +1,5 @@
 import Foundation
+import GitCoreTestSupport
 import Testing
 
 @testable import GitCore
@@ -499,7 +500,7 @@ extension TestRepo {
 
     /// Cancelled while git renames (stopped in the `reference-transaction` hook, R25): the
     /// outcome is not known — never "nothing changed" — and the hook is stopped with git.
-    @Test func aCancelledRenameIsOfUnknownOutcome() async throws {
+    @Test(.timeLimit(.minutes(10))) func aCancelledRenameIsOfUnknownOutcome() async throws {
         let fixture = try await UpstreamFixture.make()
         defer { fixture.cleanUp() }
         let repo = fixture.repo
@@ -513,14 +514,17 @@ extension TestRepo {
             """)
         let backend = self.backend
         let root = repo.root
-        let task = Task { try await backend.renameRemote("origin", to: "up", at: root) }
+        let call = CallUnderTest { await thrownError { try await backend.renameRemote("origin", to: "up", at: root) } }
         for _ in 0..<200 where !FileManager.default.fileExists(atPath: marker.path) {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
         try #require(FileManager.default.fileExists(atPath: marker.path), "the hook never ran")
-        task.cancel()
+        call.cancel()
 
-        let error = await thrownError { try await task.value }
+        guard let error = await call.value("the cancelled rename") else {
+            killLeftovers([sleep])
+            return
+        }
 
         #expect(error as? RemoteAdminPartial == .renameOutcomeUnknown(old: "origin", new: "up"))
         #expect(try ownProcesses(matching: sleep).isEmpty)

@@ -1,4 +1,5 @@
 import Foundation
+import GitCoreTestSupport
 import Testing
 
 @testable import GitCore
@@ -571,7 +572,7 @@ func thrownError(
     /// first or a later one. Whether it exists is unknown (`keptBranchesCancelled`), never git's
     /// words for a branch "not created"; the ones before it stay and nothing is deleted. A
     /// `reference-transaction` hook holds that branch's creation open.
-    @Test(arguments: [false, true])
+    @Test(.timeLimit(.minutes(10)), arguments: [false, true])
     func aCancelledKeptBranchCreationIsOfUnknownOutcome(atTheSecond: Bool) async throws {
         let fixture = try await PruneFixture.make()
         defer { fixture.cleanUp() }
@@ -589,17 +590,22 @@ func thrownError(
             """)
         let backend = self.backend
         let root = repo.root
-        let task = Task {
-            try await backend.prune(
-                plan, keeping: [PruneFixture.gone1Ref: "first", PruneFixture.gone2Ref: "second"], at: root)
+        let call = CallUnderTest {
+            await thrownError {
+                _ = try await backend.prune(
+                    plan, keeping: [PruneFixture.gone1Ref: "first", PruneFixture.gone2Ref: "second"], at: root)
+            }
         }
         for _ in 0..<200 where !FileManager.default.fileExists(atPath: marker.path) {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
         try #require(FileManager.default.fileExists(atPath: marker.path), "the hook never ran")
-        task.cancel()
+        call.cancel()
 
-        let error = await thrownError { _ = try await task.value }
+        guard let error = await call.value("the cancelled prune") else {
+            killLeftovers([sleep])
+            return
+        }
 
         #expect(
             error as? RemoteAdminPartial
@@ -614,7 +620,7 @@ func thrownError(
     /// Fix round 1 (Minor 1): cancelled while a delete is running — git was stopped part-way, so
     /// that ref's outcome is unknown (never "unchanged, in git's words"), and the refs after it
     /// were not tried. A `reference-transaction` hook holds the first delete open.
-    @Test func aCancelledDeleteIsOutcomeUnknownAndTheRestNotTried() async throws {
+    @Test(.timeLimit(.minutes(10))) func aCancelledDeleteIsOutcomeUnknownAndTheRestNotTried() async throws {
         let fixture = try await PruneFixture.make()
         defer { fixture.cleanUp() }
         let repo = fixture.repo
@@ -631,14 +637,24 @@ func thrownError(
             """)
         let backend = self.backend
         let root = repo.root
-        let task = Task { try await backend.prune(plan, keeping: [:], at: root) }
+        let call = CallUnderTest { () -> Result<PruneResult, Error> in
+            do {
+                return .success(try await backend.prune(plan, keeping: [:], at: root))
+            } catch {
+                return .failure(error)
+            }
+        }
         for _ in 0..<200 where !FileManager.default.fileExists(atPath: marker.path) {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
         try #require(FileManager.default.fileExists(atPath: marker.path), "the hook never ran")
-        task.cancel()
+        call.cancel()
 
-        let result = try await task.value
+        guard let outcome = await call.value("the cancelled prune") else {
+            killLeftovers([sleep])
+            return
+        }
+        let result = try outcome.get()
 
         #expect(result.outcomeUnknown == [RefTip(ref: PruneFixture.gone1Ref, id: fixture.gone1)])
         #expect(result.notTried == [RefTip(ref: PruneFixture.gone2Ref, id: fixture.gone2)])

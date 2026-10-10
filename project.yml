@@ -50,6 +50,10 @@ targets:
     dependencies:
       - target: Gitter
       - package: GitCore
+      # The test helpers shared with GitCoreTests (E3 Task 2). On this test target only: the app
+      # never links it.
+      - package: GitCore
+        product: GitCoreTestSupport
     settings:
       base:
         SWIFT_VERSION: "6.0"

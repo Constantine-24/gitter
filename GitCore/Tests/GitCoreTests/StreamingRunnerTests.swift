@@ -1,4 +1,5 @@
 import Foundation
+import GitCoreTestSupport
 import Testing
 
 @testable import GitCore
@@ -416,10 +417,10 @@ private final class TerminationHold: @unchecked Sendable {
 
     /// Cancelled before the runner ever reaches `process.run()`: the call still throws
     /// `CancellationError`, and nothing is launched.
-    @Test func cancellationBeforeLaunchThrowsCancellationError() async {
+    @Test(.timeLimit(.minutes(10))) func cancellationBeforeLaunchThrowsCancellationError() async {
         let runner = ProcessRunner()
         let pid = Locked<Int32?>(nil)
-        let task = Task { () -> Error? in
+        let call = CallUnderTest { () -> Error? in
             do {
                 _ = try await runner.runStreaming(
                     "/bin/sleep", ["30"], cwd: Self.root,
@@ -430,8 +431,9 @@ private final class TerminationHold: @unchecked Sendable {
                 return error
             }
         }
-        task.cancel()
-        let error = await task.value
+        call.cancel()
+        // Never came back: a `sleep 30` it may have launched ends by itself.
+        guard let error = await call.value("the call cancelled before its launch") else { return }
         #expect(error is CancellationError)
         if let launched = pid.current {
             // The cancel landed after the launch, which is a legitimate race; the child must
@@ -1283,10 +1285,10 @@ private final class TerminationHold: @unchecked Sendable {
     /// A process that has already exited when the cancel arrives: whichever side wins, the call
     /// returns exactly once — either the result or `CancellationError`, never a hang and never
     /// a `commandFailed` invented from a signal.
-    @Test func cancellingAfterTheProcessExitedStillReturnsOnce() async throws {
-        for _ in 0..<20 {
+    @Test(.timeLimit(.minutes(10))) func cancellingAfterTheProcessExitedStillReturnsOnce() async throws {
+        for attempt in 0..<20 {
             let runner = ProcessRunner()
-            let task = Task { () -> Result<ProcessRunner.StreamedResult, Error> in
+            let call = CallUnderTest { () -> Result<ProcessRunner.StreamedResult, Error> in
                 do {
                     return .success(
                         try await runner.runStreaming(
@@ -1296,8 +1298,9 @@ private final class TerminationHold: @unchecked Sendable {
                 }
             }
             try await Task.sleep(for: .milliseconds(5))
-            task.cancel()
-            switch await task.value {
+            call.cancel()
+            guard let outcome = await call.value("attempt \(attempt)") else { return }
+            switch outcome {
             case .success(let result):
                 #expect(String(decoding: result.stdout, as: UTF8.self) == "quick\n")
             case .failure(let error):
@@ -1359,7 +1362,8 @@ private final class TerminationHold: @unchecked Sendable {
 
     /// SIGTERMs the stress marker and waits for its shell to be reaped and its group to empty.
     /// If either fails, the failure is named and the group is SIGKILLed — the marker's
-    /// `sleep 300` must not run on into the next test (E1 survey S3).
+    /// `sleep 300` must not run on into the next test (E1 survey S3). A shell that never exits
+    /// holds the wait until the test's time limit ends it (`waitForReap`), and is then killed.
     ///
     /// Not `marker.waitUntilExit()`, which hung the Xcode scheme's run for good. Foundation
     /// notes each task it launches, by raw pointer, in a list kept per launching thread and
@@ -1369,9 +1373,9 @@ private final class TerminationHold: @unchecked Sendable {
     /// another cooperative thread, where the address of a task launched earlier and since
     /// freed (a probe's, or a runner's) could be the marker's own: it then waited for a run
     /// loop that no one runs (measured: that list held 39 addresses, the marker's among
-    /// them). So the kernel is asked, for a bounded time: the shell is reaped — Foundation
-    /// reaps it off any run loop — and then its group, since the marker's own `sleep` child
-    /// carries no token and would otherwise count as a process the stress left behind.
+    /// them). So the kernel is asked: the shell's exit through kqueue, then its reap —
+    /// Foundation reaps it off any run loop — and then its group, since the marker's own `sleep`
+    /// child carries no token and would otherwise count as a process the stress left behind.
     private static func endStressMarker(
         _ marker: Process, sourceLocation: SourceLocation = #_sourceLocation
     ) async {
@@ -1379,7 +1383,7 @@ private final class TerminationHold: @unchecked Sendable {
         // Read while the shell is surely unreaped, so the number is its group's.
         let markerGroup = getpgid(markerPID)
         marker.terminate()
-        let reaped = await waitForReap(markerPID)
+        let reaped = await waitForReap(markerPID, "the marker shell's exit")
         let groupGone = reaped ? await groupIsGone(markerGroup) : false
         guard !(reaped && groupGone) else { return }
         Issue.record(
@@ -1389,9 +1393,12 @@ private final class TerminationHold: @unchecked Sendable {
         killOwnGroup(markerGroup)
     }
 
-    /// The control for the stress marker's failure path: a marker that ignores its SIGTERM is
-    /// not reaped, the failure is named, and the marker — shell and `sleep` — is SIGKILLed by
-    /// its group rather than left running into the next test.
+    /// The control for the stress marker's failure path: a marker that ignores its SIGTERM
+    /// never exits, so its wait lasts until the test is cancelled — stood in for here by
+    /// cancelling the task that ends the marker, as a real limit cannot be let expire
+    /// (`TimeLimitSupport.swift`). The wait is reported as never having come back, the failure
+    /// is named, and the marker — shell and `sleep` — is SIGKILLed by its group rather than left
+    /// running into the next test.
     @Test(.timeLimit(.minutes(10))) func aStressMarkerThatOutlivesItsSIGTERMIsKilledByItsGroup() async throws {
         let token = "gitter-stress-marker-\(UUID().uuidString)"
         let trapped = FileManager.default.temporaryDirectory
@@ -1407,9 +1414,14 @@ private final class TerminationHold: @unchecked Sendable {
         try? FileManager.default.removeItem(at: trapped)
         #expect(Self.processCount(matching: token) == 1)
 
-        await withKnownIssue("the marker ignores its SIGTERM, so its reap fails") {
-            await Self.endStressMarker(marker)
-        } matching: { $0.comments.contains { $0.rawValue.contains("outlived its SIGTERM") } }
+        await withKnownIssue("the marker ignores its SIGTERM, so its wait is cancelled and its reap fails") {
+            let ending = Task { await Self.endStressMarker(marker) }
+            try? await Task.sleep(for: .milliseconds(100))
+            ending.cancel()
+            await ending.value
+        } matching: {
+            $0.isNeverCameBack || $0.comments.contains { $0.rawValue.contains("outlived its SIGTERM") }
+        }
 
         #expect(await Self.groupIsGone(group), "the marker outlived the failed reap")
         #expect(await Self.waitForNoProcess(matching: token))
@@ -1576,9 +1588,16 @@ private final class TerminationHold: @unchecked Sendable {
         return false
     }
 
-    /// Whether `pid` is gone — reaped, so `kill(pid, 0)` is ESRCH — polled for up to two
-    /// seconds.
-    private static func waitForReap(_ pid: Int32) async -> Bool {
+    /// Whether `pid` is gone — reaped, so `kill(pid, 0)` is ESRCH. Its exit is waited for on
+    /// kqueue (`waitForExit`) through `CallUnderTest`, so a pid that never exits is the time
+    /// limit's to end, recorded as `neverCameBack` with `what` in it, and the answer is then
+    /// false. The reap that follows has no event — `NOTE_EXIT` comes before it, and `EV_ADD` on
+    /// an exited, unreaped pid is ESRCH (measured, E3 Task 2) — so that last step, which is the
+    /// reaper's (`Process`, the runner, launchd) and prompt rather than instant, is polled for
+    /// up to two seconds.
+    private static func waitForReap(_ pid: Int32, _ what: String = "the exit") async -> Bool {
+        let exit = CallUnderTest { await waitForExit(pid) }
+        guard await exit.value("\(what) of pid \(pid)") != nil else { return false }
         for _ in 0..<200 {
             errno = 0
             if kill(pid, 0) == -1, errno == ESRCH { return true }

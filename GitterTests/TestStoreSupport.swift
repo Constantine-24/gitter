@@ -1,5 +1,6 @@
 import Foundation
 import GitCore
+import GitCoreTestSupport
 import Testing
 
 @testable import Gitter
@@ -55,12 +56,12 @@ struct ScratchDefaults {
 
 /// A store for a test: its defaults are a fresh `ScratchDefaults` suite, never `.standard`, and
 /// `cleanup` removes that suite. Every store GitterTests build comes from here, and with it the
-/// git environment of `GitterTestEnvironment.isolated` (E2 Task 1).
+/// git environment of `TestGitEnvironment.isolated` (E2 Task 1).
 @MainActor
 func makeTestStore(
     backend: RepositoryStore.Backend = CLIGitBackend()
 ) -> (RepositoryStore, UserDefaults, cleanup: () -> Void) {
-    precondition(GitterTestEnvironment.isolated)
+    precondition(TestGitEnvironment.isolated)
     let scratch = ScratchDefaults()
     let store = RepositoryStore(backend: backend, defaults: scratch.defaults)
     return (store, scratch.defaults, { scratch.remove() })
@@ -153,7 +154,7 @@ extension Trait where Self == LeavesTheDomainUnchanged {
 }
 
 /// A `WindowRegistry` for a test (E2 Task 3): on a fresh `ScratchDefaults` suite, never `.standard`,
-/// under `GitterTestEnvironment.isolated`. `remove()` closes every store it made — stopping their
+/// under `TestGitEnvironment.isolated`. `remove()` closes every store it made — stopping their
 /// watchers — and removes the suite.
 @MainActor
 struct TestRegistry {
@@ -161,7 +162,7 @@ struct TestRegistry {
     let registry: WindowRegistry
 
     init(recordsOpenList: Bool = true) {
-        precondition(GitterTestEnvironment.isolated)
+        precondition(TestGitEnvironment.isolated)
         registry = WindowRegistry(defaults: scratch.defaults, recordsOpenList: recordsOpenList)
     }
 

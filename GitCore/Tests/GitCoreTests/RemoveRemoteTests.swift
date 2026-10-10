@@ -1,4 +1,5 @@
 import Foundation
+import GitCoreTestSupport
 import Testing
 
 @testable import GitCore
@@ -321,7 +322,7 @@ struct RemoveFixture {
     /// Cancelled while git removes (stopped in the `reference-transaction` hook, R25): what git
     /// left is not known — never "nothing changed" — and the kept branch, created before git
     /// ran, is named. The hook's process is stopped with git.
-    @Test func aCancelledRemovalIsOfUnknownOutcome() async throws {
+    @Test(.timeLimit(.minutes(10))) func aCancelledRemovalIsOfUnknownOutcome() async throws {
         let fixture = try await RemoveFixture.make()
         defer { fixture.cleanUp() }
         let repo = fixture.repo
@@ -337,14 +338,21 @@ struct RemoveFixture {
             """)
         let backend = self.backend
         let root = repo.root
-        let task = Task { try await backend.removeRemote(impact, keeping: [PruneFixture.gone2Ref: "kept-g2"], at: root) }
+        let call = CallUnderTest {
+            await thrownError {
+                try await backend.removeRemote(impact, keeping: [PruneFixture.gone2Ref: "kept-g2"], at: root)
+            }
+        }
         for _ in 0..<200 where !FileManager.default.fileExists(atPath: marker.path) {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
         try #require(FileManager.default.fileExists(atPath: marker.path), "the hook never ran")
-        task.cancel()
+        call.cancel()
 
-        let error = await thrownError { try await task.value }
+        guard let error = await call.value("the cancelled removal") else {
+            killLeftovers([sleep])
+            return
+        }
 
         #expect(error as? RemoteAdminPartial == .removeOutcomeUnknown(remote: "origin", keptBranches: ["kept-g2"]))
         #expect(try ownProcesses(matching: sleep).isEmpty)
