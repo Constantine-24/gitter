@@ -78,11 +78,15 @@ struct ForcePushSheet: View {
             HStack {
                 Spacer()
                 // No keyboard shortcut on the destructive half: Return belongs to Cancel.
-                Button("Force Push", role: .destructive) { confirm() }
+                let act: @MainActor () -> Void = { confirm() }
+                Button("Force Push", role: .destructive, action: act)
+                    .harnessButton("Force Push", action: act)
                     // The role alone draws an ordinary grey button in a macOS sheet.
                     .foregroundStyle(.red)
                     .disabled(store.sheetBusyReason != nil)
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.defaultAction)
             }
         }

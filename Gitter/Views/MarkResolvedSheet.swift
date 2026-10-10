@@ -32,12 +32,14 @@ struct MarkResolvedSheet: View {
 
             HStack {
                 Spacer()
-                Button(ConflictWording.markResolvedButton, role: .destructive) {
-                    store.confirmMarkResolved(snapshot)
-                }
-                .foregroundStyle(.red)
-                .disabled(store.sheetBusyReason != nil)
-                Button("Cancel") { store.activeSheet = nil }
+                let act: @MainActor () -> Void = { store.confirmMarkResolved(snapshot) }
+                Button(ConflictWording.markResolvedButton, role: .destructive, action: act)
+                    .harnessButton(ConflictWording.markResolvedButton, action: act)
+                    .foregroundStyle(.red)
+                    .disabled(store.sheetBusyReason != nil)
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.defaultAction)
             }
         }

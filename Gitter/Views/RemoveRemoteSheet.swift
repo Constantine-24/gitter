@@ -102,11 +102,15 @@ struct RemoveRemoteSheet: View {
             HStack {
                 Spacer()
                 // No keyboard shortcut on the destructive half: Return belongs to Cancel.
-                Button(RemoteAdminWording.removeButton, role: .destructive) { confirm() }
+                let act: @MainActor () -> Void = { confirm() }
+                Button(RemoteAdminWording.removeButton, role: .destructive, action: act)
+                    .harnessButton(RemoteAdminWording.removeButton, action: act)
                     // The role alone draws an ordinary grey button in a macOS sheet.
                     .foregroundStyle(.red)
                     .disabled(blocked)
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.defaultAction)
             }
         }

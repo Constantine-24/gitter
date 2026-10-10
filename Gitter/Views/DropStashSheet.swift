@@ -67,10 +67,14 @@ struct DropStashSheet: View {
             HStack {
                 Spacer()
                 // No keyboard shortcut on the destructive half: Return belongs to Cancel.
-                Button(StashWording.dropButton, role: .destructive) { confirm() }
+                let act: @MainActor () -> Void = { confirm() }
+                Button(StashWording.dropButton, role: .destructive, action: act)
+                    .harnessButton(StashWording.dropButton, action: act)
                     .foregroundStyle(.red)
                     .disabled(store.sheetBusyReason != nil)
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.defaultAction)
             }
         }

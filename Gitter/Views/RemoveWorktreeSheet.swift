@@ -96,7 +96,7 @@ struct RemoveWorktreeSheet: View {
                     holders: holders, loaded: loaded, ticked: $ticked, names: $names, problems: problems,
                     checked: checked, maxRows: Self.maxRows,
                     heading: allMissing ? WorktreeWording.missingKeepHeading : WorktreeWording.keepHeading,
-                    label: WorktreeWording.keepLabel)
+                    label: WorktreeWording.keepLabel, nameLabel: WorktreeWording.keepNameLabel)
             }
 
             if !isChecking, let busy = store.sheetBusyReason {
@@ -111,12 +111,16 @@ struct RemoveWorktreeSheet: View {
                 // In place of the button while anything is refused (or nothing is checked yet).
                 if !isChecking && !removable.isEmpty {
                     // No keyboard shortcut on the destructive half: Return belongs to Cancel.
-                    Button(buttonTitle, role: .destructive) { confirm() }
+                    let act: @MainActor () -> Void = { confirm() }
+                    Button(buttonTitle, role: .destructive, action: act)
+                        .harnessButton(buttonTitle, action: act)
                         // The role alone draws an ordinary grey button in a macOS sheet.
                         .foregroundStyle(.red)
                         .disabled(blocked)
                 }
-                Button("Cancel") { close() }
+                let cancel: @MainActor () -> Void = { close() }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.defaultAction)
             }
         }

@@ -80,11 +80,15 @@ struct AbortSheet: View {
                 Spacer()
                 // No keyboard shortcut on the destructive half: Return belongs to Cancel, and
                 // nothing that throws away work should be one keystroke away.
-                Button(operation.abortActionName, role: .destructive) { confirm() }
+                let act: @MainActor () -> Void = { confirm() }
+                Button(operation.abortActionName, role: .destructive, action: act)
+                    .harnessButton(operation.abortActionName, action: act)
                     // The role alone draws an ordinary grey button in a macOS sheet.
                     .foregroundStyle(.red)
                     .disabled(store.isMutating)
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.defaultAction)
             }
         }

@@ -69,11 +69,15 @@ struct DeleteRemoteTagSheet: View {
         HStack {
             Spacer()
             // No keyboard shortcut on the destructive half: Return belongs to Cancel.
-            Button(TagWording.deleteOnRemoteButton(remote), role: .destructive) { confirm(id) }
+            let act: @MainActor () -> Void = { confirm(id) }
+            Button(TagWording.deleteOnRemoteButton(remote), role: .destructive, action: act)
+                .harnessButton(TagWording.deleteOnRemoteButton(remote), action: act)
                 // The role alone draws an ordinary grey button in a macOS sheet.
                 .foregroundStyle(.red)
                 .disabled(store.sheetBusyReason != nil)
-            Button("Cancel") { store.activeSheet = nil }
+            let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+            Button("Cancel", action: cancel)
+                .harnessButton("Cancel", action: cancel)
                 .keyboardShortcut(.defaultAction)
         }
     }
@@ -86,7 +90,9 @@ struct DeleteRemoteTagSheet: View {
             .font(.callout)
         HStack {
             Spacer()
-            Button(TagWording.closeButton) { store.activeSheet = nil }
+            let close: @MainActor () -> Void = { store.activeSheet = nil }
+            Button(TagWording.closeButton, action: close)
+                .harnessButton(TagWording.closeButton, action: close)
                 .keyboardShortcut(.defaultAction)
         }
     }

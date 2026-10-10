@@ -56,11 +56,15 @@ struct GoneBranchesSheet: View {
 
             HStack {
                 Spacer()
+                let delete: @MainActor () -> Void = { confirm() }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
                 // No keyboard shortcut on the destructive half: Return belongs to Cancel.
-                Button(RemoteAdminWording.cleanUpButton(chosen.count), role: .destructive) { confirm() }
+                Button(RemoteAdminWording.cleanUpButton(chosen.count), role: .destructive, action: delete)
+                    .harnessButton(RemoteAdminWording.cleanUpButton(chosen.count), action: delete)
                     .foregroundStyle(.red)
                     .disabled(chosen.isEmpty || busy != nil)
-                Button("Cancel") { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.defaultAction)
             }
         }
@@ -82,11 +86,10 @@ struct GoneBranchesSheet: View {
     }
 
     private func row(_ gone: GoneBranch) -> some View {
-        Toggle(
-            isOn: Binding(
-                get: { ticked.contains(gone.name) },
-                set: { on in if on { ticked.insert(gone.name) } else { ticked.remove(gone.name) } })
-        ) {
+        let isOn = Binding(
+            get: { ticked.contains(gone.name) },
+            set: { on in if on { ticked.insert(gone.name) } else { ticked.remove(gone.name) } })
+        return Toggle(isOn: isOn) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(gone.name)
                     .font(.callout)
@@ -106,6 +109,7 @@ struct GoneBranchesSheet: View {
                 }
             }
         }
+        .harnessToggle(gone.name, isOn: isOn)
         .disabled(gone.checkedOutAt != nil)
     }
 

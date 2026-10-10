@@ -77,6 +77,9 @@ struct AddWorktreeSheet: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .harnessPicker(
+                "Kind", selection: $kind,
+                options: AddWorktreeKind.allCases.map { (label: WorktreeWording.kindTitle($0), value: $0) })
 
             Text(WorktreeWording.kindExplanation(kind))
                 .font(.callout)
@@ -95,6 +98,7 @@ struct AddWorktreeSheet: View {
                         TextField("", text: $folder)
                             .textFieldStyle(.roundedBorder)
                             .accessibilityLabel(WorktreeWording.folderLabel)
+                            .harnessField("Folder", text: $folder)
                             .onChange(of: folder) { if folder != store.defaultWorktreeFolder(for: branch) { folderEdited = true } }
                         Button(WorktreeWording.chooseFolderTitle) { chooseFolder() }
                     }
@@ -118,9 +122,13 @@ struct AddWorktreeSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                let addWorktree: @MainActor () -> Void = { add() }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.cancelAction)
-                Button(WorktreeWording.addButton) { add() }
+                Button(WorktreeWording.addButton, action: addWorktree)
+                    .harnessButton(WorktreeWording.addButton, action: addWorktree)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canAdd)
             }
@@ -159,6 +167,7 @@ struct AddWorktreeSheet: View {
                     ForEach(free, id: \.self) { Text($0).tag($0) }
                 }
                 .labelsHidden()
+                .harnessPicker("Branch", selection: $existing, options: free.map { (label: $0, value: $0) })
             }
         }
     }
@@ -170,6 +179,7 @@ struct AddWorktreeSheet: View {
             TextField("Branch name", text: $newName)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Branch name")
+                .harnessField("Branch name", text: $newName)
         }
         if let message = newValidator.message(for: newName) {
             GridRow {
@@ -185,6 +195,9 @@ struct AddWorktreeSheet: View {
                 }
             }
             .labelsHidden()
+            .harnessPicker(
+                "From", selection: $start,
+                options: store.worktreeStartPoints.map { (label: WorktreeWording.startLabel($0), value: Optional($0)) })
         }
     }
 
@@ -201,6 +214,9 @@ struct AddWorktreeSheet: View {
                     }
                 }
                 .labelsHidden()
+                .harnessPicker(
+                    "Remote branch", selection: $remote,
+                    options: store.worktreeRemoteTips.map { (label: WorktreeWording.startLabel($0), value: Optional($0)) })
                 .onChange(of: remote) { trackingName = remote.map(store.trackingName(for:)) ?? "" }
             }
         }
@@ -209,6 +225,7 @@ struct AddWorktreeSheet: View {
             TextField("Branch name", text: $trackingName)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Branch name")
+                .harnessField("Branch name", text: $trackingName)
         }
         if let message = trackingValidator.message(for: trackingName) {
             GridRow {

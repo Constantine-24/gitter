@@ -53,6 +53,7 @@ struct AddRemoteSheet: View {
                         .textFieldStyle(.roundedBorder)
                         .focused($nameFocused)
                         .accessibilityLabel("Remote name")
+                        .harnessField("Name", text: $name)
                 }
                 if let message = validator.message(for: name) {
                     caption(message)
@@ -67,6 +68,7 @@ struct AddRemoteSheet: View {
                     TextField("A path, or an address such as https://host/owner/repo.git", text: $url)
                         .textFieldStyle(.roundedBorder)
                         .accessibilityLabel("Remote URL")
+                        .harnessField("URL", text: $url)
                 }
                 if !url.isEmpty, let problem = urlProblem {
                     caption(problem)
@@ -74,6 +76,7 @@ struct AddRemoteSheet: View {
             }
 
             Toggle(RemoteAdminWording.fetchAfterAdding, isOn: $fetchAfter)
+                .harnessToggle(RemoteAdminWording.fetchAfterAdding, isOn: $fetchAfter)
 
             if store.isMutating {
                 Text(RemoteWording.mutationBusy)
@@ -83,9 +86,13 @@ struct AddRemoteSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                let addRemote: @MainActor () -> Void = { add() }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.cancelAction)
-                Button(RemoteAdminWording.addButton) { add() }
+                Button(RemoteAdminWording.addButton, action: addRemote)
+                    .harnessButton(RemoteAdminWording.addButton, action: addRemote)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canAdd)
             }

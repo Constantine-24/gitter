@@ -47,9 +47,13 @@ struct HistoryActionSheet: View {
 
             HStack {
                 Spacer()
-                Button(HistoryWording.confirmButton(plan.action)) { store.confirmHistoryAction(plan) }
+                let act: @MainActor () -> Void = { store.confirmHistoryAction(plan) }
+                Button(HistoryWording.confirmButton(plan.action), action: act)
+                    .harnessButton(HistoryWording.confirmButton(plan.action), action: act)
                     .disabled(store.sheetBusyReason != nil)
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.defaultAction)
             }
         }

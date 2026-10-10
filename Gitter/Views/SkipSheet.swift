@@ -44,11 +44,15 @@ struct SkipSheet: View {
 
             HStack {
                 Spacer()
-                Button(ContinueWording.skipConfirm, role: .destructive) { store.confirmSkip(stoppedAt: current.sha) }
+                let act: @MainActor () -> Void = { store.confirmSkip(stoppedAt: current.sha) }
+                Button(ContinueWording.skipConfirm, role: .destructive, action: act)
+                    .harnessButton(ContinueWording.skipConfirm, action: act)
                     // The role alone draws an ordinary grey button in a macOS sheet.
                     .foregroundStyle(.red)
                     .disabled(store.sheetBusyReason != nil)
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.defaultAction)
             }
         }

@@ -71,9 +71,13 @@ struct PullSheet: View {
             HStack {
                 Spacer()
                 // No shortcut: Return belongs to Cancel, and a rebase rewrites commits.
-                Button(RemoteWording.pullModeTitle(mode)) { confirm() }
+                let act: @MainActor () -> Void = { confirm() }
+                Button(RemoteWording.pullModeTitle(mode), action: act)
+                    .harnessButton(RemoteWording.pullModeTitle(mode), action: act)
                     .disabled(store.sheetBusyReason != nil)
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.defaultAction)
             }
         }

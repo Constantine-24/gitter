@@ -108,9 +108,13 @@ struct PublishSheet: View {
             HStack {
                 Spacer()
                 // No shortcut: Return belongs to Cancel.
-                Button("Publish") { confirm() }
+                let act: @MainActor () -> Void = { confirm() }
+                Button("Publish", action: act)
+                    .harnessButton("Publish", action: act)
                     .disabled(remote == nil || store.sheetBusyReason != nil)
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.defaultAction)
             }
         }

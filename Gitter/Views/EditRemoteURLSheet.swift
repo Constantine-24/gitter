@@ -110,14 +110,19 @@ struct EditRemoteURLSheet: View {
 
             HStack {
                 Spacer()
+                let close: @MainActor () -> Void = { store.activeSheet = nil }
+                let saveURL: @MainActor () -> Void = { save() }
                 if editable {
-                    Button("Cancel") { store.activeSheet = nil }
+                    Button("Cancel", action: close)
+                        .harnessButton("Cancel", action: close)
                         .keyboardShortcut(.cancelAction)
-                    Button(RemoteAdminWording.saveURLButton) { save() }
+                    Button(RemoteAdminWording.saveURLButton, action: saveURL)
+                        .harnessButton(RemoteAdminWording.saveURLButton, action: saveURL)
                         .keyboardShortcut(.defaultAction)
                         .disabled(!canSave)
                 } else {
-                    Button("Close") { store.activeSheet = nil }
+                    Button("Close", action: close)
+                        .harnessButton("Close", action: close)
                         .keyboardShortcut(.defaultAction)
                 }
             }
@@ -136,6 +141,7 @@ struct EditRemoteURLSheet: View {
                     .textFieldStyle(.roundedBorder)
                     .focused($fetchFocused)
                     .accessibilityLabel("Fetch URL")
+                    .harnessField("Fetch URL", text: $fetchField)
             }
             if let configured = urls.fetch.first, RemoteAdminWording.hidesCredential(configured) {
                 note(RemoteAdminWording.displayURL(configured) + " — " + RemoteAdminWording.credentialKept)
@@ -153,11 +159,18 @@ struct EditRemoteURLSheet: View {
                 }
                 .pickerStyle(.radioGroup)
                 .labelsHidden()
+                .harnessPicker(
+                    "Push to", selection: $ownPushURL,
+                    options: [
+                        (label: RemoteAdminWording.pushToFetchURL, value: false),
+                        (label: RemoteAdminWording.pushToOwnURL, value: true),
+                    ])
                 .disabled(!editable)
                 if ownPushURL {
                     TextField("A path, or an address", text: $pushField)
                         .textFieldStyle(.roundedBorder)
                         .accessibilityLabel("Push URL")
+                        .harnessField("Push URL", text: $pushField)
                         .disabled(!editable)
                     if let configured = urls.push.first, RemoteAdminWording.hidesCredential(configured) {
                         note(RemoteAdminWording.displayURL(configured) + " — " + RemoteAdminWording.credentialKept)

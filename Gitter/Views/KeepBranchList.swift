@@ -25,6 +25,8 @@ struct KeepBranchList: View {
     /// refs; a worktree removal (B3) passes its own, its holders being worktree paths.
     var heading = RemoteAdminWording.keepHeading
     var label: (String) -> String = RemoteAdminWording.keepLabel
+    /// The name field's label for the harness (`harnessField`), the field showing none.
+    var nameLabel: (String) -> String = RemoteAdminWording.keepNameLabel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -85,9 +87,13 @@ struct KeepBranchList: View {
                 .foregroundStyle(.secondary)
             Spacer()
             // Each box is set and the names are checked again, as a click on each would.
-            Button(RemoteAdminWording.keepAllTitle) { ticked = RemoteAdminWording.ticking(refs, all: true) }
+            let keepAll: @MainActor () -> Void = { ticked = RemoteAdminWording.ticking(refs, all: true) }
+            let keepNone: @MainActor () -> Void = { ticked = RemoteAdminWording.ticking(refs, all: false) }
+            Button(RemoteAdminWording.keepAllTitle, action: keepAll)
+                .harnessButton(RemoteAdminWording.keepAllTitle, action: keepAll)
                 .disabled(!loaded || !offers.all)
-            Button(RemoteAdminWording.keepNoneTitle) { ticked = RemoteAdminWording.ticking(refs, all: false) }
+            Button(RemoteAdminWording.keepNoneTitle, action: keepNone)
+                .harnessButton(RemoteAdminWording.keepNoneTitle, action: keepNone)
                 .disabled(!loaded || !offers.none)
         }
         .controlSize(.small)
@@ -95,13 +101,15 @@ struct KeepBranchList: View {
 
     @ViewBuilder
     private func row(_ tip: RefTip) -> some View {
+        let isOn = Binding(get: { ticked[tip.ref] ?? false }, set: { ticked[tip.ref] = $0 })
+        let name = Binding(get: { names[tip.ref] ?? "" }, set: { names[tip.ref] = $0 })
         GridRow {
-            Toggle(
-                label(tip.ref),
-                isOn: Binding(get: { ticked[tip.ref] ?? false }, set: { ticked[tip.ref] = $0 }))
-            TextField("", text: Binding(get: { names[tip.ref] ?? "" }, set: { names[tip.ref] = $0 }))
+            Toggle(label(tip.ref), isOn: isOn)
+                .harnessToggle(label(tip.ref), isOn: isOn)
+            TextField("", text: name)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 200)
+                .harnessField(nameLabel(tip.ref), text: name)
                 .disabled(ticked[tip.ref] != true)
         }
         if let problem = visibleProblem(tip) {

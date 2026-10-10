@@ -49,6 +49,7 @@ struct RenameRemoteSheet: View {
                         .textFieldStyle(.roundedBorder)
                         .focused($nameFocused)
                         .accessibilityLabel("Remote name")
+                        .harnessField("Name", text: $name)
                 }
                 if let message = validator.message(for: name) {
                     Text(message)
@@ -67,9 +68,13 @@ struct RenameRemoteSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                let renameRemote: @MainActor () -> Void = { rename() }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.cancelAction)
-                Button(RemoteAdminWording.renameButton) { rename() }
+                Button(RemoteAdminWording.renameButton, action: renameRemote)
+                    .harnessButton(RemoteAdminWording.renameButton, action: renameRemote)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canRename)
             }

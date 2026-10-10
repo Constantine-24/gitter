@@ -33,9 +33,13 @@ struct StageAllSheet: View {
 
             HStack {
                 Spacer()
-                Button(ContinueWording.stageAllConfirm) { store.confirmStageAll() }
+                let act: @MainActor () -> Void = { store.confirmStageAll() }
+                Button(ContinueWording.stageAllConfirm, action: act)
+                    .harnessButton(ContinueWording.stageAllConfirm, action: act)
                     .disabled(store.sheetBusyReason != nil)
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.defaultAction)
             }
         }

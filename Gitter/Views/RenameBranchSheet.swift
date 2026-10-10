@@ -55,9 +55,13 @@ struct RenameBranchSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.cancelAction)
-                Button("Rename") { rename() }
+                let act: @MainActor () -> Void = { rename() }
+                Button("Rename", action: act)
+                    .harnessButton("Rename", action: act)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canRename)
             }

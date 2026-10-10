@@ -45,12 +45,14 @@ struct ReplaceHandEditedSheet: View {
             HStack {
                 Spacer()
                 // No keyboard shortcut on the destructive half: Return belongs to Cancel.
-                Button(ConflictWording.replaceButton(pending, snapshot.file), role: .destructive) {
-                    store.confirmReplaceHandEdited(snapshot, pending)
-                }
-                .foregroundStyle(.red)
-                .disabled(store.sheetBusyReason != nil)
-                Button("Cancel") { store.activeSheet = nil }
+                let act: @MainActor () -> Void = { store.confirmReplaceHandEdited(snapshot, pending) }
+                Button(ConflictWording.replaceButton(pending, snapshot.file), role: .destructive, action: act)
+                    .harnessButton(ConflictWording.replaceButton(pending, snapshot.file), action: act)
+                    .foregroundStyle(.red)
+                    .disabled(store.sheetBusyReason != nil)
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.defaultAction)
             }
         }

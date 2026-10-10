@@ -72,9 +72,13 @@ struct NewBranchSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.cancelAction)
-                Button("Create") { create() }
+                let act: @MainActor () -> Void = { create() }
+                Button("Create", action: act)
+                    .harnessButton("Create", action: act)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canCreate)
             }

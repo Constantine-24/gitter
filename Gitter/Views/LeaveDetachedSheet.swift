@@ -55,15 +55,19 @@ struct LeaveDetachedSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack {
-                Button("Create Branch Here…") { createBranch() }
+                let act: @MainActor () -> Void = { createBranch() }
+                Button("Create Branch Here…", action: act)
+                    .harnessButton("Create Branch Here…", action: act)
                 Spacer()
                 // No shortcut on the half that strands commits.
-                Button(isOne ? "Leave It Behind" : "Leave Them Behind", role: .destructive) {
-                    leave()
-                }
+                let act2: @MainActor () -> Void = { leave() }
+                Button(isOne ? "Leave It Behind" : "Leave Them Behind", role: .destructive, action: act2)
+                    .harnessButton(isOne ? "Leave It Behind" : "Leave Them Behind", action: act2)
                     .foregroundStyle(.red)
                     .disabled(store.isMutating)
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.defaultAction)
             }
         }

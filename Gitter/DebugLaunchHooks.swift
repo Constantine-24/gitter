@@ -36,7 +36,8 @@
     /// `DebugLaunchHooks+Events` adds the ones that click and type;
     /// `DebugLaunchHooks+Branches` the ones that run branch actions and open their sheets;
     /// `DebugLaunchHooks+Stash` and `DebugLaunchHooks+Discard` the stash and discard steps of
-    /// that same step list (its header lists every step).
+    /// that same step list, and `DebugLaunchHooks+Controls` the steps that press, tick, fill and
+    /// choose inside a sheet (its header lists every step).
     @MainActor
     enum DebugLaunchHooks {
 

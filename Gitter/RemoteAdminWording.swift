@@ -189,6 +189,8 @@ enum RemoteAdminWording {
 
     static let keepHeading = "Keep a local branch at each of these, so their commits stay on a branch:"
     static func keepLabel(_ ref: String) -> String { "Keep \"\(shortRef(ref))\" as" }
+    /// The name field beside that box, as the harness names it (it shows no label of its own).
+    static func keepNameLabel(_ ref: String) -> String { "Name for \"\(shortRef(ref))\"" }
 
     /// Carried note 1: pruning `<remote>/HEAD`'s target leaves it dangling and a later fetch
     /// does **not** repair it (measured in Task 1), so this never says that it does.

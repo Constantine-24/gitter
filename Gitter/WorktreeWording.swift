@@ -643,6 +643,8 @@ extension WorktreeWording {
 
     /// `Keep "<folder>" as` — a keep box's label; the holder is the worktree's path as listed.
     static func keepLabel(_ path: String) -> String { "Keep \"\(folderName(path))\" as" }
+    /// The name field beside that box, as the harness names it (it shows no label of its own).
+    static func keepNameLabel(_ path: String) -> String { "Name for \"\(folderName(path))\"" }
 
     /// The check found no folder: a missing worktree (R25), or a locked one whose folder is gone
     /// — anything but a folder the check could not read.

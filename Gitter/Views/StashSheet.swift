@@ -19,6 +19,7 @@ struct StashSheet: View {
 
             TextField(StashWording.messagePlaceholder, text: $message)
                 .textFieldStyle(.roundedBorder)
+                .harnessField("Message", text: $message)
 
             if !selectedPaths.isEmpty {
                 Picker(selection: $onlySelected) {
@@ -28,6 +29,12 @@ struct StashSheet: View {
                     EmptyView()
                 }
                 .pickerStyle(.radioGroup)
+                .harnessPicker(
+                    "Stash", selection: $onlySelected,
+                    options: [
+                        (label: StashWording.allChanges, value: false),
+                        (label: StashWording.selectedFiles(selectedPaths.count), value: true),
+                    ])
             }
 
             if onlySelected {
@@ -40,6 +47,7 @@ struct StashSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 Toggle(StashWording.includeUntracked, isOn: $includeUntracked)
+                    .harnessToggle(StashWording.includeUntracked, isOn: $includeUntracked)
                 if includeUntracked {
                     Text(StashWording.includeUntrackedNote)
                         .font(.caption)
@@ -56,9 +64,13 @@ struct StashSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                let stashChanges: @MainActor () -> Void = { stash() }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.cancelAction)
-                Button(StashWording.stashButton) { stash() }
+                Button(StashWording.stashButton, action: stashChanges)
+                    .harnessButton(StashWording.stashButton, action: stashChanges)
                     .keyboardShortcut(.defaultAction)
                     .disabled(store.sheetBusyReason != nil)
             }

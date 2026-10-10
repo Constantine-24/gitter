@@ -81,9 +81,13 @@ struct MergeSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.cancelAction)
-                Button("Merge") { merge() }
+                let act: @MainActor () -> Void = { merge() }
+                Button("Merge", action: act)
+                    .harnessButton("Merge", action: act)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canMerge)
             }

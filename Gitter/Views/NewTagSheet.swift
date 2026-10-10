@@ -98,9 +98,13 @@ struct NewTagSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.cancelAction)
-                Button(TagWording.createButton) { create() }
+                let act: @MainActor () -> Void = { create() }
+                Button(TagWording.createButton, action: act)
+                    .harnessButton(TagWording.createButton, action: act)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canCreate)
             }

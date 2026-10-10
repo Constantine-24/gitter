@@ -84,12 +84,16 @@
     ///     confirmpublish:<remote>      ffbranch:<b>                 upstream:<b>
     ///     setupstream:<b>:<ref>
     ///     unsetupstream:<b>            adminmenu
+    ///     prefill:<key>=<value>|clear  addremote                    confirmaddremote:<n>=<url>[=nofetch]
+    ///     editurl:<remote>             confirmediturl[:<key>=<value>|…]
+    ///     renameremote:<remote>        confirmrenameremote:<new>
+    ///     removeremote:<remote>        confirmremoveremote[:none|:<ref>=<name>,…]
     ///
     ///   Navigation (`SidebarFilter`, `RepositoryStore+Worktrees`, `DebugLaunchHooks+Navigation`):
     ///
     ///     filter:<text>                sidebar                      worktrees
     ///     worktreemenu                 openworktree:<folder>        pills
-    ///     watchloads:<seconds>         firstresponder
+    ///     watchloads:<seconds>         firstresponder               reloadtiming
     ///     comparewith:<ref>            compare:<a>:<b>              comparesheet[:<a>[:<b>]]
     ///     comparefilter:<text>         confirmcompare:<a>:<b>       comparestate
     ///     compareselect:<id|changes>   comparepath:<path>           compareswap
@@ -98,6 +102,12 @@
     ///     addworktree[:<b>]            folderproblem:<path>         confirmaddworktree:<kind>:…:<path>
     ///     removeworktree:<folder>      removeworktreestart:<folder> removeallmissing
     ///     worktreesheet                confirmremoveworktree[:none|:<name>]  noticeopen
+    ///
+    ///   The target window's sheet, through its own controls (`HarnessControls`,
+    ///   `DebugLaunchHooks+Controls`; the value is split from the label at the first `=`):
+    ///
+    ///     controls                     press:<label>                tick:<label>[=on|off]
+    ///     fill:<label>=<text>          choose:<label>=<option>
     ///
     /// Steps run in order, each waiting for the mutation the one before it started — and, for a
     /// step that starts network work, for the lane to free as well, for up to 120 seconds.
@@ -422,6 +432,8 @@
                 await remoteAdminStep(command, step: step, store: store)
             case let navigation where navigationCommands.contains(navigation):
                 await navigationStep(command, step: step, store: store)
+            case let control where controlCommands.contains(control):
+                await controlStep(command, step: step, store: store)
             case "stashcontinue":
                 guard store.offeredStashAndContinue != nil else {
                     log("stashcontinue: not offered")

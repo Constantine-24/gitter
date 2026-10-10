@@ -36,9 +36,13 @@ struct ContinueEmptySheet: View {
 
             HStack {
                 Spacer()
-                Button(confirmTitle) { confirm() }
+                let act: @MainActor () -> Void = { confirm() }
+                Button(confirmTitle, action: act)
+                    .harnessButton(confirmTitle, action: act)
                     .disabled(store.sheetBusyReason != nil)
-                Button("Cancel") { store.activeSheet = nil }
+                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                Button("Cancel", action: cancel)
+                    .harnessButton("Cancel", action: cancel)
                     .keyboardShortcut(.defaultAction)
             }
         }
