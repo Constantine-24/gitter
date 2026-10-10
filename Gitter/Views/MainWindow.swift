@@ -143,7 +143,7 @@ struct MainWindow: View {
                 .foregroundStyle(.secondary)
             Text("Open a repository to get started")
                 .font(.title3)
-            Button("Open Repository…") { RepositoryOpener.run(store: store) }
+            Button("Open Repository…") { RepositoryOpener.run(front: store) }
                 .keyboardShortcut("o")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -158,4 +158,7 @@ struct SidebarFilterFocus {
 
 extension FocusedValues {
     @Entry var focusSidebarFilter: SidebarFilterFocus?
+    /// The front window's store, for the menus (E2 Task 4): published by `RepositoryWindowView`
+    /// for an empty window as well, kept while its sheet is up, nil with no window open (M3.3).
+    @Entry var repositoryStore: RepositoryStore?
 }

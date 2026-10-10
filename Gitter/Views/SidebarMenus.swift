@@ -339,7 +339,9 @@ struct TagMenu: View {
 /// Open is off for this window's own worktree, a missing one and a bare repository, Reveal for a
 /// missing one, and Remove Worktree… for the main and this window's own, each with the reason at
 /// the top. Copy Path copies the path exactly as git lists it. A missing worktree's menu also
-/// has Remove All Missing…, and every row's Add Worktree… (Task 5).
+/// has Remove All Missing…, and every row's Add Worktree… (Task 5). A linked worktree this window
+/// does not show also has Open in New Window (E2 Task 4), routed as an open: its own window, or
+/// the one already showing it brought to the front.
 struct WorktreeMenu: View {
     let worktree: Worktree
 
@@ -354,6 +356,12 @@ struct WorktreeMenu: View {
 
         Button(WorktreeWording.openTitle) { store.openWorktree(worktree) }
             .disabled(openReason != nil)
+        if WorktreeWording.offersOpenInNewWindow(worktree, isOpenHere: store.isOpenHere(worktree)) {
+            Button(WorktreeWording.openInNewWindowTitle) {
+                store.openWorktreeInNewWindow(worktree, in: AppModel.windows)
+            }
+            .disabled(WorktreeWording.openInNewWindowBlocked(worktree) != nil)
+        }
 
         Divider()
 
@@ -448,38 +456,39 @@ struct CommitMenu: View {
 /// The menu bar's Remotes menu: Add Remote… (B2 Task 5 — the way to a first remote, which has no
 /// sidebar row to right-click yet), Prune <remote>… — one item with a single remote to fetch from,
 /// a submenu with several — and Clean Up Gone Branches… (B2 Task 4). Off while a sheet is up, as
-/// the Repository menu's items are: a sheet is a question the user has not answered yet.
+/// the Repository menu's items are: a sheet is a question the user has not answered yet. `store`
+/// is the front window's (E2 Task 4); with no window open every item is off, with no reason shown.
 struct RemotesMenuContent: View {
-    let store: RepositoryStore
+    let store: RepositoryStore?
 
     var body: some View {
-        let sheetUp = store.activeSheet != nil
-        let addReason = store.addRemoteBlockedReason
-        let pruneReason = store.pruneMenuBlockedReason
-        let cleanUpReason = store.cleanUpBlockedReason
-        let remotes = RemoteAdminWording.prunableRemotes(store.snapshot?.refs.remotes ?? [])
+        let off = store == nil || store?.activeSheet != nil
+        let addReason = store?.addRemoteBlockedReason
+        let pruneReason = store?.pruneMenuBlockedReason
+        let cleanUpReason = store?.cleanUpBlockedReason
+        let remotes = RemoteAdminWording.prunableRemotes(store?.snapshot?.refs.remotes ?? [])
 
         MenuReasons(reasons: [addReason, pruneReason, cleanUpReason])
 
-        Button(RemoteAdminWording.addRemoteTitle) { store.requestAddRemote() }
-            .disabled(sheetUp || addReason != nil)
+        Button(RemoteAdminWording.addRemoteTitle) { store?.requestAddRemote() }
+            .disabled(off || addReason != nil)
 
         Divider()
 
         if remotes.count > 1 {
             Menu("Prune") {
                 ForEach(remotes, id: \.self) { remote in
-                    Button(RemoteAdminWording.pruneTitle(remote)) { store.requestPrune(remote) }
+                    Button(RemoteAdminWording.pruneTitle(remote)) { store?.requestPrune(remote) }
                 }
             }
-            .disabled(sheetUp || pruneReason != nil)
+            .disabled(off || pruneReason != nil)
         } else {
             Button(remotes.first.map(RemoteAdminWording.pruneTitle) ?? "Prune…") {
-                remotes.first.map { store.requestPrune($0) }
+                remotes.first.map { store?.requestPrune($0) }
             }
-            .disabled(sheetUp || pruneReason != nil || remotes.isEmpty)
+            .disabled(off || pruneReason != nil || remotes.isEmpty)
         }
-        Button(RemoteAdminWording.cleanUpTitle) { store.requestCleanUpGoneBranches() }
-            .disabled(sheetUp || cleanUpReason != nil)
+        Button(RemoteAdminWording.cleanUpTitle) { store?.requestCleanUpGoneBranches() }
+            .disabled(off || cleanUpReason != nil)
     }
 }

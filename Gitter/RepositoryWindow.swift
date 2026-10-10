@@ -34,6 +34,9 @@ struct RepositoryWindowView: View {
     var body: some View {
         MainWindow()
             .environment(store)
+            // To the menus (`@FocusedValue`, M3.3): the front window's store — an empty window's
+            // too, which Open Repository… opens in.
+            .focusedSceneValue(\.repositoryStore, store)
             .background(WindowAccessor { window in AppModel.windows.attach(window, to: store) })
             .onAppear { appeared() }
             // The fallback signal, for a store whose window was never attached: with a window,
@@ -51,11 +54,11 @@ struct RepositoryWindowView: View {
     }
 
     private func appeared() {
-        if AppModel.openWindow == nil {
+        if AppModel.windows.openWindow == nil {
             // From the first window, kept: an `openWindow` from a window since closed still opens
             // one (M2.4). Nil is an empty window, by the scene's id.
             let openWindow = openWindow
-            AppModel.openWindow = { value in
+            AppModel.windows.openWindow = { value in
                 if let value {
                     openWindow(value: value)
                 } else {
@@ -85,17 +88,16 @@ struct RepositoryWindowView: View {
     }
 
     /// The launch (`WindowRegistry.launchPlan`, Ruling 9): a Finder open that came with it first —
-    /// already in this store (`application(_:open:)`), or waiting in `pendingOpen` — then the
-    /// list's other repositories, a window each. A refused launch (a test host, a scripted launch)
-    /// opens only the Finder open.
+    /// waiting in `pendingOpen` (`WindowRegistry.open`), or already in this store — then the list's
+    /// other repositories, a window each. A refused launch (a test host, a scripted launch) opens
+    /// only the Finder open. From here on every open that needs a window gets one at once.
     private func launch() {
         let registry = AppModel.windows
-        let pending = registry.pendingOpen ?? store.root
-        registry.pendingOpen = nil
+        let pending = registry.takePendingOpen() ?? store.root
         let rest = store.reopenLastRepository { refused in
             WindowRegistry.launchPlan(pending: pending, refused: refused) { registry.launchPaths() }
         }
-        for url in rest { AppModel.openWindow?(RepositoryWindow(url: url)) }
+        for url in rest { registry.openWindow?(RepositoryWindow(url: url)) }
         #if DEBUG
             DebugLaunchHooks.run(store: store)
         #endif

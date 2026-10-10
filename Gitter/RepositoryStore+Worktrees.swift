@@ -184,6 +184,19 @@ extension RepositoryStore {
         open(URL(fileURLWithPath: worktree.path))
     }
 
+    /// Open in New Window (E2 Task 4): routed as an open (`.worktreeNewWindow`) through
+    /// `registry` — the app's, `AppModel.windows` — so it gets a window of its own, or the window
+    /// already showing it comes to the front; this window keeps its repository. Nil, with the
+    /// reason in the banner, when it cannot be opened.
+    @discardableResult
+    func openWorktreeInNewWindow(_ worktree: Worktree, in registry: WindowRegistry) -> OpenRoute? {
+        if let reason = WorktreeWording.openInNewWindowBlocked(worktree) {
+            showStickyError(reason)
+            return nil
+        }
+        return registry.open(URL(fileURLWithPath: worktree.path), kind: .worktreeNewWindow, front: self)
+    }
+
     func revealWorktree(_ worktree: Worktree) {
         if let reason = WorktreeWording.revealBlocked(worktree) {
             showStickyError(reason)

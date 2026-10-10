@@ -195,3 +195,69 @@ import Testing
         #expect(store.lastError == nil)
     }
 }
+
+/// E2 Task 4: a linked worktree's menu keeps Open Worktree, which switches this window, and adds
+/// Open in New Window, routed as an open (`.worktreeNewWindow`): a window of its own, or — when a
+/// window shows that worktree already — that window, brought to the front. Offered for a linked
+/// worktree this window does not show; off, with Open Worktree's reason, for a missing one.
+@Suite struct WorktreeOpenInNewWindowWordingTests {
+    @Test func theTitle() {
+        #expect(WorktreeWording.openInNewWindowTitle == "Open in New Window")
+    }
+
+    @Test func offeredForALinkedWorktreeThisWindowDoesNotShow() {
+        #expect(WorktreeWording.offersOpenInNewWindow(WorktreeMenuTests.feat, isOpenHere: false))
+        #expect(WorktreeWording.offersOpenInNewWindow(WorktreeMenuTests.gone, isOpenHere: false))
+        #expect(!WorktreeWording.offersOpenInNewWindow(WorktreeMenuTests.feat, isOpenHere: true))
+        #expect(!WorktreeWording.offersOpenInNewWindow(WorktreeMenuTests.main, isOpenHere: false))
+        #expect(!WorktreeWording.offersOpenInNewWindow(WorktreeMenuTests.main, isOpenHere: true))
+    }
+
+    @Test func offForAMissingWorktreeWithOpenWorktreesReason() {
+        #expect(WorktreeWording.openInNewWindowBlocked(WorktreeMenuTests.feat) == nil)
+        #expect(
+            WorktreeWording.openInNewWindowBlocked(WorktreeMenuTests.gone)
+                == WorktreeWording.openBlocked(WorktreeMenuTests.gone, isOpenHere: false))
+        #expect(WorktreeWording.openInNewWindowBlocked(WorktreeMenuTests.gone) != nil)
+    }
+}
+
+/// The same, on real repositories: a main repository with a linked worktree (`git worktree add`),
+/// a scratch registry whose new windows are recorded (`OpenRoutingTests.launchedRegistry`).
+@MainActor @Suite(.leavesTheRealDefaultsAlone) struct WorktreeOpenInNewWindowTests {
+    @Test(.timeLimit(.minutes(10))) func openInNewWindowRoutesAsAWorktreeOpen() async throws {
+        let repo = try ScratchRepo("main")
+        defer { repo.remove() }
+        try repo.commit("a.txt", "one\n", "first")
+        let linked = repo.directory.appending(path: "wt-feat")
+        _ = try repo.git("worktree", "add", "-b", "feat", linked.path)
+        let (test, recorder) = OpenRoutingTests.launchedRegistry()
+        defer { test.remove() }
+        let here = await test.opened(repo)
+        let feat = try #require(here.worktrees.first { !$0.isMain })
+        let main = try #require(here.worktrees.first { $0.isMain })
+
+        #expect(WorktreeWording.offersOpenInNewWindow(feat, isOpenHere: here.isOpenHere(feat)))
+        #expect(!WorktreeWording.offersOpenInNewWindow(main, isOpenHere: here.isOpenHere(main)))
+
+        // A window of its own; this window keeps its repository (Open Worktree would switch it).
+        #expect(here.openWorktreeInNewWindow(feat, in: test.registry) == .newWindow(RepositoryWindow(url: linked)))
+        #expect(recorder.asked == [RepositoryWindow(url: linked)])
+        #expect(here.root.map(RepositoryWindow.init(url:)) == RepositoryWindow(url: repo.url))
+
+        // Shown in another window: that one comes to the front, and no window is made.
+        let there = test.registry.makeStore()
+        await open(there, linked)
+        #expect(here.openWorktreeInNewWindow(feat, in: test.registry) == .front(there))
+        #expect(recorder.asked.count == 1)
+
+        // A Worktree value whose folder is gone: refused with the reason, nothing routed.
+        let gone = Worktree(
+            path: repo.directory.appending(path: "wt-gone").path, head: feat.head, branch: "refs/heads/gone",
+            isMain: false, isBare: false, lock: nil, missingReason: "gitdir file points to non-existent location",
+            operationBranches: [])
+        #expect(here.openWorktreeInNewWindow(gone, in: test.registry) == nil)
+        #expect(here.lastError == WorktreeWording.openInNewWindowBlocked(gone))
+        #expect(recorder.asked.count == 1)
+    }
+}

@@ -108,6 +108,68 @@ import Testing
         #expect(DebugLaunchGuard.stepRefusal(root: base, env) != nil)
     }
 
+    // MARK: - The other windows' repositories (E2 Task 4)
+
+    /// `GITTER_DEBUG_ALSO_OPEN` is a colon-separated list of paths; empty parts are no path, and
+    /// each is kept with its links resolved.
+    @Test func alsoOpenIsAColonSeparatedListOfResolvedPaths() throws {
+        #expect(DebugLaunchGuard.alsoOpen([:]).isEmpty)
+        #expect(DebugLaunchGuard.alsoOpen(["GITTER_DEBUG_ALSO_OPEN": ""]).isEmpty)
+        #expect(DebugLaunchGuard.alsoOpen(["GITTER_DEBUG_ALSO_OPEN": "::"]).isEmpty)
+        #expect(
+            DebugLaunchGuard.alsoOpen(["GITTER_DEBUG_ALSO_OPEN": "/nonexistent-gitter/a::/nonexistent-gitter/b/./"])
+                .map(\.path) == ["/nonexistent-gitter/a", "/nonexistent-gitter/b"])
+
+        let (base, repo, link) = try Self.linkedRepo()
+        defer { try? FileManager.default.removeItem(at: base) }
+        #expect(DebugLaunchGuard.alsoOpen(["GITTER_DEBUG_ALSO_OPEN": link.path]).map(\.path) == [repo.path])
+    }
+
+    /// A step may act on a repository `allowed` names, matched through a link; an unlisted one is
+    /// refused, the fixture is still allowed, and with no fixture named nothing is.
+    @Test func aStepRunsAgainstAnAllowedRepositoryAndNoOther() throws {
+        let (base, repo, link) = try Self.linkedRepo()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let env = ["GITTER_DEBUG_OPEN": Self.fixture, "GITTER_DEBUG_ALSO_OPEN": link.path]
+        let allowed = DebugLaunchGuard.alsoOpen(env)
+
+        #expect(DebugLaunchGuard.stepRefusal(root: repo, allowed: allowed, env) == nil)
+        #expect(DebugLaunchGuard.stepRefusal(root: link, allowed: allowed, env) == nil)
+        #expect(DebugLaunchGuard.stepRefusal(root: URL(fileURLWithPath: Self.fixture), allowed: allowed, env) == nil)
+        let refusal = try #require(DebugLaunchGuard.stepRefusal(root: base, allowed: allowed, env))
+        #expect(refusal.contains(base.resolvingSymlinksInPath().path))
+        #expect(DebugLaunchGuard.stepRefusal(root: nil, allowed: allowed, env) != nil)
+        // Without the list the other window's repository is refused, as before.
+        #expect(DebugLaunchGuard.stepRefusal(root: repo, allowed: [], env) != nil)
+        // No fixture named: nothing runs, whatever is allowed.
+        #expect(DebugLaunchGuard.stepRefusal(root: repo, allowed: allowed, ["GITTER_DEBUG_ALSO_OPEN": link.path]) != nil)
+    }
+
+    /// `newwindow:<path>` opens only a path `GITTER_DEBUG_ALSO_OPEN` names, matched through a link.
+    @Test func aNewWindowOpensOnlyAnAlsoOpenPath() throws {
+        let (base, repo, link) = try Self.linkedRepo()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let env = ["GITTER_DEBUG_OPEN": Self.fixture, "GITTER_DEBUG_ALSO_OPEN": link.path]
+
+        #expect(DebugLaunchGuard.newWindowRefusal(repo.path, env) == nil)
+        #expect(DebugLaunchGuard.newWindowRefusal(link.path + "/", env) == nil)
+        let refusal = try #require(DebugLaunchGuard.newWindowRefusal(base.path, env))
+        #expect(refusal.contains("GITTER_DEBUG_ALSO_OPEN"))
+        #expect(DebugLaunchGuard.newWindowRefusal(Self.fixture, env) != nil, "the fixture is not listed")
+        #expect(DebugLaunchGuard.newWindowRefusal("", env) != nil)
+        #expect(DebugLaunchGuard.newWindowRefusal(repo.path, ["GITTER_DEBUG_OPEN": Self.fixture]) != nil)
+    }
+
+    /// A real directory `repo` and a link to it, `link`, in a fresh temporary `base`.
+    static func linkedRepo() throws -> (base: URL, repo: URL, link: URL) {
+        let base = FileManager.default.temporaryDirectory.appending(path: "gitter-guard-\(UUID().uuidString)")
+        let repo = base.appending(path: "repo")
+        let link = base.appending(path: "link")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: repo)
+        return (base, repo.resolvingSymlinksInPath(), link)
+    }
+
     // MARK: - What is opened (final review M4)
 
     /// An empty `GITTER_DEBUG_OPEN` behaves as an unset one: nothing is opened — it used to open

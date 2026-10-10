@@ -174,6 +174,20 @@ enum WorktreeWording {
         return nil
     }
 
+    static let openInNewWindowTitle = "Open in New Window"
+
+    /// Whether a row's menu has Open in New Window (E2 Task 4): a linked worktree — not the main
+    /// one — that this window does not show. Open Worktree, which switches this window, stays.
+    static func offersOpenInNewWindow(_ worktree: Worktree, isOpenHere: Bool) -> Bool {
+        !worktree.isMain && !isOpenHere
+    }
+
+    /// Why Open in New Window is off, or nil: Open Worktree's reasons, but for "this window" —
+    /// another window is just what it is for.
+    static func openInNewWindowBlocked(_ worktree: Worktree) -> String? {
+        openBlocked(worktree, isOpenHere: false)
+    }
+
     /// Why Reveal in Finder is off, or nil.
     static func revealBlocked(_ worktree: Worktree) -> String? {
         worktree.isMissing ? "Its folder is gone, so Finder has nothing to show." : nil

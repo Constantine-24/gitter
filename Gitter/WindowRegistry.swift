@@ -8,7 +8,11 @@ import Observation
 /// **One store per window.** Each window builds its store once, through
 /// `@State private var store = AppModel.windows.makeStore()` (M3.1), and the registry keeps them in
 /// the order they were made. `QuitFlow` and `QuitGuard` take every one of them
-/// (`AppModel.quitStores()`), the menus take the first open one until they follow the front window.
+/// (`AppModel.quitStores()`); the menus act on the front window's (`FocusedValues.repositoryStore`).
+///
+/// **Every open is routed here** (`route`, `open`, E2 Task 4): a repository a window already shows
+/// comes to the front; Open Repository… takes an empty front window; everything else gets a
+/// window of its own (`openWindow`). No open happens unseen.
 ///
 /// **A closed window lingers** (M3.2): its `NSWindow` stays in `NSApp.windows` and its view tree —
 /// with its store — is not released. So a close is told here explicitly (`windowClosed`, from the
@@ -38,7 +42,7 @@ final class WindowRegistry {
     @ObservationIgnored let recordsOpenList: Bool
 
     /// Every registered store, in the order made: one per open window, and a closed window's for as
-    /// long as its lane is busy. Observed: the menus follow it.
+    /// long as its lane is busy.
     private(set) var stores: [RepositoryStore] = []
 
     /// The stores whose window is still open, in order.
@@ -51,9 +55,19 @@ final class WindowRegistry {
     /// Whether the first window has taken the launch's repositories (`launchPaths`) — once.
     @ObservationIgnored var launchHandled = false
 
-    /// A Finder open that arrived before any window had a store to open it in: the first window
-    /// opens it first, and the launch's other repositories after it (`launchPlan`).
-    @ObservationIgnored var pendingOpen: URL?
+    /// An open that needed a window of its own before the first window had taken the launch (a
+    /// Finder open at launch): the first window opens it first, and the launch's other
+    /// repositories after it (`takePendingOpen`, `launchPlan`).
+    @ObservationIgnored private(set) var pendingOpen: URL?
+
+    /// Whether the first window's launch has taken `pendingOpen`: from then on a new window is
+    /// opened at once.
+    @ObservationIgnored private var launchTookPendingOpen = false
+
+    /// Opens a repository window: on the repository given — fronting the window that already
+    /// holds that value (M2.2) — or an empty one for nil. Set by the first window to appear, from
+    /// its `openWindow`, which still works once that window has closed (M2.4); a recorder in tests.
+    @ObservationIgnored var openWindow: ((RepositoryWindow?) -> Void)?
 
     @ObservationIgnored private var windows: [ObjectIdentifier: WeakWindow] = [:]
     @ObservationIgnored private var closeObservers: [ObjectIdentifier: any NSObjectProtocol] = [:]
@@ -88,6 +102,59 @@ final class WindowRegistry {
     func store(showing url: URL) -> RepositoryStore? {
         let wanted = RepositoryWindow(url: url)
         return liveStores.first { $0.root.map(RepositoryWindow.init(url:)) == wanted }
+    }
+
+    // MARK: - Opening
+
+    /// Where `url` opens (spec §2, Open routing):
+    /// - shown in an open window, by any spelling (RF2) → `.front`, whatever asked;
+    /// - Open Repository… with a front window that shows nothing → `.useFront`;
+    /// - otherwise — Open Recent, a Finder open, Open in New Window, or a front window that shows a
+    ///   repository — `.newWindow`.
+    func route(_ url: URL, kind: OpenKind, front: RepositoryStore?) -> OpenRoute {
+        if let shown = store(showing: url) { return .front(shown) }
+        if kind == .openPanel, let front, front.root == nil, !front.isClosed { return .useFront(front) }
+        return .newWindow(RepositoryWindow(url: url))
+    }
+
+    /// Opens `url` where `route` says: brings its window to the front (made key, out of the Dock
+    /// if it was there), opens it in the empty front window, or asks for a new window — held in
+    /// `pendingOpen` for the first window while the launch has not taken it yet (Ruling 9), so a
+    /// Finder open at launch comes first and the open list's repositories follow it.
+    @discardableResult
+    func open(_ url: URL, kind: OpenKind, front: RepositoryStore?) -> OpenRoute {
+        let route = route(url, kind: kind, front: front)
+        switch route {
+        case .front(let store): window(of: store)?.makeKeyAndOrderFront(nil)
+        case .useFront(let store): store.open(url)
+        case .newWindow(let value):
+            if launchTookPendingOpen, let openWindow {
+                openWindow(value)
+            } else {
+                pendingOpen = url
+            }
+        }
+        return route
+    }
+
+    /// The first window's launch takes the open waiting for it, if any; every later new window
+    /// opens at once (`open`).
+    func takePendingOpen() -> URL? {
+        launchTookPendingOpen = true
+        defer { pendingOpen = nil }
+        return pendingOpen
+    }
+
+    /// The open window's store whose window is `window` — or whose window `window` is a sheet of,
+    /// since with a sheet up the sheet is the key window. Nil for no window, one that is not a
+    /// repository window, and a closed one.
+    func store(of window: NSWindow?) -> RepositoryStore? {
+        var candidate = window
+        while let current = candidate {
+            if let store = liveStores.first(where: { self.window(of: $0) === current }) { return store }
+            candidate = current.sheetParent
+        }
+        return nil
     }
 
     // MARK: - Windows
@@ -245,5 +312,33 @@ final class WindowRegistry {
         if let current = stored as? [String], current == list { return }
         if stored == nil, list.isEmpty { return }
         defaults.set(list, forKey: Self.openRepositoriesKey)
+    }
+}
+
+/// What asked for an open: how `WindowRegistry.route` decides where it goes.
+enum OpenKind: Sendable {
+    /// Open Repository… (⌘O), the menu's or the empty window's button.
+    case openPanel
+    /// Open Recent, or a Finder open (`application(_:open:)`).
+    case recentOrFinder
+    /// A worktree's Open in New Window.
+    case worktreeNewWindow
+}
+
+/// Where an open goes (`WindowRegistry.route`).
+enum OpenRoute: Equatable {
+    /// The window already showing it: brought to the front, nothing reopened.
+    case front(RepositoryStore)
+    /// The front window, which shows nothing: it opens there.
+    case useFront(RepositoryStore)
+    /// A window of its own, for this value.
+    case newWindow(RepositoryWindow)
+
+    static func == (lhs: OpenRoute, rhs: OpenRoute) -> Bool {
+        switch (lhs, rhs) {
+        case (.front(let a), .front(let b)), (.useFront(let a), .useFront(let b)): a === b
+        case (.newWindow(let a), .newWindow(let b)): a == b
+        default: false
+        }
     }
 }

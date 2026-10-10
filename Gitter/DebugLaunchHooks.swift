@@ -20,6 +20,8 @@
     ///   GITTER_DEBUG_WINDOW=1400x1400       resize the window, past the screen if asked
     ///   GITTER_DEBUG_OPEN=<path>            the fixture: opened first, as "Open Repository…"
     ///                                       does, and the only repository a hook acts on
+    ///   GITTER_DEBUG_ALSO_OPEN=<p>[:<p>…]   the other windows' repositories: the only paths
+    ///                                       `newwindow:` opens, and the only others a step acts on
     ///   GITTER_DEBUG_APPEARANCE=light|dark  force the window's appearance
     ///   GITTER_DEBUG_THEN=<steps>           branch-action steps to run after the clicks and
     ///                                       keys, e.g. `idle;snapshot:after-click` — what a
@@ -50,9 +52,16 @@
             }
         }
 
-        /// Called once, for the first window's store (`RepositoryWindowView`, E2 Task 3): every
-        /// hook and step acts on that store.
+        /// The store every step, its wait and its result line act on (E2 Task 4, Ruling 3): the
+        /// first window's, set by `run(store:)`, until `inwindow:<n>` makes the n-th registered
+        /// store the target. Nil before `run`.
+        static var target: RepositoryStore?
+
+        /// Called once, for the first window's store (`RepositoryWindowView`, E2 Task 3): the
+        /// selection, staging and click hooks act on that store, and the steps start on it
+        /// (`target`).
         static func run(store: RepositoryStore) {
+            target = store
             RepositoryStore.logStores("the first window's store is store \(store.debugSerial)")
             let env = ProcessInfo.processInfo.environment
             let path = env["GITTER_DEBUG_SELECT_PATH"]
@@ -109,7 +118,7 @@
                 // a screenshot). Each step checks the guard again (`runBranchActions`).
                 if let branchAction {
                     guard await wait({ store.snapshot != nil }, what: "a snapshot before the steps") else { return }
-                    guard await runBranchActions(branchAction, store: store) else { return }
+                    guard await runBranchActions(branchAction) else { return }
                 }
                 // Last, so a click lands on a list that has finished loading its rows.
                 if wantsEvents {
@@ -124,17 +133,19 @@
                     guard await wait({ store.snapshot != nil }, what: "a snapshot before GITTER_DEBUG_THEN") else {
                         return
                     }
-                    await runBranchActions(then, store: store)
+                    await runBranchActions(then)
                 }
             }
         }
 
-        /// Why a hook must not act on the repository on screen now, or nil (`DebugLaunchGuard`).
+        /// Why a hook must not act on `store`'s repository now, or nil (`DebugLaunchGuard`): the
+        /// fixture, or another window's repository the launcher named (`GITTER_DEBUG_ALSO_OPEN`).
         // internal (not private): used by DebugLaunchHooks+Branches.swift before every step
         static func guardRefusal(_ store: RepositoryStore) -> String? {
             // A closed window's store is acted on no more (RF3), whatever it shows.
             if store.isClosed { return "refused: the window is closed" }
-            return DebugLaunchGuard.stepRefusal(root: store.root, ProcessInfo.processInfo.environment)
+            let env = ProcessInfo.processInfo.environment
+            return DebugLaunchGuard.stepRefusal(root: store.root, allowed: DebugLaunchGuard.alsoOpen(env), env)
         }
 
         /// Makes the window `<width>x<height>`, anchored at its current top-left corner.

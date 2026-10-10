@@ -15,7 +15,10 @@
     ///   schedule with `GITTER_DEBUG_AUTOFETCH`;
     /// - no hook acts — no selection, staging, click, key or step — unless the repository on
     ///   screen is that fixture (`stepRefusal`), compared by resolved path, so a script whose
-    ///   own open failed, or that names no fixture, does nothing and says why.
+    ///   own open failed, or that names no fixture, does nothing and says why;
+    /// - another window is opened (`newwindow:`) only on a path `GITTER_DEBUG_ALSO_OPEN` names
+    ///   (`newWindowRefusal`), and a step acts on a window's repository only when it is the
+    ///   fixture or one of those (E2 Task 4).
     ///
     /// Pure: each answer comes from the environment it is handed (and, for the paths, the file
     /// system's links). Compiled out of Release, where launches are never scripted.
@@ -23,6 +26,7 @@
         static let prefix = "GITTER_DEBUG_"
         static let openVariable = "GITTER_DEBUG_OPEN"
         static let autoFetchVariable = "GITTER_DEBUG_AUTOFETCH"
+        static let alsoOpenVariable = "GITTER_DEBUG_ALSO_OPEN"
 
         /// Whether a harness started this process: any `GITTER_DEBUG_*` variable, even empty.
         static func isScripted(_ environment: [String: String]) -> Bool {
@@ -52,9 +56,30 @@
             !isScripted(environment) || environment[autoFetchVariable] != nil
         }
 
-        /// Nil when a hook may act on `root`, the repository on screen; otherwise the line to
-        /// log instead of acting.
-        static func stepRefusal(root: URL?, _ environment: [String: String]) -> String? {
+        /// The other windows' repositories (E2 Task 4): `GITTER_DEBUG_ALSO_OPEN`'s colon-separated
+        /// paths, each with its links resolved; an empty part is no path.
+        static func alsoOpen(_ environment: [String: String]) -> [URL] {
+            (environment[alsoOpenVariable] ?? "").split(separator: ":").map {
+                URL(fileURLWithPath: resolved(URL(fileURLWithPath: String($0))))
+            }
+        }
+
+        /// Nil when `newwindow:<path>` may open `path`: one of `alsoOpen`'s, by resolved path —
+        /// the launcher named it, as it names the fixture. Otherwise the line to log instead.
+        static func newWindowRefusal(_ path: String, _ environment: [String: String]) -> String? {
+            let allowed = alsoOpen(environment).map(\.path)
+            guard !path.isEmpty else { return "refused: newwindow: names no path" }
+            let wanted = resolved(URL(fileURLWithPath: path))
+            guard allowed.contains(wanted) else {
+                return "refused: newwindow:\(path) (\(wanted)) is not in \(alsoOpenVariable)=\(environment[alsoOpenVariable] ?? "")"
+            }
+            return nil
+        }
+
+        /// Nil when a hook may act on `root`, the repository its window shows; otherwise the line
+        /// to log instead of acting. `allowed` (`alsoOpen`) are the other windows' repositories a
+        /// step may act on besides the fixture; nothing is allowed when no fixture is named.
+        static func stepRefusal(root: URL?, allowed: [URL], _ environment: [String: String]) -> String? {
             guard let fixture = environment[openVariable], !fixture.isEmpty else {
                 return "refused: no \(openVariable) names the fixture to act on"
             }
@@ -63,10 +88,16 @@
             }
             let wanted = resolved(URL(fileURLWithPath: fixture))
             let open = resolved(root)
-            guard open == wanted else {
-                return "refused: the open repository \(open) is not \(openVariable)=\(fixture) (\(wanted))"
+            guard open == wanted || allowed.map(resolved).contains(open) else {
+                let also = allowed.isEmpty ? "" : " nor one of \(alsoOpenVariable)'s"
+                return "refused: the open repository \(open) is not \(openVariable)=\(fixture) (\(wanted))\(also)"
             }
             return nil
+        }
+
+        /// `stepRefusal` with only the fixture allowed.
+        static func stepRefusal(root: URL?, _ environment: [String: String]) -> String? {
+            stepRefusal(root: root, allowed: [], environment)
         }
 
         /// The path with its links followed, `.` and `..` removed and no trailing slash —

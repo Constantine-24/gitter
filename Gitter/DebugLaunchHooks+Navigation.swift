@@ -87,11 +87,24 @@
     ///                                Missing… (default or `none`).
     ///   noticeopen                   the sticky notice's Open (`openWorktree`), then the root and
     ///                                the titles. The launch guard refuses every step after it.
+    ///
+    /// E2 Task 4's windows. Every step acts on the **target** store (`target`), which starts as
+    /// the first window's; its guard is checked against the fixture and `GITTER_DEBUG_ALSO_OPEN`:
+    ///
+    ///   newwindow:<path>             opens `<path>` as Open Recent or a Finder open does
+    ///                                (`WindowRegistry.open`, `.recentOrFinder`, no front window):
+    ///                                a window of its own, or the one showing it brought to the
+    ///                                front; then waits for its first snapshot and lists every
+    ///                                registered store. Refused, and the app quits, unless `<path>`
+    ///                                is one of `GITTER_DEBUG_ALSO_OPEN`'s. The target stays.
+    ///   inwindow:<n>                 makes the n-th registered store (1-based, in the order made)
+    ///                                the target. Refused, and the app quits, for no such store.
+    ///                                The menus still act on the front window (`menu:` says which).
     extension DebugLaunchHooks {
 
         static let navigationCommands: Set<String> = Set([
             "filter", "sidebar", "worktrees", "worktreemenu", "openworktree", "pills", "watchloads", "firstresponder",
-            "reloadtiming",
+            "reloadtiming", "newwindow", "inwindow",
         ]).union(compareCommands).union(worktreeSheetCommands)
 
         private static let worktreeSheetCommands: Set<String> = [
@@ -151,6 +164,13 @@
                 log("firstresponder: \(responder.map { String(describing: type(of: $0)) } ?? "nil")")
             case "reloadtiming":
                 await reloadTiming(store)
+            case "newwindow": await newWindow(rest)
+            case "inwindow":
+                // `windowStepRefusal` has checked the number before the step ran.
+                guard let n = Int(rest), AppModel.windows.stores.indices.contains(n - 1) else { return }
+                let chosen = AppModel.windows.stores[n - 1]
+                target = chosen
+                log("inwindow: \(n) -> \(describeStore(chosen))")
             case let compare where compareCommands.contains(compare):
                 await compareStep(command, rest: rest, store: store)
             case let sheet where worktreeSheetCommands.contains(sheet):
@@ -557,8 +577,59 @@
             }
         }
 
+        // MARK: - Windows (E2 Task 4)
+
+        /// Why a `newwindow:` or `inwindow:` step must not run, or nil; nil for every other step.
+        // internal (not private): used by DebugLaunchHooks+Branches.swift before every step
+        static func windowStepRefusal(_ step: String) -> String? {
+            if step.hasPrefix("newwindow:") {
+                return DebugLaunchGuard.newWindowRefusal(
+                    String(step.dropFirst("newwindow:".count)), ProcessInfo.processInfo.environment)
+            }
+            if step.hasPrefix("inwindow:") {
+                let rest = step.dropFirst("inwindow:".count)
+                let count = AppModel.windows.stores.count
+                guard let n = Int(rest), n >= 1, n <= count else {
+                    return "refused: \(step) names no window (\(count) registered)"
+                }
+            }
+            return nil
+        }
+
+        /// The window showing `store`, for what a step draws or reads of one (`snapshot:`, `views`,
+        /// the titles): the target's own window, not whichever is first on screen.
+        static func window(of store: RepositoryStore) -> NSWindow? {
+            AppModel.windows.window(of: store)
+        }
+
+        private static func newWindow(_ path: String) async {
+            let url = URL(fileURLWithPath: path)
+            let registry = AppModel.windows
+            let route = registry.open(url, kind: .recentOrFinder, front: nil)
+            switch route {
+            case .front(let store): log("newwindow: \(path) -> shown already, fronted: \(describeStore(store))")
+            case .useFront(let store): log("newwindow: \(path) -> opened in the front window: \(describeStore(store))")
+            case .newWindow(let value): log("newwindow: \(path) -> a new window for \(value.path)")
+            }
+            _ = await wait(
+                {
+                    guard let shown = registry.store(showing: url) else { return false }
+                    return shown.snapshot != nil && !shown.isMutating && !shown.isReadingWorktreeState
+                }, seconds: 30, what: "newwindow: the window's first snapshot")
+            for (index, store) in registry.stores.enumerated() {
+                log("newwindow: window \(index + 1): \(describeStore(store))")
+            }
+        }
+
+        private static func describeStore(_ store: RepositoryStore) -> String {
+            "store \(store.debugSerial) \(store.root?.path ?? "(empty)")"
+                + (store.isClosed ? " (closed)" : "") + (store === target ? " [target]" : "")
+                + (window(of: store)?.isKeyWindow == true || window(of: store)?.attachedSheet?.isKeyWindow == true
+                    ? " [key]" : "")
+        }
+
         private static func logTitles(_ store: RepositoryStore) {
-            let window = NSApp.windows.first { $0.isVisible && $0.sheetParent == nil }
+            let window = window(of: store)
             log("title: store \"\(store.windowTitle)\" | window \"\(window?.title ?? "nil")\" #\(window?.windowNumber ?? 0) | linked: \(store.isLinkedWorktree) "
                 + "| main: \(store.mainWorktreeName ?? "nil") | open path: \(store.worktreeState.openPath ?? "nil")")
         }
@@ -580,8 +651,13 @@
         private static func logWorktreeMenus(_ store: RepositoryStore) {
             func state(_ reason: String?) -> String { reason.map { "off: \($0)" } ?? "on" }
             for worktree in store.worktrees {
+                let newWindow =
+                    WorktreeWording.offersOpenInNewWindow(worktree, isOpenHere: store.isOpenHere(worktree))
+                    ? "\(WorktreeWording.openInNewWindowTitle) [\(state(WorktreeWording.openInNewWindowBlocked(worktree)))] | "
+                    : ""
                 log("worktreemenu \(WorktreeWording.folderName(worktree.path)): "
                     + "\(WorktreeWording.openTitle) [\(state(store.openWorktreeBlockedReason(worktree)))] | "
+                    + newWindow
                     + "\(WorktreeWording.revealTitle) [\(state(WorktreeWording.revealBlocked(worktree)))] | "
                     + "\(WorktreeWording.copyPathTitle) [on: \(flatten(worktree.path))] | "
                     + "\(WorktreeWording.removeTitle) [\(state(store.removeWorktreeBlockedReason(worktree)))]"

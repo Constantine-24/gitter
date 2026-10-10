@@ -33,6 +33,7 @@
     ///     quit                         alert               alertbutton:<title>
     ///     menuitem:<menu>:<title>
     ///     notice                       openlink
+    ///     newwindow:<path>             inwindow:<n>
     ///
     ///   The stash (`RepositoryStore+Stash`, `DebugLaunchHooks+Stash`):
     ///
@@ -144,8 +145,10 @@
     /// that button of an alert on screen (`performClick`, the button's own action — the alert's
     /// completion handler runs as it would for a pointer). `menuitem:<menu>:<title>` fires a main
     /// menu item through `NSMenu.performActionForItem(at:)`, which is what choosing it does —
-    /// how "Fetch Automatically" is toggled — and `menu:<title>` then shows its state. None of
-    /// the three waits for anything. `alert` logs every text and button (with its key
+    /// how "Fetch Automatically" is toggled — and `menu:<title>` then shows its state, and which
+    /// window's store the menus act on (the front one's, `menu <title>: front window: …`). Both
+    /// make the app frontmost first when none of its windows is key (`bringToFront`). None of
+    /// the three waits for a step's work to finish. `alert` logs every text and button (with its key
     /// equivalent) of each sheet on screen: the snapshot draws an alert's frame and its tinted
     /// buttons but not its text, which is drawn with vibrancy (the sidebar's problem, below).
     ///
@@ -176,27 +179,31 @@
             ProcessInfo.processInfo.environment["GITTER_DEBUG_BRANCH_ACTION"]
         }
 
-        /// Runs the steps in order. False when the launch guard refused a step: the rest were
-        /// not run, and the app is quitting (`QuitFlow`, reason `.launchRefusal`).
+        /// Runs the steps in order, each on the target window's store (`target`, `inwindow:`).
+        /// False when the launch guard refused a step: the rest were not run, and the app is
+        /// quitting (`QuitFlow`, reason `.launchRefusal`).
         @discardableResult
-        static func runBranchActions(_ spec: String, store: RepositoryStore) async -> Bool {
+        static func runBranchActions(_ spec: String) async -> Bool {
             for step in spec.split(separator: ";") {
-                // An `open:` step, or a failed reload, can leave another repository on screen.
-                if let refusal = guardRefusal(store) {
-                    log("launch guard: \(refusal); step \(step) and the rest not run")
-                    QuitFlow.request(.launchRefusal)
-                    return false
+                let text = String(step)
+                let started = text.hasPrefix("start:")
+                let command = started ? String(text.dropFirst("start:".count)) : text
+                // An `open:` step, or a failed reload, can leave another repository on screen; a
+                // `newwindow:` or `inwindow:` the launcher did not provide for is refused too.
+                guard let acting = target else { return refuse("refused: no target window", step: step) }
+                if let refusal = guardRefusal(acting) ?? windowStepRefusal(command) {
+                    return refuse(refusal, step: step)
                 }
                 // The worktree state is read after a snapshot lands, in its own task (B3 final
                 // review, I2): a step acts on, and logs, the state that snapshot's read gives.
-                _ = await wait({ !store.isReadingWorktreeState }, seconds: 60, what: "step \(step): the worktree state read")
+                _ = await wait({ !acting.isReadingWorktreeState }, seconds: 60, what: "step \(step): the worktree state read")
                 log("step: \(step)")
-                let text = String(step)
                 // An automatic fetch does not count: the user's network actions stop it and go
                 // ahead (`beginRemote`), so a step taken during one waits for its own lane.
-                let laneWasBusy = store.blockingRemoteActivity != nil
-                let started = text.hasPrefix("start:")
-                await perform(started ? String(text.dropFirst("start:".count)) : text, store: store)
+                let laneWasBusy = acting.blockingRemoteActivity != nil
+                await perform(command, store: acting)
+                // The wait and the result line are the target's — the new one after `inwindow:`.
+                let store = target ?? acting
                 // `mutate` and the lane are both claimed synchronously, so by now `isMutating` or
                 // `remoteActivity` is already set for anything that runs git; a step that only
                 // opens a sheet sets neither and this returns at once.
@@ -216,6 +223,13 @@
                 logResult(store)
             }
             return true
+        }
+
+        /// Logs a launch-guard refusal of `step` and quits (`.launchRefusal`); false, for the loop.
+        private static func refuse(_ refusal: String, step: Substring) -> Bool {
+            log("launch guard: \(refusal); step \(step) and the rest not run")
+            QuitFlow.request(.launchRefusal)
+            return false
         }
 
         private static func logResult(_ store: RepositoryStore) {
@@ -339,7 +353,7 @@
             case "snapshot":
                 // Past the banners' insertion animation, so they are drawn at full opacity.
                 try? await Task.sleep(for: .milliseconds(800))
-                first.map { snapshot(named: $0) }
+                first.map { snapshot(named: $0, store: store) }
             // "Open Repository…" mid-script, e.g. while a push is on the lane. The path is the
             // rest of the step, colons and all. Once another repository is open, the launch
             // guard refuses every step after this one.
@@ -348,8 +362,8 @@
                 if !path.isEmpty { store.open(URL(fileURLWithPath: String(path))) }
             case "autofetchfailed":
                 store.debugSetLastAutoFetchFailure(String(step.dropFirst("autofetchfailed:".count)))
-            case "menu": first.map { dumpMenu(titled: $0) }
-            case "views": dumpViews(matching: first)
+            case "menu": if let first { await dumpMenu(titled: first) }
+            case "views": dumpViews(matching: first, store: store)
             case "badges":
                 // What each sidebar row's badge draws, says and reads out — the same function
                 // the row calls. The snapshot cannot show the sidebar (see `snapshot(named:)`).
@@ -387,7 +401,7 @@
                     log("alertbutton: no button \"\(title)\" on screen")
                 }
             case "menuitem":
-                if let first, let second { fireMenuItem(second, inMenu: first) }
+                if let first, let second { await fireMenuItem(second, inMenu: first) }
             case "notice":
                 log("notice transient: \(describe(store.notice))")
                 log("notice sticky: \(describe(store.stickyNotice))")
@@ -451,12 +465,13 @@
             return nil
         }
 
-        private static func fireMenuItem(_ title: String, inMenu menuTitle: String) {
+        private static func fireMenuItem(_ title: String, inMenu menuTitle: String) async {
             guard let menu = NSApp.mainMenu?.items.first(where: { $0.title == menuTitle })?.submenu
             else {
                 log("menuitem: no \"\(menuTitle)\" menu")
                 return
             }
+            await bringToFront()
             menu.delegate?.menuNeedsUpdate?(menu)
             menu.update()
             guard let index = menu.items.firstIndex(where: { $0.title == title }) else {
@@ -548,9 +563,9 @@
         /// window. (Measured in Task 9: rendering the sidebar's own layer does not help either —
         /// its text layers hold vibrancy-tinted contents, `CATintedImage`, which
         /// `render(in:)` skips. The `badges` step logs what its rows draw instead.)
-        private static func snapshot(named name: String) {
+        private static func snapshot(named name: String, store: RepositoryStore) {
             guard let dir = ProcessInfo.processInfo.environment["GITTER_DEBUG_SNAPSHOT_DIR"],
-                let window = NSApp.windows.first(where: { $0.isVisible && $0.sheetParent == nil }),
+                let window = window(of: store),
                 let main = image(of: window)
             else {
                 log("snapshot failed: \(name)")
@@ -586,8 +601,8 @@
         /// item is a `ToolbarItemHostingView`, and the centre of its frame is the click point.
         /// (The in-process accessibility tree was tried first and exposes only the window and
         /// its title-bar buttons, not SwiftUI's elements, when no assistive client is running.)
-        private static func dumpViews(matching filter: String?) {
-            guard let window = NSApp.windows.first(where: { $0.isVisible && $0.sheetParent == nil }),
+        private static func dumpViews(matching filter: String?, store: RepositoryStore) {
+            guard let window = window(of: store),
                 let frameView = window.contentView?.superview
             else { return }
             let content = window.contentLayoutRect
@@ -633,12 +648,19 @@
         /// `update()`, which runs the same validation opening it would. A script cannot open a
         /// menu (a posted click on the menu bar does not reach it), so this is how a check
         /// reads which commands exist, what they are bound to and which are live right now.
-        private static func dumpMenu(titled title: String) {
+        private static func dumpMenu(titled title: String) async {
             guard let menu = NSApp.mainMenu?.items.first(where: { $0.title == title })?.submenu
             else {
                 log("menu: no \"\(title)\" menu")
                 return
             }
+            await bringToFront()
+            // The menus act on the front window's store (`@FocusedValue`), not on the target.
+            let front = AppModel.windows.store(of: NSApp.keyWindow)
+            log(
+                "menu \(title): front window: "
+                    + (front.map { "store \($0.debugSerial) \($0.root?.lastPathComponent ?? "(empty)")" } ?? "none")
+                    + (front?.activeSheet != nil ? ", sheet up" : ""))
             // SwiftUI refreshes a command menu's items when it is about to open, through the
             // delegate; `update()` alone reads whatever was there when the app launched.
             menu.delegate?.menuNeedsUpdate?(menu)
@@ -656,6 +678,19 @@
                 let state = item.state == .on ? " state=on" : ""
                 log("menu \(title): \(item.title) [\(shortcut)] enabled=\(item.isEnabled)\(state)")
             }
+        }
+
+        /// Makes the app frontmost when no window of it is key, and waits for one to be. The menus
+        /// act on the front window's store (`@FocusedValue`, E2 Task 4), and an app launched from a
+        /// shell is never frontmost — no window is key, so every repository item would read off.
+        /// The click hooks do the same (`runEvents`). The window made key is AppKit's choice: the
+        /// one last made key, which `newwindow:` and a fronted window change.
+        private static func bringToFront() async {
+            guard NSApp.keyWindow == nil else { return }
+            NSApp.activate()
+            _ = await wait({ NSApp.keyWindow != nil }, seconds: 5, what: "a key window, for the menus")
+            // The commands are re-read on the key window's change (M3.3): one turn for that.
+            try? await Task.sleep(for: .milliseconds(200))
         }
 
         /// The commits in full: the shell compares them with `git rev-list sequencer/head..HEAD`.
