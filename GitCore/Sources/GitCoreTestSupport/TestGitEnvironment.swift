@@ -42,7 +42,8 @@ import Foundation
 /// **The whole target audited, so "every git" is a claim and not a hope.** `git grep` for
 /// `ProcessRunner()` and `Process()` across `Tests/` leaves exactly three kinds of caller:
 ///
-/// - `TestRepo`'s own runner and `isolatedRunner()` — both behind the precondition above.
+/// - `TestRepo`'s own runner and `isolatedRunner()` — both behind a
+///   `precondition(TestGitEnvironment.isolated)` in GitCoreTests.
 /// - `CLIGitBackend()`, which builds its own runner and is the object under test. Every use of
 ///   it in the suite operates on a `TestRepo`'s `root`, so the repository — and with it this
 ///   `setenv` — exists before git is started.
@@ -55,6 +56,7 @@ import Foundation
 /// `/usr/bin/git` on a bare `ProcessRunner()`. They were isolated only by whichever other suite
 /// happened to have built a `TestRepo` first, and `swift test --filter ProcessRunnerTests` ran
 /// them against the developer's own configuration.
+///
 /// **Shared with GitterTests** (E3 Task 2): the test host there is the app, whose stores start
 /// the real `/usr/bin/git` through `ProcessRunner` too, so `makeTestStore` and `ScratchRepo`
 /// touch it the same way, each with `precondition(TestGitEnvironment.isolated)`. This target

@@ -10,10 +10,15 @@ import Testing
 /// reap: `Process` reaps on a thread of its own, and `NOTE_EXIT` comes at the exit, before the
 /// reap (measured: right after the event, an unreaped child still answers `kill(pid, 0)`), so an
 /// ESRCH check would race that thread. The test reaps its own child instead.
+///
+/// "Exited" is read from the kernel's process table (`hasExited`), not from a `WNOHANG` reap: the
+/// event can come while the process is still exiting (`P_WEXIT`), before it is a zombie with
+/// anything to reap (Task 2 review: `waitpid(WNOHANG)` found nothing ~1 in 4 000 times under load).
 @Suite struct ProcessExitTests {
 
-    /// The wait ends once the child has exited, not before: the reap then finds it at once
-    /// (`WNOHANG`), where a wait that ended early would find the `sleep` still running.
+    /// The wait ends once the child has exited, not before: the kernel then has it exiting, a
+    /// zombie or gone, where a wait that ended early would find the `sleep` still running (in
+    /// `SRUN`/`SSLEEP`, without `P_WEXIT`). The test then reaps it, and the pid is gone.
     @Test(.timeLimit(.minutes(10))) func theWaitEndsOnceTheChildHasExited() async throws {
         let pid = try Self.spawn("exec sleep 0.2")
         var reaped = false
@@ -22,9 +27,10 @@ import Testing
         let exit = CallUnderTest { await waitForExit(pid) }
         guard await exit.value("the wait for the child's exit") != nil else { return }
 
+        #expect(Self.hasExited(pid), "the wait ended while the child still ran")
         var status: Int32 = 0
-        reaped = waitpid(pid, &status, WNOHANG) == pid
-        #expect(reaped, "the wait ended while the child still ran")
+        reaped = waitpid(pid, &status, 0) == pid
+        #expect(reaped)
         errno = 0
         #expect(kill(pid, 0) == -1 && errno == ESRCH, "the child is still there after its reap")
     }
@@ -73,12 +79,14 @@ import Testing
 
         let shellExit = CallUnderTest { await waitForExit(shellPID) }
         let grandchildExit = CallUnderTest { await waitForExit(grandchild) }
-        guard await shellExit.value("the wait for the shell's exit") != nil,
-              await grandchildExit.value("the wait for the grandchild's exit") != nil
-        else {
-            // Never came back: both are the test's own and may still run.
-            kill(grandchild, SIGKILL)
+        // A wait that never came back kills only its own process: one that has not exited, so its
+        // pid is still its own. One whose wait came back may be reaped, and its pid reused.
+        guard await shellExit.value("the wait for the shell's exit") != nil else {
             kill(shellPID, SIGKILL)
+            return
+        }
+        guard await grandchildExit.value("the wait for the grandchild's exit") != nil else {
+            kill(grandchild, SIGKILL)
             return
         }
         #expect(Self.hasExited(grandchild), "the wait ended while the grandchild still ran")
@@ -142,13 +150,15 @@ import Testing
         _ = waitpid(pid, nil, 0)
     }
 
-    /// Whether `pid` has exited — a zombie, or no longer in the kernel's process table at all —
-    /// read with `sysctl`, independently of kqueue.
+    /// Whether `pid` has exited — still exiting (`P_WEXIT`: `NOTE_EXIT` can come before the
+    /// process is a zombie, Task 2 review), a zombie, or no longer in the kernel's process table
+    /// at all (`sysctl` then succeeds with size 0, measured) — read with `sysctl`, independently
+    /// of kqueue.
     private static func hasExited(_ pid: pid_t) -> Bool {
         var info = kinfo_proc()
         var size = MemoryLayout<kinfo_proc>.stride
         var name: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
         guard sysctl(&name, u_int(name.count), &info, &size, nil, 0) == 0 else { return false }
-        return size == 0 || Int32(info.kp_proc.p_stat) == SZOMB
+        return size == 0 || Int32(info.kp_proc.p_stat) == SZOMB || (info.kp_proc.p_flag & P_WEXIT) != 0
     }
 }
