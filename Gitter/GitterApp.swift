@@ -24,6 +24,10 @@ enum AppModel {
     /// `AppDelegate` — which has no SwiftUI environment — can show the repository a Finder open
     /// has just opened when every window has been closed.
     static var openWindow: (() -> Void)?
+
+    /// Every store a quit takes with it: the ones `QuitFlow` closes the sheets of and `QuitGuard`
+    /// checks the lane of. The one store until the window registry (E2 Task 3).
+    static func quitStores() -> [RepositoryStore] { [store] }
 }
 
 /// Whether this process is the host of a test bundle (`GitterTests`) rather than the app a
@@ -83,6 +87,14 @@ struct GitterApp: App {
         // review.
         .handlesExternalEvents(matching: [])
         .commands {
+            // AppKit refuses every quit while a sheet is attached (M1.4), the stock Quit's too;
+            // this one closes the sheets first (`QuitFlow`) and stays enabled with a sheet up,
+            // where ⌘Q still reaches it (M1.6). "Quit and Keep Windows" (⌥⌘Q) goes with the
+            // stock item (M1.6).
+            CommandGroup(replacing: .appTermination) {
+                Button("Quit Gitter") { QuitFlow.request(.menu) }
+                    .keyboardShortcut("q")
+            }
             CommandGroup(replacing: .newItem) {
                 Button("Open Repository…") { RepositoryOpener.run(store: store) }
                     .keyboardShortcut("o")
@@ -166,13 +178,31 @@ struct SidebarFilterCommands: Commands {
     }
 }
 
-/// Forwards "Open Recent" selections (and other Finder/system open requests) to the store, and
-/// asks `QuitGuard` before the app quits. Both go to `AppModel.store`, the one the window shows.
+/// Forwards "Open Recent" selections (and other Finder/system open requests) to the store, takes
+/// the quit Apple Event into `QuitFlow`, and asks `QuitGuard` before the app quits, over
+/// `AppModel.quitStores()`.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// The quit Apple Event (the Dock's Quit, a logout, a shutdown) goes straight to AppKit's
+    /// `_shouldTerminate`, past the menu, and is swallowed with a sheet up (M1.6). A handler
+    /// installed here, before launch finishes, sees it first and quits through `QuitFlow`, which
+    /// closes the sheets and then terminates — where AppKit's own handler would have ended up.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(
+            self, andSelector: #selector(handleQuit(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kCoreEventClass), andEventID: AEEventID(kAEQuitApplication))
+    }
+
+    @objc func handleQuit(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
+        MainActor.assumeIsolated {
+            QuitFlow.request(.appleEvent)
+        }
+    }
+
     /// ⌘Q, the Dock's Quit, a logout that asks: never with git still running on its own.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
-            QuitGuard.shouldTerminate(AppModel.store)
+            QuitFlow.delegateWasAsked()
+            return QuitGuard.shouldTerminate(AppModel.quitStores())
         }
     }
 

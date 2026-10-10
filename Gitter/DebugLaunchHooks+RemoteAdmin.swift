@@ -66,7 +66,7 @@
             switch command {
             case "prune":
                 store.requestPrune(rest)
-                _ = await wait({ store.remoteActivity == nil }, seconds: 120)
+                _ = await wait({ store.remoteActivity == nil }, seconds: 120, what: "prune \(rest): the dry run")
                 await logPruneSheet(store)
             case "confirmprune":
                 guard case .prune(let plan) = store.activeSheet else {
@@ -81,11 +81,11 @@
                 }
                 log("confirmprune: keeping \(keeping.sorted { $0.key < $1.key })")
                 store.confirmPrune(plan, keeping: keeping)
-                _ = await wait({ store.remoteActivity == nil && !store.isMutating }, seconds: 120)
+                _ = await wait({ store.remoteActivity == nil && !store.isMutating }, seconds: 120, what: "confirmprune: the prune")
                 log("notice sticky: \(store.stickyNotice?.text.replacingOccurrences(of: "\n", with: " \u{23CE} ") ?? "nil")")
             case "cleanup":
                 store.requestCleanUpGoneBranches()
-                _ = await wait({ !store.isMutating })
+                _ = await wait({ !store.isMutating }, what: "cleanup: the gone branches' read")
                 logCleanUpSheet(store)
             case "confirmcleanup":
                 guard case .cleanUpGone(let branches) = store.activeSheet else {
@@ -96,7 +96,7 @@
                 let chosen = branches.filter { names?.contains($0.name) ?? RemoteAdminWording.defaultTicked($0) }
                 log("confirmcleanup: \(chosen.map(\.name))")
                 store.confirmCleanUp(chosen)
-                _ = await wait({ !store.isMutating })
+                _ = await wait({ !store.isMutating }, what: "confirmcleanup: the deletes")
                 log("notice sticky: \(store.stickyNotice?.text.replacingOccurrences(of: "\n", with: " \u{23CE} ") ?? "nil")")
             case "pushbranch": store.pushBranch(rest)
             case "confirmpublish": store.confirmPublish(to: rest)
@@ -143,11 +143,11 @@
                 let fields = rest.split(separator: "=", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
                 guard fields.count >= 2 else { return }
                 store.confirmAddRemote(name: fields[0], url: fields[1], fetchAfter: fields.count < 3 || fields[2] != "nofetch")
-                _ = await wait({ !store.isMutating })
-                _ = await wait({ store.remoteActivity == nil }, seconds: 120)
+                _ = await wait({ !store.isMutating }, what: "confirmaddremote: the add")
+                _ = await wait({ store.remoteActivity == nil }, seconds: 120, what: "confirmaddremote: the fetch after it")
             case "editurl":
                 store.requestEditURL(rest)
-                _ = await wait({ !store.isMutating })
+                _ = await wait({ !store.isMutating }, what: "editurl \(rest): the read for its sheet")
                 logEditURLSheet(store)
             case "confirmediturl":
                 guard case .editRemoteURL(let urls, let remote) = store.activeSheet else {
@@ -167,7 +167,7 @@
                     + "writes=\(RemoteAdminWording.editURLWrites(urls, fetch: fetch, push: push)) "
                     + "problem=\(RemoteAdminWording.urlProblem(fetch) ?? "nil")")
                 store.confirmEditURL(remote, fetch: fetch, push: push)
-                _ = await wait({ !store.isMutating })
+                _ = await wait({ !store.isMutating }, what: "confirmediturl: the write")
             case "renameremote":
                 store.requestRenameRemote(rest)
                 if case .renameRemote(let remote) = store.activeSheet {
@@ -182,10 +182,10 @@
                 let problem = await store.remoteNameProblem(rest)
                 log("confirmrenameremote: \(remote) → \(rest), verdict=\(problem.map(RemoteAdminWording.remoteNameProblem) ?? "ok")")
                 store.confirmRenameRemote(remote, to: rest)
-                _ = await wait({ store.remoteActivity == nil && !store.isMutating }, seconds: 120)
+                _ = await wait({ store.remoteActivity == nil && !store.isMutating }, seconds: 120, what: "confirmrenameremote: the rename")
             case "removeremote":
                 store.requestRemoveRemote(rest)
-                _ = await wait({ !store.isMutating })
+                _ = await wait({ !store.isMutating }, what: "removeremote \(rest): the read for its sheet")
                 await logRemoveSheet(store)
             case "confirmremoveremote":
                 guard case .removeRemote(let impact) = store.activeSheet else {
@@ -202,7 +202,7 @@
                 }
                 log("confirmremoveremote: keeping \(keeping.sorted { $0.key < $1.key })")
                 store.confirmRemoveRemote(impact, keeping: keeping)
-                _ = await wait({ store.remoteActivity == nil && !store.isMutating }, seconds: 120)
+                _ = await wait({ store.remoteActivity == nil && !store.isMutating }, seconds: 120, what: "confirmremoveremote: the removal")
                 log("notice sticky: \(store.stickyNotice?.text.replacingOccurrences(of: "\n", with: " \u{23CE} ") ?? "nil")")
             default: log("unknown step: \(command):\(rest)")
             }

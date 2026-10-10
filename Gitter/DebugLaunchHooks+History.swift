@@ -75,7 +75,7 @@
                 let target = rest.hasPrefix("refs/") ? rest : resolve(rest, store: store)
                 guard let target else { return }
                 store.requestRebaseOnto(target)
-                _ = await wait({ !store.isMutating })
+                _ = await wait({ !store.isMutating }, what: "rebaseonto \(target): the plan's read")
                 if case .rebaseOnto(let plan) = store.activeSheet {
                     let incoming = await store.commitsOnlyIn(plan.target, notIn: plan.head)
                     log("rebaseonto: incoming \(incoming.map(String.init) ?? "nil") "
@@ -130,7 +130,7 @@
                 store.requestDeleteTag(tag)
                 // A refusal is said at once; otherwise the sheet comes.
                 if store.lastError == errorBefore {
-                    _ = await wait({ store.activeSheet != nil }, seconds: 10)
+                    _ = await wait({ store.activeSheet != nil }, seconds: 10, what: "deletetag \(tag): its sheet")
                 }
             case "confirmdeletetag":
                 guard case .deleteTag(let tag, _, _) = store.activeSheet else {

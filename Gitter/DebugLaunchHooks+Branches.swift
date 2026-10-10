@@ -134,11 +134,13 @@
     /// `copy <remote> "<title>": <raw address> -> <pasteboard>`. The raw address is printed so
     /// the redaction can be checked against it; point this only at scratch remotes.
     ///
-    /// `quit` asks the app to quit the way ⌘Q does (`NSApp.terminate`), performed from the run
-    /// loop (`perform(_:with:afterDelay: 0)`) — not from a main-queue block, where a held quit
-    /// would starve every MainActor job — so that the steps after it still run while `QuitGuard`
-    /// holds the quit (`.terminateLater`):
-    /// `start:push;wait:1;quit;snapshot:alert;alertbutton:Wait`. `alertbutton:<title>` clicks
+    /// `quit` asks the app to quit the way Quit Gitter (⌘Q) does, through `QuitFlow`: every sheet
+    /// is closed, and once none is attached the terminate is performed from the run loop
+    /// (`perform(_:with:afterDelay: 0)`) — not from a main-queue block, where a held quit would
+    /// starve every MainActor job — so that the steps after it still run while `QuitGuard` holds
+    /// the quit (`.terminateLater`): `start:push;wait:1;quit;wait:1;alert;alertbutton:Wait`. With
+    /// a quit already under way it is ignored, and says so (`QUIT … ignored`). A step the launch
+    /// guard refuses ends the script and quits the same way. `alertbutton:<title>` clicks
     /// that button of an alert on screen (`performClick`, the button's own action — the alert's
     /// completion handler runs as it would for a pointer). `menuitem:<menu>:<title>` fires a main
     /// menu item through `NSMenu.performActionForItem(at:)`, which is what choosing it does —
@@ -174,16 +176,20 @@
             ProcessInfo.processInfo.environment["GITTER_DEBUG_BRANCH_ACTION"]
         }
 
-        static func runBranchActions(_ spec: String, store: RepositoryStore) async {
+        /// Runs the steps in order. False when the launch guard refused a step: the rest were
+        /// not run, and the app is quitting (`QuitFlow`, reason `.launchRefusal`).
+        @discardableResult
+        static func runBranchActions(_ spec: String, store: RepositoryStore) async -> Bool {
             for step in spec.split(separator: ";") {
                 // An `open:` step, or a failed reload, can leave another repository on screen.
                 if let refusal = guardRefusal(store) {
                     log("launch guard: \(refusal); step \(step) and the rest not run")
-                    return
+                    QuitFlow.request(.launchRefusal)
+                    return false
                 }
                 // The worktree state is read after a snapshot lands, in its own task (B3 final
                 // review, I2): a step acts on, and logs, the state that snapshot's read gives.
-                _ = await wait({ !store.isReadingWorktreeState }, seconds: 60)
+                _ = await wait({ !store.isReadingWorktreeState }, seconds: 60, what: "step \(step): the worktree state read")
                 log("step: \(step)")
                 let text = String(step)
                 // An automatic fetch does not count: the user's network actions stop it and go
@@ -199,13 +205,17 @@
                 {
                     // Nothing to wait for: the point is to carry on while it runs.
                 } else if laneWasBusy && text != "cancel" && text != "idle" {
-                    _ = await wait({ !store.isMutating })
+                    _ = await wait({ !store.isMutating }, what: "step \(step): the mutation, the lane being busy")
                 } else {
+                    // The lane as the user's actions see it (S11): an automatic fetch blocks
+                    // nothing, so a step does not wait out one that started meanwhile.
                     _ = await wait(
-                        { store.remoteActivity == nil && !store.isMutating }, seconds: 120)
+                        { store.blockingRemoteActivity == nil && !store.isMutating }, seconds: 120,
+                        what: "step \(step): the lane and the mutation to finish")
                 }
                 logResult(store)
             }
+            return true
         }
 
         private static func logResult(_ store: RepositoryStore) {
@@ -277,13 +287,13 @@
                 // A branch `-d` deletes cleanly never reaches the second half, which is right.
                 if let first {
                     store.requestDelete(first)
-                    _ = await wait({ !store.isMutating })
+                    _ = await wait({ !store.isMutating }, what: "forcedelete \(first): the delete")
                     // Reached for unconditionally, on purpose: the store's own guard is the only
                     // thing that may stop it. For a branch `-d` deleted cleanly no warning was
                     // ever shown, and a `confirmForceDelete` that ran anyway would be visible —
                     // it would put "There is no branch named …" in the banner.
                     store.confirmForceDelete(first)
-                    _ = await wait({ !store.isMutating })
+                    _ = await wait({ !store.isMutating }, what: "forcedelete \(first): the confirmed delete")
                 }
             case "merge":
                 if let first, let mode = mergeMode(second) { store.merge(first, mode: mode) }
@@ -311,13 +321,13 @@
                     // unconditionally: `confirmPull` does nothing without its sheet on screen.
                     store.pull()
                     _ = await wait(
-                        { store.remoteActivity == nil && !store.isMutating }, seconds: 120)
+                        { store.remoteActivity == nil && !store.isMutating }, seconds: 120, what: "pull:\(mode.rawValue): the pull before its sheet")
                     store.confirmPull(mode)
                 }
             case "push": store.push()
             case "publish":
                 store.push()
-                _ = await wait({ store.remoteActivity == nil && !store.isMutating }, seconds: 120)
+                _ = await wait({ store.remoteActivity == nil && !store.isMutating }, seconds: 120, what: "publish: the push before its sheet")
                 first.map { store.confirmPublish(to: $0) }
             case "forcepush": store.requestForcePush()
             case "confirmforcepush": store.confirmForcePush()
@@ -359,13 +369,10 @@
                 }
             case "copyurls": copyURLs(store: store)
             case "quit":
-                // From the run loop, as ⌘Q's key event or the Dock's quit event arrives — not
-                // called here, and not from a main-queue block. `terminate` does not return while
-                // the quit is held, and the run loop it spins then cannot drain the main queue
-                // from *inside* a main-queue block (a MainActor job is one), so nothing on the
-                // main actor — the lane's own task included — would run again (measured in Task
-                // 11: the lane never freed and the app never quit).
-                NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0)
+                // The app's one quit path, as Quit Gitter takes it: it closes every sheet, waits
+                // until none is attached — AppKit refuses a quit while one is (M1.4) — and then
+                // terminates from the run loop (`QuitFlow.Environment.live`).
+                QuitFlow.request(.harness)
             case "alert":
                 for window in NSApp.windows where window.sheetParent != nil && window.isVisible {
                     logControls(in: window.contentView, window: "\(type(of: window))")
@@ -409,7 +416,7 @@
                 store.stashAndContinue()
                 // The stash, then the retry it starts in the same main-actor run: the slot or
                 // the lane is claimed again before either wait below can see them free.
-                _ = await wait({ store.remoteActivity == nil && !store.isMutating }, seconds: 120)
+                _ = await wait({ store.remoteActivity == nil && !store.isMutating }, seconds: 120, what: "stashcontinue: the stash and its retry")
                 if let mode = first.flatMap(PullMode.init(rawValue:)) {
                     // Does nothing without its sheet on screen.
                     store.confirmPull(mode)
@@ -519,7 +526,7 @@
                 // left up, which would print the previous step's answer for this one.
                 store.activeSheet = nil
                 name.map { store.previewDeleteWarning($0) }
-                _ = await wait({ store.activeSheet != nil })
+                _ = await wait({ store.activeSheet != nil }, what: "sheet:delete: its sheet")
             case "abort": store.requestAbort()
             // From the tracking on screen, with no fetch and no merge: this step opens a sheet.
             case "pull": store.previewPullSheet()

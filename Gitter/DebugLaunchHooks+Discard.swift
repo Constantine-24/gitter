@@ -96,7 +96,7 @@
             let shown = await wait({
                 if case .discard = store.activeSheet { return true }
                 return store.lastError != before
-            })
+            }, what: "discard: a sheet or a banner")
             if !shown { log("discard: no sheet after ten seconds") }
         }
 

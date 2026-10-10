@@ -119,12 +119,12 @@
                 }
                 store.stagedView = true
                 store.selectPath(rest)
-                guard await wait({ store.reopenablePath == rest }) else {
+                guard await wait({ store.reopenablePath == rest }, what: "reopen \(rest): the offer") else {
                     log("reopen: not offered for \(rest)")
                     return
                 }
                 store.requestReopen(rest)
-                let shown = await wait({ if case .reopen(rest, _, _, _)? = store.activeSheet { true } else { false } })
+                let shown = await wait({ if case .reopen(rest, _, _, _)? = store.activeSheet { true } else { false } }, what: "reopen \(rest): its sheet")
                 if !shown {
                     log("reopen: no sheet for \(rest) | blocked: \(store.conflictActionBlockedReason ?? "nil")")
                 }
@@ -150,7 +150,7 @@
                 let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.debug-noticeshow"))
                 defer { pasteboard.releaseGlobally() }
                 store.perform(show, pasteboard: pasteboard) { _ in }
-                _ = await wait({ store.stashContents != nil })
+                _ = await wait({ store.stashContents != nil }, what: "noticeshow: the stash's contents")
                 log("noticeshow: selection \(store.selection)")
             default:
                 log("unknown step: \(step)")
@@ -171,12 +171,12 @@
                 store.selectPath(path)
             }
             if conflicted {
-                guard await wait({ store.selectedConflict != nil }) else {
+                guard await wait({ store.selectedConflict != nil }, what: "select \(path): its resolver") else {
                     log("select: no resolver for \(path) after ten seconds | error: \(store.lastError ?? "nil")")
                     return false
                 }
             } else {
-                _ = await wait({ store.reopenablePath == path }, seconds: 3)
+                _ = await wait({ store.reopenablePath == path }, seconds: 3, what: "select \(path): the reopen offer")
             }
             logResolver(store)
             return true

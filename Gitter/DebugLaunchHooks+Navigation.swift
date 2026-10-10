@@ -127,7 +127,7 @@
                 }
                 let before = store.generation
                 store.openWorktree(worktree)
-                _ = await wait({ store.generation != before && store.snapshot != nil && !store.worktrees.isEmpty })
+                _ = await wait({ store.generation != before && store.snapshot != nil && !store.worktrees.isEmpty }, what: "openworktree: the worktree's first snapshot")
                 log("openworktree: root \(store.root?.path ?? "nil") | error: \(store.lastError ?? "nil")")
                 logTitles(store)
                 log(
@@ -175,7 +175,7 @@
                 }
                 log("confirmaddworktree: \(choice) at \(flatten(path)) | sheet: \(describeWorktreeSheet(store.activeSheet) ?? "none")")
                 store.confirmAddWorktree(choice, path: path)
-                _ = await wait({ !store.isMutating && !store.isReadingWorktreeState }, seconds: 60)
+                _ = await wait({ !store.isMutating && !store.isReadingWorktreeState }, seconds: 60, what: "confirmaddworktree: the add and the worktree read")
                 logOutcome(store)
             case "removeworktree", "removeworktreestart":
                 guard let worktree = worktree(rest, store) else { return log("\(command): no worktree \(rest)") }
@@ -196,7 +196,7 @@
                 log("noticeopen: \(open) [\(NoticeWording.title(open))]")
                 let before = store.generation
                 store.perform(open)
-                _ = await wait({ store.generation != before && store.snapshot != nil && !store.worktrees.isEmpty })
+                _ = await wait({ store.generation != before && store.snapshot != nil && !store.worktrees.isEmpty }, what: "noticeopen: the opened worktree's first snapshot")
                 log("noticeopen: root \(store.root?.path ?? "nil") | error: \(store.lastError.map(flatten) ?? "nil")")
                 logTitles(store)
             default: log("unknown step: \(command)")
@@ -253,7 +253,7 @@
             } else {
                 store.confirmRemoveMissingWorktrees(removals, keeping: keeping)
             }
-            _ = await wait({ !store.isMutating && !store.isReadingWorktreeState }, seconds: 60)
+            _ = await wait({ !store.isMutating && !store.isReadingWorktreeState }, seconds: 60, what: "confirmremoveworktree: the removal and the worktree read")
             logOutcome(store)
         }
 

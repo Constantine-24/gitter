@@ -79,10 +79,10 @@
                 let parts = rest.split(separator: ":", maxSplits: 1).map(String.init)
                 guard let stash = entry(parts.first ?? "", store) else { return }
                 store.select(.stash(stash.sha))
-                _ = await wait({ store.stashContents != nil })
+                _ = await wait({ store.stashContents != nil }, what: "selectstash: the stash's contents")
                 if parts.count > 1 {
                     store.selectPath(parts[1])
-                    _ = await wait({ !store.diff.isEmpty })
+                    _ = await wait({ !store.diff.isEmpty }, what: "selectstash: the diff")
                 }
                 let contents = store.stashContents
                 log(

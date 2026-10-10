@@ -63,7 +63,7 @@
             case "skip":
                 logBar(store)
                 store.requestSkip()
-                if !(await wait({ store.activeSheet != nil || store.lastError != nil }, seconds: 10)) {
+                if !(await wait({ store.activeSheet != nil || store.lastError != nil }, seconds: 10, what: "skip: a sheet or a banner")) {
                     log("skip: no sheet | state: \(describe(store.skipState))")
                 }
             case "confirmskip":
@@ -75,7 +75,7 @@
             case "stageall":
                 store.requestStageAll()
                 // During an operation the sheet (or the mutation) starts after a read.
-                _ = await wait({ store.activeSheet != nil || store.isMutating }, seconds: 5)
+                _ = await wait({ store.activeSheet != nil || store.isMutating }, seconds: 5, what: "stageall: a sheet or the mutation")
             case "confirmstageall":
                 guard case .stageAll = store.activeSheet else {
                     log("confirmstageall: no stage all sheet")

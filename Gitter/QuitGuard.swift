@@ -1,6 +1,9 @@
 import AppKit
 
-/// What quitting does while the network lane is busy.
+/// What quitting does while a network lane is busy — over every store a quit takes with it
+/// (`AppModel.quitStores()`; E2 Task 2): the lanes decide together (`decision`), and the reply
+/// waits until every lane is free. The sheets are already closed: `QuitFlow`, the one way in,
+/// closes them before it terminates, since AppKit never asks the delegate while one is attached.
 ///
 /// Without this, ⌘Q left git running: it runs in a process group of its own, nothing cancelled
 /// `remoteTask`, and git — re-parented to pid 1 — finished on its own, so a push whose pack was
@@ -25,8 +28,9 @@ import AppKit
 /// write's follow-up fetch — so the lane can only free; a Fetch, Pull or Push the user asks for
 /// meanwhile is refused with a sentence saying so. Stop (⌘.) still works while the quit is held.
 ///
-/// A second quit (⌘Q again) while one is held does nothing: AppKit does not ask
-/// `applicationShouldTerminate` again until the first is answered.
+/// A second quit (⌘Q again) while one is held does nothing: `QuitFlow` ignores a request while a
+/// quit is under way, and AppKit does not ask `applicationShouldTerminate` again until the first
+/// is answered. Every answer of false ends the quit for `QuitFlow` (`quitEnded`).
 ///
 /// **Not covered:** a SIGTERM (`kill`, a logout that force-quits) never reaches
 /// `applicationShouldTerminate`, and git is left running as before; and a mutation that is not
@@ -65,28 +69,50 @@ enum QuitGuard {
         case callOff
     }
 
-    /// The answer to `applicationShouldTerminate`.
-    static func shouldTerminate(_ store: RepositoryStore?) -> NSApplication.TerminateReply {
-        guard let store, let activity = store.remoteActivity else {
+    /// What quitting does about every store's lane, from the lanes alone (`[]` and all-free
+    /// alike quit now). A write anywhere is asked about — the first one, by its index into the
+    /// stores — whatever reads run beside it; otherwise any read is stopped.
+    enum Decision: Equatable {
+        case now
+        case stopReads
+        case ask(writeAt: Int)
+    }
+
+    static func decision(_ lanes: [RemoteActivity?]) -> Decision {
+        if let write = lanes.firstIndex(where: { $0?.isWrite == true }) { return .ask(writeAt: write) }
+        return lanes.contains { $0 != nil } ? .stopReads : .now
+    }
+
+    /// The answer to `applicationShouldTerminate`, over every store a quit takes with it
+    /// (`AppModel.quitStores()`). Every path that answers false tells `QuitFlow` the quit has
+    /// ended (`quitEnded`) and ends the terminating of every store it began.
+    static func shouldTerminate(_ stores: [RepositoryStore]) -> NSApplication.TerminateReply {
+        let lanes = stores.map(\.remoteActivity)
+        switch decision(lanes) {
+        case .now:
             log("quit: the lane is free, quitting now")
             return .terminateNow
-        }
-        guard activity.isWrite else {
-            log("quit: stopping \(activity.kind) and quitting when the lane frees")
-            store.beginTerminating()
-            store.cancelRemoteActivity()
-            replyWhenLaneFrees(
-                store, bound: readStopBound, atTheBound: .quitAnyway, callOffIfToldSince: nil)
+        case .stopReads:
+            let kinds = lanes.compactMap { $0.map { "\($0.kind)" } }
+            log("quit: stopping \(kinds.joined(separator: ", ")) and quitting when the lane frees")
+            for store in stores {
+                store.beginTerminating()
+                store.cancelRemoteActivity()
+            }
+            replyWhenLanesFree(
+                stores, bound: readStopBound, atTheBound: .quitAnyway, callOffIfToldSince: nil)
+            return .terminateLater
+        case .ask(let index):
+            guard let activity = lanes[index] else { preconditionFailure("asked about a free lane") }
+            log("quit: \(activity.kind) is a write, asking")
+            // Before the alert: whatever any lane ends with from here on is unread.
+            ask(about: activity, stores: stores, messagesBefore: stores.map(\.laneMessagesToRead))
             return .terminateLater
         }
-        log("quit: \(activity.kind) is a write, asking")
-        // Before the alert: whatever the write ends with from here on is unread.
-        ask(about: activity, store: store, messagesBefore: store.laneMessagesToRead)
-        return .terminateLater
     }
 
     private static func ask(
-        about activity: RemoteActivity, store: RepositoryStore, messagesBefore: Int
+        about activity: RemoteActivity, stores: [RepositoryStore], messagesBefore: [Int]
     ) {
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -103,24 +129,28 @@ enum QuitGuard {
             switch response {
             case .alertFirstButtonReturn:
                 log("quit: Wait")
-                store.beginTerminating()
-                replyWhenLaneFrees(
-                    store, bound: waitBound, atTheBound: .callOff,
+                for store in stores { store.beginTerminating() }
+                replyWhenLanesFree(
+                    stores, bound: waitBound, atTheBound: .callOff,
                     callOffIfToldSince: messagesBefore)
             case .alertSecondButtonReturn:
                 log("quit: Stop and Quit")
-                store.beginTerminating()
-                store.cancelRemoteActivity()
-                replyWhenLaneFrees(
-                    store, bound: readStopBound, atTheBound: .quitAnyway,
+                for store in stores {
+                    store.beginTerminating()
+                    store.cancelRemoteActivity()
+                }
+                replyWhenLanesFree(
+                    stores, bound: readStopBound, atTheBound: .quitAnyway,
                     callOffIfToldSince: nil)
             default:
                 log("quit: Don't Quit")
-                NSApp.reply(toApplicationShouldTerminate: false)
+                callOff()
             }
         }
         // As a sheet on the window (or on the sheet it already has), like every other question
-        // Gitter asks; app-modal only when no window is open.
+        // Gitter asks; app-modal only when no window is open. The window is the first visible
+        // one that is no sheet — the one window there is until the window registry (E2 Task 3)
+        // says which window shows the store with the write.
         if let window = NSApp.windows.first(where: { $0.isVisible && $0.sheetParent == nil }) {
             alert.beginSheetModal(for: window.attachedSheet ?? window, completionHandler: answer)
         } else {
@@ -128,17 +158,17 @@ enum QuitGuard {
         }
     }
 
-    /// Replies to the pending terminate once the lane is free — or, once `bound` has passed with
-    /// the lane still busy, as `atTheBound` says.
+    /// Replies to the pending terminate once every lane is free — or, once `bound` has passed with
+    /// a lane still busy, as `atTheBound` says.
     ///
-    /// `callOffIfToldSince` is `laneMessagesToRead` as it was when the quit was asked: if a lane
-    /// has ended since with something to read (the push failed, the server refused it, it
-    /// pushed but could not set the upstream), the quit is called off so that the user reads it.
-    /// A write that failed while nobody was looking is exactly the silent loss this type exists
-    /// to prevent.
-    private static func replyWhenLaneFrees(
-        _ store: RepositoryStore, bound: Duration, atTheBound: AtTheBound,
-        callOffIfToldSince before: Int?
+    /// `callOffIfToldSince` is each store's `laneMessagesToRead` as it was when the quit was asked:
+    /// if a store's lane has ended since with something to read (the push failed, the server
+    /// refused it, it pushed but could not set the upstream), the quit is called off so that the
+    /// user reads it — checked per store, as soon as that store's lane is free. A write that failed
+    /// while nobody was looking is exactly the silent loss this type exists to prevent.
+    private static func replyWhenLanesFree(
+        _ stores: [RepositoryStore], bound: Duration, atTheBound: AtTheBound,
+        callOffIfToldSince before: [Int]?
     ) {
         // Polled from a run-loop timer in the common modes, not from a Task: while the quit is
         // held AppKit spins the run loop in its modal-panel mode, and a timer there fires even if
@@ -149,7 +179,19 @@ enum QuitGuard {
         let timer = Timer(timeInterval: 0.05, repeats: true) { timer in
             let replied = MainActor.assumeIsolated { () -> Bool in
                 let waited = ContinuousClock.now - started
-                if let activity = store.remoteActivity {
+                if let before {
+                    for (store, count) in zip(stores, before)
+                    where store.remoteActivity == nil && store.laneMessagesToRead != count {
+                        log(
+                            "quit: called off, the lane ended with something to read: "
+                                + (store.lastLaneMessageToRead ?? "?"))
+                        for store in stores { store.endTerminating() }
+                        callOff()
+                        return true
+                    }
+                }
+                let busy = stores.compactMap { store in store.remoteActivity.map { (store, $0) } }
+                if !busy.isEmpty {
                     guard waited > bound else { return false }
                     switch atTheBound {
                     case .quitAnyway:
@@ -157,18 +199,12 @@ enum QuitGuard {
                         NSApp.reply(toApplicationShouldTerminate: true)
                     case .callOff:
                         log("quit: the lane did not free within \(bound); calling the quit off")
-                        store.endTerminating()
-                        store.showStickyError(RemoteWording.quitWaitGaveUp(activity, after: bound))
-                        NSApp.reply(toApplicationShouldTerminate: false)
+                        for store in stores { store.endTerminating() }
+                        for (store, activity) in busy {
+                            store.showStickyError(RemoteWording.quitWaitGaveUp(activity, after: bound))
+                        }
+                        callOff()
                     }
-                    return true
-                }
-                if let before, store.laneMessagesToRead != before {
-                    log(
-                        "quit: called off, the lane ended with something to read: "
-                            + (store.lastLaneMessageToRead ?? "?"))
-                    store.endTerminating()
-                    NSApp.reply(toApplicationShouldTerminate: false)
                     return true
                 }
                 log("quit: the lane is free after \(waited), quitting")
@@ -180,7 +216,15 @@ enum QuitGuard {
         RunLoop.main.add(timer, forMode: .common)
     }
 
-    private static func log(_ message: String) {
+    /// The quit is called off: AppKit is told, and so is `QuitFlow`, so that the next ⌘Q starts
+    /// afresh.
+    private static func callOff() {
+        NSApp.reply(toApplicationShouldTerminate: false)
+        QuitFlow.quitEnded()
+    }
+
+    /// A `QUIT <time> …` line on stderr, DEBUG only. Internal: `QuitFlow` writes its lines here too.
+    static func log(_ message: String) {
         #if DEBUG
             let time = Date.now.formatted(
                 .dateTime.hour(.twoDigits(amPM: .omitted)).minute().second()
@@ -189,3 +233,4 @@ enum QuitGuard {
         #endif
     }
 }
+

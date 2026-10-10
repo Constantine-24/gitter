@@ -74,12 +74,16 @@
                 // on screen — and nothing below acts on any other one, or with none open.
                 // An empty GITTER_DEBUG_OPEN opens nothing, as an unset one (final review M4).
                 if let fixture = DebugLaunchGuard.fixtureToOpen(env) { store.open(URL(fileURLWithPath: fixture)) }
-                guard await wait({ store.snapshot != nil }) else {
+                // Every refusal ends the script and quits (`QuitFlow`, `.launchRefusal`), its
+                // line logged first, instead of leaving the app idle for the watchdog.
+                guard await wait({ store.snapshot != nil }, what: "the fixture's first snapshot") else {
                     log("launch guard: \(guardRefusal(store) ?? "refused: no snapshot loaded")")
+                    QuitFlow.request(.launchRefusal)
                     return
                 }
                 if let refusal = guardRefusal(store) {
                     log("launch guard: \(refusal)")
+                    QuitFlow.request(.launchRefusal)
                     return
                 }
 
@@ -87,7 +91,7 @@
                     let sha = commit == "HEAD" ? store.snapshot?.commits.first?.sha : commit
                     guard let sha else { return }
                     store.select(.commit(sha))
-                    _ = await wait({ !store.detailFiles.isEmpty })
+                    _ = await wait({ !store.detailFiles.isEmpty }, what: "GITTER_DEBUG_SELECT_COMMIT: the commit's files")
                     store.selectPath(path ?? store.detailFiles.first?.path)
                 } else if let path {
                     // Written before a path is selected, so its `didSet` cannot fire a diff
@@ -96,25 +100,28 @@
                     store.selectPath(path)
                 }
 
-                if let apply = env["GITTER_DEBUG_APPLY"], await wait({ !store.diff.isEmpty }) {
+                if let apply = env["GITTER_DEBUG_APPLY"], await wait({ !store.diff.isEmpty }, what: "GITTER_DEBUG_APPLY: the diff") {
                     self.apply(apply, store: store)
                 }
                 // Before the clicks, so a sheet one of them opens is on screen for them (and for
                 // a screenshot). Each step checks the guard again (`runBranchActions`).
                 if let branchAction {
-                    guard await wait({ store.snapshot != nil }) else { return }
-                    await runBranchActions(branchAction, store: store)
+                    guard await wait({ store.snapshot != nil }, what: "a snapshot before the steps") else { return }
+                    guard await runBranchActions(branchAction, store: store) else { return }
                 }
                 // Last, so a click lands on a list that has finished loading its rows.
                 if wantsEvents {
                     if let refusal = guardRefusal(store) {
                         log("launch guard: \(refusal); no clicks or keys")
+                        QuitFlow.request(.launchRefusal)
                         return
                     }
                     await runEvents()
                 }
                 if let then {
-                    guard await wait({ store.snapshot != nil }) else { return }
+                    guard await wait({ store.snapshot != nil }, what: "a snapshot before GITTER_DEBUG_THEN") else {
+                        return
+                    }
                     await runBranchActions(then, store: store)
                 }
             }
@@ -179,14 +186,21 @@
         /// 120, since a slow transfer is exactly what some of them are there to drive. Loading is spread over several independent
         /// tasks in the store with nothing to await from outside, so polling is the honest
         /// way to say "once it is on screen".
+        ///
+        /// A wait that runs out says so — `BRANCH_ACTION wait timed out after <s>s: <what>` — so
+        /// a line that follows it is not read as the state the wait was for.
         // internal (not private): used by DebugLaunchHooks+Branches.swift, which waits the same
         // way for each step's mutation to finish
-        static func wait(_ condition: @MainActor () -> Bool, seconds: Int = 10) async -> Bool {
+        static func wait(
+            _ condition: @MainActor () -> Bool, seconds: Int = 10, what: String
+        ) async -> Bool {
             for _ in 0..<(seconds * 10) {
                 if condition() { return true }
                 try? await Task.sleep(for: .milliseconds(100))
             }
-            return condition()
+            if condition() { return true }
+            log("wait timed out after \(seconds)s: \(what)")
+            return false
         }
     }
 
