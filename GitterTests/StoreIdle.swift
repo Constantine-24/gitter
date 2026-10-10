@@ -1,4 +1,5 @@
 import Foundation
+import GitCore
 import GitCoreTestSupport
 import Testing
 
@@ -37,12 +38,14 @@ func waitUntilIdle(_ store: RepositoryStore, sourceLocation: SourceLocation = #_
 
 /// A store on `repo`, opened and idle, with the first snapshot in. `cleanup` removes its scratch
 /// defaults (the repository is `repo.remove()`'s). If `open` fails (`lastError`), that is recorded
-/// as an issue at the caller's `sourceLocation` and the wait ends at once.
+/// as an issue at the caller's `sourceLocation` and the wait ends at once. `backend` is real git
+/// unless the test hands in its own (a `TestBackend`, E3 Task 3).
 @MainActor
 func openedTestStore(
-    _ repo: ScratchRepo, sourceLocation: SourceLocation = #_sourceLocation
+    _ repo: ScratchRepo, backend: RepositoryStore.Backend = CLIGitBackend(),
+    sourceLocation: SourceLocation = #_sourceLocation
 ) async -> (RepositoryStore, cleanup: () -> Void) {
-    let (store, _, cleanup) = makeTestStore()
+    let (store, _, cleanup) = makeTestStore(backend: backend)
     await open(store, repo.url, sourceLocation: sourceLocation)
     return (store, cleanup)
 }
