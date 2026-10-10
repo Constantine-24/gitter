@@ -93,6 +93,11 @@ import Testing
 
         test.registry.windowClosed(store)
 
+        // While the cancelled read winds down it still holds the lane, and the store stays
+        // registered, so `QuitGuard` does not miss a git that is still running.
+        #expect(store.remoteActivity != nil)
+        #expect(test.registry.stores.contains { $0 === store })
+
         await waitUntilGone(store, from: test.registry)
         #expect(store.remoteActivity == nil)
     }

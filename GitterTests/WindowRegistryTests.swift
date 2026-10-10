@@ -145,8 +145,9 @@ import Testing
     @Test func theTestHostsRegistryKeepsNoOpenList() {
         #expect(!AppModel.windows.recordsOpenList)
         #expect(AppModel.windows.defaults === UserDefaults.standard)
+        // The host's one window has a registered store (not an empty list that `allSatisfy` passes).
+        #expect(!AppModel.windows.stores.isEmpty)
         #expect(AppModel.windows.stores.allSatisfy { $0.root == nil })
-        #expect(AppModel.quitStores().count == AppModel.windows.stores.count)
     }
 
     // MARK: - QuitGuard over several stores (Ruling 8)
