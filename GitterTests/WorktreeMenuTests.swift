@@ -196,20 +196,22 @@ import Testing
     }
 }
 
-/// E2 Task 4: a linked worktree's menu keeps Open Worktree, which switches this window, and adds
-/// Open in New Window, routed as an open (`.worktreeNewWindow`): a window of its own, or — when a
-/// window shows that worktree already — that window, brought to the front. Offered for a linked
-/// worktree this window does not show; off, with Open Worktree's reason, for a missing one.
+/// E2 Task 4: a worktree's menu keeps Open Worktree, which switches this window, and adds Open in
+/// New Window, routed as an open (`.worktreeNewWindow`): a window of its own, or — when a window
+/// shows that worktree already — that window, brought to the front. Offered for any worktree this
+/// window does not show (Ruling 12); off, with Open Worktree's reason, for a missing one.
 @Suite struct WorktreeOpenInNewWindowWordingTests {
     @Test func theTitle() {
         #expect(WorktreeWording.openInNewWindowTitle == "Open in New Window")
     }
 
-    @Test func offeredForALinkedWorktreeThisWindowDoesNotShow() {
+    /// Ruling 12: wherever Open Worktree is offered for a worktree this window does not show —
+    /// the main worktree included, the natural thing to open beside a linked one.
+    @Test func offeredForAnyWorktreeThisWindowDoesNotShow() {
         #expect(WorktreeWording.offersOpenInNewWindow(WorktreeMenuTests.feat, isOpenHere: false))
         #expect(WorktreeWording.offersOpenInNewWindow(WorktreeMenuTests.gone, isOpenHere: false))
+        #expect(WorktreeWording.offersOpenInNewWindow(WorktreeMenuTests.main, isOpenHere: false))
         #expect(!WorktreeWording.offersOpenInNewWindow(WorktreeMenuTests.feat, isOpenHere: true))
-        #expect(!WorktreeWording.offersOpenInNewWindow(WorktreeMenuTests.main, isOpenHere: false))
         #expect(!WorktreeWording.offersOpenInNewWindow(WorktreeMenuTests.main, isOpenHere: true))
     }
 
@@ -238,7 +240,7 @@ import Testing
         let main = try #require(here.worktrees.first { $0.isMain })
 
         #expect(WorktreeWording.offersOpenInNewWindow(feat, isOpenHere: here.isOpenHere(feat)))
-        #expect(!WorktreeWording.offersOpenInNewWindow(main, isOpenHere: here.isOpenHere(main)))
+        #expect(!WorktreeWording.offersOpenInNewWindow(main, isOpenHere: here.isOpenHere(main)), "this window's own")
 
         // A window of its own; this window keeps its repository (Open Worktree would switch it).
         #expect(here.openWorktreeInNewWindow(feat, in: test.registry) == .newWindow(RepositoryWindow(url: linked)))
@@ -259,5 +261,73 @@ import Testing
         #expect(here.openWorktreeInNewWindow(gone, in: test.registry) == nil)
         #expect(here.lastError == WorktreeWording.openInNewWindowBlocked(gone))
         #expect(recorder.asked.count == 1)
+    }
+}
+
+/// Ruling 11: Open Worktree — the row's menu, its double-click, the add notice's Open — is routed
+/// too (`.worktreeHere`): a worktree another window already shows brings that window to the front
+/// and this window keeps its repository (two stores on one worktree would be two watchers and two
+/// write lanes on one index); otherwise this window switches to it, as before.
+@MainActor @Suite(.leavesTheRealDefaultsAlone) struct WorktreeOpenHereTests {
+    @Test(.timeLimit(.minutes(10))) func openWorktreeFrontsTheWindowShowingItAndOtherwiseSwitchesHere() async throws {
+        let repo = try ScratchRepo("main")
+        defer { repo.remove() }
+        try repo.commit("a.txt", "one\n", "first")
+        let linked = repo.directory.appending(path: "wt-feat")
+        _ = try repo.git("worktree", "add", "-b", "feat", linked.path)
+        let (test, recorder) = OpenRoutingTests.launchedRegistry()
+        defer { test.remove() }
+        let here = await test.opened(repo)
+        let there = test.registry.makeStore()
+        await open(there, linked)
+        let feat = try #require(here.worktrees.first { !$0.isMain })
+
+        // Shown in another window: that one comes to the front; nothing changes here.
+        #expect(here.openWorktree(feat) == .front(there))
+        #expect(here.root.map(RepositoryWindow.init(url:)) == RepositoryWindow(url: repo.url))
+        #expect(recorder.asked.isEmpty)
+
+        // Shown nowhere else: this window switches to it, as Open Worktree always did.
+        test.registry.windowClosed(there)
+        #expect(here.openWorktree(feat) == .useFront(here))
+        await waitUntilIdle(here)
+        #expect(here.root.map(RepositoryWindow.init(url:)) == RepositoryWindow(url: linked))
+        #expect(recorder.asked.isEmpty, "no window is made for a switch here")
+    }
+
+    /// The add notice's Open goes the same way (`openAddedWorktree` → `openWorktree`).
+    @Test(.timeLimit(.minutes(10))) func theAddNoticesOpenFrontsTheWindowShowingIt() async throws {
+        let repo = try ScratchRepo("main")
+        defer { repo.remove() }
+        try repo.commit("a.txt", "one\n", "first")
+        let linked = repo.directory.appending(path: "wt-feat")
+        _ = try repo.git("worktree", "add", "-b", "feat", linked.path)
+        let (test, _) = OpenRoutingTests.launchedRegistry()
+        defer { test.remove() }
+        let here = await test.opened(repo)
+        let there = test.registry.makeStore()
+        await open(there, linked)
+        let feat = try #require(here.worktrees.first { !$0.isMain })
+
+        here.perform(.openWorktree(feat.path))
+        #expect(here.root.map(RepositoryWindow.init(url:)) == RepositoryWindow(url: repo.url))
+        #expect(there.root.map(RepositoryWindow.init(url:)) == RepositoryWindow(url: linked))
+    }
+
+    /// A store made outside a registry (`makeTestStore`) has nowhere to route: it switches itself,
+    /// the fallback.
+    @Test(.timeLimit(.minutes(10))) func aStoreWithNoRegistrySwitchesItself() async throws {
+        let repo = try ScratchRepo("main")
+        defer { repo.remove() }
+        try repo.commit("a.txt", "one\n", "first")
+        let linked = repo.directory.appending(path: "wt-feat")
+        _ = try repo.git("worktree", "add", "-b", "feat", linked.path)
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        let feat = try #require(store.worktrees.first { !$0.isMain })
+
+        #expect(store.openWorktree(feat) == .useFront(store))
+        await waitUntilIdle(store)
+        #expect(store.root.map(RepositoryWindow.init(url:)) == RepositoryWindow(url: linked))
     }
 }

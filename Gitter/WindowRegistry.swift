@@ -86,6 +86,7 @@ final class WindowRegistry {
     /// A new store on the registry's defaults, registered last, its opens reported to the list.
     func makeStore(backend: RepositoryStore.Backend = CLIGitBackend()) -> RepositoryStore {
         let store = RepositoryStore(backend: backend, defaults: defaults)
+        store.registry = self
         store.onRootChange = { [weak self, weak store] old, new in
             guard let self, let store else { return }
             rootChanged(store, from: old, to: new)
@@ -109,11 +110,17 @@ final class WindowRegistry {
     /// Where `url` opens (spec §2, Open routing):
     /// - shown in an open window, by any spelling (RF2) → `.front`, whatever asked;
     /// - Open Repository… with a front window that shows nothing → `.useFront`;
+    /// - Open Worktree with its window open → `.useFront`: that window switches to it;
     /// - otherwise — Open Recent, a Finder open, Open in New Window, or a front window that shows a
     ///   repository — `.newWindow`.
     func route(_ url: URL, kind: OpenKind, front: RepositoryStore?) -> OpenRoute {
         if let shown = store(showing: url) { return .front(shown) }
-        if kind == .openPanel, let front, front.root == nil, !front.isClosed { return .useFront(front) }
+        if let front, !front.isClosed {
+            switch kind {
+            case .openPanel where front.root == nil, .worktreeHere: return .useFront(front)
+            default: break
+            }
+        }
         return .newWindow(RepositoryWindow(url: url))
     }
 
@@ -323,6 +330,9 @@ enum OpenKind: Sendable {
     case recentOrFinder
     /// A worktree's Open in New Window.
     case worktreeNewWindow
+    /// Open Worktree — the row's menu, its double-click, the add notice's Open: this window
+    /// switches to it, unless another window shows it already (Ruling 11).
+    case worktreeHere
 }
 
 /// Where an open goes (`WindowRegistry.route`).

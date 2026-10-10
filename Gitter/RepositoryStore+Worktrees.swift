@@ -175,13 +175,23 @@ extension RepositoryStore {
         WorktreeWording.openBlocked(worktree, isOpenHere: isOpenHere(worktree))
     }
 
-    /// Open Worktree, and a double-click on the row: this window switches to it.
-    func openWorktree(_ worktree: Worktree) {
+    /// Open Worktree, a double-click on the row, the add notice's Open: this window switches to
+    /// it — unless another window already shows it, which comes to the front instead (Ruling 11:
+    /// two stores on one worktree would be two watchers and two write lanes on one index). Routed
+    /// through the store's registry (`.worktreeHere`); a store made outside one opens it itself.
+    /// Nil, with the reason in the banner, when it cannot be opened.
+    @discardableResult
+    func openWorktree(_ worktree: Worktree) -> OpenRoute? {
         if let reason = openWorktreeBlockedReason(worktree) {
             showStickyError(reason)
-            return
+            return nil
         }
-        open(URL(fileURLWithPath: worktree.path))
+        let url = URL(fileURLWithPath: worktree.path)
+        guard let registry else {
+            open(url)
+            return .useFront(self)
+        }
+        return registry.open(url, kind: .worktreeHere, front: self)
     }
 
     /// Open in New Window (E2 Task 4): routed as an open (`.worktreeNewWindow`) through

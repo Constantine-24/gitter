@@ -20,7 +20,8 @@
     ///   worktreemenu           each worktree's menu items with the reasons the disabled ones
     ///                          show, and every local branch's held icon and its Switch, Delete and
     ///                          Fast-Forward with their reasons.
-    ///   openworktree:<folder>  Open Worktree on the row with that folder name (or that path),
+    ///   openworktree:<folder>  Open Worktree on the row with that folder name (or that path) —
+    ///                          or, when another window shows it, `shown already, fronted: …` —
     ///                          then — once its first snapshot is in — the root, the titles, Open
     ///                          Recent's first entry and `lastRepositoryPath`. The launch guard
     ///                          refuses every step after it: another repository is open.
@@ -139,7 +140,11 @@
                     return
                 }
                 let before = store.generation
-                store.openWorktree(worktree)
+                // Routed (Ruling 11): a worktree another window shows brings that one to the front.
+                if case .front(let shown) = store.openWorktree(worktree) {
+                    log("openworktree: shown already, fronted: \(describeStore(shown))")
+                    return
+                }
                 _ = await wait({ store.generation != before && store.snapshot != nil && !store.worktrees.isEmpty }, what: "openworktree: the worktree's first snapshot")
                 log("openworktree: root \(store.root?.path ?? "nil") | error: \(store.lastError ?? "nil")")
                 logTitles(store)

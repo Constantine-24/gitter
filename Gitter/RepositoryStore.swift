@@ -119,6 +119,10 @@ final class RepositoryStore {
     /// (`WindowRegistry.makeStore`). Not observed.
     @ObservationIgnored var onRootChange: ((_ old: URL?, _ new: URL?) -> Void)?
 
+    /// The registry that made this store (`WindowRegistry.makeStore`), which a worktree open is
+    /// routed through (Ruling 11); nil for a store made outside one, which then opens in itself.
+    @ObservationIgnored weak var registry: WindowRegistry?
+
     /// A short, non-error message about something that just succeeded ("Fast-forwarded to
     /// feature."). Unlike `lastError` it is never sticky and clears itself after a few seconds.
     private(set) var notice: Notice?

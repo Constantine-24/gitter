@@ -120,17 +120,22 @@
                     guard await wait({ store.snapshot != nil }, what: "a snapshot before the steps") else { return }
                     guard await runBranchActions(branchAction) else { return }
                 }
-                // Last, so a click lands on a list that has finished loading its rows.
+                // Last, so a click lands on a list that has finished loading its rows. In the
+                // target's own window — the store the guard has just checked — which after
+                // `newwindow:` and `inwindow:` is not the first one on screen.
                 if wantsEvents {
-                    if let refusal = guardRefusal(store) {
+                    switch eventTarget(target, in: AppModel.windows, env) {
+                    case .refused(let refusal):
                         log("launch guard: \(refusal); no clicks or keys")
                         QuitFlow.request(.launchRefusal)
                         return
+                    case .window(let window):
+                        log("events: in the window \"\(window.title)\" #\(window.windowNumber) of store \(target?.debugSerial ?? 0)")
+                        await runEvents(in: window)
                     }
-                    await runEvents()
                 }
                 if let then {
-                    guard await wait({ store.snapshot != nil }, what: "a snapshot before GITTER_DEBUG_THEN") else {
+                    guard await wait({ target?.snapshot != nil }, what: "a snapshot before GITTER_DEBUG_THEN") else {
                         return
                     }
                     await runBranchActions(then)
@@ -141,11 +146,30 @@
         /// Why a hook must not act on `store`'s repository now, or nil (`DebugLaunchGuard`): the
         /// fixture, or another window's repository the launcher named (`GITTER_DEBUG_ALSO_OPEN`).
         // internal (not private): used by DebugLaunchHooks+Branches.swift before every step
-        static func guardRefusal(_ store: RepositoryStore) -> String? {
+        static func guardRefusal(
+            _ store: RepositoryStore, _ env: [String: String] = ProcessInfo.processInfo.environment
+        ) -> String? {
             // A closed window's store is acted on no more (RF3), whatever it shows.
             if store.isClosed { return "refused: the window is closed" }
-            let env = ProcessInfo.processInfo.environment
             return DebugLaunchGuard.stepRefusal(root: store.root, allowed: DebugLaunchGuard.alsoOpen(env), env)
+        }
+
+        /// Where the click, key and typing hooks land: the window of `store` — the target — once
+        /// the guard has passed that same store, or why not (E2 Task 4 review, Important 2).
+        enum EventTarget {
+            case window(NSWindow)
+            case refused(String)
+        }
+
+        static func eventTarget(
+            _ store: RepositoryStore?, in registry: WindowRegistry, _ env: [String: String]
+        ) -> EventTarget {
+            guard let store else { return .refused("refused: no target window") }
+            if let refusal = guardRefusal(store, env) { return .refused(refusal) }
+            guard let window = registry.window(of: store) else {
+                return .refused("refused: the target store \(store.debugSerial) has no window")
+            }
+            return .window(window)
         }
 
         /// Makes the window `<width>x<height>`, anchored at its current top-left corner.

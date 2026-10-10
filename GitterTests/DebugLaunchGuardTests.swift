@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 
@@ -160,6 +161,24 @@ import Testing
         #expect(DebugLaunchGuard.newWindowRefusal(repo.path, ["GITTER_DEBUG_OPEN": Self.fixture]) != nil)
     }
 
+    /// `linkedRepo`'s control (Ruling 14): `link` is another path, and a symbolic link to `repo`
+    /// — so the "through a link" checks above are about a link. A plain second directory in its
+    /// place fails the same check.
+    @Test func linkedRepoMakesARealLinkToTheRepo() throws {
+        let (base, repo, link) = try Self.linkedRepo()
+        defer { try? FileManager.default.removeItem(at: base) }
+        #expect(link.path != repo.path)
+        let destination = try FileManager.default.destinationOfSymbolicLink(atPath: link.path)
+        #expect(URL(fileURLWithPath: destination).resolvingSymlinksInPath().path == repo.path)
+        #expect(DebugLaunchGuard.alsoOpen(["GITTER_DEBUG_ALSO_OPEN": link.path]).map(\.path) == [repo.path])
+
+        let plain = base.appending(path: "plain")
+        try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
+        withKnownIssue("a directory that is not a link to the repo is another path") {
+            #expect(DebugLaunchGuard.alsoOpen(["GITTER_DEBUG_ALSO_OPEN": plain.path]).map(\.path) == [repo.path])
+        }
+    }
+
     /// A real directory `repo` and a link to it, `link`, in a fresh temporary `base`.
     static func linkedRepo() throws -> (base: URL, repo: URL, link: URL) {
         let base = FileManager.default.temporaryDirectory.appending(path: "gitter-guard-\(UUID().uuidString)")
@@ -196,5 +215,58 @@ import Testing
         #expect(!DebugLaunchGuard.notesRecentDocuments(["GITTER_DEBUG_OPEN": Self.fixture]))
         #expect(!DebugLaunchGuard.notesRecentDocuments(["GITTER_DEBUG_THEN": ""]))
         #expect(!DebugLaunchGuard.notesRecentDocuments(["GITTER_DEBUG_SNAPSHOT_DIR": "/tmp/x"]))
+    }
+}
+
+/// E2 Task 4 fix round (review Important 2): `GITTER_DEBUG_CLICK`, `KEYS` and `TYPE` land in the
+/// window of the very store the launch guard checked — the target's — not in whichever window is
+/// first on screen. `eventTarget` makes that choice: the target's own window, or the refusal.
+@MainActor @Suite(.leavesTheRealDefaultsAlone) struct HarnessEventTargetTests {
+    static func window() -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered,
+            defer: true)
+        window.isReleasedWhenClosed = false
+        return window
+    }
+
+    @Test(.timeLimit(.minutes(10))) func eventsGoToTheTargetsOwnWindowAfterTheGuard() async throws {
+        let fixture = try ScratchRepo("fixture")
+        defer { fixture.remove() }
+        try fixture.commit("a.txt", "one\n", "first")
+        let second = try ScratchRepo("second")
+        defer { second.remove() }
+        try second.commit("a.txt", "one\n", "first")
+        let unlisted = try ScratchRepo("unlisted")
+        defer { unlisted.remove() }
+        try unlisted.commit("a.txt", "one\n", "first")
+        let test = TestRegistry()
+        defer { test.remove() }
+        let one = await test.opened(fixture)
+        let two = await test.opened(second)
+        let other = await test.opened(unlisted)
+        let windowless = await test.opened(second)
+        let (first, next, third) = (Self.window(), Self.window(), Self.window())
+        test.registry.attach(first, to: one)
+        test.registry.attach(next, to: two)
+        test.registry.attach(third, to: other)
+        let env = ["GITTER_DEBUG_OPEN": fixture.url.path, "GITTER_DEBUG_ALSO_OPEN": second.url.path]
+
+        func chosen(_ store: RepositoryStore?) -> NSWindow? {
+            if case .window(let window) = DebugLaunchHooks.eventTarget(store, in: test.registry, env) { return window }
+            return nil
+        }
+        func refusal(_ store: RepositoryStore?) -> String? {
+            if case .refused(let why) = DebugLaunchHooks.eventTarget(store, in: test.registry, env) { return why }
+            return nil
+        }
+
+        #expect(chosen(two) === next, "the second window's own, not the first one's")
+        #expect(chosen(one) === first)
+        #expect(refusal(other)?.contains("refused") == true, "a repository nobody named is refused")
+        #expect(refusal(windowless) != nil, "a store with no window has nowhere for events to land")
+        #expect(refusal(nil) != nil)
+        test.registry.windowClosed(two)
+        #expect(refusal(two) == "refused: the window is closed")
     }
 }

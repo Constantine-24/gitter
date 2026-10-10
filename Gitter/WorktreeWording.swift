@@ -176,10 +176,11 @@ enum WorktreeWording {
 
     static let openInNewWindowTitle = "Open in New Window"
 
-    /// Whether a row's menu has Open in New Window (E2 Task 4): a linked worktree — not the main
-    /// one — that this window does not show. Open Worktree, which switches this window, stays.
+    /// Whether a row's menu has Open in New Window (E2 Task 4, Ruling 12): wherever Open Worktree
+    /// is, for a worktree this window does not show — the main one included. Open Worktree, which
+    /// switches this window, stays beside it.
     static func offersOpenInNewWindow(_ worktree: Worktree, isOpenHere: Bool) -> Bool {
-        !worktree.isMain && !isOpenHere
+        !isOpenHere
     }
 
     /// Why Open in New Window is off, or nil: Open Worktree's reasons, but for "this window" —

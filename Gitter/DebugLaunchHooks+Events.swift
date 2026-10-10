@@ -42,14 +42,16 @@
         }
 
         /// Clicks, then keys, then typing, then the dump — in that order, because each step is
-        /// usually the setup for the next (click a row, press space, see where focus went).
-        static func runEvents() async {
+        /// usually the setup for the next (click a row, press space, see where focus went) — in
+        /// `window`, the target's (`eventTarget`), which is made key: a posted key goes to the
+        /// key window, whatever window number it carries.
+        static func runEvents(in window: NSWindow) async {
             let env = ProcessInfo.processInfo.environment
-            guard let window = NSApp.windows.first(where: \.isVisible) else { return }
             // Launched from a shell the app is not frontmost, and an inactive window is never
             // key: its selection draws in the unemphasized grey no matter who is first
             // responder, which is exactly the thing under investigation here.
             NSApp.activate()
+            window.makeKeyAndOrderFront(nil)
             // `activate()` returns long before the window is key, and a click that lands first
             // is the *inactive*-window case, which AppKit treats differently.
             for _ in 0..<50 {

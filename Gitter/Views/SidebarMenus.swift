@@ -339,9 +339,9 @@ struct TagMenu: View {
 /// Open is off for this window's own worktree, a missing one and a bare repository, Reveal for a
 /// missing one, and Remove Worktree… for the main and this window's own, each with the reason at
 /// the top. Copy Path copies the path exactly as git lists it. A missing worktree's menu also
-/// has Remove All Missing…, and every row's Add Worktree… (Task 5). A linked worktree this window
-/// does not show also has Open in New Window (E2 Task 4), routed as an open: its own window, or
-/// the one already showing it brought to the front.
+/// has Remove All Missing…, and every row's Add Worktree… (Task 5). A worktree this window does
+/// not show also has Open in New Window (E2 Task 4), routed as an open: its own window, or the one
+/// already showing it brought to the front; Open Worktree fronts that one too (Ruling 11).
 struct WorktreeMenu: View {
     let worktree: Worktree
 
