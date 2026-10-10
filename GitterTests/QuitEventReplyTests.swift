@@ -120,6 +120,7 @@ extension QuitFlowTests {
             QuitFlow.answerHeldQuitEvents(quitting: true)
 
             #expect(fake.answers == [.init(1, -128), .init(2, -128), .init(3, 0)])
+            #expect(QuitFlow.heldQuitEvents.isEmpty)
         }
 
         // MARK: - The outcomes are wired

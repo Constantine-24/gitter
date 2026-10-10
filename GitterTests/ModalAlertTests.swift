@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Synchronization
 import Testing
 
 @testable import Gitter
@@ -10,8 +11,9 @@ import Testing
 /// ending, a refresh — until the alert is dismissed, because the main queue is serial and the
 /// modal loop runs inside the current block; from a run-loop source the main queue keeps draining.
 ///
-/// `runModal` is the seam: no alert is ever put on screen here.
-@MainActor @Suite struct ModalAlertTests {
+/// `runModal` is the seam: no alert is ever put on screen here. Serialized: the tests spin the
+/// main run loop in chosen modes, and share it.
+@MainActor @Suite(.serialized) struct ModalAlertTests {
 
     @MainActor final class Probe {
         var inCall = false
@@ -82,8 +84,18 @@ import Testing
 
     // MARK: - Other main-actor work goes on under the alert (C3)
 
+    /// Set when the test is cancelled (its time limit). The drain's spins run inside a timer's
+    /// callout, outside any task, where `Task.isCancelled` is always false — and they hold the main
+    /// thread, so the test could never come back — so they check this instead.
+    final class Cancelled: Sendable {
+        private let state = Mutex(false)
+        func set() { state.withLock { $0 = true } }
+        var isSet: Bool { state.withLock { $0 } }
+    }
+
     /// What a draining `runModal` saw.
     @MainActor final class Drain {
+        let cancelled = Cancelled()
         var queueBlockRan = false
         var actorJobRan = false
         /// Whether both jobs posted as the alert came up ran before it went: set as it goes.
@@ -94,15 +106,21 @@ import Testing
 
     /// A stand-in for `runModal`: as it comes up it posts a main-queue block and a main-actor job —
     /// a lane's ending, a refresh — and then spins the run loop in its modal-panel mode, as
-    /// `runModal` does, until both have run or 500 passes are over. The jobs are posted from
+    /// `runModal` does, until both have run (or the test is cancelled). The jobs are posted from
     /// inside, not before the raise, so that one that ran before the alert came up cannot count.
-    private static func drainingRunModal(_ drain: Drain) -> @MainActor (NSAlert) -> NSApplication.ModalResponse {
+    ///
+    /// `bounded` stops the spin after that many passes; only the control passes it, as the jobs
+    /// can never run there and its known issue is what it shows.
+    private static func drainingRunModal(
+        _ drain: Drain, bounded: Int? = nil
+    ) -> @MainActor (NSAlert) -> NSApplication.ModalResponse {
         { _ in
             drain.firedInMode = RunLoop.current.currentMode
             DispatchQueue.main.async { MainActor.assumeIsolated { drain.queueBlockRan = true } }
             Task { @MainActor in drain.actorJobRan = true }
             var passes = 0
-            while !(drain.queueBlockRan && drain.actorJobRan), passes < 500 {
+            while !(drain.queueBlockRan && drain.actorJobRan), !drain.cancelled.isSet {
+                if let bounded, passes >= bounded { break }
                 _ = RunLoop.main.run(mode: .modalPanel, before: Date(timeIntervalSinceNow: 0.01))
                 passes += 1
             }
@@ -111,12 +129,19 @@ import Testing
         }
     }
 
+    /// The alert's answer, waited for through the hang guard; the test's cancel also ends the
+    /// drain's spins (`Cancelled`).
     private func answer(of drain: Drain) async -> NSApplication.ModalResponse? {
+        let cancelled = drain.cancelled
         let answered = CallUnderTest { @MainActor () -> NSApplication.ModalResponse? in
             while drain.response == nil, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(5)) }
             return drain.response
         }
-        return await answered.value("the alert's answer") ?? nil
+        return await withTaskCancellationHandler {
+            await answered.value("the alert's answer") ?? nil
+        } onCancel: {
+            cancelled.set()
+        }
     }
 
     /// Raised while the app is idle: the timer fires in `.default` (C3f).
@@ -131,17 +156,15 @@ import Testing
 
     /// Raised while AppKit holds a quit: `.terminateLater` is a loop in the modal-panel mode until
     /// the reply, entered from a run-loop source (`QuitFlow` performs the terminate from the run
-    /// loop), and `QuitGuard.shouldTerminate` raises the question inside it. The outer loop is
-    /// bounded by 500 passes, so a timer that cannot fire there fails the mode check instead of hanging.
+    /// loop), and `QuitGuard.shouldTerminate` raises the question inside it. The outer loop spins
+    /// until the answer comes; a timer that cannot fire there is caught by the time limit.
     @Test(.timeLimit(.minutes(10))) func otherMainActorWorkRunsUnderAnAlertRaisedWhileAppKitHoldsAQuit() async {
         let drain = Drain()
         let held = Timer(timeInterval: 0, repeats: false) { _ in
             MainActor.assumeIsolated {
                 ModalAlert.raise(NSAlert(), runModal: Self.drainingRunModal(drain), then: { drain.response = $0 })
-                var passes = 0
-                while drain.response == nil, passes < 500 {
+                while drain.response == nil, !drain.cancelled.isSet {
                     _ = RunLoop.main.run(mode: .modalPanel, before: Date(timeIntervalSinceNow: 0.01))
-                    passes += 1
                 }
             }
         }
@@ -159,7 +182,7 @@ import Testing
     @Test(.timeLimit(.minutes(10))) func control_underAnAlertRunFromAMainQueueBlockNothingElseRuns() async {
         let drain = Drain()
         DispatchQueue.main.async {
-            MainActor.assumeIsolated { drain.response = Self.drainingRunModal(drain)(NSAlert()) }
+            MainActor.assumeIsolated { drain.response = Self.drainingRunModal(drain, bounded: 500)(NSAlert()) }
         }
 
         #expect(await answer(of: drain) == .alertFirstButtonReturn)
