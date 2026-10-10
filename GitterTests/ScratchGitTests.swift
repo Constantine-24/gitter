@@ -165,6 +165,71 @@ import Testing
         await waitUntilIdle(store)
     }
 
+    /// Control for the wait the hang guard exists for: the store's reload never ends (a stuck
+    /// `refreshTask`), which nothing but the cancel of the waiting task can stop. Awaited outside
+    /// `CallUnderTest` this would freeze the test; through it the cancel ends the wait and the
+    /// guard's own issue is recorded.
+    @Test(.timeLimit(.minutes(10))) func aStuckRefreshIsCaughtByTheTimeLimit() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try repo.commit("a.txt", "one\n", "first")
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        let stuck = StuckCall()
+        store.refreshTask = Task { await stuck.wait() }
+        defer { stuck.release() }
+
+        await withKnownIssue("the store's reload never ends") {
+            let waiter = Task { @MainActor in await waitUntilIdle(store) }
+            while !stuck.waiting { try? await Task.sleep(for: .milliseconds(5)) }
+            try? await Task.sleep(for: .milliseconds(150))
+            waiter.cancel()
+            await waiter.value
+        } matching: { $0.isNeverCameBack }
+        stuck.release()
+        await store.refreshTask?.value
+        await waitUntilIdle(store)
+    }
+
+    /// `scheduleRefresh` replaces `refreshTask` while a wait is on the old one: the wait must not
+    /// return until the replacement has run too.
+    @Test(.timeLimit(.minutes(10))) func waitUntilIdleWaitsForAReplacementOfTheRefreshTask() async throws {
+        final class Flag: @unchecked Sendable { var ran = false }
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try repo.commit("a.txt", "one\n", "first")
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        let first = StuckCall()
+        store.refreshTask = Task { await first.wait() }
+        let flag = Flag()
+
+        let waiter = Task { @MainActor in
+            await waitUntilIdle(store)
+            return flag.ran
+        }
+        while !first.waiting { try await Task.sleep(for: .milliseconds(5)) }
+        try await Task.sleep(for: .milliseconds(100))
+        store.refreshTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            flag.ran = true
+        }
+        first.release()
+
+        #expect(await waiter.value, "the wait returned before the replacing reload ran")
+    }
+
+    /// Control: `open` failing is recorded promptly, at the caller, and not waited out.
+    @Test(.timeLimit(.minutes(10))) func aFailedOpenIsRecordedInsteadOfHanging() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try FileManager.default.removeItem(at: repo.url.appending(path: ".git"))
+        await withKnownIssue("the directory is not a repository") {
+            let (_, cleanup) = await openedTestStore(repo)
+            cleanup()
+        } matching: { $0.comments.contains { $0.rawValue.contains("open failed: Not a Git repository") } }
+    }
+
     /// The copy of GitCore's hang guard behaves as its original does.
     @Test(.timeLimit(.minutes(10))) func theCopiedHangGuardReportsAStuckCall() async throws {
         let stuck = StuckCall()
