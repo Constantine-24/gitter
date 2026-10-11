@@ -7,8 +7,21 @@ import SwiftUI
 /// every launch (measured, window polish Task 2).
 struct SplitViewAutosave: NSViewRepresentable {
     let name: String
+    /// Under the test host no name is given (`autosaveName(_:isRunningTests:)`); a test can say
+    /// otherwise to see the name given, into a split view that keeps none.
+    var isRunningTests = TestHost.isRunningTests
 
-    func makeNSView(context: Context) -> NSView { Finder(name: name) }
+    func makeNSView(context: Context) -> NSView {
+        Finder(name: Self.autosaveName(name, isRunningTests: isRunningTests))
+    }
+
+    /// The name to give, or nil under the test host: a split view with an autosave name writes its
+    /// frames to `UserDefaults.standard`, which there is the user's real domain — tests that build a
+    /// real window wrote `NSSplitView Subview Frames CommitListDetail` into it (final fix wave, G1),
+    /// as `AppLog` and `AutoFetchScheduler` stay out of the test host too.
+    static func autosaveName(_ name: String, isRunningTests: Bool) -> String? {
+        isRunningTests ? nil : name
+    }
 
     func updateNSView(_ nsView: NSView, context: Context) {}
 
@@ -26,9 +39,9 @@ struct SplitViewAutosave: NSViewRepresentable {
     }
 
     private final class Finder: NSView {
-        let name: String
+        let name: String?
 
-        init(name: String) {
+        init(name: String?) {
             self.name = name
             super.init(frame: .zero)
         }
@@ -38,6 +51,7 @@ struct SplitViewAutosave: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            guard let name else { return }
             SplitViewAutosave.splitToName(above: self)?.autosaveName = name
         }
     }

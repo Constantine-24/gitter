@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Testing
 
 @testable import Gitter
@@ -41,6 +42,44 @@ import Testing
         parent.addSubview(child)
         #expect(SplitViewAutosave.enclosingSplitView(of: child) == nil)
         #expect(SplitViewAutosave.enclosingSplitView(of: parent) == nil)
+    }
+
+    // MARK: - No name under the test host (final fix wave, G1)
+
+    /// A split view with an autosave name writes its frames to `UserDefaults.standard`, which under
+    /// the test host is the user's real domain: three tests that build a real window failed
+    /// `.leavesTheRealDefaultsAlone` on `NSSplitView Subview Frames CommitListDetail`.
+    @Test func underTheTestHostNoNameIsGiven() {
+        #expect(TestHost.isRunningTests)
+        #expect(SplitViewAutosave.autosaveName("CommitListDetail", isRunningTests: true) == nil)
+        #expect(SplitViewAutosave.autosaveName("CommitListDetail", isRunningTests: false) == "CommitListDetail")
+    }
+
+    /// Control: the check fails when it expects a name under the test host.
+    @Test func theCheckFailsForANameUnderTheTestHost() {
+        withKnownIssue("no name is given under the test host") {
+            #expect(SplitViewAutosave.autosaveName("CommitListDetail", isRunningTests: true) == "CommitListDetail")
+        }
+    }
+
+    /// The view itself, hosted in a window inside a split view that records the names it is given
+    /// and keeps none (so nothing reaches the defaults): under the test host it gives none.
+    @Test(.timeLimit(.minutes(10))) func aWindowUnderTheTestHostNamesNoSplitView() async {
+        let hosted = HostedInSplit(SplitViewAutosave(name: "CommitListDetail"))
+        #expect(await hosted.finderIsInTheWindow())
+        #expect(hosted.split.namesGiven.isEmpty)
+        hosted.close()
+    }
+
+    /// Control: the same window, told it is not under the test host, gives the name — the check
+    /// above sees a name when one is given.
+    @Test(.timeLimit(.minutes(10))) func theCheckFailsWhenTheViewGivesAName() async {
+        let hosted = HostedInSplit(SplitViewAutosave(name: "CommitListDetail", isRunningTests: false))
+        #expect(await hosted.finderIsInTheWindow())
+        withKnownIssue("the view outside the test host names its split view") {
+            #expect(hosted.split.namesGiven.isEmpty)
+        }
+        hosted.close()
     }
 
     // MARK: - Only an unnamed split view is named (fix round 1, M1)
@@ -94,5 +133,55 @@ private final class NamedSplitView: NSSplitView {
     override var autosaveName: NSSplitView.AutosaveName? {
         get { Self.sidebarName }
         set {}
+    }
+}
+
+/// A split view that records the autosave names it is given and keeps none: AppKit's setter, which
+/// would write frames into the defaults, is never called.
+private final class RecordingSplitView: NSSplitView {
+    private(set) var namesGiven: [String] = []
+
+    override var autosaveName: NSSplitView.AutosaveName? {
+        get { namesGiven.last }
+        set { if let newValue { namesGiven.append(newValue) } }
+    }
+}
+
+/// `view` in an `NSHostingView` in a pane of a `RecordingSplitView`, in a window that is never shown.
+@MainActor private final class HostedInSplit {
+    let split = RecordingSplitView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+    let window: NSWindow
+    private let hosting: NSView
+
+    init(_ view: SplitViewAutosave) {
+        let pane = NSView(frame: split.bounds)
+        split.addSubview(pane)
+        hosting = NSHostingView(rootView: view)
+        hosting.frame = pane.bounds
+        pane.addSubview(hosting)
+        window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled], backing: .buffered,
+            defer: true)
+        window.isReleasedWhenClosed = false
+        window.contentView = split
+        split.layoutSubtreeIfNeeded()
+    }
+
+    /// Waits until the representable's own view is in the window — its `viewDidMoveToWindow` has run.
+    func finderIsInTheWindow() async -> Bool {
+        await waitUntil("the autosave view in the window") { [hosting, window] in
+            var stack = [hosting]
+            while let view = stack.popLast() {
+                if String(describing: type(of: view)).contains("Finder"), view.window === window { return true }
+                stack.append(contentsOf: view.subviews)
+            }
+            hosting.layoutSubtreeIfNeeded()
+            return false
+        }
+    }
+
+    func close() {
+        window.contentView = nil
+        window.close()
     }
 }

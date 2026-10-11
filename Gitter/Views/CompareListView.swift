@@ -13,8 +13,9 @@ import SwiftUI
 struct CompareListView: View {
     @Environment(RepositoryStore.self) private var store
     /// Draws the selection in the system highlight colour once the list is clicked, as
-    /// `CommitListView` does.
-    @FocusState private var isFocused: Bool
+    /// `CommitListView` does. `CommitListView`'s, so that a Tab landing on the history hidden under
+    /// this list can hand the focus here (final fix wave, I1).
+    var isFocused: FocusState<Bool>.Binding
 
     var body: some View {
         if let comparison = store.comparison {
@@ -43,8 +44,8 @@ struct CompareListView: View {
             group(c.a.ref, count: c.onlyA, commits: c.commitsOnlyA)
         }
         .listStyle(.inset)
-        .focused($isFocused)
-        .simultaneousGesture(TapGesture().onEnded { isFocused = true })
+        .focused(isFocused)
+        .simultaneousGesture(TapGesture().onEnded { isFocused.wrappedValue = true })
         .contextMenu(forSelectionType: Selection.self) { ids in
             if ids.count == 1, case .commit(let sha)? = ids.first {
                 Button(CompareWording.copyCommitIDTitle) { Clipboard.copy(sha) }

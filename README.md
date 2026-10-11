@@ -121,6 +121,11 @@ removed, a removal only behind a check of what it would delete.
   quits (or stays open if it failed or has a warning, so you can read it, or if it is still
   running after ten minutes), **Stop and Quit**, or **Don't Quit**
 
+The pictures below, and the compare and worktree ones further down, were taken before the window
+became two columns (2026-10-11): what each shows is current, but around it the window is the old
+one, three columns with the commit list's divider running up through the toolbar. The picture at
+the top is the window as it is now; the rest are on the backlog to retake.
+
 ![The remote toolbar: Fetch, "Pull ↓2" and "Push ↑2", with "main ↑2 ↓2" on the branch button](docs/screenshots/remotes.png)
 
 ![Line-level staging, in dark mode, with a long line wrapped](docs/screenshots/main.png)
@@ -826,7 +831,7 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (835 tests in 67 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (852 tests in 69 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -1005,7 +1010,7 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   final review probed; and three pins of what is still kept: an scp-form password with a parenthesis
   in git's words, and a password with an unencoded `/` in two URLs.
 
-`GitterTests` reports **forty-five known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
+`GitterTests` reports **forty-eight known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
 shows that the operation gate alone lets a branch another worktree holds through, which is why
 the switch asks about the hold first. Three come from `DefaultsIsolationTests`: the check that
 the real defaults are unchanged fails when a store writes the domain it watches (a scratch
@@ -1052,10 +1057,13 @@ queue (`settle`) on a writer stuck on a hung write is reported as never having c
 a banner's line from a store that was not given the recorder, and a window's close line where no quit
 began; `LogLineTests` expects a backslash kept as it is, where it is doubled.
 
-Four come from the window polish: `AppIconTests` looks up an icon the bundle does not have and an
-icon name its `Info.plist` does not give (two), and `SplitViewAutosaveTests` expects the outer split
-view, the sidebar's, where the one a pane sits in is the nearest, and expects a split view that
-already has an autosave name to be the one it names (two).
+Seven come from the window polish: `AppIconTests` looks up an icon the bundle does not have and an
+icon name its `Info.plist` does not give (two); `SplitViewAutosaveTests` expects the outer split
+view, the sidebar's, where the one a pane sits in is the nearest, expects a split view that already
+has an autosave name to be the one it names, expects a name to be given under the test host, and
+expects a hosted view told it is not under the test host to give none (four); and
+`CommitSelectionTests` expects the history table's write to leave the selection alone with no
+comparison up (one).
 
 Deleting any of them would take the proof away and the suite would go on looking green.
 

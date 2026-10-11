@@ -109,6 +109,30 @@ import Testing
         #expect(store.selectedCommits == [])
     }
 
+    /// Compare mode draws the comparison over the history, which stays in the tree so the commit
+    /// list / detail divider is not thrown to its minimum (final fix wave, I1): a key that still
+    /// reaches the hidden table must not move the selection off the comparison.
+    @Test func whileComparingTheHistoryTableSelectsNothing() {
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
+        store.setComparison(CompareWordingTests.comparison())
+        store.select(.comparisonChanges)
+        store.selectRows([.commit(Self.a)], shown: Self.shown)
+        #expect(store.selection == .comparisonChanges)
+        #expect(store.selectedCommits == [])
+    }
+
+    /// Control: with no comparison the same write selects the row, so the check above can fail.
+    @Test func theCheckFailsWithNoComparison() {
+        let (store, _, cleanup) = makeTestStore()
+        defer { cleanup() }
+        store.select(.workingCopy)
+        store.selectRows([.commit(Self.a)], shown: Self.shown)
+        withKnownIssue("with no comparison the table's write selects the row") {
+            #expect(store.selection == .workingCopy)
+        }
+    }
+
     @Test func theStoreOrdersAGivenListAsShown() {
         let (store, _, cleanup) = makeTestStore()
         defer { cleanup() }

@@ -632,6 +632,10 @@ final class RepositoryStore {
     /// pane moves to the first selected commit — or to the working copy — and the set is kept in
     /// the order `shown`. An empty set changes nothing.
     func selectRows(_ rows: Set<Selection>, shown: [Selection]) {
+        // The history table's write. In compare mode the table is still there, under the
+        // comparison (`CommitListView`, final fix wave I1), and a key that reaches it must not
+        // move the selection off the comparison.
+        guard comparison == nil else { return }
         let previous = CommitSelection.table(selection: selection, commits: selectedCommits)
         guard let resolved = CommitSelection.resolve(rows, previous: previous, shown: shown) else {
             return

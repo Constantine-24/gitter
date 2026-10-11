@@ -20,6 +20,8 @@ struct CommitListView: View {
     /// system highlight colour rather than the unemphasized grey. Defensive and undiagnosed,
     /// exactly as in `WorkingCopyFileList.isFocused` — see the reasoning there.
     @FocusState private var isFocused: Bool
+    /// The comparison list's, drawn over the history in compare mode (`CompareListView`).
+    @FocusState private var isCompareFocused: Bool
 
     /// The last selection the table itself made, so the scroll below can skip it.
     ///
@@ -30,13 +32,24 @@ struct CommitListView: View {
     @State private var selectedInTable: Selection?
 
     var body: some View {
-        // Compare mode (B3): the column shows the comparison instead of the history until it
-        // ends (Done, Esc, a sidebar click, another repository).
-        if store.comparison != nil {
-            CompareListView()
-        } else {
-            history
-        }
+        // Compare mode (B3): the comparison is drawn over the history until it ends (Done, Esc,
+        // a sidebar click, another repository). Over it, not instead of it: swapping the history
+        // out made the `HSplitView` lay this pane out afresh at its minimum, so every Compare
+        // threw the commit list / detail divider to 360 pt, and its autosave kept it there
+        // (measured: 900 → 601, still 601 after Done and after a relaunch; final review I1).
+        // Underneath, the history is inert: no clicks, nothing for VoiceOver, and no keyboard
+        // (see `.onChange(of: isFocused)` below).
+        let comparing = store.comparison != nil
+        history
+            .disabled(comparing)
+            .allowsHitTesting(!comparing)
+            .accessibilityHidden(comparing)
+            .overlay {
+                if comparing {
+                    CompareListView(isFocused: $isCompareFocused)
+                        .background(.background)
+                }
+            }
     }
 
     @ViewBuilder
@@ -154,6 +167,17 @@ struct CommitListView: View {
         }
         .tableStyle(.inset)
         .focused($isFocused)
+        // Under the comparison the table is hidden but still in the key loop (`.disabled` does
+        // not take it out, and `.focusable` either puts a stop of its own in front of the table,
+        // which took the click's focus from it, or rebuilds the table, which throws the divider
+        // again — measured): when Tab lands on it while comparing, the focus goes on to the
+        // comparison's list. (Handed to nothing, the next Tab came back here.) Its selection
+        // writes are dropped meanwhile (`RepositoryStore.selectRows`).
+        .onChange(of: isFocused) { _, focused in
+            guard focused, store.comparison != nil else { return }
+            isFocused = false
+            isCompareFocused = true
+        }
         .simultaneousGesture(TapGesture().onEnded { isFocused = true })
         // `forSelectionType:` rather than a `.contextMenu` inside the row views: this is the
         // form `Table` knows about, and it is what makes a right-click select the row it lands
@@ -280,3 +304,4 @@ private struct TagPillLabelStyle: LabelStyle {
         }
     }
 }
+
