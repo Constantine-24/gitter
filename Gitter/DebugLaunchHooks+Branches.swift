@@ -32,7 +32,7 @@
     ///     autofetchfailed:<reason>     copyurls
     ///     quit                         alert               alertbutton:<title>
     ///     quitevent                    alertsnapshot:<name>         activate
-    ///     menuitem:<menu>:<title>
+    ///     menuitem:<menu>:<title>      panelsnapshot:<name>
     ///     notice                       openlink
     ///     newwindow:<path>             inwindow:<n>                 closewindow
     ///
@@ -387,6 +387,20 @@
                     write(cachedImage(of: modal), named: first)
                 } else {
                     log("snapshot failed: \(first ?? "") (no app-modal alert)")
+                }
+            case "panelsnapshot":
+                // A panel of its own that is neither a sheet nor an app-modal alert — the About
+                // panel, after `menuitem:Gitter:About Gitter` (P1 Task 2) — its words read off the
+                // panel, then its own window, nothing else on screen.
+                try? await Task.sleep(for: .milliseconds(300))
+                let panel = NSApp.windows.first {
+                    $0 is NSPanel && $0.isVisible && $0.sheetParent == nil && $0 !== NSApp.modalWindow
+                }
+                if let first, let panel {
+                    logControls(in: panel.contentView, window: "panel \(type(of: panel))")
+                    write(cachedImage(of: panel), named: first)
+                } else {
+                    log("snapshot failed: \(first ?? "") (no panel)")
                 }
             // "Open Repository…" mid-script, e.g. while a push is on the lane. The path is the
             // rest of the step, colons and all. Once this window shows another repository, the

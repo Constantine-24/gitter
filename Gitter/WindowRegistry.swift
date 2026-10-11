@@ -88,6 +88,11 @@ final class WindowRegistry {
     /// What hiding does to a window: AppKit in the app, a recorder in tests.
     @ObservationIgnored let hiddenWindows: HiddenWindowEnvironment
 
+    /// Where every store's backend reports its git calls, and where the stores and the registry
+    /// tell their events: the app's log (`AppLog`, at the composition root), or nowhere (P1 Task 2).
+    @ObservationIgnored let commandLog: any CommandLog
+    @ObservationIgnored let eventLog: EventLog
+
     /// Each window's `WindowCloseProxy`, by window — its delegate holds it weakly (C1). Kept with
     /// the window it was made for, since a window freed can leave its address to the next.
     @ObservationIgnored private var proxies: [ObjectIdentifier: (window: WeakWindow, proxy: WindowCloseProxy)] = [:]
@@ -108,20 +113,30 @@ final class WindowRegistry {
         weak var window: NSWindow?
     }
 
-    init(defaults: UserDefaults, recordsOpenList: Bool, hiddenWindows: HiddenWindowEnvironment = .live) {
+    init(
+        defaults: UserDefaults, recordsOpenList: Bool, hiddenWindows: HiddenWindowEnvironment = .live,
+        commandLog: any CommandLog = NoCommandLog(), eventLog: EventLog = .none
+    ) {
         self.defaults = defaults
         self.recordsOpenList = recordsOpenList
         self.hiddenWindows = hiddenWindows
+        self.commandLog = commandLog
+        self.eventLog = eventLog
     }
 
     // MARK: - Stores
 
-    /// A new store on the registry's defaults, registered last, its opens reported to the list.
-    func makeStore(backend: RepositoryStore.Backend = CLIGitBackend()) -> RepositoryStore {
-        let store = RepositoryStore(backend: backend, defaults: defaults)
+    /// A new store on the registry's defaults, registered last, its opens reported to the list and
+    /// told to the event log. Its backend, unless a test gives one, is git reporting to the
+    /// registry's `commandLog`.
+    func makeStore(backend: RepositoryStore.Backend? = nil) -> RepositoryStore {
+        let store = RepositoryStore(
+            backend: backend ?? CLIGitBackend(commandLog: commandLog), defaults: defaults, eventLog: eventLog)
         store.registry = self
         store.onRootChange = { [weak self, weak store] old, new in
             guard let self, let store else { return }
+            // Every open, a reopen of the same repository too.
+            if let new { store.eventLog.write("open \(new.path)") }
             rootChanged(store, from: old, to: new)
         }
         stores.append(store)
@@ -280,6 +295,7 @@ final class WindowRegistry {
     /// second call does nothing.
     func windowClosed(_ store: RepositoryStore) {
         guard stores.contains(where: { $0 === store }), !store.isClosed else { return }
+        if let root = store.root { store.eventLog.write("close \(root.path)") }
         store.close()
         let key = ObjectIdentifier(store)
         for observer in [closeObservers.removeValue(forKey: key), keyObservers.removeValue(forKey: key)] {
@@ -419,7 +435,10 @@ final class WindowRegistry {
             // (A local change's ending — a failure, a stop, the staged revert — never moves
             // `laneMessagesToRead`, which is all the call-off compares, so it never tells one.)
             store.noteLaneMessagesTold()
+            let eventLog = store.eventLog
             hiddenWindows.alert(text) { [weak self, weak store] choice in
+                let button = choice == .show ? RemoteWording.closedWindowShow : RemoteWording.closedWindowClose
+                eventLog.write("alert \"\(RemoteWording.closedWindowFailedTitle)\": \(text) → \(button)")
                 guard let self, let store, !store.isClosed else { return }
                 switch choice {
                 case .show: self.show(store)

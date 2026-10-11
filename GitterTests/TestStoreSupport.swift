@@ -56,14 +56,15 @@ struct ScratchDefaults {
 
 /// A store for a test: its defaults are a fresh `ScratchDefaults` suite, never `.standard`, and
 /// `cleanup` removes that suite. Every store GitterTests build comes from here, and with it the
-/// git environment of `TestGitEnvironment.isolated` (E2 Task 1).
+/// git environment of `TestGitEnvironment.isolated` (E2 Task 1). `eventLog`: where its banners and
+/// notices are told (P1 Task 2) — nowhere unless a test records them.
 @MainActor
 func makeTestStore(
-    backend: RepositoryStore.Backend = CLIGitBackend()
+    backend: RepositoryStore.Backend = CLIGitBackend(), eventLog: EventLog = .none
 ) -> (RepositoryStore, UserDefaults, cleanup: () -> Void) {
     precondition(TestGitEnvironment.isolated)
     let scratch = ScratchDefaults()
-    let store = RepositoryStore(backend: backend, defaults: scratch.defaults)
+    let store = RepositoryStore(backend: backend, defaults: scratch.defaults, eventLog: eventLog)
     return (store, scratch.defaults, { scratch.remove() })
 }
 
@@ -162,11 +163,13 @@ struct TestRegistry {
     let registry: WindowRegistry
 
     /// `hiddenWindows`: what hiding does to a window — AppKit's own unless a test records it
-    /// (`HiddenWindowRecorder`, E3 Task 5).
-    init(recordsOpenList: Bool = true, hiddenWindows: HiddenWindowEnvironment = .live) {
+    /// (`HiddenWindowRecorder`, E3 Task 5). `eventLog`: where the registry and its stores tell
+    /// their events (P1 Task 2) — nowhere unless a test records them.
+    init(recordsOpenList: Bool = true, hiddenWindows: HiddenWindowEnvironment = .live, eventLog: EventLog = .none) {
         precondition(TestGitEnvironment.isolated)
         registry = WindowRegistry(
-            defaults: scratch.defaults, recordsOpenList: recordsOpenList, hiddenWindows: hiddenWindows)
+            defaults: scratch.defaults, recordsOpenList: recordsOpenList, hiddenWindows: hiddenWindows,
+            eventLog: eventLog)
     }
 
     var defaults: UserDefaults { scratch.defaults }

@@ -19,7 +19,10 @@ final class RepositoryStore {
     private(set) var root: URL?
     private(set) var snapshot: RepoSnapshot?
     private(set) var isLoading = false
-    private(set) var lastError: String?
+    private(set) var lastError: String? {
+        // Every banner, as it is set — ~13 places assign it — told once (P1 Task 2).
+        didSet { tell("banner", lastError, was: oldValue) }
+    }
     private(set) var gitMissing = false
     var selection: Selection = .workingCopy {
         // Whoever writes it — a click, a sidebar row, a fallback, `open()` — the commit set
@@ -143,13 +146,17 @@ final class RepositoryStore {
 
     /// A short, non-error message about something that just succeeded ("Fast-forwarded to
     /// feature."). Unlike `lastError` it is never sticky and clears itself after a few seconds.
-    private(set) var notice: Notice?
+    private(set) var notice: Notice? {
+        didSet { tell("notice", notice?.text, was: oldValue?.text, changed: notice != oldValue) }
+    }
 
     /// A notice that stays until it is dismissed or replaced: one that carries something to act
     /// on, like a pushed branch's pull-request link. Shown under `notice`, and never cleared by
     /// it. Also ends when another repository is opened, and — for one with links — when the
     /// next push or publish starts. See `RepositoryStore+Notices`.
-    private(set) var stickyNotice: Notice?
+    private(set) var stickyNotice: Notice? {
+        didSet { tell("sticky", stickyNotice?.text, was: oldValue?.text, changed: stickyNotice != oldValue) }
+    }
 
     /// The sticky notice of a revert git could not commit (`HistoryOutcome
     /// .unsignedRevertLeftStaged`), while it may still be the one on screen: it says the revert's
@@ -400,21 +407,34 @@ final class RepositoryStore {
     // internal (not private): used by RepositoryStore+Opening.swift's `lastRepositoryToReopen(in:)`
     static let lastRepositoryPathKey = "lastRepositoryPath"
 
+    /// Where this store's banners and notices are told, and — through it — the registry's lines
+    /// about its window (`WindowRegistry`): the app's log (`AppLog.events`), or nowhere (P1 Task 2).
+    let eventLog: EventLog
+
     init(
         backend: Backend = CLIGitBackend(),
         gitPath: String = "/usr/bin/git",
         trasher: any Trasher = FileManagerTrasher(),
-        defaults: UserDefaults
+        defaults: UserDefaults,
+        eventLog: EventLog = .none
     ) {
         self.backend = backend
         self.gitPath = gitPath
         self.trasher = trasher
         self.defaults = defaults
+        self.eventLog = eventLog
         autoFetchScheduler = AutoFetchScheduler.fromEnvironment(defaults: defaults)
         #if DEBUG
             Self.storesBuilt += 1
             debugSerial = Self.storesBuilt
         #endif
+    }
+
+    /// `kind <root>: <text>` to the event log, when `text` is a new value: non-nil, and not what
+    /// was there before (`changed`, for a notice compared whole).
+    private func tell(_ kind: String, _ text: String?, was old: String?, changed: Bool? = nil) {
+        guard let text, changed ?? (text != old) else { return }
+        eventLog.write("\(kind)\(root.map { " \($0.path)" } ?? ""): \(text)")
     }
 
     // MARK: - Opening

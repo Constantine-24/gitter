@@ -16,7 +16,12 @@ enum AppModel {
     /// Neither the test host nor a scripted launch writes the open-repositories list into it
     /// (Ruling 4): the one is not the user's launch, and the other opens scratch fixtures — as
     /// neither adds to Open Recent (B3 Ruling 7).
-    static let windows = WindowRegistry(defaults: UserDefaults.standard, recordsOpenList: recordsOpenList)
+    ///
+    /// Every store's git reports to the app's log, and every window's events are told there
+    /// (`AppLog`, P1 Task 2) — nowhere under the test host, which has no log file.
+    static let windows = WindowRegistry(
+        defaults: UserDefaults.standard, recordsOpenList: recordsOpenList, commandLog: AppLog.commandLog,
+        eventLog: AppLog.events)
 
     private static var recordsOpenList: Bool {
         #if DEBUG
@@ -78,6 +83,13 @@ struct GitterApp: App {
             RepositoryCommands()
             // B3: ⌘F into the sidebar's filter (⇧⌘F is Fetch).
             SidebarFilterCommands()
+            // P1: the version, build and commit (`AboutPanel`), and the diagnostics log's folder.
+            CommandGroup(replacing: .appInfo) {
+                Button("About Gitter") { AboutPanel.show() }
+            }
+            CommandGroup(after: .help) {
+                Button("Show Logs") { AppLog.showLogs() }
+            }
         }
     }
 }
@@ -214,10 +226,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// The net: a quit event still held when the app goes is answered 0 before exit (A2b).
+    /// The log's launch header (P1 Task 2), once: Gitter's version, macOS's and git's, the last
+    /// read off the main actor — so it may follow the first window's first lines. No header under
+    /// the test host, which has no log.
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            guard AppLog.writer != nil else { return }
+            let info = Bundle.main.infoDictionary ?? [:]
+            Task {
+                AppLog.events.write(await AppLog.header(info: info, gitPath: "/usr/bin/git"))
+            }
+        }
+    }
+
+    /// The net: a quit event still held when the app goes is answered 0 before exit (A2b). And
+    /// every line given to the log so far is written before the process ends.
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
             QuitFlow.answerHeldQuitEvents(quitting: true)
+            AppLog.writer?.flush()
         }
     }
 

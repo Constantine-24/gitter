@@ -136,7 +136,14 @@ enum QuitGuard {
         let cancel = alert.addButton(withTitle: RemoteWording.quitCancel)
         cancel.keyEquivalent = "\u{1b}"
 
+        let eventLog = writing.eventLog
         let answer: @MainActor (NSApplication.ModalResponse) -> Void = { response in
+            let button = switch response {
+            case .alertFirstButtonReturn: RemoteWording.quitWait
+            case .alertSecondButtonReturn: RemoteWording.quitStop
+            default: RemoteWording.quitCancel
+            }
+            eventLog.write("quit question: \(button)")
             switch response {
             case .alertFirstButtonReturn:
                 log("quit: Wait")
