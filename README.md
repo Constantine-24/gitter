@@ -674,38 +674,54 @@ stays reachable with no window and tells every window.
 
 **Every open goes to a window.** A repository that a window already shows is brought to the front,
 by whatever spelling of its path; nothing opens twice in open windows, so two open windows never
-share an index. (A window closed while its push or other write is still running keeps that
-repository until the write ends without showing it, and a new window may open it meanwhile; a
-second write there then races the first on the same refs and git fails one of them — see the
-backlog.) Open Repository… (⌘O) uses the front window if it shows nothing and opens a new one
-otherwise; Open Recent and a Finder open each get a new window; a folder that is not (or is no
-longer) a repository makes no window: the front window says "Not a Git repository" in its banner
-and keeps what it shows, and only with no window in front does the open make one to say it in; a
-click on the Dock icon with no window open shows one empty window. Open Worktree switches the
-window it is asked in, unless another window already shows that worktree, which comes to the
-front instead. **Open in New Window**, beside it in a worktree's menu, opens a worktree this
-window does not show (the main one too) in a window of its own.
+share an index. A window closed while it is still working is only hidden (below), so an open of its
+repository brings that same window back rather than making a second one. Open Repository… (⌘O) uses
+the front window if it shows nothing and opens a new one otherwise; Open Recent and a Finder open
+each get a new window; a folder that is not (or is no longer) a repository makes no window: the
+front window says "Not a Git repository" in its banner and keeps what it shows, and only with no
+window in front does the open make one to say it in; a click on the Dock icon with no window open
+shows one empty window. Open Worktree switches the window it is asked in, unless another window
+already shows that worktree, which comes to the front instead. **Open in New Window**, beside it in
+a worktree's menu, opens a worktree this window does not show (the main one too) in a window of its
+own.
 
 **The reopen list.** Gitter keeps its own list of the repositories that have a window
 (`openRepositoryPaths`) and reopens each in its own window at the next launch, in order — macOS
 window restoration is off, so no killed launch can leave saved state that restores no window. A
 Finder open at launch comes first, then the list. Closing a window takes its repository off the
-list, except while the app is quitting, so the list survives a quit. A path that no longer opens
-is dropped. Window frames and sidebar state are not kept across launches. Closing a window
-stops its automatic fetch and file watcher and cancels its reads; a **write** that is running
-finishes first, git is never killed mid-write, and the window's store stays in sight of the quit
-check until it is done. If that write fails with nobody looking, a held quit is called off and an
-alert says why.
+list, except while the app is quitting, so the list survives a quit. A path that no longer opens is
+dropped. Window frames and sidebar state are not kept across launches. Closing a window that is not
+working stops its automatic fetch and file watcher and cancels its reads.
+
+**Closing a window that is still working hides it.** If a push or another write (publish, force
+push, a tag pushed, a delete on a remote) is running in the window, or anything else that holds its
+change slot (a commit, a merge, a rebase, a prune, a remote's rename), closing it — the close
+button, ⌘W or File › Close — hides it instead: it leaves the screen and the Window menu, its
+repository leaves the reopen list, and the work goes on; git is never killed mid-write. A fetch
+does not keep a window: it is stopped, as before. Opening that repository again by any route (Open
+Recent, a Finder open, Open Repository…, Open in New Window) brings the same window back with the
+work still running there, and puts the repository back at its old place in the list; nothing runs
+twice. When the work ends with the window still hidden, the window closes for real — unless it
+ended with something to read (a failure, a question, a notice that must be read), when an alert
+comes first: "A closed window's change didn't finish", then `<folder>: <what it says>`, with
+**Show** (the window comes back with its banner) and **Close**. The alert does not bring Gitter
+forward when it is in the background. A click on the Dock icon with only hidden windows opens one
+empty window, since to you the hidden one is closed.
 
 **Quit with a sheet up.** ⌘Q, the Dock's Quit and a logout's quit all go through one path: every
 window's sheet is closed (what was typed in it is lost), Gitter waits until AppKit shows none —
 AppKit refuses to quit while a sheet is attached — and then quits through the same question as
 before. If a push or another write (publish, force push, a tag pushed, a delete on a remote) is
-running in **any** window, the alert asks whether to Wait, Stop and Quit or not quit; a fetch or
-pull is stopped and waited for without asking. If a sheet has not closed after 2 seconds the
-quit is dropped with a beep (`quit: a sheet did not close`), and a second ⌘Q during a quit is
-ignored. The quit Apple Event is answered at once, so a logout does not learn
-that a quit was called off.
+running in **any** window, the alert asks whether to Wait, Stop and Quit or not quit — on that
+window, brought back to the front first if it was hidden (on its own, app-modal, if the window is
+minimized); a fetch or pull is stopped and waited for without asking. Under Wait, a write that
+fails or has something to say calls the quit off and Gitter stays open to show it (a hidden
+window's alert says it, once). If a sheet has not closed after 2 seconds the quit is dropped with a
+beep (`quit: a sheet did not close`), and a second ⌘Q during a quit is ignored. **The quit Apple
+Event** (the Dock's Quit, a logout, a shutdown) is answered only once Gitter has decided: a quit
+called off — Don't Quit, a Wait that ends in a call-off, a sheet that would not close — answers it
+cancelled (`userCanceledErr`, −128), so a logout learns that Gitter stopped it, and a quit that
+goes ahead answers 0 before Gitter exits.
 
 ## Design decisions
 
@@ -724,8 +740,8 @@ that a quit was called off.
 | Remotes housekeeping | A dry-run listing on the lane, then a per-ref compare-and-delete on the ids the sheet showed; stranded commits counted once as a union and kept as branches before anything is deleted; URLs read as configured; a failed `remote rename` / `remove` read back, never assumed a no-op | `fetch --prune` deletes whatever the server lacks at that moment; remote-tracking refs have no reflog; `remote -v` shows the rewritten URL; git leaves half-done state under a held lock |
 | History actions | A plan read first (order, left out, may be skipped, replayed, already pushed), shown on a sheet, made again by the run and refused on any difference; full commit ids and `refs/…` names in every vector; tags deleted by compare-and-delete with the receipt kept in the app | A sheet is a promise only if the run checks it; a short name can mean a tag; tags have no reflog |
 | Navigation | Compare reads both tips to ids once and every count, list and diff from those ids (`log --left-only` / `--right-only` over the symmetric range, the changes by `diff-tree` from the merge base); worktree removal behind Gitter's own check, made again in full before git runs, with git's settings forced; worktrees added only on a branch named in full and read back | A branch can move mid-read; a two-dot `log` disagrees with the count under clock skew; `worktree remove` deletes ignored files, hidden edits and nested repositories without asking, and `worktree add` creates or detaches what it guesses |
-| Windows | `WindowGroup(for: RepositoryWindow.self)`, one `RepositoryStore` per window made by `@State private var store = AppModel.windows.makeStore()`; a `WindowRegistry` routes every open; Gitter's own reopen list, restoration off | A store per window keeps sheets, lanes and fetch schedules apart; routing keeps one index to one store; restoration cannot be told what Gitter's list knows, and a killed launch could leave state that restores no window |
-| Quit | One `QuitFlow` (menu, quit Apple Event, harness), which closes every sheet and waits for AppKit to show none before terminating through `QuitGuard`, which checks every window | AppKit does not ask the app whether it may quit while a window has a sheet attached |
+| Windows | `WindowGroup(for: RepositoryWindow.self)`, one `RepositoryStore` per window made by `@State private var store = AppModel.windows.makeStore()`; a `WindowRegistry` routes every open; Gitter's own reopen list, restoration off; a window still writing or mid-change hides instead of closing (`WindowCloseProxy` as its delegate) and comes back on the next open of its repository | A store per window keeps sheets, lanes and fetch schedules apart; routing keeps one index to one store; restoration cannot be told what Gitter's list knows, and a killed launch could leave state that restores no window; a hidden window's live store is the one an open finds, so its work is never run twice nor its ending lost |
+| Quit | One `QuitFlow` (menu, quit Apple Event, harness), which closes every sheet and waits for AppKit to show none before terminating through `QuitGuard`, which checks every window; the quit Apple Event's reply held until the outcome; its alerts raised from a run-loop timer (`ModalAlert`) | AppKit does not ask the app whether it may quit while a window has a sheet attached; a logout learns only from the reply that the user said Don't Quit; an alert run from a main-queue block would hold up every other window's work |
 | Scope | Browsing, diffs, staging, commit, branch and remote operations, stash and discard, conflict resolution and continuing an operation, cherry-pick, revert, rebase onto a commit, tags, remotes housekeeping, the sidebar filter, comparing branches and worktrees are done | Each milestone keeps the promise before it adds the next way to lose work |
 
 ## Build & run
@@ -767,7 +783,7 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (698 tests in 56 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (773 tests in 63 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -788,26 +804,45 @@ defaults, and leaves nothing in `~/Library/Preferences`; `DefaultsIsolationTests
 domain before and after each of its tests, never writing it, and tests the reopen and Open
 Recent decisions.
 
+**One support library for both test targets.** `GitCoreTestSupport`, a library in GitCore's
+package with no dependency on GitCore itself (one that had it would link a second, static copy of
+GitCore into the app's test bundle), holds what both test targets need: `CallUnderTest`, the wait
+every guarded call goes through, and `StuckCall`; `neverCameBack` and `Issue.isNeverCameBack`;
+`TestGitEnvironment.isolated`; and `waitForExit`, which waits for a process's exit on kqueue's
+`NOTE_EXIT` instead of polling. `GitCoreTests` and `GitterTests` (through `project.yml`) import it,
+and the app never links it — the Release build has no trace of it.
+
 **GitterTests runs on isolated real git.** Every git a GitterTest causes runs under
-`GitterTestEnvironment.isolated`, a word-for-word copy of GitCore's `TestGitEnvironment.isolated`
-(your git configuration and system configuration are not read, no ssh agent or askpass, only the
-`file` transport): `makeTestStore`, `ScratchRepo` and the scratch registries refuse to run without
-it, and a control reads `git config --show-origin --list` through a store's own backend and
-asserts that nothing comes from outside the repository. `ScratchRepo` makes a temporary
-repository (with an optional local bare remote) and removes only its own directory.
-`waitUntilIdle` waits for a store's lane, mutation, worktree read and scheduled refresh to settle,
-bounded by a ten-minute `.timeLimit` through a `CallUnderTest` (a copy of GitCore's, kept
-identical to its source by a test that reads both files). Store-level flows run on that real git:
+`TestGitEnvironment.isolated`, from that library (your git configuration and system configuration
+are not read, no ssh agent or askpass, only the `file` transport): `makeTestStore`, `ScratchRepo`,
+`TestBackend` and the scratch registries refuse to run without it, and a control reads `git config
+--show-origin --list` through a store's own backend and asserts that nothing comes from outside the
+repository. `ScratchRepo` makes a temporary repository (with an optional local bare remote) and
+removes only its own directory. `waitUntilIdle` waits for a store's lane, mutation, worktree read
+and scheduled refresh to settle, bounded by a ten-minute `.timeLimit` through `CallUnderTest`.
+Store-level flows run on that real git:
 a stash pop that conflicts, applies partly or is kept after a failed drop, Stash and Continue after
 a refused `track`, `detach` and create-and-switch, and a Continue refusal, its sheet and the retry
 (including the index changing between the sheet and Continue, and everything unstaged). Two
 windows' stores, `WindowRegistry` routing and the reopen list, `QuitFlow` and `QuitGuard` over
-several stores, and a closed window's store whose write is still running (a push held by a
-`receivepack` script until the test lets it go) are tested the same way. The cases that need git
-to change state between one backend call's internal steps wait for a fake backend (the backlog's
-E3 items).
+several stores, the quit Apple Event's replies (over a recording fake of the reply seam) and a
+window closed while its push is still running (a push held by a `receivepack` script until the
+test lets it go) are tested the same way.
 
-`GitCoreTests` has 1 664 tests in 142 suites. Most of them run real `git` against a temporary
+**A test backend over real git.** `TestBackend` (GitterTests) forwards every one of the twelve
+backend protocols' 102 calls to a real `CLIGitBackend` on the test's scratch repository, and lets a
+test act at any one call: run code before or after it (`hook`), make the next one throw without
+running git (`fail`), park the next one until the test lets it go (`hold`, on a `StuckCall`),
+replace the stash pop with one that changes the repository between its apply and its drop
+(`replacePop`), and read the calls in order (`calls`); `releaseAll()` ends every hold at teardown.
+A call is named by a typed `TestBackend.Call` whose raw value is the method's own `#function`
+spelling, so a misspelt name does not compile; the forwarder hands in its own key, which is checked
+at run time and, for every forwarder, by a test that reads the source. On it run the stash list
+moved before a pop's drop (`StashDropRaceTests`), a reload that fails after a commit
+(`InjectedFailureTests`), a window closed during a held commit or push (`HiddenWindowTests`) and
+every request made while a change is held (`RequestsDuringChangeTests`).
+
+`GitCoreTests` has 1 675 tests in 144 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
 for a server, with a second clone as "the colleague" who pushes in between — including one
 that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
@@ -815,7 +850,7 @@ your git configuration (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`) 
 touches the network: the transports other than `file` (and a fake ssh one test needs) are refused,
 and an inherited `GIT_SSH_COMMAND` or `GIT_CONFIG_*` is cleared first.
 
-The run also reports **83 known issues, and they are meant to be there** — please do not
+The run also reports **95 known issues, and they are meant to be there** — please do not
 "fix" them. They are deliberate negative controls: tests that make an assertion helper fail
 on purpose, inside `withKnownIssue`, to prove it *can* fail.
 
@@ -898,10 +933,18 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   after the call came back leaves a helper that ignores SIGTERM running (the residual the
   backlog's "Own the reap" item names), and an escalation one grace early and one past the
   margin each fail the latency check, which is taken on the runner's own clock.
-- Three come from the scoped process checks (`OwnProcessTests`, `StreamingRunnerTests`): a leak
+- Four come from the scoped process checks (`OwnProcessTests`, `StreamingRunnerTests`): a leak
   check fails on a process of the test's still running, a cleanup whose query fails is
   recorded rather than swallowed, and the stress marker that outlives its SIGTERM is killed by
-  its group.
+  its group — two of them, since milestone E3: the wait for its reap, now on `NOTE_EXIT`, is
+  reported as never having come back when the test is cancelled, and the marker is named as having
+  outlived its SIGTERM.
+- One comes from `ProcessExitTests`: `waitForExit`, the shared wait on kqueue's `NOTE_EXIT`, on a
+  process that never exits is reported as never having come back once the test is cancelled.
+- Ten come from `ConfigCountTests`: the cross-check every row of `GIT_CONFIG_COUNT`'s table goes
+  through, which asks the real git how it reads the value, catches a parse that is not git's —
+  Swift's `Int(_:)`, the parse before E3, disagrees with git on ten rows (a leading space, a count
+  over `INT_MAX`, a negative that wraps).
 - Two come from `UpstreamStateTests`: `TestRepo.upstream(of:)` treats a branch that does not
   exist, and one whose name is only a prefix of another's, as a failure rather than "no
   upstream".
@@ -909,20 +952,18 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   submodule really loses the work inside it — the hazard the unstage's
   `--no-recurse-submodules` keeps away, so the fixture can show it.
 
-`GitterTests` reports **eighteen known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
+`GitterTests` reports **thirty-one known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
 shows that the operation gate alone lets a branch another worktree holds through, which is why
 the switch asks about the hold first. Three come from `DefaultsIsolationTests`: the check that
 the real defaults are unchanged fails when a store writes the domain it watches (a scratch
 suite standing in for the real one), directly, inside a test's scope, and in a test that writes
-and then throws. The other fourteen are the controls of the helpers added in milestone E2:
+and then throws. Twelve are the controls of the helpers added in milestone E2:
 - Nine come from `ScratchGitTests`: a config include from outside the repository is caught by the
   isolation check; `waitUntilIdle` on a store held busy and on a stuck refresh is reported as
-  "never came back" instead of freezing; a failed open is recorded instead of hanging; the copied
+  "never came back" instead of freezing; a failed open is recorded instead of hanging; the shared
   hang guard reports a stuck call; a transport that never starts, a condition that never holds, a
   lane that never frees and a store that never leaves the registry are each caught by the waits
   built on `waitUntil`.
-- Two come from `CopiedSupportGuardTests`: a one-character drift in either copied GitCore helper
-  is caught by the comparison.
 - One comes from `HarnessControlsTests`: the control modifier applied outside the control's
   `.disabled` reads the control as enabled.
 - One comes from `DebugLaunchGuardTests`: a `linkedRepo` that is a plain directory and not a link
@@ -930,14 +971,33 @@ and then throws. The other fourteen are the controls of the helpers added in mil
 - One comes from `OpenRoutingTests`: before the launch has taken it, an open is held, not handed to
   the window opener.
 
+Fifteen come from milestone E3:
+- Four come from `ModalAlertTests`: a test expecting the alert to have run by the time `raise`
+  returns fails, since it is raised from a timer; the
+  modal-panel spin the tests use cannot run a main-queue block, nor fire a timer added in `.default`
+  alone (why the alert's timer is in both modes); and under an alert run from a main-queue block,
+  `QuitGuard`'s old form, no other main-actor job runs.
+- One comes from `QuitEventReplyTests`: a called-off quit answers −128, so a test expecting 0 fails
+  against the recording fake.
+- Five come from `TestBackendTests`: a call keyed by another method's name is recorded; the call log
+  holds no call the store never made, and not in the reverse order (two); the hooks run before, then
+  after, whatever order they were added in; and a hold nobody releases is caught by the hang guard.
+- Four come from `HiddenWindowTests`: the recorder of a hidden window's AppKit calls records nothing it
+  was not asked (two); a hidden store whose alert closed it, judged by its window alone, would be told
+  twice under a held quit; and one is a known defect, not a control — a store closed through E2's
+  path in the middle of a commit stays mutating (B3.1, in the backlog), now reachable only when a
+  window was never attached.
+- One comes from `StagedSideTests`: setting the side and then the path, the old two steps, loads the
+  same diff twice.
+
 Deleting any of them would take the proof away and the suite would go on looking green.
 
 ## Project layout
 
-Every `.swift` file in the two product targets — 196 of them, which is what `find
-GitCore/Sources Gitter -name '*.swift' | wc -l` prints — with the ones inside `Models/`,
-`Parsers/` and `Views/` named in prose rather than one per line. The 184 test files (131 in
-`GitCore/Tests`, 53 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
+Every `.swift` file in the two product targets and the test-support library beside GitCore — 204
+of them, which is what `find GitCore/Sources Gitter -name '*.swift' | wc -l` prints — with the ones
+inside `Models/`, `Parsers/` and `Views/` named in prose rather than one per line. The 196 test files
+(136 in `GitCore/Tests`, 60 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
 listed, which is also why the check is that command and not a bare `find . -name '*.swift'`:
 that one reaches them too, and the generated sources under `.build` as well.
 
@@ -980,6 +1040,8 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
       +ConflictWrite.swift        resolve, take, delete, keep, Mark Resolved, Reopen
       +Continue.swift             progress, the message, operationPaths, Continue, Skip,
                                   halted and stale ranges
+      +ContinueMessage.swift      the pure message helpers: the merged name, the message file,
+                                  comments and their character, scissors, empty after cleanup
       +Branches.swift             create, switch, detach, track, rename
       +BranchDelete.swift         `branch -d`, and `-D` only against an expected tip
       +Merge.swift                the three merge modes and the name/tag comparison
@@ -1015,7 +1077,11 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
                                 PushPorcelain, RemoteFailure, StashList, StashFailure,
                                 Conflict and WorktreeList parsers, and GitLines (git's output
                                 split at the newline byte)
-  Tests/GitCoreTests/           142 suites; ForceFlagScanner(+Lexing) is the force-flag grep
+  Sources/GitCoreTestSupport/   The test-support library both test targets import, never the
+                                app, with no GitCore dependency: CallUnderTest, StuckCall and
+                                neverCameBack (TimeLimitSupport), TestGitEnvironment.isolated,
+                                waitForExit (ProcessExit, kqueue's NOTE_EXIT)
+  Tests/GitCoreTests/           144 suites; ForceFlagScanner(+Lexing) is the force-flag grep
 
 Gitter/                   macOS app (SwiftUI)
   GitterApp.swift            App entry point, `AppModel` (the window registry), the menus
@@ -1024,7 +1090,10 @@ Gitter/                   macOS app (SwiftUI)
   RepositoryWindow.swift     What a window shows (`RepositoryWindow`) and the window's view,
                               which owns its store and takes the launch
   WindowRegistry.swift       Every window's store: open routing, the reopen list, closing a
-                              window, the launch plan
+                              window, hiding one still working and its ending (HiddenEnding),
+                              the launch plan
+  WindowCloseProxy.swift     The window delegate that answers a close: hide a busy window,
+                              forward everything else to SwiftUI's own delegate
   RepositoryStore.swift      @Observable @MainActor store: snapshot + selection state
   RepositoryStore+Opening.swift   Opening a repository, checking git is there
   RepositoryStore+Refresh.swift   Debounced, coalesced snapshot reloading
@@ -1060,6 +1129,9 @@ Gitter/                   macOS app (SwiftUI)
   QuitGuard.swift            Quitting while a lane is busy, in any window: stop, or ask first
   QuitFlow.swift             The one way to quit: close every sheet, wait for AppKit to show
                               none, then terminate
+  QuitEventReplies.swift     The quit Apple Event's held replies and the seam that answers them
+  ModalAlert.swift           An app-modal alert raised from a run-loop timer, so other work goes
+                              on under it
   RemoteActivity.swift       What the lane is running, a refused push, the progress relay
   RemoteWording.swift        Every sentence about the network, and making server text plain
   StashWording.swift         Every sentence about a stash and Stash and Continue
@@ -1086,6 +1158,7 @@ Gitter/                   macOS app (SwiftUI)
   DebugLaunchHooks.swift     Debug-only launch hooks for screenshot verification (see below),
     +Events.swift              posted clicks, keys and the responder dump
     +Branches.swift            the `GITTER_DEBUG_BRANCH_ACTION` step list
+    +Quit.swift                its `quitevent` step
     +Stash.swift               its stash steps
     +Discard.swift             its discard steps
     +Conflicts.swift           its resolver steps
@@ -1126,16 +1199,19 @@ GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app):
                           and fingerprint, the worktree read's schedule, a held branch's
                           switch, the test-host check, and the scratch defaults every test
                           store is built on (`TestStoreSupport`, `DefaultsIsolationTests`);
-                          and on isolated real git (`GitterTestEnvironment`, `ScratchRepo`,
-                          `StoreIdle`, `HeldTransport`): the stash and continue flows, the
-                          window registry, open routing and the reopen list, closing a window,
-                          `QuitFlow` and `QuitGuard`, and the harness's control registry
+                          and on isolated real git (`TestGitEnvironment` from the support
+                          library, `ScratchRepo`, `StoreIdle`, `HeldTransport`, `TestBackend`):
+                          the stash and continue flows, the stash drop race and an injected
+                          failure, the window registry, open routing and the reopen list,
+                          closing and hiding a window, requests during a change, `QuitFlow`,
+                          `QuitGuard` and the quit event's replies, `ModalAlert`, and the
+                          harness's control registry
 ```
 
 ## Debug launch hooks
 
 `Gitter/DebugLaunchHooks.swift`, `DebugLaunchHooks+Events.swift`,
-`DebugLaunchHooks+Branches.swift`, `DebugLaunchHooks+Stash.swift`,
+`DebugLaunchHooks+Branches.swift`, `DebugLaunchHooks+Quit.swift`, `DebugLaunchHooks+Stash.swift`,
 `DebugLaunchHooks+Discard.swift`, `DebugLaunchHooks+Conflicts.swift`,
 `DebugLaunchHooks+Continue.swift`, `DebugLaunchHooks+History.swift`,
 `DebugLaunchHooks+RemoteAdmin.swift`, `DebugLaunchHooks+Navigation.swift`,
@@ -1215,7 +1291,8 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `stageall` / `commit:<subject>` | stage everything — during an operation, when files outside it would be added, it opens Stage All's question instead (`confirmstageall`) — and commit through the composer's own path |
 | `snapshot:<name>` | draw the window into `GITTER_DEBUG_SNAPSHOT_DIR/<name>.png` |
 | `open:<path>` | open that repository in this window as "Open Repository…" does — mid-script, e.g. while a push is running. The launch guard refuses every step after it unless the path is one `GITTER_DEBUG_ALSO_OPEN` names |
-| `newwindow:<path>` / `inwindow:<n>` | open `<path>` in a window of its own, as Open Recent or a Finder open does (or bring the window already showing it to the front), wait for its first snapshot and list every registered store with `[target]` and `[key]` marks; refused, and the app quits, unless `<path>` is one of `GITTER_DEBUG_ALSO_OPEN`'s. `inwindow:` makes the n-th store (1-based, in the order made) the **target**. Every step acts on the target — the first window's store until `inwindow:` — and its guard, wait and result line are the target's; so are `snapshot:`, `views` and the title lines, which draw and read the target's window. The menus act on the **front** window, and `menu:` says which |
+| `newwindow:<path>` / `inwindow:<n>` | open `<path>` in a window of its own, as Open Recent or a Finder open does (or bring the window already showing it to the front), wait for its first snapshot and list every registered store with `[target]` and `[key]` marks (and `(hidden)` or `(closed)`), then `NSApp.windows: <n>, on screen: <m>` — a window closed for real leaves that count; refused, and the app quits, unless `<path>` is one of `GITTER_DEBUG_ALSO_OPEN`'s. `inwindow:` makes the n-th store (1-based, in the order made) the **target**. Every step acts on the target — the first window's store until `inwindow:` — and its guard, wait and result line are the target's; so are `snapshot:`, `views` and the title lines, which draw and read the target's window. The menus act on the **front** window, and `menu:` says which |
+| `closewindow` | close the target's window as a user does (`performClose`, what the close button, ⌘W and File › Close send) and log `closewindow: hidden \| closed \| <store> \| windows on screen: <n> of <m>`: `hidden` when its work keeps it (a write on its lane, a change running), `closed` otherwise. A hidden window's store is still the target, so `inwindow:`, `newwindow:` and the alert steps go on; after a real close the launch guard refuses the next step (`the window is closed`) and the app quits |
 | `controls` / `press:<label>` / `tick:<label>[=on\|off]` / `fill:<label>=<text>` / `choose:<label>=<option>` | drive the target's sheet through its own controls: each sheet registers its buttons, toggles, fields and pickers by the label on screen (a field's or picker's without its colon) in a Debug-only registry, so a step runs exactly what the control does. `controls` logs `control: <kind> "<label>" = "<state>" [enabled\|disabled]` for each (a picker's with `[options: a\|b]`) in the order their views registered, `control: none (store N)` when there are none; the others split the label from the value at the first `=` (a `fill:` text may hold `=` and `:`, never `;`; a bare `tick:` is on). Each sleeps 300 ms (the time a sheet takes to re-register), then waits up to 5 seconds for exactly one enabled control of that kind and label — a sheet still appearing, a name still being checked — and logs `control: pressed "…"`, `ticked "…" on`, `filled "…" = "…"` or `chose "…" = "…"`, or `control refused: <kind> <why>` (not on screen, more than one, disabled, or a value it does not take; an option label two options share is ambiguous) and runs nothing. A control is the sheet's it was drawn in, so one still being dismissed cannot be pressed. Every sheet registers Cancel and its default or destructive button; Keep All, Keep None and each keep box and name (Prune, Remove Remote, Remove Worktree), Add Worktree's kind, branch, name and folder, Compare's branch lists, Stash's options, Clean Up Gone Branches' rows, and Add Remote, Edit URL and Rename Remote's fields are fully covered. A Choose… folder panel stays the panel's: fill the folder field instead. The `confirm…` steps and `prefill:` stay |
 | `menu:<title>` | log every item of that main-menu menu — title, shortcut, enabled — as it would be when opened, then `front window: store N <repo>[, sheet up]` (the window the menus act on); a script cannot open a menu. The menus follow the front window, so when no Gitter window is key the step first brings the app to the front, as the click hooks do — a scripted launch with `menu:` or `menuitem:` comes to the front on your screen. As the **very first** step it can read stale state (seen: every item `enabled=false` before the first snapshot had loaded), so put `wait:1` before it |
 | `views[:<class>]` | log the window's view tree with frames in click coordinates; a toolbar item is a `ToolbarItemHostingView`, above the content area (negative y) — the centre of its frame is where `GITTER_DEBUG_CLICK` aims |
@@ -1224,6 +1301,7 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `autofetchfailed:<reason>` | set the failure the Fetch item's quiet mark stands for, without waiting for a real automatic fetch to fail |
 | `menuitem:<menu>:<title>` | choose that main-menu item (`NSMenu.performActionForItem`) — how "Fetch Automatically" is toggled; `menu:<title>` a second later shows its tick as `state=on`. Like `menu:` it brings the app to the front first, and the item acts on the **front** window's store, while the step's wait and result line describe the target |
 | `quit` | quit as ⌘Q does (`QuitFlow`, so with a sheet up the sheets are closed first and the quit then goes ahead), from the run loop, so the steps after it run while the quit is held: `start:push;wait:1;quit;wait:1;start:snapshot:alert;alert;alertbutton:Wait`. `QUIT …` lines say what was decided and when |
+| `quitevent` | quit as the Dock, a logout or a shutdown does: send the quit Apple Event (`kCoreEventClass`/`kAEQuitApplication`) from a background thread, wait up to 30 s for the reply and log `quit event reply: <keyErrorNumber>` — −128 once the quit is called off, 0 when it goes ahead — or `quit event send failed: <error>`. The next step does not wait for the reply: `start:push;wait:1;quitevent;wait:1;alert;alertbutton:Don't Quit`. The event goes to the app's **own Apple Event Mach port** (`AEGetRegisteredMachPort()`), never to its pid or `kCurrentProcess`: sent that way it is handled on the sending thread, where AppKit answers −128 without asking anyone and Gitter's handler traps on `MainActor.assumeIsolated`; to the Mach port it arrives through the main run loop as the Dock's does (measured in a probe app) |
 | `notice` | log both notice slots, the transient one and the sticky one: each one's text, links and button titles |
 | `openlink` | press the sticky notice's **Open** through the store's own call, with an opener that only logs `openlink: <url>` — the harness never starts a browser |
 | `stash:<msg>[:u]` / `stashpaths:<p,p>:<msg>` | **acts**: Stash Changes… with every change (`:u` ticks "Include untracked files"), or as if those files were selected with "Selected files" — the sheet, then its Stash. An empty `<msg>` is git's default (all changes) or the files' names (selected) |
@@ -1238,7 +1316,7 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `discardstale` | log whether the discard sheet on screen is out of date now — every read again, which its orange line runs when an `lstat` fingerprint of the files, the index and HEAD has moved |
 | `undodiscard` | **acts**: the sticky notice's **Undo Discard**; logs each receipt (kind, paths, record, Trash URLs) |
 | `stashcontinue[:merge\|:rebase]` | **acts**: the error banner's **Stash and Continue**, waiting for the stash and the retry; with a mode, then answers the pull sheet if the retry opened one. Logs `stashcontinue: not offered` when the banner offers nothing |
-| `alert` / `alertbutton:<title>` | log every text and button (with its key equivalent) of the alert on screen — the snapshot draws an alert's buttons but not its text — and click one of its buttons |
+| `alert` / `alertbutton:<title>` / `alertsnapshot:<name>` | log every text and button (with its key equivalent) of each alert sheet on screen and of the app-modal alert if one is up (`app-modal …`: the quit question with no window to ask on, a hidden window's ending) — the snapshot draws an alert's buttons but not its text — and click one of its buttons, the app-modal alert's first; `alertsnapshot:` draws the app-modal alert's own window, text included, into `GITTER_DEBUG_SNAPSHOT_DIR/<name>.png` |
 | `select:<path>` / `resolver` | select a working-copy file (a conflicted file's unstaged row, a resolved one's staged row) and wait for the resolver's read; `resolver` logs its state: kind, blocks or the whole-file reason, whether the file is what git wrote, the hash, the side names, the actions offered |
 | `blocks:<path>:<O\|T\|B\|b\|.…>` | choose each block in turn — Ours, Theirs, Both (ours first), Both (theirs first), `.` none — and log the composed file and its SHA-256; writes nothing |
 | `resolve` / `take:ours\|theirs:<path>` / `keep:<path>` / `deletefile:<path>` / `markresolved:<path>` | **act**: Resolve File, Take Ours / Theirs, Keep … Version, Delete the File (`delete:` is the branch step), Mark Resolved — each through the resolver's own entry point, which logs the offer first, so a refused one shows |
@@ -1373,6 +1451,16 @@ every open is routed to a window and a repository is never open twice; the open 
 back at the next launch; and ⌘Q, the Dock's Quit and a logout close every sheet and quit, asking
 first when a write is running in any window. The debug harness drives the controls inside
 sheets and a second window, and the app's own tests run its store flows on isolated real git.
+
+Answers a logout honestly and keeps a closed window's work (milestone E3): the quit Apple Event's
+reply waits for Gitter's decision, so a logout learns that Don't Quit called it off; a window
+closed while it is still writing or changing hides until its work ends, comes back when its
+repository is opened again, and says with an alert if the work ended with something to read. The
+app's tests gained a test backend over real git that can hold, fail or replace any one call, and
+both test targets share one support library; requests that would start a change are refused while
+one runs, A2's largest files are split, and GitCore reads a spaced `GIT_CONFIG_COUNT` as git
+does, sees an operation in a worktree whose main checkout's path holds a newline, and no longer
+lets a symbolic ref hide the commits a delete would strand.
 
 Everything wanted and deliberately deferred is kept in [`docs/BACKLOG.md`](docs/BACKLOG.md), with
 what is already known about each item — including what only a person at the keyboard can still
