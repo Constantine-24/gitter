@@ -5,10 +5,15 @@ import Foundation
 public struct CLIGitBackend: GitBackend {
     private let gitPath: String
     private let runner: ProcessRunner
+    private let commandLog: any CommandLog
 
-    public init(gitPath: String = "/usr/bin/git", runner: ProcessRunner = ProcessRunner()) {
+    /// `commandLog` hears of every git call this backend starts, once each, from `run`,
+    /// `runStreaming` and `runWithEnvironment`; the default hears nothing.
+    public init(gitPath: String = "/usr/bin/git", runner: ProcessRunner = ProcessRunner(),
+                commandLog: any CommandLog = NoCommandLog()) {
         self.gitPath = gitPath
         self.runner = runner
+        self.commandLog = commandLog
     }
 
     /// Runs `git --version` at `path` and reports whether it succeeded.
@@ -170,8 +175,50 @@ public struct CLIGitBackend: GitBackend {
 
     // Internal (not private) so CLIGitBackend+WorkingCopy.swift can share this helper.
     func run(_ arguments: [String], cwd: URL, allowedExitCodes: Set<Int32> = []) async throws -> Data {
-        try Self.checkArgumentCount(arguments)
-        return try await runner.run(gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes)
+        try await logged(arguments, cwd: cwd, outcome: { _ in .succeeded }, stderr: { _ in "" }) {
+            try Self.checkArgumentCount(arguments)
+            return try await runner.run(gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes)
+        }
+    }
+
+    /// Runs `body`, one of the three seams, and reports it to `commandLog` once, whichever way it
+    /// ends. `checkArgumentCount` is inside `body`, so a refusal before launch is reported too.
+    private func logged<T>(_ arguments: [String], cwd: URL,
+                           outcome: (T) -> CommandLogEntry.Outcome,
+                           stderr: (T) -> String,
+                           _ body: () async throws -> T) async throws -> T {
+        let started = Date()
+        let clock = ContinuousClock()
+        let start = clock.now
+        do {
+            let value = try await body()
+            commandLog.record(.init(started: started, duration: clock.now - start, directory: cwd,
+                                    rawArguments: arguments, outcome: outcome(value), rawStderr: stderr(value)))
+            return value
+        } catch {
+            commandLog.record(.init(started: started, duration: clock.now - start, directory: cwd,
+                                    rawArguments: arguments, outcome: Self.outcome(of: error),
+                                    rawStderr: Self.stderr(of: error)))
+            throw error
+        }
+    }
+
+    /// How a thrown error is told to the log. A killed git is checked before the generic
+    /// `commandFailed`, which it is a case of.
+    private static func outcome(of error: Error) -> CommandLogEntry.Outcome {
+        if error is CancellationError { return .cancelled }
+        if wasKilledBySignal(error) { return .killed }
+        switch error as? GitError {
+        case .commandFailed(let code, _)?: return .exitCode(code)
+        case .launchFailed(let message)?: return .launchFailed(message)
+        case .tooManyArguments?: return .refusedBeforeLaunch(String(describing: error))
+        default: return .refusedBeforeLaunch(String(describing: error))
+        }
+    }
+
+    private static func stderr(of error: Error) -> String {
+        guard case GitError.commandFailed(_, let stderr)? = error as? GitError else { return "" }
+        return stderr
     }
 
     /// `run`'s cancellable, streaming twin, for the network operations: the same git and the
@@ -204,15 +251,17 @@ public struct CLIGitBackend: GitBackend {
         _ arguments: [String], cwd: URL, allowedExitCodes: Set<Int32> = [],
         progress: @escaping @Sendable (String) -> Void
     ) async throws -> ProcessRunner.StreamedResult {
-        try Self.checkArgumentCount(arguments)
-        let result = try await runner.runStreaming(
-            gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes,
-            onStderr: { segment in
-                let trimmed = segment.trimmingCharacters(in: .whitespaces)
-                if !trimmed.isEmpty { progress(trimmed) }
-            })
-        try Self.refusingAKilledGit(result)
-        return result
+        try await logged(arguments, cwd: cwd, outcome: { .exitCode($0.exitCode) }, stderr: { $0.stderr }) {
+            try Self.checkArgumentCount(arguments)
+            let result = try await runner.runStreaming(
+                gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes,
+                onStderr: { segment in
+                    let trimmed = segment.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty { progress(trimmed) }
+                })
+            try Self.refusingAKilledGit(result)
+            return result
+        }
     }
 
     /// `run` with variables of the caller's own added to the child's environment, for the
@@ -242,13 +291,15 @@ public struct CLIGitBackend: GitBackend {
         _ arguments: [String], cwd: URL, extra: [String: String],
         allowedExitCodes: Set<Int32> = []
     ) async throws -> ProcessRunner.StreamedResult {
-        try Self.checkArgumentCount(arguments)
-        let environment = ProcessInfo.processInfo.environment.merging(extra) { _, added in added }
-        let result = try await runner.runStreaming(
-            gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes, onLaunch: nil,
-            inheritedEnvironment: environment, onStderr: { _ in })
-        try Self.refusingAKilledGit(result)
-        return result
+        try await logged(arguments, cwd: cwd, outcome: { .exitCode($0.exitCode) }, stderr: { $0.stderr }) {
+            try Self.checkArgumentCount(arguments)
+            let environment = ProcessInfo.processInfo.environment.merging(extra) { _, added in added }
+            let result = try await runner.runStreaming(
+                gitPath, arguments, cwd: cwd, allowedExitCodes: allowedExitCodes, onLaunch: nil,
+                inheritedEnvironment: environment, onStderr: { _ in })
+            try Self.refusingAKilledGit(result)
+            return result
+        }
     }
 
     /// **A killed git is never read as an exit code** (E1 promise 4). For a git a signal killed,
