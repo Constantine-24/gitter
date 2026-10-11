@@ -155,7 +155,7 @@ struct RemoteBranchMenu: View {
         let compareBranchesReason = store.compareBranchesBlockedReason
 
         let changeReason = store.changeRunningBlockedReason
-        let rebaseReason = store.rebaseOntoRemoteBranchBlockedReason(branch)
+        let rebaseReason = store.rebaseOntoRemoteBranchBlockedReason
 
         MenuReasons(reasons: [reason, deleteReason, compareReason, compareBranchesReason, changeReason])
 

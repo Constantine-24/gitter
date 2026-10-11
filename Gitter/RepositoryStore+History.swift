@@ -162,7 +162,9 @@ extension RepositoryStore {
     }
 
     /// Why Rebase onto a remote-tracking branch is off, or nil: the remote branch menu's item.
-    func rebaseOntoRemoteBranchBlockedReason(_ branch: String) -> String? {
+    /// The same for every remote branch — none is HEAD's own, which is the local item's one
+    /// reason of its branch (`rebaseOntoBranchBlockedReason`) — so it takes none.
+    var rebaseOntoRemoteBranchBlockedReason: String? {
         branchSwitchingBlockedReason ?? changeRunningBlockedReason
     }
 

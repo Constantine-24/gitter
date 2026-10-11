@@ -227,11 +227,11 @@ import Testing
         let (store, backend, gate, cleanup) = await Self.storeWithAHeldCommit(repo)
         defer { cleanup() }
         defer { backend.releaseAll() }
-        #expect(store.rebaseOntoRemoteBranchBlockedReason("origin/feature") == RepositoryStore.changeRunningReason)
+        #expect(store.rebaseOntoRemoteBranchBlockedReason == RepositoryStore.changeRunningReason)
 
         gate.release()
         await waitUntilIdle(store)
-        #expect(store.rebaseOntoRemoteBranchBlockedReason("origin/feature") == nil)
+        #expect(store.rebaseOntoRemoteBranchBlockedReason == nil)
     }
 }
 
