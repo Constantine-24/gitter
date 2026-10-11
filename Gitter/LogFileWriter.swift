@@ -81,15 +81,15 @@ final class LogFileWriter: Sendable {
         }
     }
 
-    /// Makes the folder and the file when they are not there, and opens the file at its end.
+    /// Makes the folder and the file when they are not there, and opens the file to append
+    /// (`O_APPEND`): every write lands at the file's end as it is then, so a second process writing
+    /// the same file (a Debug build beside the installed one) adds its lines after these rather than
+    /// over them. Two processes *rotating* the same folder can still race (docs/BACKLOG.md).
     private func open(_ state: inout State) throws {
         try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
-        if !fileManager.fileExists(atPath: fileURL.path) {
-            guard fileManager.createFile(atPath: fileURL.path, contents: nil) else {
-                throw CocoaError(.fileWriteUnknown)
-            }
-        }
-        let handle = try FileHandle(forWritingTo: fileURL)
+        let descriptor = fileURL.path.withCString { Darwin.open($0, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0o644) }
+        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         state.size = Int(try handle.seekToEnd())
         state.handle = handle
     }

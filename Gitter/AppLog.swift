@@ -20,9 +20,25 @@ struct EventLog: Sendable {
 /// (`AppModel.windows`), and never under the test host: there is no file at all in a test run, and a
 /// harness launch logs to its own scratch folder (`GITTER_LOG_DIR`, DEBUG only).
 @MainActor enum AppLog {
-    /// Nil under the test host (`TestHost.isRunningTests`): no file is ever opened there.
+    /// Nil under the test host (`TestHost.isRunningTests`): no file is ever opened there. Nil too
+    /// for a scripted DEBUG launch without a `GITTER_LOG_DIR` of its own (`writerFolder`).
     static let writer: LogFileWriter? =
-        TestHost.isRunningTests ? nil : LogFileWriter(folder: folder(environment: ProcessInfo.processInfo.environment))
+        writerFolder(environment: ProcessInfo.processInfo.environment, isRunningTests: TestHost.isRunningTests)
+        .map { LogFileWriter(folder: $0) }
+
+    /// Where this process's writer writes, or nil for none: none under the test host, and — a
+    /// mechanical guard, not the scripts' discipline (Task 2's review M5) — none for a harness launch
+    /// (`DebugLaunchGuard.isScripted`) that names no folder of its own, so it can never write the
+    /// user's real log. Otherwise `folder(environment:)`.
+    static func writerFolder(environment: [String: String], isRunningTests: Bool) -> URL? {
+        guard !isRunningTests else { return nil }
+        #if DEBUG
+            if DebugLaunchGuard.isScripted(environment), environment["GITTER_LOG_DIR"]?.isEmpty ?? true {
+                return nil
+            }
+        #endif
+        return folder(environment: environment)
+    }
 
     /// `~/Library/Logs/Gitter`, or `GITTER_LOG_DIR` in DEBUG when it is set. Makes nothing.
     static func folder(environment: [String: String]) -> URL {
@@ -66,11 +82,29 @@ struct EventLog: Sendable {
         }
     }
 
-    /// Help › Show Logs: the log's folder — created if needed — opened in Finder.
+    /// Help › Show Logs: the log's folder — created if needed — opened in Finder, or an alert that
+    /// says why not.
     static func showLogs() {
         let folder = writer?.fileURL.deletingLastPathComponent()
             ?? folder(environment: ProcessInfo.processInfo.environment)
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(folder)
+        showLogs(folder: folder, open: { NSWorkspace.shared.open($0) }) { message in
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Gitter couldn't show its logs"
+            alert.informativeText = message
+            ModalAlert.raise(alert) { _ in }
+        }
+    }
+
+    /// `showLogs`, with Finder and the alert as seams (internal for tests, which never pass the real
+    /// folder): makes `folder`, then opens it; when either fails, `tell` gets one sentence naming it.
+    static func showLogs(folder: URL, open: (URL) -> Bool, tell: (String) -> Void) {
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            tell("The folder \(folder.path) could not be made: \(error.localizedDescription)")
+            return
+        }
+        if !open(folder) { tell("Finder could not open the folder \(folder.path).") }
     }
 }

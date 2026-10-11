@@ -135,7 +135,9 @@ final class WindowRegistry {
         store.registry = self
         store.onRootChange = { [weak self, weak store] old, new in
             guard let self, let store else { return }
-            // Every open, a reopen of the same repository too.
+            // Every open, a reopen of the same repository too; a window switched to another
+            // repository closes the one it showed first (Task 2's review M6).
+            if let old, old.path != new?.path { store.eventLog.write("close \(old.path)") }
             if let new { store.eventLog.write("open \(new.path)") }
             rootChanged(store, from: old, to: new)
         }
@@ -295,7 +297,8 @@ final class WindowRegistry {
     /// second call does nothing.
     func windowClosed(_ store: RepositoryStore) {
         guard stores.contains(where: { $0 === store }), !store.isClosed else { return }
-        if let root = store.root { store.eventLog.write("close \(root.path)") }
+        // At a quit that goes ahead the close was told already (`beginAppTermination`).
+        if !isTerminating, let root = store.root { store.eventLog.write("close \(root.path)") }
         store.close()
         let key = ObjectIdentifier(store)
         for observer in [closeObservers.removeValue(forKey: key), keyObservers.removeValue(forKey: key)] {
@@ -465,8 +468,16 @@ final class WindowRegistry {
     // MARK: - Quitting
 
     // `QuitGuard`: on `.terminateNow` and before every reply of true.
+    //
+    // Every open window's close is told to the log here, once — before `applicationWillTerminate`
+    // flushes it — rather than from the teardown's own closes, which AppKit and SwiftUI may run after
+    // that flush, racing the exit (Task 2's review I2). `windowClosed` tells none while terminating.
     func beginAppTermination() {
+        guard !isTerminating else { return }
         isTerminating = true
+        for store in liveStores {
+            if let root = store.root { store.eventLog.write("close \(root.path)") }
+        }
     }
 
     // `QuitGuard`: on every reply of false.

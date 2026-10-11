@@ -193,6 +193,75 @@ final class RecordingLog: CommandLog {
 
     // MARK: - Redaction
 
+    // MARK: - A URL's userinfo, by structure (P1 Task 2 fix round 1, I1, Ruling 6)
+
+    /// The prose redactor ends a run of address at `'"<>`()]` and a blank, so a password holding one
+    /// of them came back whole (measured in Task 2's review). An argument is one token: a URL's
+    /// userinfo goes by its structure, whatever it holds — a username alone too, as a token is often
+    /// the whole of it.
+    @Test(arguments: [
+        ("https://me:p'ss@example.invalid/x.git", "p'ss"),
+        ("https://me:p(ss)@example.invalid/x.git", "p(ss)"),
+        ("https://me:p)ss@example.invalid/x.git", "p)ss"),
+        ("https://me:p(@ss@example.invalid/x.git", "p(@ss"),
+        ("https://me:p:(ss@example.invalid/x.git", "p:(ss"),
+        ("https://me:p%28ss%29@example.invalid/x.git", "p%28ss%29"),
+        ("https://me:p ss)@example.invalid/x.git", "p ss)"),
+        ("https://ghp_only'token@example.invalid/x.git", "ghp_only'token"),
+        ("https://ghp_onlytoken@example.invalid/x.git", "ghp_onlytoken"),
+        ("ssh://me:p(ss)@[::1]:22/x.git", "p(ss)"),
+        ("--url=https://me:p(ss)@example.invalid/x.git", "p(ss)"),
+        ("--push-option=https://me:p(ss)@example.invalid/x", "p(ss)"),
+        ("remote.origin.url=me:p(ss)@example.invalid:x.git", "p(ss)"),
+        ("https://me:p(ss)@[::1]:8443/x.git", "p(ss)"),
+    ])
+    func aURLsUserinfoIsStrippedWhateverItHolds(url: String, secret: String) {
+        let arguments = entry(arguments: ["remote", "add", "--end-of-options", "origin", url]).arguments
+        #expect(!arguments.joined(separator: " ").contains(secret), "\(arguments)")
+        #expect(!arguments.joined(separator: " ").contains("me:"), "\(arguments)")
+        #expect(arguments.last?.contains("example.invalid") == true || arguments.last?.contains("[::1]") == true)
+    }
+
+    @Test func theStrippedURLKeepsItsSchemeHostAndPath() {
+        #expect(CommandLogEntry.strippingUserinfo("https://me:p(ss)@example.invalid/x.git") == "https://example.invalid/x.git")
+        #expect(CommandLogEntry.strippingUserinfo("https://tok@example.invalid:8443/x?y=1") == "https://example.invalid:8443/x?y=1")
+        #expect(CommandLogEntry.strippingUserinfo("--url=https://me:p@example.invalid/x") == "--url=https://example.invalid/x")
+        #expect(CommandLogEntry.strippingUserinfo("--push-option=https://me:p@example.invalid/x") == "--push-option=https://example.invalid/x")
+        #expect(CommandLogEntry.strippingUserinfo("remote.o.url=me:p(ss)@example.invalid:x") == "remote.o.url=example.invalid:x")
+        #expect(CommandLogEntry.strippingUserinfo("--url=me:p@example.invalid:x") == "--url=example.invalid:x")
+        // A `=` inside a password is not a value's start: the first `:` comes before it.
+        #expect(CommandLogEntry.strippingUserinfo("https://me:p=ss@example.invalid/x") == "https://example.invalid/x")
+        #expect(CommandLogEntry.strippingUserinfo("me:p=ss@example.invalid:x") == "example.invalid:x")
+        // IPv6 hosts keep their brackets.
+        #expect(CommandLogEntry.strippingUserinfo("https://me:p@[::1]:8443/x") == "https://[::1]:8443/x")
+        #expect(CommandLogEntry.strippingUserinfo("ssh://me:p(ss)@[fe80::1%25en0]/x") == "ssh://[fe80::1%25en0]/x")
+        // scp-style, only where userinfo is there.
+        #expect(CommandLogEntry.strippingUserinfo("me:p(ss)@example.invalid:x.git") == "example.invalid:x.git")
+        #expect(CommandLogEntry.strippingUserinfo("git@example.invalid:team@2024/x.git") == "example.invalid:team@2024/x.git")
+        #expect(CommandLogEntry.strippingUserinfo("example.invalid:x.git") == "example.invalid:x.git")
+    }
+
+    /// What is not a URL with userinfo is kept as it is: a path, a refspec, a revision, an `@` in a
+    /// path, a reflog selector.
+    @Test(arguments: [
+        "/tmp/gitter-test/a:b@origin.git", "./a:b@c", "~/a:b@c", "refs/heads/main:refs/heads/main",
+        "HEAD:refs/heads/x", "stash@{0}:a.txt", "main@{upstream}", "https://example.invalid/team@2024/x.git",
+        "file:///tmp/x@y.git", "--message", "Discarded by Gitter: a@b.c", "user@example.invalid",
+        "HEAD@{1}", "HEAD@{1}:a.txt", "--format=%H@%s", "--push-option=ci.skip", "refs/stash@{0}",
+        "--git-dir=/tmp/a:b@c/.git", "https://[::1]:8443/team@2024/x",
+    ])
+    func whatIsNoURLWithUserinfoIsKept(argument: String) {
+        #expect(CommandLogEntry.strippingUserinfo(argument) == argument)
+    }
+
+    /// The control: the prose redactor alone — the only one before this fix — hands the password
+    /// with a parenthesis back.
+    @Test func theProseRedactorAloneLeaksAPasswordWithAParenthesis() {
+        withKnownIssue("the prose redactor ends its run at `(`, so the userinfo is never seen") {
+            #expect(!RemoteFailureParser.redactingCredentials("https://me:p(ss)@example.invalid/x.git").contains("p(ss)"))
+        }
+    }
+
     @Test func aCredentialInTheArgumentsIsInNoField() async throws {
         let directory = try Self.scratch()
         defer { try? FileManager.default.removeItem(at: directory) }

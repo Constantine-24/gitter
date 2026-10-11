@@ -29,7 +29,8 @@ public struct CommandLogEntry: Sendable, Equatable {
     public let started: Date
     public let duration: Duration
     public let directory: String
-    /// Redacted (`RemoteFailureParser.redactingCredentials`, one argument at a time); more than
+    /// Redacted one argument at a time — a URL's userinfo stripped by structure
+    /// (`strippingUserinfo`), then `RemoteFailureParser.redactingCredentials`; more than
     /// `argumentThreshold` are cut to the first `argumentsShown` plus "… and N more".
     public let arguments: [String]
     public let outcome: Outcome
@@ -62,10 +63,72 @@ public struct CommandLogEntry: Sendable, Equatable {
     /// `argumentsShown` of them (redacted — the rest are never looked at) and a count of the rest.
     static func shown(_ arguments: [String]) -> [String] {
         guard arguments.count > argumentThreshold else {
-            return arguments.map(RemoteFailureParser.redactingCredentials)
+            return arguments.map(redacted)
         }
-        return arguments.prefix(argumentsShown).map(RemoteFailureParser.redactingCredentials)
+        return arguments.prefix(argumentsShown).map(redacted)
             + ["… and \(arguments.count - argumentsShown) more"]
+    }
+
+    /// `argument` without the userinfo of a URL in it, read by structure — the argument is one
+    /// token, so nothing in a password (`'`, `(`, `)`, `@`, `:`, a blank, `%28`) can end it early,
+    /// as it ends a run of the prose redactor (`RemoteFailureParser.redactingCredentials`, Task 2's
+    /// review I1). Compared by Unicode scalar, like that redactor.
+    /// - `…scheme://authority…` anywhere in it (`--url=https://…` too): the authority runs to the
+    ///   first `/`, `?` or `#`, and everything in it up to its **last** `@` goes — a username alone
+    ///   too, since a token is often the whole of it.
+    /// - scp-style, `[user[:password]@]host:path`, not a path (`/`, `.`, `~`) and with no `/` before
+    ///   its first colon: only where userinfo is there. An `@` before that colon ends the userinfo
+    ///   (`git@host:team@2024/x` keeps its path); otherwise `user:password@host…` loses everything up
+    ///   to the last `@` before the next `/`. A username with a blank in it is prose, not a URL
+    ///   (`Discarded by Gitter: a@b.c`), and an `@{` is a revision (`stash@{0}:a.txt`); both stay.
+    /// - an option's or a setting's value (`--push-option=…`, `--url=…`, `remote.o.url=…`): where
+    ///   the first `=` comes before any `:`, what follows it is read as its own argument and the
+    ///   part up to the `=` kept.
+    /// An IPv6 host keeps its brackets (`https://u:p@[::1]:8443/x` → `https://[::1]:8443/x`).
+    /// Anything else — a path, a refspec, a revision (`HEAD@{1}`), an `@` in a path — is returned
+    /// as it is.
+    static func strippingUserinfo(_ argument: String) -> String {
+        let scalars = Array(argument.unicodeScalars)
+        if let equals = scalars.firstIndex(of: "="),
+            scalars.firstIndex(of: ":").map({ equals < $0 }) ?? true
+        {
+            return string(scalars[...equals]) + strippingUserinfo(string(scalars[(equals + 1)...]))
+        }
+        if let colon = scalars.indices.dropLast(2).first(where: {
+            scalars[$0] == ":" && scalars[$0 + 1] == "/" && scalars[$0 + 2] == "/"
+        }) {
+            let rest = colon + 3
+            let end = (rest..<scalars.count).first { "/?\u{23}".unicodeScalars.contains(scalars[$0]) } ?? scalars.count
+            guard let at = (rest..<end).last(where: { scalars[$0] == "@" }) else { return argument }
+            return string(scalars[..<rest]) + string(scalars[(at + 1)...])
+        }
+        guard let first = scalars.first, !"/.~".unicodeScalars.contains(first),
+            let colon = scalars.firstIndex(of: ":"), !scalars[..<colon].contains("/")
+        else { return argument }
+        func isUserinfo(_ user: ArraySlice<Unicode.Scalar>, before at: Int) -> Bool {
+            !user.isEmpty && !user.contains(where: \.properties.isWhitespace)
+                && at + 1 < scalars.count && scalars[at + 1] != "{"
+        }
+        if let at = scalars[..<colon].lastIndex(of: "@") {
+            return isUserinfo(scalars[..<at], before: at) ? string(scalars[(at + 1)...]) : argument
+        }
+        let segmentEnd = (colon + 1..<scalars.count).first { scalars[$0] == "/" } ?? scalars.count
+        guard let at = (colon + 1..<segmentEnd).last(where: { scalars[$0] == "@" }),
+            isUserinfo(scalars[..<colon], before: at)
+        else { return argument }
+        return string(scalars[(at + 1)...])
+    }
+
+    private static func string(_ slice: ArraySlice<Unicode.Scalar>) -> String {
+        var view = String.UnicodeScalarView()
+        view.append(contentsOf: slice)
+        return String(view)
+    }
+
+    /// One argument: a URL's userinfo stripped by structure (`strippingUserinfo`), then the prose
+    /// redactor over what is left.
+    private static func redacted(_ argument: String) -> String {
+        RemoteFailureParser.redactingCredentials(strippingUserinfo(argument))
     }
 
     /// The outcome's own strings (a launch failure's message, a refusal's description) redacted and

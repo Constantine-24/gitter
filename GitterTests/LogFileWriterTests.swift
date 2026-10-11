@@ -147,6 +147,23 @@ struct LogTestFolder {
         #expect(!writer.hasStopped)
     }
 
+    /// M1: the file is opened to append, so a second writer on the same file — a Debug build beside
+    /// the installed one — adds its lines after the first one's instead of over them. (Two writers
+    /// rotating the same folder can still race: docs/BACKLOG.md.)
+    @Test func twoWritersOnOneFileOverwriteNothing() throws {
+        let folder = LogTestFolder()
+        defer { folder.remove() }
+        let one = LogFileWriter(folder: folder.url)
+        let two = LogFileWriter(folder: folder.url)
+        one.append("one first")
+        one.flush()
+        two.append("two first")
+        two.flush()
+        one.append("one second")
+        one.flush()
+        #expect(try folder.lines() == ["one first", "two first", "one second"])
+    }
+
     /// `count` distinct lines of 99 characters: 100 bytes each with the newline.
     static func hundredByteLines(_ count: Int) -> [String] {
         (1...count).map { index in

@@ -121,6 +121,33 @@ enum QuitGuard {
         }
     }
 
+    /// The quit question's three answers, in the order of its buttons.
+    enum Answer: Equatable {
+        case wait, stopAndQuit, dontQuit
+
+        var title: String {
+            switch self {
+            case .wait: RemoteWording.quitWait
+            case .stopAndQuit: RemoteWording.quitStop
+            case .dontQuit: RemoteWording.quitCancel
+            }
+        }
+    }
+
+    /// The question's `response`, read once — the first button Wait, the second Stop and Quit,
+    /// anything else (the third, Escape) Don't Quit — and told to `eventLog` as
+    /// `quit question: <button>` (internal for tests).
+    static func answer(_ response: NSApplication.ModalResponse, toldTo eventLog: EventLog) -> Answer {
+        let answer: Answer =
+            switch response {
+            case .alertFirstButtonReturn: .wait
+            case .alertSecondButtonReturn: .stopAndQuit
+            default: .dontQuit
+            }
+        eventLog.write("quit question: \(answer.title)")
+        return answer
+    }
+
     private static func ask(
         about activity: RemoteActivity, of writing: RepositoryStore, stores: [RepositoryStore],
         writesAsked: [Bool], messagesBefore: [Int]
@@ -138,19 +165,13 @@ enum QuitGuard {
 
         let eventLog = writing.eventLog
         let answer: @MainActor (NSApplication.ModalResponse) -> Void = { response in
-            let button = switch response {
-            case .alertFirstButtonReturn: RemoteWording.quitWait
-            case .alertSecondButtonReturn: RemoteWording.quitStop
-            default: RemoteWording.quitCancel
-            }
-            eventLog.write("quit question: \(button)")
-            switch response {
-            case .alertFirstButtonReturn:
+            switch Self.answer(response, toldTo: eventLog) {
+            case .wait:
                 log("quit: Wait")
                 let compared = beginWaiting(stores, writesAsked: writesAsked, messagesBefore: messagesBefore)
                 replyWhenLanesFree(
                     stores, bound: waitBound, atTheBound: .callOff, callOffIfToldSince: compared)
-            case .alertSecondButtonReturn:
+            case .stopAndQuit:
                 log("quit: Stop and Quit")
                 for store in stores {
                     store.beginTerminating()
@@ -159,7 +180,7 @@ enum QuitGuard {
                 replyWhenLanesFree(
                     stores, bound: readStopBound, atTheBound: .quitAnyway,
                     callOffIfToldSince: nil)
-            default:
+            case .dontQuit:
                 log("quit: Don't Quit")
                 callOff()
             }

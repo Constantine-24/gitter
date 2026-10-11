@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GitCore
 import GitCoreTestSupport
@@ -116,11 +117,154 @@ final class RecordingEventLog: Sendable {
 
         let store = await test.opened(repo)
         let path = try #require(store.root?.path)
-        #expect(recorder.lines == ["open \(path)"])
+        #expect(Self.windowLines(recorder) == ["open \(path)"])
         test.registry.windowClosed(store)
-        #expect(recorder.lines == ["open \(path)", "close \(path)"])
+        #expect(Self.windowLines(recorder) == ["open \(path)", "close \(path)"])
         test.registry.windowClosed(store)
-        #expect(recorder.lines.count == 2, "a second close does nothing")
+        #expect(Self.windowLines(recorder).count == 2, "a second close does nothing")
+    }
+
+    /// M6: a window switched to another repository closes the one it showed, before it opens the next.
+    @Test(.timeLimit(.minutes(10))) func aSwitchToAnotherRepositoryClosesTheOldOneFirst() async throws {
+        let first = try ScratchRepo("first")
+        defer { first.remove() }
+        let second = try ScratchRepo("second")
+        defer { second.remove() }
+        try first.commit("a.txt", "one\n", "first")
+        try second.commit("b.txt", "one\n", "first")
+        let recorder = RecordingEventLog()
+        let test = TestRegistry(eventLog: recorder.eventLog)
+        defer { test.remove() }
+
+        let store = await test.opened(first)
+        let firstPath = try #require(store.root?.path)
+        await open(store, second.url)
+        let secondPath = try #require(store.root?.path)
+        #expect(firstPath != secondPath)
+        #expect(Self.windowLines(recorder) == ["open \(firstPath)", "close \(firstPath)", "open \(secondPath)"])
+
+        // The same repository again is a reopen: an open, and no close.
+        await open(store, second.url)
+        #expect(Self.windowLines(recorder).suffix(2) == ["open \(secondPath)", "open \(secondPath)"])
+    }
+
+    /// I2: at a quit that goes ahead, every open window's close is given to the log then — before
+    /// the terminate path's flush — and not again when its window closes during the teardown.
+    @Test(.timeLimit(.minutes(10))) func aQuitTellsEveryOpenWindowsCloseOnce() async throws {
+        let first = try ScratchRepo("first")
+        defer { first.remove() }
+        let second = try ScratchRepo("second")
+        defer { second.remove() }
+        try first.commit("a.txt", "one\n", "first")
+        try second.commit("b.txt", "one\n", "first")
+        let recorder = RecordingEventLog()
+        let test = TestRegistry(eventLog: recorder.eventLog)
+        defer { test.remove() }
+        let one = await test.opened(first)
+        let two = await test.opened(second)
+        let empty = test.registry.makeStore()
+        let paths = [try #require(one.root?.path), try #require(two.root?.path)]
+
+        test.registry.beginAppTermination()
+        #expect(Self.windowLines(recorder).filter { $0.hasPrefix("close ") } == paths.map { "close \($0)" })
+        test.registry.beginAppTermination()
+        test.registry.windowClosed(one)
+        test.registry.windowClosed(two)
+        test.registry.windowClosed(empty)
+        #expect(Self.windowLines(recorder).filter { $0.hasPrefix("close ") } == paths.map { "close \($0)" })
+        test.registry.endAppTermination()
+    }
+
+    /// The control for the quit's check: without the quit, nothing is closed and no close is told.
+    @Test(.timeLimit(.minutes(10))) func theQuitsCloseCheckCanFail() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try repo.commit("a.txt", "one\n", "first")
+        let recorder = RecordingEventLog()
+        let test = TestRegistry(eventLog: recorder.eventLog)
+        defer { test.remove() }
+        let store = await test.opened(repo)
+        let path = try #require(store.root?.path)
+        withKnownIssue("no quit began, so no close was told") {
+            #expect(Self.windowLines(recorder).contains("close \(path)"))
+        }
+    }
+
+    /// The registry's lines about windows: its opens and closes, whatever else a refresh tells.
+    static func windowLines(_ recorder: RecordingEventLog) -> [String] {
+        recorder.lines.filter { $0.hasPrefix("open ") || $0.hasPrefix("close ") }
+    }
+
+    // MARK: - The quit question (M2, M3)
+
+    @Test func eachQuitAnswerIsOneLineWithItsButton() {
+        let cases: [(NSApplication.ModalResponse, QuitGuard.Answer, String)] = [
+            (.alertFirstButtonReturn, .wait, RemoteWording.quitWait),
+            (.alertSecondButtonReturn, .stopAndQuit, RemoteWording.quitStop),
+            (.alertThirdButtonReturn, .dontQuit, RemoteWording.quitCancel),
+            (.abort, .dontQuit, RemoteWording.quitCancel),
+        ]
+        for (response, answer, title) in cases {
+            let recorder = RecordingEventLog()
+            #expect(QuitGuard.answer(response, toldTo: recorder.eventLog) == answer)
+            #expect(recorder.lines == ["quit question: \(title)"])
+        }
+    }
+
+    // MARK: - Where the writer writes (M5)
+
+    @Test func aTestHostOrAScriptedLaunchWithoutItsOwnFolderHasNoWriter() throws {
+        #expect(AppLog.writerFolder(environment: [:], isRunningTests: true) == nil)
+        #expect(AppLog.writerFolder(environment: ["GITTER_LOG_DIR": "/tmp/x"], isRunningTests: true) == nil)
+        let plain = try #require(AppLog.writerFolder(environment: [:], isRunningTests: false))
+        #expect(plain.path.hasSuffix("Library/Logs/Gitter"))
+        #if DEBUG
+            #expect(AppLog.writerFolder(environment: ["GITTER_DEBUG_OPEN": "/tmp/fixture"], isRunningTests: false) == nil)
+            #expect(AppLog.writerFolder(environment: ["GITTER_DEBUG_THEN": ""], isRunningTests: false) == nil)
+            #expect(
+                AppLog.writerFolder(
+                    environment: ["GITTER_DEBUG_OPEN": "/tmp/fixture", "GITTER_LOG_DIR": ""], isRunningTests: false) == nil)
+            #expect(
+                AppLog.writerFolder(
+                    environment: ["GITTER_DEBUG_OPEN": "/tmp/fixture", "GITTER_LOG_DIR": "/tmp/x"], isRunningTests: false)?
+                    .path == "/tmp/x")
+        #endif
+    }
+
+    // MARK: - Show Logs (M4), through its seam: never the real folder
+
+    @Test func showLogsMakesTheFolderAndOpensItSayingNothing() throws {
+        let folder = LogTestFolder()
+        defer { folder.remove() }
+        var opened: [URL] = []
+        var told: [String] = []
+        AppLog.showLogs(folder: folder.url, open: { opened.append($0); return true }, tell: { told.append($0) })
+        #expect(FileManager.default.fileExists(atPath: folder.url.path))
+        #expect(opened == [folder.url])
+        #expect(told.isEmpty)
+    }
+
+    @Test func showLogsSaysSoWhenTheFolderCannotBeMade() throws {
+        let folder = LogTestFolder()
+        defer { folder.remove() }
+        try FileManager.default.createDirectory(at: folder.parent, withIntermediateDirectories: true)
+        let plain = folder.parent.appending(path: "plain")
+        try Data("x".utf8).write(to: plain)
+        var opened: [URL] = []
+        var told: [String] = []
+        AppLog.showLogs(folder: plain.appending(path: "logs"), open: { opened.append($0); return true }, tell: { told.append($0) })
+        #expect(opened.isEmpty)
+        #expect(told.count == 1)
+        #expect(told.first?.contains(plain.appending(path: "logs").path) == true, "\(told)")
+    }
+
+    @Test func showLogsSaysSoWhenFinderCannotOpenIt() throws {
+        let folder = LogTestFolder()
+        defer { folder.remove() }
+        var told: [String] = []
+        AppLog.showLogs(folder: folder.url, open: { _ in false }, tell: { told.append($0) })
+        #expect(told.count == 1)
+        #expect(told.first?.contains(folder.url.path) == true, "\(told)")
     }
 
     /// The hidden ending's alert, with the button that answered it, after the banner it tells.

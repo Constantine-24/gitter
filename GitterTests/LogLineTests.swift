@@ -86,6 +86,17 @@ import Testing
         #expect(Array(lines.dropFirst()) == [#"    a\tb\r"#, #"    c\u{1B}d"#])
     }
 
+    /// I1 through the app's line: a password the prose redactor would not see never reaches it.
+    @Test func aPasswordWithAParenthesisIsInNoLine() {
+        let entry = CommandLogEntry(
+            started: Date(), duration: .zero, directory: URL(fileURLWithPath: "/tmp/repo"),
+            rawArguments: ["remote", "add", "--end-of-options", "origin", "https://me:p(ss)@example.invalid/x.git"],
+            outcome: .succeeded, rawStderr: "")
+        let line = LogLine.entry(entry)
+        #expect(!line.contains("p(ss)"), "\(line)")
+        #expect(line.contains("origin https://example.invalid/x.git → ok"), "\(line)")
+    }
+
     @Test func everyOutcomeHasItsWords() {
         func words(_ outcome: CommandLogEntry.Outcome) -> String {
             let entry = CommandLogEntry(
