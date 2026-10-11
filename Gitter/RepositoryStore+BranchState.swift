@@ -107,14 +107,15 @@ extension RepositoryStore {
     /// Why merging `branch` into HEAD is off right now, or nil when it is available.
     func mergeBlockedReason(for branch: String) -> String? {
         if branch == currentBranch { return Self.currentBranchReason }
-        return branchSwitchingBlockedReason
+        return branchSwitchingBlockedReason ?? changeRunningBlockedReason
     }
 
     /// Why deleting `branch` is off right now, or nil when it is available. Not gated on an
     /// operation in progress: deleting some *other* branch mid-merge touches neither the
     /// worktree nor the index. Off for a branch another worktree holds (B3, R14): git refuses.
     func deleteBlockedReason(for branch: String) -> String? {
-        branch == currentBranch ? Self.currentBranchReason : worktreeHeldReason(branch)
+        branch == currentBranch
+            ? Self.currentBranchReason : (worktreeHeldReason(branch) ?? changeRunningBlockedReason)
     }
 
     func canSwitch(to branch: String) -> Bool {

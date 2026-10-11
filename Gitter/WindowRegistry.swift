@@ -464,15 +464,18 @@ final class WindowRegistry {
     }
 
     /// What launch opens, in order: the list's repositories — each once, by `RepositoryWindow` path,
-    /// skipping any that is no longer a folder with a `.git` — or, with none of those, the last
+    /// skipping any that is no longer a folder with a `.git` (`RepositoryStore.notARepository`, the
+    /// rule every open makes) — or, with none of those, the last
     /// repository (`RepositoryStore.lastRepositoryToReopen`), as before E2. A list that was there is
     /// rewritten as the clean one (RF5), so a bad entry is gone for the next launch too.
-    func launchPaths(fileManager: FileManager = .default) -> [URL] {
+    func launchPaths() -> [URL] {
         let stored = defaults.object(forKey: Self.openRepositoriesKey)
         var clean: [String] = []
         for case let path as String in stored as? [Any] ?? [] {
             let window = RepositoryWindow(url: URL(fileURLWithPath: path))
-            guard !clean.contains(window.path), Self.isRepository(window.path, fileManager) else { continue }
+            guard !clean.contains(window.path),
+                RepositoryStore.notARepository(URL(fileURLWithPath: window.path)) == nil
+            else { continue }
             clean.append(window.path)
         }
         if stored != nil { writeList(clean) }
@@ -499,15 +502,6 @@ final class WindowRegistry {
         guard let pending else { return LaunchPlan(first: paths.first, rest: Array(paths.dropFirst())) }
         let shown = RepositoryWindow(url: pending)
         return LaunchPlan(first: pending, rest: paths.filter { RepositoryWindow(url: $0) != shown })
-    }
-
-    /// A folder with a `.git` in it — a directory, or a linked worktree's file.
-    private static func isRepository(_ path: String, _ fileManager: FileManager) -> Bool {
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
-            return false
-        }
-        return fileManager.fileExists(atPath: (path as NSString).appendingPathComponent(".git"))
     }
 
     /// `store` opened `new` in place of `old`: the new repository takes the old one's place in the

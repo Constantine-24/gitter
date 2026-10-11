@@ -314,12 +314,13 @@ extension RepositoryStore {
     // MARK: - Add Worktree
 
     var addWorktreeBlockedReason: String? {
-        root == nil ? RemoteWording.noRepository : nil
+        root == nil ? RemoteWording.noRepository : changeRunningBlockedReason
     }
 
     /// "New Worktree for <b>…": off for this window's branch and one another worktree holds.
     func newWorktreeBlockedReason(_ name: String) -> String? {
         WorktreeWording.newWorktreeBlocked(name, isCurrent: name == currentBranch, heldReason: worktreeHeldReason(name))
+            ?? changeRunningBlockedReason
     }
 
     /// Opens the Add Worktree sheet, preset to the local branch `branch` when given.
@@ -480,11 +481,11 @@ extension RepositoryStore {
     // MARK: - Remove Worktree
 
     func removeWorktreeBlockedReason(_ worktree: Worktree) -> String? {
-        WorktreeWording.removeBlocked(worktree, isOpenHere: isOpenHere(worktree))
+        WorktreeWording.removeBlocked(worktree, isOpenHere: isOpenHere(worktree)) ?? changeRunningBlockedReason
     }
 
     var removeAllMissingBlockedReason: String? {
-        WorktreeWording.removeAllMissingBlocked(worktrees)
+        WorktreeWording.removeAllMissingBlocked(worktrees) ?? changeRunningBlockedReason
     }
 
     /// Opens the Remove sheet in its progress state and runs Gitter's removal check off the main

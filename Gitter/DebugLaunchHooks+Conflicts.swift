@@ -117,8 +117,7 @@
                     log("reopen: no file \(rest)")
                     return
                 }
-                store.stagedView = true
-                store.selectPath(rest)
+                store.select(rest, staged: true)
                 guard await wait({ store.reopenablePath == rest }, what: "reopen \(rest): the offer") else {
                     log("reopen: not offered for \(rest)")
                     return
@@ -167,8 +166,7 @@
             }
             let conflicted = file.conflict != nil
             if store.selectedPath != path || (conflicted && store.stagedView) {
-                store.stagedView = !conflicted && file.unstaged == nil
-                store.selectPath(path)
+                store.select(path, staged: !conflicted && file.unstaged == nil)
             }
             if conflicted {
                 guard await wait({ store.selectedConflict != nil }, what: "select \(path): its resolver") else {

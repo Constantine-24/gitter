@@ -38,7 +38,10 @@ struct BranchMenu: View {
 
             Divider()
 
+            // The reason beside the item, as the sidebar menus show theirs.
+            if let reason = store.changeRunningBlockedReason { Text(reason) }
             Button("New Branch…") { store.requestNewBranch() }
+                .disabled(store.changeRunningBlockedReason != nil)
         } label: {
             Label {
                 // The badge rides in the label, so it is where the eye already is for "which
@@ -85,8 +88,9 @@ struct BranchMenu: View {
     }
 }
 
-/// "New Branch…", from wherever HEAD is. Always available: it is also the way out of a detached
-/// HEAD, and the one branch action an operation in progress does not stand in the way of.
+/// "New Branch…", from wherever HEAD is. Available through an operation in progress: it is also
+/// the way out of a detached HEAD, and the one branch action an operation does not stand in the
+/// way of. Off only while a change runs (`changeRunningBlockedReason`).
 struct NewBranchButton: View {
     @Environment(RepositoryStore.self) private var store
 
@@ -97,6 +101,7 @@ struct NewBranchButton: View {
             Label("New Branch…", systemImage: "plus")
         }
         .labelStyle(.titleAndIcon)
-        .help("Create a branch from \(store.headLabel)")
+        .disabled(store.changeRunningBlockedReason != nil)
+        .help(store.changeRunningBlockedReason ?? "Create a branch from \(store.headLabel)")
     }
 }

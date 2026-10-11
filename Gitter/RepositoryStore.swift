@@ -77,13 +77,9 @@ final class RepositoryStore {
     /// it — a later `--continue` would drop a commit, so it must not vanish with a banner.
     private(set) var haltedSequence: HaltedSequence?
 
-    var stagedView = false {
-        didSet {
-            guard stagedView != oldValue else { return }
-            guard selection == .workingCopy, selectedPath != nil else { return }
-            loadDiff()
-        }
-    }
+    /// Which side of the selected file the working copy shows. Written only through `showSide(staged:)`
+    /// and `select(_:staged:)`, which also decide whether the diff reloads (once, never twice).
+    private(set) var stagedView = false
 
     /// True while a stage/unstage/commit is running; mutations are serialized behind it and
     /// the UI disables its controls. Claimed and released through `beginMutation()` /
@@ -629,6 +625,21 @@ final class RepositoryStore {
     func selectPath(_ path: String?) {
         selectedPath = path
         loadDiff()
+    }
+
+    /// Shows the staged or unstaged side of the selected file — the views' and the harness's only
+    /// way to change it. One diff load when the side changes, none when it does not.
+    func showSide(staged: Bool) {
+        guard staged != stagedView else { return }
+        stagedView = staged
+        guard selection == .workingCopy, selectedPath != nil else { return }
+        loadDiff()
+    }
+
+    /// Selects `path` on `staged`'s side in one step: one diff load, not the side's and then the path's.
+    func select(_ path: String, staged: Bool) {
+        stagedView = staged
+        selectPath(path)
     }
 
     // MARK: - State mutators for other files

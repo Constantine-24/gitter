@@ -22,6 +22,7 @@ extension RepositoryStore {
     /// Plans cherry-picking or reverting `shas` (the commit list's full ids, any order) and puts
     /// the plan up as `.historyAction`, or the refusal in the banner.
     func requestHistoryAction(_ action: HistoryAction, shas: [String]) {
+        guard requestMayProceed() else { return }
         let pending = PendingBranchAction.history(action, shas)
         // Refused here with the operation's own sentence, before even the plan's read; GitCore
         // refuses the same (and a halted range, which only it can see).
@@ -97,6 +98,7 @@ extension RepositoryStore {
     /// (`refs/heads/x`, `refs/remotes/o/x`) — and puts the plan up as `.rebaseOnto`, or the
     /// refusal in the banner.
     func requestRebaseOnto(_ target: String) {
+        guard requestMayProceed() else { return }
         let pending = PendingBranchAction.rebaseOnto(target)
         if let operation = operationInProgress {
             mutate { _, _ in
@@ -145,7 +147,7 @@ extension RepositoryStore {
     /// Why Cherry-Pick / Revert is off for `shas`, or nil: an operation in progress, or a merge
     /// commit among them (GitCore refuses both too; this says it before the click).
     func historyBlockedReason(for shas: [String]) -> String? {
-        if let reason = branchSwitchingBlockedReason { return reason }
+        if let reason = branchSwitchingBlockedReason ?? changeRunningBlockedReason { return reason }
         let merges = Set(snapshot?.commits.filter(\.isMerge).map(\.sha) ?? [])
         if shas.contains(where: merges.contains) { return HistoryWording.mergesInSelection }
         return nil
@@ -156,13 +158,13 @@ extension RepositoryStore {
         guard shas.count == 1 else { return HistoryWording.rebaseNeedsOneCommit }
         if let reason = branchSwitchingBlockedReason { return reason }
         if shas.first == headSha { return HistoryWording.rebaseOntoHead }
-        return nil
+        return changeRunningBlockedReason
     }
 
     /// Why Rebase onto the local branch `branch` is off, or nil.
     func rebaseOntoBranchBlockedReason(_ branch: String) -> String? {
         if branch == currentBranch { return Self.currentBranchReason }
-        return branchSwitchingBlockedReason
+        return branchSwitchingBlockedReason ?? changeRunningBlockedReason
     }
 }
 

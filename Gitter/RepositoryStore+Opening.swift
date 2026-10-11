@@ -74,7 +74,8 @@ extension RepositoryStore {
     /// folder nor a linked worktree's file — or nil when it has one. The one test of "is this a
     /// repository" an open makes: `open(_:)` refuses with it, and the routing asks it before it
     /// makes a window for a folder that would only show this banner (`WindowRegistry.route`,
-    /// Ruling 17).
+    /// Ruling 17), and launch's reopen list keeps only the folders it passes
+    /// (`WindowRegistry.launchPaths`).
     static func notARepository(_ url: URL) -> String? {
         let standardized = url.standardizedFileURL
         let dotGit = standardized.appending(path: ".git")

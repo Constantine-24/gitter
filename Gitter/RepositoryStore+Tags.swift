@@ -37,10 +37,9 @@ extension RepositoryStore {
         snapshot?.commits.first { $0.sha == sha }?.summary
     }
 
-    /// Why Delete Tag… is off for `tag`, or nil. The sheet's own button waits for a running
-    /// change; the item itself is off only for a symbolic ref.
+    /// Why Delete Tag… is off for `tag`, or nil: a symbolic ref, or a change running.
     func deleteTagBlockedReason(_ tag: Tag) -> String? {
-        tag.isSymbolic ? TagWording.symbolicReason(tag.name) : nil
+        tag.isSymbolic ? TagWording.symbolicReason(tag.name) : changeRunningBlockedReason
     }
 
     /// Why Push Tag to <remote> and Delete from <remote>… are off for `tag`, or nil: a symbolic
@@ -55,7 +54,7 @@ extension RepositoryStore {
 
     /// Opens New Tag… on the commit `sha` (a full object id: it is what `createTag` is given).
     func requestNewTag(at sha: String) {
-        guard snapshot != nil else { return }
+        guard snapshot != nil, requestMayProceed() else { return }
         activeSheet = .newTag(sha: sha)
     }
 

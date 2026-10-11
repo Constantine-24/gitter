@@ -158,6 +158,34 @@ import Testing
         #expect(test.storedList as? [String] == [shownPath(a), shownPath(b)])
     }
 
+    /// E3 Task 6 (spec item 3): launch asks `RepositoryStore.notARepository`, the rule every open
+    /// makes, so the two cannot disagree — a plain file named like a repository and a folder with
+    /// no `.git` are dropped, a linked worktree (its `.git` is a file) is kept.
+    @Test func launchAndEveryOpenAgreeWhatARepositoryIs() throws {
+        let (a, b, c) = try Self.repos()
+        defer { [a, b, c].forEach { $0.remove() } }
+        let test = TestRegistry()
+        defer { test.remove() }
+        let file = a.directory.appending(path: "looks-like-a-repo")
+        try "not a folder\n".write(to: file, atomically: true, encoding: .utf8)
+        let plain = a.directory.appending(path: "plain")
+        try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
+        let linked = a.directory.appending(path: "wt-linked")
+        try a.git("worktree", "add", "-b", "linked", linked.path)
+        let linkedGit = linked.appending(path: ".git")
+        var isDirectory: ObjCBool = true
+        #expect(FileManager.default.fileExists(atPath: linkedGit.path, isDirectory: &isDirectory) && !isDirectory.boolValue)
+        test.defaults.set([file.path, plain.path, linked.path, a.url.path], forKey: WindowRegistry.openRepositoriesKey)
+
+        let shownLinked = RepositoryWindow(url: linked).path
+        let kept = test.registry.launchPaths().map(\.path)
+
+        #expect(kept == [shownLinked, shownPath(a)])
+        for url in [file, plain] { #expect(RepositoryStore.notARepository(url) != nil) }
+        for url in [linked, a.url] { #expect(RepositoryStore.notARepository(url) == nil) }
+        #expect(test.storedList as? [String] == [shownLinked, shownPath(a)])
+    }
+
     @Test func launchKeepsTheListsOrder() throws {
         let (a, b, c) = try Self.repos()
         defer { [a, b, c].forEach { $0.remove() } }

@@ -295,13 +295,11 @@ struct WorkingCopyFileList: View {
                 guard let (path, staged) = RowKey.parse(newValue) else { return }
 
                 if path == store.selectedPath {
-                    // Only the side changed. `stagedView`'s `didSet` reloads the diff by
-                    // itself, and `selectPath` reloads unconditionally — calling both here
-                    // would run `git diff` twice for the same file.
-                    store.stagedView = staged
+                    // Only the side changed: one diff load, and `select(_:staged:)` would
+                    // reload for the path as well.
+                    store.showSide(staged: staged)
                 } else {
-                    if store.stagedView != staged { store.stagedView = staged }
-                    store.selectPath(path)
+                    store.select(path, staged: staged)
                 }
             }
         )
@@ -333,7 +331,7 @@ struct WorkingCopyFileList: View {
         }
         // Exactly one side has it now; follow the file there so the row stays selected and
         // the diff below shows the version that still exists.
-        if store.stagedView != inStaged { store.stagedView = inStaged }
+        store.showSide(staged: inStaged)
     }
 }
 

@@ -148,7 +148,7 @@ extension RepositoryStore {
         }
     }
 
-    // internal (not private): used by RepositoryStore.swift's `stagedView` didSet and
+    // internal (not private): used by RepositoryStore.swift's `showSide(staged:)` and
     // `selectPath()`
     func loadDiff() {
         diffTask?.cancel()

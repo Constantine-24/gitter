@@ -12,18 +12,41 @@ extension RepositoryStore {
 
     // MARK: - Opening a sheet
 
+    /// The one reason every writing request shares while a change runs (`isMutating`): a sheet
+    /// opened over it would describe a repository that is about to change, or be replaced when the
+    /// change returns. The wording is the one the remote and stash sheets already show.
+    static let changeRunningReason = RemoteWording.mutationBusy
+
+    /// True when a writing request may go on. While a change runs it puts `changeRunningReason`
+    /// in the banner (a request `mutate` would have dropped without a word is told too) and
+    /// returns false. Every `…BlockedReason` the menus read includes the same reason.
+    func requestMayProceed() -> Bool {
+        guard let reason = changeRunningBlockedReason else { return true }
+        showStickyError(reason)
+        return false
+    }
+
+    /// `changeRunningReason` while a change runs, else nil: what a request that has no reason of
+    /// its own (New Branch, Rename, New Tag) answers, and what the others fall back to.
+    var changeRunningBlockedReason: String? {
+        isMutating ? Self.changeRunningReason : nil
+    }
+
     /// `startPoint` nil means "from HEAD", which is what the sheet shows as the current branch
     /// or "detached at <sha>". A caller that has a revision (a commit row, a remote branch, a
     /// tag) passes both it and the label to show for it.
     func requestNewBranch(from startPoint: String? = nil, labelled label: String? = nil) {
+        guard requestMayProceed() else { return }
         activeSheet = .newBranch(startPoint: startPoint, startLabel: label ?? startPoint ?? headLabel)
     }
 
     func requestRename(_ branch: String) {
+        guard requestMayProceed() else { return }
         activeSheet = .rename(branch)
     }
 
     func requestMerge(_ branch: String) {
+        guard requestMayProceed() else { return }
         activeSheet = .merge(branch)
     }
 
@@ -32,6 +55,7 @@ extension RepositoryStore {
     /// while an operation is in progress — so it simply does nothing.
     func requestAbort() {
         guard let operation = operationInProgress else { return }
+        guard requestMayProceed() else { return }
         // Over an older range's stale list git's `--abort` rewinds HEAD to before that range
         // (Ruling 29); the button is off, and GitCore refuses as well.
         if case .disabled(let reason) = abortState, staleSequence != nil {
@@ -47,6 +71,7 @@ extension RepositoryStore {
     /// comes back as `.notFullyMerged` with the numbers to show — the branch is untouched — and
     /// that is what opens the second confirmation.
     func requestDelete(_ name: String) {
+        guard requestMayProceed() else { return }
         mutate(result: { backend, root in
             try await Self.reporting(.delete, name) {
                 try await backend.deleteBranch(name, at: root)

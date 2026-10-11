@@ -106,10 +106,7 @@
                     _ = await wait({ !store.detailFiles.isEmpty }, what: "GITTER_DEBUG_SELECT_COMMIT: the commit's files")
                     store.selectPath(path ?? store.detailFiles.first?.path)
                 } else if let path {
-                    // Written before a path is selected, so its `didSet` cannot fire a diff
-                    // load for the side we are about to leave.
-                    store.stagedView = env["GITTER_DEBUG_STAGED"] == "1"
-                    store.selectPath(path)
+                    store.select(path, staged: env["GITTER_DEBUG_STAGED"] == "1")
                 }
 
                 if let apply = env["GITTER_DEBUG_APPLY"], await wait({ !store.diff.isEmpty }, what: "GITTER_DEBUG_APPLY: the diff") {

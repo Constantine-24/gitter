@@ -61,10 +61,11 @@ struct LocalBranchMenu: View {
         let compareReason = store.compareWithCurrentBlockedReason(fullRef)
         let compareBranchesReason = store.compareBranchesBlockedReason
         let worktreeReason = store.newWorktreeBlockedReason(branch)
+        let changeReason = store.changeRunningBlockedReason
 
         MenuReasons(reasons: [
             switchReason, mergeReason, rebaseReason, deleteReason, pushReason, fastForwardReason,
-            upstreamReason, unsetReason, compareReason, compareBranchesReason, worktreeReason,
+            upstreamReason, unsetReason, compareReason, compareBranchesReason, worktreeReason, changeReason,
         ])
 
         Button("Switch") { store.switchTo(branch: branch) }
@@ -87,10 +88,12 @@ struct LocalBranchMenu: View {
         Divider()
 
         Button("New Branch from Here…") { store.requestNewBranch(from: branch) }
+            .disabled(changeReason != nil)
         // B3: Add Worktree… preset to this branch.
         Button(WorktreeWording.newWorktreeTitle(branch)) { store.requestAddWorktree(branch: branch) }
             .disabled(worktreeReason != nil)
         Button("Rename…") { store.requestRename(branch) }
+            .disabled(changeReason != nil)
         // Spelled with an ellipsis as the design lists it, although a branch git considers
         // merged is deleted straight away: `requestDelete` runs a plain `git branch -d`, and
         // only git's "not fully merged" refusal — which changes nothing — opens a sheet.
@@ -151,7 +154,9 @@ struct RemoteBranchMenu: View {
         let compareReason = store.compareWithCurrentBlockedReason(fullRef)
         let compareBranchesReason = store.compareBranchesBlockedReason
 
-        MenuReasons(reasons: [reason, deleteReason, compareReason, compareBranchesReason])
+        let changeReason = store.changeRunningBlockedReason
+
+        MenuReasons(reasons: [reason, deleteReason, compareReason, compareBranchesReason, changeReason])
 
         Button("Check Out as Local Branch") { store.track(remoteBranch: branch) }
             .disabled(reason != nil)
@@ -168,6 +173,7 @@ struct RemoteBranchMenu: View {
         Divider()
 
         Button("New Branch from Here…") { store.requestNewBranch(from: branch) }
+            .disabled(changeReason != nil)
 
         Divider()
 
@@ -298,7 +304,9 @@ struct TagMenu: View {
         let remotes = RemoteWording.tagMenuRemotes(store.snapshot?.refs.remotes ?? [])
         let remoteReason = remotes.push.isEmpty ? nil : store.remoteTagBlockedReason(tag)
 
-        MenuReasons(reasons: [reason, deleteReason, remoteReason])
+        let changeReason = store.changeRunningBlockedReason
+
+        MenuReasons(reasons: [reason, deleteReason, remoteReason, changeReason])
 
         Button("Check Out (detached)") { store.detach(at: tag.name) }
             .disabled(reason != nil)
@@ -306,6 +314,7 @@ struct TagMenu: View {
         Divider()
 
         Button("New Branch from Here…") { store.requestNewBranch(from: tag.name) }
+            .disabled(changeReason != nil)
 
         Divider()
 
@@ -418,7 +427,9 @@ struct CommitMenu: View {
         let rebaseReason = store.rebaseOntoCommitBlockedReason(shas)
         let single = shas.count == 1 ? shas.first : nil
 
-        MenuReasons(reasons: [reason, historyReason, rebaseReason])
+        let changeReason = store.changeRunningBlockedReason
+
+        MenuReasons(reasons: [reason, historyReason, rebaseReason, changeReason])
 
         Button(HistoryWording.menuTitle(.cherryPick, count: shas.count)) {
             store.requestHistoryAction(.cherryPick, shas: shas)
@@ -441,8 +452,10 @@ struct CommitMenu: View {
             Button("New Branch from Here…") {
                 store.requestNewBranch(from: sha, labelled: String(sha.prefix(7)))
             }
+            .disabled(changeReason != nil)
             // The full sha: it is what `createTag` is given (Ruling 1).
             Button(TagWording.newTagTitle) { store.requestNewTag(at: sha) }
+                .disabled(changeReason != nil)
             Button("Check Out (detached)") { store.detach(at: sha) }
                 .disabled(reason != nil)
 
