@@ -155,6 +155,7 @@ struct RemoteBranchMenu: View {
         let compareBranchesReason = store.compareBranchesBlockedReason
 
         let changeReason = store.changeRunningBlockedReason
+        let rebaseReason = store.rebaseOntoRemoteBranchBlockedReason(branch)
 
         MenuReasons(reasons: [reason, deleteReason, compareReason, compareBranchesReason, changeReason])
 
@@ -164,7 +165,7 @@ struct RemoteBranchMenu: View {
         Button(HistoryWording.rebaseMenuTitle(current: store.currentBranch, onto: branch)) {
             store.requestRebaseOnto("refs/remotes/" + branch)
         }
-        .disabled(reason != nil)
+        .disabled(rebaseReason != nil)
 
         Divider()
 
@@ -360,8 +361,9 @@ struct WorktreeMenu: View {
         let openReason = store.openWorktreeBlockedReason(worktree)
         let revealReason = WorktreeWording.revealBlocked(worktree)
         let removeReason = store.removeWorktreeBlockedReason(worktree)
+        let missingReason = worktree.isMissing ? store.removeAllMissingBlockedReason : nil
 
-        MenuReasons(reasons: [openReason, revealReason, removeReason])
+        MenuReasons(reasons: [openReason, revealReason, removeReason, missingReason])
 
         Button(WorktreeWording.openTitle) { store.openWorktree(worktree) }
             .disabled(openReason != nil)
@@ -384,6 +386,7 @@ struct WorktreeMenu: View {
             .disabled(removeReason != nil)
         if worktree.isMissing {
             Button(WorktreeWording.removeAllMissingTitle) { store.requestRemoveAllMissing() }
+                .disabled(missingReason != nil)
         }
 
         Divider()

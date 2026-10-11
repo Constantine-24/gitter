@@ -58,6 +58,7 @@ struct LeaveDetachedSheet: View {
                 let act: @MainActor () -> Void = { createBranch() }
                 Button("Create Branch Here…", action: act)
                     .harnessButton("Create Branch Here…", action: act)
+                    .disabled(store.changeRunningBlockedReason != nil)
                 Spacer()
                 // No shortcut on the half that strands commits.
                 let act2: @MainActor () -> Void = { leave() }

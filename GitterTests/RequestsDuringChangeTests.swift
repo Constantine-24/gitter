@@ -68,6 +68,15 @@ import Testing
             reason: { store in store.historyBlockedReason(for: [store.featureTip]) },
             opens: { if case .historyAction = $0 { true } else { false } }),
         Case(
+            name: "Revert",
+            request: { store in store.requestHistoryAction(.revert, shas: [store.mainTip]) },
+            reason: { store in store.historyBlockedReason(for: [store.mainTip]) },
+            opens: { if case .historyAction = $0 { true } else { false } }),
+        Case(
+            name: "Rebase Onto a commit", request: { store in store.requestRebaseOnto(store.featureTip) },
+            reason: { store in store.rebaseOntoCommitBlockedReason([store.featureTip]) },
+            opens: { if case .rebaseOnto = $0 { true } else { false } }),
+        Case(
             name: "Rebase Onto", request: { $0.requestRebaseOnto("refs/heads/feature") },
             reason: { $0.rebaseOntoBranchBlockedReason("feature") },
             opens: { if case .rebaseOnto = $0 { true } else { false } }),
@@ -108,8 +117,8 @@ import Testing
         let repo = try Self.repository()
         defer { repo.remove() }
         let (store, backend, gate, cleanup) = await Self.storeWithAHeldCommit(repo)
-        defer { backend.releaseAll() }
         defer { cleanup() }
+        defer { backend.releaseAll() }
         #expect(store.isMutating)
         #expect(store.activeSheet == nil)
 
@@ -146,8 +155,8 @@ import Testing
         try repo.write("b.txt", "changed\n")
         let backend = TestBackend()
         let (store, cleanup) = await openedTestStore(repo, backend: backend)
-        defer { backend.releaseAll() }
         defer { cleanup() }
+        defer { backend.releaseAll() }
         #expect(store.operationInProgress == .merge)
         let file = try #require(store.snapshot?.status.files.first { $0.path == "b.txt" })
         let gate = backend.hold(.stage)
@@ -174,22 +183,63 @@ import Testing
         let repo = try Self.repository()
         defer { repo.remove() }
         let (store, backend, gate, cleanup) = await Self.storeWithAHeldCommit(repo)
-        defer { backend.releaseAll() }
         defer { cleanup() }
+        defer { backend.releaseAll() }
         #expect(store.isMutating)
 
         store.requestCompareBranches(a: nil, b: nil)
 
         guard case .compareBranches = store.activeSheet else {
             Issue.record("Compare Branches did not open during the change: \(String(describing: store.activeSheet))")
+            gate.release()
+            await waitUntilIdle(store)
             return
         }
         #expect(store.compareBranchesBlockedReason == nil)
         gate.release()
+        await waitUntilIdle(store)
+    }
+
+    /// The refusal is a sticky banner and it stays when the change ends (the same as every
+    /// request that was gated before; BACKLOG): what is on screen after the release is the
+    /// sentence, until it is dismissed.
+    @Test(.timeLimit(.minutes(10))) func theRefusalBannerStaysAfterTheChangeEnds() async throws {
+        let repo = try Self.repository()
+        defer { repo.remove() }
+        let (store, backend, gate, cleanup) = await Self.storeWithAHeldCommit(repo)
+        defer { cleanup() }
+        defer { backend.releaseAll() }
+        store.requestNewBranch()
+        #expect(store.lastError == RepositoryStore.changeRunningReason)
+
+        gate.release()
+        await waitUntilIdle(store)
+
+        #expect(!store.isMutating)
+        #expect(store.lastError == RepositoryStore.changeRunningReason)
+    }
+
+    /// The remote branch menu's Rebase item reads this: off while a change runs, with the same
+    /// sentence (the name need not exist; the reason does not look it up).
+    @Test(.timeLimit(.minutes(10))) func aRemoteBranchRebaseMenuItemIsOffDuringAChange() async throws {
+        let repo = try Self.repository()
+        defer { repo.remove() }
+        let (store, backend, gate, cleanup) = await Self.storeWithAHeldCommit(repo)
+        defer { cleanup() }
+        defer { backend.releaseAll() }
+        #expect(store.rebaseOntoRemoteBranchBlockedReason("origin/feature") == RepositoryStore.changeRunningReason)
+
+        gate.release()
+        await waitUntilIdle(store)
+        #expect(store.rebaseOntoRemoteBranchBlockedReason("origin/feature") == nil)
     }
 }
 
 extension RepositoryStore {
+    /// The full id of the commit HEAD is on, which a revert can undo (the feature tip is not in
+    /// main's history).
+    @MainActor var mainTip: String { headSha ?? "" }
+
     /// The full id of `feature`'s tip in the snapshot, for the history cases.
     @MainActor var featureTip: String {
         localBranches.first { $0.name == "feature" }?.sha ?? ""

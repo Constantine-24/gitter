@@ -699,7 +699,8 @@
                     + "\(WorktreeWording.revealTitle) [\(state(WorktreeWording.revealBlocked(worktree)))] | "
                     + "\(WorktreeWording.copyPathTitle) [on: \(flatten(worktree.path))] | "
                     + "\(WorktreeWording.removeTitle) [\(state(store.removeWorktreeBlockedReason(worktree)))]"
-                    + (worktree.isMissing ? " | \(WorktreeWording.removeAllMissingTitle) [on]" : "")
+                    + (worktree.isMissing
+                        ? " | \(WorktreeWording.removeAllMissingTitle) [\(state(store.removeAllMissingBlockedReason))]" : "")
                     + " | \(WorktreeWording.addTitle) [\(state(store.addWorktreeBlockedReason))]")
             }
             log("worktreemenu header: \(WorktreeWording.addTitle) [\(state(store.addWorktreeBlockedReason))] | "
