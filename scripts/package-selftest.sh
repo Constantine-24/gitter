@@ -96,7 +96,7 @@ check "control: strings scan finds a present name" binary_has strings /bin/ls CL
 check "control: nm scan finds a present symbol" binary_has symbols /bin/ls __mh_execute_header
 check "control: scans do not find an absent name" bash -c '. "$0"; ! binary_has strings /bin/ls GITTER_LOG_DIR && ! binary_has symbols /bin/ls GitCoreTestSupport' "$HERE/package-lib.sh"
 
-# The Authority matching, on captured codesign -dv text (no codesign, no identity involved).
+# The Authority matching, on captured codesign -dvv text (no codesign, no identity involved).
 ADHOC=$'Signature=adhoc\nTeamIdentifier=not set'
 SIGNED=$'Authority=My Cert\nTeamIdentifier=not set'
 HASH=0123456789abcdef0123456789abcdef01234567
@@ -106,6 +106,12 @@ check "authority: name must be whole line" bash -c '. "$0"; ! authority_problem 
 check "authority: hash with an authority passes" authority_problem "$SIGNED" "$HASH"
 check "authority: hash with adhoc refused" bash -c '. "$0"; ! authority_problem "$1" "$2" >/dev/null' "$HERE/package-lib.sh" "$ADHOC" "$HASH"
 check "authority: hash with no authority line refused" bash -c '. "$0"; ! authority_problem "$1" "$2" >/dev/null' "$HERE/package-lib.sh" "TeamIdentifier=x" "$HASH"
+
+# The control for the text authority_problem reads: signing_info must show a real signature's
+# Authority= lines. `codesign -dv` shows none (it needs -dvv), so a --sign build was refused even
+# when the identity had signed it. Calculator is signed by Apple, through to Apple Root CA.
+check "control: signing_info shows a signed app's Authority= lines" \
+    authority_problem "$(signing_info /System/Applications/Calculator.app)" "Apple Root CA"
 
 if [ "$FAILS" -ne 0 ]; then
     echo "selftest: $FAILS failed"

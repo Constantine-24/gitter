@@ -20,7 +20,11 @@ binary_has() {
     text_has "$text" "$3"
 }
 
-# authority_problem <codesign -dv text> <identity>: prints what was expected and what was found and
+# signing_info <app>: codesign's description of a signature, the text authority_problem reads.
+# -dvv, not -dv: only the second level of detail lists the Authority= lines.
+signing_info() { codesign -dvv "$1" 2>&1; }
+
+# authority_problem <codesign -dvv text> <identity>: prints what was expected and what was found and
 # returns 1 if the signature does not match the identity; returns 0 when it does.
 # A 40-hex identity is a SHA-1: the signature must be non-adhoc with an Authority= line (the
 # common name is not in the hash). Any other identity must be an Authority= line, exactly.

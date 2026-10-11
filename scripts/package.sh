@@ -104,16 +104,16 @@ fi
 # 5. Checks on the built app.
 codesign --verify --strict --deep "$APP" 2>&1 \
     || check_failed "codesign --verify --strict --deep"
-SIGINFO="$(codesign -dv "$APP" 2>&1)"
+SIGINFO="$(signing_info "$APP")"
 echo "$SIGINFO" | grep -q 'flags=.*runtime' \
-    || check_failed "the hardened runtime flag is missing from codesign -dv"
+    || check_failed "the hardened runtime flag is missing from codesign -dvv"
 if [ -n "$IDENTITY" ]; then
     PROBLEM="$(authority_problem "$SIGINFO" "$IDENTITY")" || check_failed "$PROBLEM"
     echo "$SIGINFO" | grep '^Authority=' | sed 's/^/signed by: /'
     SHOWN_IDENTITY="$IDENTITY"
 else
     echo "$SIGINFO" | grep -q '^Signature=adhoc' \
-        || check_failed "codesign -dv shows no Signature=adhoc"
+        || check_failed "codesign -dvv shows no Signature=adhoc"
     SHOWN_IDENTITY="ad-hoc"
 fi
 
