@@ -707,8 +707,9 @@ struct HiddenWindowEnvironment {
             // Gitter in the background — the usual case, the user having closed the window and
             // gone elsewhere — leaves the panel not key: AppKit then neither draws Show as the
             // default nor lets Return press it, and the panel can sit behind the front app's
-            // windows (measured, final review M1; C3). The Dock icon bounces until Gitter is
-            // brought forward, which makes the panel key and Show the default again.
+            // windows (measured, final review M1; C3). So the Dock is asked for attention; whether
+            // its icon bounces is unmeasured (the user's checklist). Bringing Gitter forward makes
+            // the panel key and Show the default again (measured).
             let attention = NSApp.isActive ? nil : NSApp.requestUserAttention(.criticalRequest)
             #if DEBUG
                 DebugLaunchHooks.logAlertBuilt(alert, attention: attention)
