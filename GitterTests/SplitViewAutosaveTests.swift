@@ -126,7 +126,8 @@ import Testing
 }
 
 /// A split view that reads as already named, as the navigation split's is, without setting a name:
-/// a split view given one writes its frames into the defaults.
+/// a split view given one writes its frames into the defaults. Never put in a window or laid out: its
+/// getter's name would let AppKit's save path write `NSSplitView Subview Frames` for it.
 private final class NamedSplitView: NSSplitView {
     static let sidebarName = "main-AppWindow-1, SidebarNavigationSplitView"
 
@@ -136,13 +137,15 @@ private final class NamedSplitView: NSSplitView {
     }
 }
 
-/// A split view that records the autosave names it is given and keeps none: AppKit's setter, which
-/// would write frames into the defaults, is never called.
+/// A split view that records the autosave names it is given and keeps none: AppKit's setter is never
+/// called, and the getter always reads nil, since AppKit's save path reads the getter and a name there
+/// would make a layout of this view write its frames into `UserDefaults.standard` — the real domain
+/// under the test host (the final re-review measured it).
 private final class RecordingSplitView: NSSplitView {
     private(set) var namesGiven: [String] = []
 
     override var autosaveName: NSSplitView.AutosaveName? {
-        get { namesGiven.last }
+        get { nil }
         set { if let newValue { namesGiven.append(newValue) } }
     }
 }
