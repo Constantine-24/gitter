@@ -10,3 +10,4 @@ DerivedData/
 Package.resolved
 # macOS
 .DS_Store
+dist/
