@@ -13,6 +13,7 @@
 set -euo pipefail
 
 ROOT="${GITTER_PACKAGE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+. "$(dirname "${BASH_SOURCE[0]}")/package-lib.sh"
 USAGE='package.sh: usage: bash scripts/package.sh [--sign "<identity>"]'
 
 refuse() { echo "package.sh: $1" >&2; exit 2; }
@@ -67,6 +68,12 @@ cleanup() {
 trap cleanup EXIT
 
 # 3. Build.
+# The selftest sets this so a regressed refusal fails fast (exit 99) instead of building.
+if [ -n "${GITTER_PACKAGE_NO_BUILD:-}" ]; then
+    echo "package.sh: reached the build with GITTER_PACKAGE_NO_BUILD set" >&2
+    exit 99
+fi
+command -v xcodegen >/dev/null 2>&1 || refuse "xcodegen is not installed (brew install xcodegen)"
 xcodegen generate
 xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Release \
     -derivedDataPath "$DERIVED" ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
@@ -76,7 +83,8 @@ xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Release \
 # 4. Re-sign with the given identity, keeping the built entitlements.
 if [ -n "$IDENTITY" ]; then
     ENTITLEMENTS="$SCRATCH/entitlements.plist"
-    codesign -d --entitlements - --xml "$APP" > "$ENTITLEMENTS" 2>/dev/null
+    codesign -d --entitlements - --xml "$APP" > "$ENTITLEMENTS" 2>/dev/null || true
+    [ -s "$ENTITLEMENTS" ] || { echo "package.sh: the built app has no entitlements to keep; not re-signing" >&2; exit 1; }
     codesign --force --options runtime --timestamp=none \
         --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP"
 fi
@@ -88,8 +96,8 @@ SIGINFO="$(codesign -dv "$APP" 2>&1)"
 echo "$SIGINFO" | grep -q 'flags=.*runtime' \
     || check_failed "the hardened runtime flag is missing from codesign -dv"
 if [ -n "$IDENTITY" ]; then
-    echo "$SIGINFO" | grep -qxF "Authority=$IDENTITY" \
-        || check_failed "codesign -dv shows no Authority=$IDENTITY"
+    PROBLEM="$(authority_problem "$SIGINFO" "$IDENTITY")" || check_failed "$PROBLEM"
+    echo "$SIGINFO" | grep '^Authority=' | sed 's/^/signed by: /'
     SHOWN_IDENTITY="$IDENTITY"
 else
     echo "$SIGINFO" | grep -q '^Signature=adhoc' \
@@ -116,16 +124,20 @@ SCANNED=0
 while IFS= read -r -d '' f; do
     file -b "$f" | grep -q 'Mach-O' || continue
     SCANNED=$((SCANNED + 1))
+    SYMS="$(dump_symbols "$f")"
+    STRS="$(dump_strings "$f")"
+    # Control: the same scan must FIND names known to be present, or it proves nothing.
+    text_has "$SYMS" "__mh_execute_header" || [ "$(basename "$f")" != "Gitter" ] \
+        || check_failed "scan control: nm -gU found no __mh_execute_header in $(basename "$f")"
+    text_has "$STRS" "NSApplication" || [ "$(basename "$f")" != "Gitter" ] \
+        || check_failed "scan control: strings found no NSApplication in $(basename "$f")"
     for name in GitCoreTestSupport DebugLaunchHooks closewindow; do
-        if nm -gU "$f" 2>/dev/null | grep -qF "$name"; then
-            check_failed "$(basename "$f") exports a symbol with $name (nm -gU)"
-        fi
+        ! text_has "$SYMS" "$name" || check_failed "$(basename "$f") exports a symbol with $name (nm -gU)"
     done
     for name in GITTER_LOG_DIR quitevent closewindow; do
-        if strings - "$f" | grep -qF "$name"; then
-            check_failed "$(basename "$f") holds the string $name (strings)"
-        fi
+        ! text_has "$STRS" "$name" || check_failed "$(basename "$f") holds the string $name (strings)"
     done
+    echo "scan control ok: $(basename "$f") has __mh_execute_header (nm) and NSApplication (strings); none of the Release gate's names"
 done < <(find "$APP/Contents/MacOS" -type f -print0)
 [ "$SCANNED" -ge 1 ] || check_failed "no Mach-O file found to scan under Contents/MacOS"
 
@@ -134,19 +146,23 @@ STAGE="$SCRATCH/stage"
 mkdir -p "$STAGE"
 /bin/cp -R "$APP" "$STAGE/Gitter.app"
 ln -s /Applications "$STAGE/Applications"
-if [ -e "$DMG" ]; then
-    echo "replaced dist/$DMG_NAME"
-fi
-hdiutil create -volname "Gitter $VERSION" -srcfolder "$STAGE" -format UDZO -ov "$DMG"
-hdiutil verify "$DMG" || check_failed "hdiutil verify"
+REPLACED=0
+[ ! -e "$DMG" ] || REPLACED=1
+PARTIAL="$DIST/.partial-$DMG_NAME"
+/bin/rm -f "$PARTIAL"
+trap 'cleanup; /bin/rm -f "$PARTIAL"' EXIT
+hdiutil create -volname "Gitter $VERSION" -srcfolder "$STAGE" -format UDZO -ov "$PARTIAL"
+hdiutil verify "$PARTIAL" || check_failed "hdiutil verify"
 mkdir -p "$MNT"
-hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "$DMG" >/dev/null \
+hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "$PARTIAL" >/dev/null \
     || check_failed "hdiutil attach"
 MOUNTED=1
 [ -d "$MNT/Gitter.app" ] || check_failed "the mounted DMG holds no Gitter.app"
 [ -L "$MNT/Applications" ] || check_failed "the mounted DMG holds no Applications link"
 hdiutil detach "$MNT" >/dev/null || check_failed "hdiutil detach"
 MOUNTED=0
+[ "$REPLACED" = 0 ] || echo "replaced dist/$DMG_NAME"
+mv -f "$PARTIAL" "$DMG"
 
 # 7. Copy to GITTER_DIST_DIR.
 COPIED=""
@@ -155,7 +171,10 @@ if [ -n "${GITTER_DIST_DIR:-}" ]; then
     if [ -e "$GITTER_DIST_DIR/$DMG_NAME" ]; then
         echo "replaced $GITTER_DIST_DIR/$DMG_NAME"
     fi
-    /bin/cp -f "$DMG" "$GITTER_DIST_DIR/$DMG_NAME"
+    TMPCOPY="$GITTER_DIST_DIR/.$DMG_NAME.copying"
+    trap 'cleanup; /bin/rm -f "$PARTIAL" "$TMPCOPY"' EXIT
+    /bin/cp -f "$DMG" "$TMPCOPY"
+    mv -f "$TMPCOPY" "$GITTER_DIST_DIR/$DMG_NAME"
     COPIED="$GITTER_DIST_DIR/$DMG_NAME"
 fi
 

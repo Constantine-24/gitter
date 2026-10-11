@@ -15,6 +15,9 @@ trap '/bin/rm -rf "$SCRATCH"' EXIT
 
 export GIT_ALLOW_PROTOCOL=file GIT_SSH_COMMAND=/usr/bin/false GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 unset SSH_AUTH_SOCK
+# A regressed refusal must exit 99 here, never fall through to a build.
+export GITTER_PACKAGE_NO_BUILD=1
+. "$HERE/package-lib.sh"
 
 CLONE="$SCRATCH/clone"
 git clone --quiet --no-hardlinks "$REPO" "$CLONE"
@@ -53,6 +56,31 @@ expect "untracked file" 2 "package.sh: the tree is not clean" --
 /bin/rm "$CLONE/untracked-file"
 echo "x" >> "$CLONE/project.yml"
 expect "modified file" 2 "package.sh: the tree is not clean" --
+
+# Controls for the Release-name scan: the same code must FIND a name that is present. The needle
+# is on the first line of a 20 MB file, the case where grep -q under pipefail used to miss it.
+big="$SCRATCH/big.txt"
+{ echo "PLANTED_NEEDLE_NAME"; head -c 20000000 /dev/zero | tr '\0' 'x' | fold -w 80; } > "$big"
+check() { # check <name> <command...>: the command must succeed
+    local name="$1"; shift
+    if "$@"; then echo "ok   $name"; else echo "FAIL $name"; FAILS=$((FAILS + 1)); fi
+}
+check "control: text_has finds a name on the first line of 20 MB" text_has "$(cat "$big")" PLANTED_NEEDLE_NAME
+check "control: text_has does not find an absent name" bash -c '! { . "$0"; text_has "abc" zzz; }' "$HERE/package-lib.sh"
+check "control: strings scan finds a present name" binary_has strings /bin/ls CLICOLOR
+check "control: nm scan finds a present symbol" binary_has symbols /bin/ls __mh_execute_header
+check "control: scans do not find an absent name" bash -c '. "$0"; ! binary_has strings /bin/ls GITTER_LOG_DIR && ! binary_has symbols /bin/ls GitCoreTestSupport' "$HERE/package-lib.sh"
+
+# The Authority matching, on captured codesign -dv text (no codesign, no identity involved).
+ADHOC=$'Signature=adhoc\nTeamIdentifier=not set'
+SIGNED=$'Authority=My Cert\nTeamIdentifier=not set'
+HASH=0123456789abcdef0123456789abcdef01234567
+check "authority: name matches exactly" authority_problem "$SIGNED" "My Cert"
+check "authority: other name refused" bash -c '. "$0"; ! authority_problem "$1" "Other" >/dev/null' "$HERE/package-lib.sh" "$SIGNED"
+check "authority: name must be whole line" bash -c '. "$0"; ! authority_problem "$1" "My" >/dev/null' "$HERE/package-lib.sh" "$SIGNED"
+check "authority: hash with an authority passes" authority_problem "$SIGNED" "$HASH"
+check "authority: hash with adhoc refused" bash -c '. "$0"; ! authority_problem "$1" "$2" >/dev/null' "$HERE/package-lib.sh" "$ADHOC" "$HASH"
+check "authority: hash with no authority line refused" bash -c '. "$0"; ! authority_problem "$1" "$2" >/dev/null' "$HERE/package-lib.sh" "TeamIdentifier=x" "$HASH"
 
 if [ "$FAILS" -ne 0 ]; then
     echo "selftest: $FAILS failed"
