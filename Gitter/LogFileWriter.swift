@@ -11,8 +11,9 @@ import Synchronization
 final class LogFileWriter: Sendable {
     /// folder/gitter.log; rotated files are gitter.1.log … gitter.<keep-1>.log.
     let fileURL: URL
+    /// The folder it writes in, as it was given (Show Logs opens it).
+    let folder: URL
 
-    private let folder: URL
     private let limit: Int
     private let keep: Int
     private let queue = DispatchQueue(label: "dev.penzin.Gitter.log")
@@ -44,14 +45,27 @@ final class LogFileWriter: Sendable {
         }
     }
 
-    /// Waits for every append so far (tests, and the terminate path).
-    func flush() {
-        queue.sync {}
+    /// Waits for every append so far, but no longer than `timeout` (the terminate path, the final
+    /// review's m11): true when they were all written in time; false when the queue is still busy —
+    /// a write stuck on a volume that does not answer, a network home folder — and the caller goes
+    /// on without them.
+    func flush(within timeout: DispatchTimeInterval) -> Bool {
+        let drained = DispatchSemaphore(value: 0)
+        queue.async { drained.signal() }
+        return drained.wait(timeout: .now() + timeout) == .success
     }
 
-    /// Whether the writer has stopped, once every append so far has been written.
+    /// Returns once every append so far has been written, without blocking a thread (tests, which
+    /// wait for it through `CallUnderTest`, so a time limit can end the wait).
+    func flushed() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            queue.async { continuation.resume() }
+        }
+    }
+
+    /// Whether the writer has stopped, as of the appends written so far: read it after `flushed()`.
     var hasStopped: Bool {
-        queue.sync { state.withLock { $0.stopped } }
+        state.withLock { $0.stopped }
     }
 
     // MARK: - On the queue

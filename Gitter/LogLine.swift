@@ -12,12 +12,14 @@ enum LogLine {
     }
 
     /// "<time> git <0.012s> <directory>: <arguments> → <outcome>", and stderr as continuation lines
-    /// indented by four spaces, each line escaped.
+    /// indented by four spaces, each line escaped. The first line's parts are escaped one at a time,
+    /// each argument before it is quoted, so the quoting's own `'\''` is written as it is while a
+    /// backslash in the text is doubled.
     static func entry(_ entry: CommandLogEntry) -> String {
-        let arguments = entry.arguments.map(quoted).joined(separator: " ")
-        let first = "\(time(entry.started)) git \(seconds(entry.duration)) \(entry.directory): \(arguments) → "
-            + words(entry.outcome)
-        var lines = [escape(first)]
+        let arguments = entry.arguments.map { quoted(escape($0)) }.joined(separator: " ")
+        let first = "\(time(entry.started)) git \(seconds(entry.duration)) \(escape(entry.directory)): \(arguments) → "
+            + escape(words(entry.outcome))
+        var lines = [first]
         if let stderr = entry.stderr {
             // At each "\n" scalar: a "\r\n" is one `Character`, which a split by characters would
             // not break at, and its "\r" is escaped like any other.
@@ -28,7 +30,10 @@ enum LogLine {
         return lines.joined(separator: "\n")
     }
 
-    /// \n \r \t → "\\n" "\\r" "\\t"; other C0 controls and U+007F → "\\u{XX}"; everything else kept.
+    /// \n \r \t → "\\n" "\\r" "\\t"; a backslash → "\\\\", so a text holding one before an `n`
+    /// reads otherwise than an escaped newline; the other C0 controls, U+007F, the C1 controls
+    /// (U+0080–U+009F, NEL among them) and the line and paragraph separators U+2028 and U+2029,
+    /// which a text view may break a line at → "\\u{XX}"; everything else kept.
     static func escape(_ text: String) -> String {
         var escaped = ""
         escaped.unicodeScalars.reserveCapacity(text.unicodeScalars.count)
@@ -37,7 +42,8 @@ enum LogLine {
             case "\n": escaped += "\\n"
             case "\r": escaped += "\\r"
             case "\t": escaped += "\\t"
-            case "\u{0}"..."\u{1F}", "\u{7F}":
+            case "\\": escaped += "\\\\"
+            case "\u{0}"..."\u{1F}", "\u{7F}"..."\u{9F}", "\u{2028}", "\u{2029}":
                 escaped += "\\u{" + String(format: "%02X", scalar.value) + "}"
             default: escaped.unicodeScalars.append(scalar)
             }

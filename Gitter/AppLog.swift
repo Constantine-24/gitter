@@ -82,12 +82,28 @@ struct EventLog: Sendable {
         }
     }
 
-    /// Help › Show Logs: the log's folder — created if needed — opened in Finder, or an alert that
-    /// says why not.
+    /// How long the quit waits for the log's last lines (`flushBeforeQuit`).
+    static let quitFlushLimit: DispatchTimeInterval = .seconds(2)
+
+    /// The terminate path's flush: every line given to `writer` so far, waited for no longer than
+    /// `limit`, so a write stuck on a hung volume cannot hold the quit (the final review's m11).
+    /// True when all were written, false when the wait gave up, nil with no writer.
+    @discardableResult
+    static func flushBeforeQuit(_ writer: LogFileWriter?, within limit: DispatchTimeInterval = quitFlushLimit) -> Bool? {
+        writer?.flush(within: limit)
+    }
+
+    /// The folder Show Logs opens: the writer's own, or nil when this launch has no writer.
+    static func shownFolder(of writer: LogFileWriter?) -> URL? {
+        writer?.folder
+    }
+
+    /// Help › Show Logs: the writer's folder — created if needed — opened in Finder, or an alert that
+    /// says why not. A launch with no writer (`writerFolder` is nil: the test host, a scripted DEBUG
+    /// launch without `GITTER_LOG_DIR`) keeps no log, and the alert says so; the real
+    /// `~/Library/Logs/Gitter` is never made for it (the final review's T2-a).
     static func showLogs() {
-        let folder = writer?.fileURL.deletingLastPathComponent()
-            ?? folder(environment: ProcessInfo.processInfo.environment)
-        showLogs(folder: folder, open: { NSWorkspace.shared.open($0) }) { message in
+        showLogs(folder: shownFolder(of: writer), open: { NSWorkspace.shared.open($0) }) { message in
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.messageText = "Gitter couldn't show its logs"
@@ -98,7 +114,12 @@ struct EventLog: Sendable {
 
     /// `showLogs`, with Finder and the alert as seams (internal for tests, which never pass the real
     /// folder): makes `folder`, then opens it; when either fails, `tell` gets one sentence naming it.
-    static func showLogs(folder: URL, open: (URL) -> Bool, tell: (String) -> Void) {
+    /// With no folder, `tell` gets "This launch keeps no log." and nothing is made or opened.
+    static func showLogs(folder: URL?, open: (URL) -> Bool, tell: (String) -> Void) {
+        guard let folder else {
+            tell("This launch keeps no log.")
+            return
+        }
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         } catch {

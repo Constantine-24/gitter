@@ -1,4 +1,6 @@
 import Foundation
+import GitCoreTestSupport
+import Synchronization
 import Testing
 
 @testable import Gitter
@@ -31,17 +33,18 @@ struct LogTestFolder {
 /// P1 Task 2: the log file's writer — one serial queue, lines in order, rotation at the limit,
 /// a folder made again when it was deleted (RF2), every line whole under appends from many
 /// threads (RF1), and a writer that stops for good, without throwing, when it cannot write.
-/// Every writer here writes inside its own temporary folder.
-@Suite struct LogFileWriterTests {
+/// Every writer here writes inside its own temporary folder. Every wait for the writer's queue is
+/// `settle`, which a time limit can end (`CallUnderTest`, the final review's m5).
+@Suite(.timeLimit(.minutes(10))) struct LogFileWriterTests {
 
-    @Test func linesComeBackInOrderAfterAFlush() throws {
+    @Test func linesComeBackInOrderAfterAFlush() async throws {
         let folder = LogTestFolder()
         defer { folder.remove() }
         let writer = LogFileWriter(folder: folder.url)
         writer.append("one")
         writer.append("two words")
         writer.append("three")
-        writer.flush()
+        await settle(writer)
 
         #expect(writer.fileURL == folder.url.appending(path: "gitter.log"))
         #expect(try folder.lines() == ["one", "two words", "three"])
@@ -51,13 +54,13 @@ struct LogTestFolder {
     /// Seventy lines of 100 bytes each (the newline included) at a limit of 1 000: ten lines a
     /// file, six rotations. Five files are kept — `gitter.log` with the newest ten, then
     /// `gitter.1.log` … `gitter.4.log` going back — and the oldest twenty lines are gone.
-    @Test func theFileRotatesAtTheLimitKeepingFiveFiles() throws {
+    @Test func theFileRotatesAtTheLimitKeepingFiveFiles() async throws {
         let folder = LogTestFolder()
         defer { folder.remove() }
         let writer = LogFileWriter(folder: folder.url, limit: 1_000)
         let written = Self.hundredByteLines(70)
         for line in written { writer.append(line) }
-        writer.flush()
+        await settle(writer)
 
         #expect(
             try folder.names() == ["gitter.1.log", "gitter.2.log", "gitter.3.log", "gitter.4.log", "gitter.log"])
@@ -72,19 +75,19 @@ struct LogTestFolder {
     }
 
     /// The control for the rotation check: the rotated files counted are not six.
-    @Test func theRotationCheckCanFail() throws {
+    @Test func theRotationCheckCanFail() async throws {
         let folder = LogTestFolder()
         defer { folder.remove() }
         let writer = LogFileWriter(folder: folder.url, limit: 1_000)
         for line in Self.hundredByteLines(70) { writer.append(line) }
-        writer.flush()
+        await settle(writer)
         let rotated = try folder.names().filter { $0 != "gitter.log" }.count
         withKnownIssue("five files are kept, so four are rotated, not six") {
             #expect(rotated == 6)
         }
     }
 
-    @Test func aFolderThatCannotBeMadeStopsTheWriterWithoutThrowing() throws {
+    @Test func aFolderThatCannotBeMadeStopsTheWriterWithoutThrowing() async throws {
         let folder = LogTestFolder()
         defer { folder.remove() }
         try FileManager.default.createDirectory(at: folder.parent, withIntermediateDirectories: true)
@@ -94,10 +97,10 @@ struct LogTestFolder {
         let writer = LogFileWriter(folder: plain.appending(path: "logs"))
 
         writer.append("first")
-        writer.flush()
+        await settle(writer)
         #expect(writer.hasStopped)
         writer.append("second")
-        writer.flush()
+        await settle(writer)
         #expect(writer.hasStopped)
         #expect(!FileManager.default.fileExists(atPath: plain.appending(path: "logs").path))
         #expect(try Data(contentsOf: plain) == Data("not a folder".utf8))
@@ -105,17 +108,17 @@ struct LogTestFolder {
 
     /// RF2: the log's folder deleted while the app runs (the user cleaning up) is made again, with
     /// a new `gitter.log`, at the next line.
-    @Test func aDeletedFolderIsMadeAgainAtTheNextLine() throws {
+    @Test func aDeletedFolderIsMadeAgainAtTheNextLine() async throws {
         let folder = LogTestFolder()
         defer { folder.remove() }
         let writer = LogFileWriter(folder: folder.url)
         writer.append("before")
-        writer.flush()
+        await settle(writer)
         #expect(try folder.lines() == ["before"])
 
         try FileManager.default.removeItem(at: folder.url)
         writer.append("after")
-        writer.flush()
+        await settle(writer)
 
         #expect(try folder.lines() == ["after"])
         #expect(!writer.hasStopped)
@@ -123,14 +126,14 @@ struct LogTestFolder {
 
     /// RF1: eight threads appending at once lose no line, tear none and duplicate none, and each
     /// thread's lines stay in its own order.
-    @Test func appendsFromManyThreadsAreEachOneWholeLine() throws {
+    @Test func appendsFromManyThreadsAreEachOneWholeLine() async throws {
         let folder = LogTestFolder()
         defer { folder.remove() }
         let writer = LogFileWriter(folder: folder.url)
         DispatchQueue.concurrentPerform(iterations: 8) { thread in
             for index in 0..<200 { writer.append("thread \(thread) line \(index) " + String(repeating: "x", count: 40)) }
         }
-        writer.flush()
+        await settle(writer)
 
         let lines = try folder.lines()
         var expected = Set<String>()
@@ -150,18 +153,55 @@ struct LogTestFolder {
     /// M1: the file is opened to append, so a second writer on the same file — a Debug build beside
     /// the installed one — adds its lines after the first one's instead of over them. (Two writers
     /// rotating the same folder can still race: docs/BACKLOG.md.)
-    @Test func twoWritersOnOneFileOverwriteNothing() throws {
+    @Test func twoWritersOnOneFileOverwriteNothing() async throws {
         let folder = LogTestFolder()
         defer { folder.remove() }
         let one = LogFileWriter(folder: folder.url)
         let two = LogFileWriter(folder: folder.url)
         one.append("one first")
-        one.flush()
+        await settle(one)
         two.append("two first")
-        two.flush()
+        await settle(two)
         one.append("one second")
-        one.flush()
+        await settle(one)
         #expect(try folder.lines() == ["one first", "two first", "one second"])
+    }
+
+    /// m11: a write stuck on a hung volume holds the queue, and the bounded flush gives up on it at
+    /// its limit instead of waiting with it; once the volume answers, the line is written and the
+    /// writer goes on.
+    @Test func aWriterStuckOnAHungWriteDoesNotHoldTheBoundedFlush() async throws {
+        let folder = LogTestFolder()
+        defer { folder.remove() }
+        let volume = HangingFileManager()
+        let writer = LogFileWriter(folder: folder.url, fileManager: volume)
+        writer.append("first")
+        await settle(writer)
+        volume.hang()
+        defer { volume.answer() }
+        writer.append("second")
+
+        #expect(!writer.flush(within: .milliseconds(50)))
+
+        volume.answer()
+        await settle(writer)
+        #expect(try folder.lines() == ["first", "second"])
+        #expect(!writer.hasStopped)
+        #expect(volume.hangs == 1, "the stuck call was the writer's own check of its file")
+    }
+
+    /// The control: with nothing stuck, the bounded flush says every line is written.
+    @Test func anIdleWritersBoundedFlushSaysItIsDone() async throws {
+        let folder = LogTestFolder()
+        defer { folder.remove() }
+        let writer = LogFileWriter(folder: folder.url)
+        writer.append("one")
+        await settle(writer)
+        let done = writer.flush(within: .seconds(60))
+        #expect(done)
+        withKnownIssue("an idle writer's flush is done, not timed out") {
+            #expect(!done)
+        }
     }
 
     /// `count` distinct lines of 99 characters: 100 bytes each with the newline.
@@ -170,5 +210,49 @@ struct LogTestFolder {
             let number = String(format: "%03d ", index)
             return number + String(repeating: "x", count: 99 - number.count)
         }
+    }
+}
+
+/// Returns once every line given to `writer` so far is written — through `CallUnderTest`, so a
+/// queue that never drains ends at the test's time limit with `neverCameBack`, not with a hung run.
+func settle(_ writer: LogFileWriter, sourceLocation: SourceLocation = #_sourceLocation) async {
+    let call = CallUnderTest { () async -> Bool in
+        await writer.flushed()
+        return true
+    }
+    if await call.value("the log writer's queue draining", sourceLocation: sourceLocation) == nil {
+        call.cancel()
+    }
+}
+
+/// A `FileManager` whose `fileExists(atPath:)` — the writer's check of its file before each write
+/// to an open file — can be made to hang, as a call to a volume that does not answer would, until
+/// `answer()`.
+final class HangingFileManager: FileManager, @unchecked Sendable {
+    private let hanging = Mutex(false)
+    private let counted = Mutex(0)
+    private let gate = DispatchSemaphore(value: 0)
+
+    /// How many calls hung.
+    var hangs: Int { counted.withLock { $0 } }
+
+    /// The next `fileExists(atPath:)` hangs until `answer()`.
+    func hang() { hanging.withLock { $0 = true } }
+
+    /// Ends a hang (and any to come); a second call does nothing.
+    func answer() {
+        let wasHanging = hanging.withLock { state in
+            defer { state = false }
+            return state
+        }
+        if wasHanging { gate.signal() }
+    }
+
+    override func fileExists(atPath path: String) -> Bool {
+        if hanging.withLock({ $0 }) {
+            counted.withLock { $0 += 1 }
+            gate.wait()
+        }
+        return super.fileExists(atPath: path)
     }
 }

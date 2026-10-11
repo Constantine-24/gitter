@@ -35,9 +35,41 @@ import Testing
         #expect(LogLine.escape("a\u{0}b") == #"a\u{00}b"#)
         #expect(LogLine.escape("a\u{7F}b") == #"a\u{7F}b"#)
         #expect(LogLine.escape("a\u{1B}[31mb") == #"a\u{1B}[31mb"#)
-        #expect(LogLine.escape(#"café ✓ \ "q" 'q'"#) == #"café ✓ \ "q" 'q'"#)
+        #expect(LogLine.escape(#"café ✓ "q" 'q'"#) == #"café ✓ "q" 'q'"#)
         let escaped = LogLine.escape("one\ntwo\r\nthree\u{0}")
         #expect(!escaped.contains("\n") && !escaped.contains("\r") && !escaped.contains("\u{0}"))
+    }
+
+    /// The final review's m6: the C1 controls (NEL among them) and the line and paragraph
+    /// separators, which a text view may break a line at, are escaped too; and a backslash is
+    /// doubled, so a text holding a backslash and an `n` reads otherwise than an escaped newline.
+    @Test func c1ControlsSeparatorsAndABackslashAreEscaped() {
+        #expect(LogLine.escape("a\u{80}b") == #"a\u{80}b"#)
+        #expect(LogLine.escape("a\u{85}b") == #"a\u{85}b"#)
+        #expect(LogLine.escape("a\u{9F}b") == #"a\u{9F}b"#)
+        #expect(LogLine.escape("a\u{2028}b") == #"a\u{2028}b"#)
+        #expect(LogLine.escape("a\u{2029}b") == #"a\u{2029}b"#)
+        #expect(LogLine.escape(#"a\b"#) == #"a\\b"#)
+        #expect(LogLine.escape(#"a\nb"#) != LogLine.escape("a\nb"))
+        // Next to them, kept: U+00A0 (after the C1 block) and U+2027 (before the separators).
+        #expect(LogLine.escape("a\u{A0}b\u{2027}c") == "a\u{A0}b\u{2027}c")
+    }
+
+    /// The control for the backslash row: the escaped text is not the text as it was.
+    @Test func theBackslashCheckCanFail() {
+        withKnownIssue("a backslash is doubled, so it is not kept as it is") {
+            #expect(LogLine.escape(#"a\nb"#) == #"a\nb"#)
+        }
+    }
+
+    /// A quoted argument's `'\''` is written as it is: the escape runs on each part of a git line
+    /// before the quoting, so the quoting's own backslash is not doubled, while one in the argument is.
+    @Test func aQuotedArgumentsBackslashesReadOneWay() {
+        let entry = CommandLogEntry(
+            started: Date(), duration: .zero, directory: URL(fileURLWithPath: #"/tmp/a\b"#),
+            rawArguments: ["stash", "push", "--message", #"it's a\b"#], outcome: .succeeded, rawStderr: "")
+        let line = LogLine.entry(entry)
+        #expect(line.hasSuffix(#" git 0.000s /tmp/a\\b: stash push --message 'it'\''s a\\b' → ok"#), "\(line)")
     }
 
     @Test func anEventsTextIsEscaped() {

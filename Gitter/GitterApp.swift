@@ -240,11 +240,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The net: a quit event still held when the app goes is answered 0 before exit (A2b). And
-    /// every line given to the log so far is written before the process ends.
+    /// every line given to the log so far is written before the process ends — waited for at most
+    /// `AppLog.quitFlushLimit`, so a write stuck on a hung volume cannot hold the quit.
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
             QuitFlow.answerHeldQuitEvents(quitting: true)
-            AppLog.writer?.flush()
+            AppLog.flushBeforeQuit(AppLog.writer)
         }
     }
 

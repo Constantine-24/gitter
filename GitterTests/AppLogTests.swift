@@ -258,6 +258,56 @@ final class RecordingEventLog: Sendable {
         #expect(told.first?.contains(plain.appending(path: "logs").path) == true, "\(told)")
     }
 
+    /// T2-a: a launch with no writer — the test host, or a scripted DEBUG launch without its own
+    /// `GITTER_LOG_DIR` — keeps no log, so Show Logs says so and makes and opens nothing: before,
+    /// it fell back to `~/Library/Logs/Gitter` and made the real folder.
+    @Test func showLogsWithNoWriterSaysThisLaunchKeepsNoLog() {
+        var opened: [URL] = []
+        var told: [String] = []
+        AppLog.showLogs(folder: nil, open: { opened.append($0); return true }, tell: { told.append($0) })
+        #expect(opened.isEmpty)
+        #expect(told == ["This launch keeps no log."])
+        #if DEBUG
+            told = []
+            let scripted = AppLog.writerFolder(environment: ["GITTER_DEBUG_OPEN": "/tmp/fixture"], isRunningTests: false)
+            AppLog.showLogs(folder: scripted, open: { opened.append($0); return true }, tell: { told.append($0) })
+            #expect(opened.isEmpty)
+            #expect(told == ["This launch keeps no log."])
+        #endif
+    }
+
+    /// The folder Show Logs opens is the writer's own, and none without a writer.
+    @Test func showLogsOpensTheWritersFolder() {
+        let folder = LogTestFolder()
+        defer { folder.remove() }
+        #expect(AppLog.shownFolder(of: LogFileWriter(folder: folder.url)) == folder.url)
+        #expect(AppLog.shownFolder(of: nil) == nil)
+    }
+
+    /// m11: the quit's flush is bounded, so a writer stuck on a hung write does not hold the quit:
+    /// `flushBeforeQuit` comes back, saying the lines were not all written, and the line is written
+    /// once the volume answers.
+    @Test(.timeLimit(.minutes(10))) func aWriterStuckOnAHungWriteDoesNotHoldTheQuit() async throws {
+        let folder = LogTestFolder()
+        defer { folder.remove() }
+        let volume = HangingFileManager()
+        let writer = LogFileWriter(folder: folder.url, fileManager: volume)
+        writer.append("first")
+        await settle(writer)
+        volume.hang()
+        defer { volume.answer() }
+        writer.append("second")
+
+        #expect(AppLog.flushBeforeQuit(writer) == false)
+        #expect(AppLog.flushBeforeQuit(nil) == nil)
+
+        volume.answer()
+        await settle(writer)
+        #expect(try folder.lines() == ["first", "second"])
+        // The control: with nothing stuck, the same call says every line was written.
+        #expect(AppLog.flushBeforeQuit(writer, within: .seconds(60)) == true)
+    }
+
     @Test func showLogsSaysSoWhenFinderCannotOpenIt() throws {
         let folder = LogTestFolder()
         defer { folder.remove() }
