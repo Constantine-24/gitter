@@ -34,7 +34,7 @@ import AppKit
 /// answers the quit Apple Events held meanwhile (`wentAhead`, `calledOff`): 0, or −128.
 ///
 /// A window closed while its store writes is hidden, not closed (E3 Task 5): the question fronts it
-/// (`questionWindow`), and a hidden store's failure under Wait is told by its own hidden ending's
+/// (`frontWindowToAsk`), and a hidden store's failure under Wait is told by its own hidden ending's
 /// alert, not a second time by the call-off — whether that alert is answered before or after Wait
 /// (`callingOff`, `hasWindow`).
 ///
@@ -161,7 +161,7 @@ enum QuitGuard {
         // has), like every other question Gitter asks — a hidden one brought to the front first;
         // app-modal when there is no such window, or it is not on screen (minimized), raised from
         // the run loop so that every other window's work goes on under it (C3).
-        if let window = questionWindow(for: writing, in: AppModel.windows) {
+        if let window = frontWindowToAsk(about: writing, in: AppModel.windows) {
             alert.beginSheetModal(for: window.attachedSheet ?? window, completionHandler: answer)
         } else {
             ModalAlert.raise(alert, then: answer)
@@ -170,10 +170,12 @@ enum QuitGuard {
 
     /// The window the quit's question about `writing`'s write goes on as a sheet, or nil for an
     /// app-modal question: its window if on screen; a hidden one (E3 Task 5, closed by the user
-    /// while it wrote) brought to the front first (`WindowRegistry.show`), so the question has a
-    /// window — a hidden window is never restored, so the quit must not go unseen there (C4); nil
-    /// for no window (a closed one whose write still runs) or one not on screen otherwise.
-    static func questionWindow(for writing: RepositoryStore, in registry: WindowRegistry) -> NSWindow? {
+    /// while it wrote) **brought to the front first** (`WindowRegistry.show`, which makes it key,
+    /// clears `isHidden`, stops its ending's watcher and puts its repository back on the open
+    /// list), so the question has a window — a hidden window is never restored, so the quit must
+    /// not go unseen there (C4); nil for no window (a closed one whose write still runs) or one not
+    /// on screen otherwise. Not a lookup: named for what it does (final review M4).
+    static func frontWindowToAsk(about writing: RepositoryStore, in registry: WindowRegistry) -> NSWindow? {
         guard let window = registry.window(of: writing) else { return nil }
         if writing.isHidden {
             registry.show(writing)

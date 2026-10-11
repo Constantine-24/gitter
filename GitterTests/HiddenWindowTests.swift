@@ -259,7 +259,7 @@ import Testing
 
         // The quit: its question goes on the hidden window, brought to the front first.
         #expect(QuitGuard.decision(test.registry.stores.map(\.remoteActivity)) == .ask(writeAt: 0))
-        #expect(QuitGuard.questionWindow(for: busy, in: test.registry) === busyWindow)
+        #expect(QuitGuard.frontWindowToAsk(about: busy, in: test.registry) === busyWindow)
         #expect(recorder.fronted == [busyWindow])
         #expect(!busy.isHidden)
         #expect(test.registry.openRepositoryPaths == [shownPath(busyRepo)])
@@ -284,10 +284,10 @@ import Testing
         let window = Self.window()
         test.registry.attach(window, to: store)
 
-        #expect(QuitGuard.questionWindow(for: store, in: test.registry) == nil)
+        #expect(QuitGuard.frontWindowToAsk(about: store, in: test.registry) == nil)
         #expect(recorder.fronted.isEmpty)
         let windowless = test.registry.makeStore()
-        #expect(QuitGuard.questionWindow(for: windowless, in: test.registry) == nil)
+        #expect(QuitGuard.frontWindowToAsk(about: windowless, in: test.registry) == nil)
     }
 
     // MARK: - Opening it again
@@ -695,7 +695,7 @@ import Testing
         let lanes = stores.map(\.remoteActivity)
         #expect(QuitGuard.decision(lanes) == .ask(writeAt: 0))
         let messagesBefore = stores.map(\.laneMessagesToRead)
-        #expect(QuitGuard.questionWindow(for: stores[0], in: test.registry) != nil)
+        #expect(QuitGuard.frontWindowToAsk(about: stores[0], in: test.registry) != nil)
         #expect(!stores[0].isHidden)
         #expect(stores[1].isHidden)
         let compared = QuitGuard.beginWaiting(
@@ -747,7 +747,7 @@ import Testing
         defer { for store in stores { store.endTerminating() } }
         let lanes = stores.map(\.remoteActivity)
         let messagesBefore = stores.map(\.laneMessagesToRead)
-        #expect(QuitGuard.questionWindow(for: stores[0], in: test.registry) != nil)
+        #expect(QuitGuard.frontWindowToAsk(about: stores[0], in: test.registry) != nil)
 
         // The question is up: the hidden push is refused, and its alert answered Close.
         gates[1].release()
@@ -784,7 +784,7 @@ import Testing
         defer { for store in stores { store.endTerminating() } }
         let lanes = stores.map(\.remoteActivity)
         let messagesBefore = stores.map(\.laneMessagesToRead)
-        #expect(QuitGuard.questionWindow(for: stores[0], in: test.registry) != nil)
+        #expect(QuitGuard.frontWindowToAsk(about: stores[0], in: test.registry) != nil)
         let compared = QuitGuard.beginWaiting(
             stores, writesAsked: lanes.map { $0?.isWrite == true }, messagesBefore: messagesBefore)
 
