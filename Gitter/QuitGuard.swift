@@ -33,6 +33,10 @@ import AppKit
 /// is answered. Every answer of false ends the quit for `QuitFlow` (`quitEnded`). Every ending
 /// answers the quit Apple Events held meanwhile (`wentAhead`, `calledOff`): 0, or −128.
 ///
+/// A window closed while its store writes is hidden, not closed (E3 Task 5): the question fronts it
+/// (`questionWindow`), and a hidden store's failure under Wait is told by its own hidden ending's
+/// alert, not a second time by the call-off (`callingOff`).
+///
 /// **Not covered:** a SIGTERM (`kill`, a logout that force-quits) never reaches
 /// `applicationShouldTerminate`, and git is left running as before; and a mutation that is not
 /// on the lane (a merge, a commit) is not waited for. Both are in `docs/BACKLOG.md`.
@@ -153,14 +157,28 @@ enum QuitGuard {
             }
         }
         // As a sheet on the window showing the store with the write (or on the sheet it already
-        // has), like every other question Gitter asks; app-modal when that window is closed — a
-        // closed window's write still runs (`WindowRegistry.windowClosed`) — or not on screen,
-        // raised from the run loop so that every other window's work goes on under it (C3).
-        if let window = AppModel.windows.window(of: writing), window.isVisible {
+        // has), like every other question Gitter asks — a hidden one brought to the front first;
+        // app-modal when there is no such window, or it is not on screen (minimized), raised from
+        // the run loop so that every other window's work goes on under it (C3).
+        if let window = questionWindow(for: writing, in: AppModel.windows) {
             alert.beginSheetModal(for: window.attachedSheet ?? window, completionHandler: answer)
         } else {
             ModalAlert.raise(alert, then: answer)
         }
+    }
+
+    /// The window the quit's question about `writing`'s write goes on as a sheet, or nil for an
+    /// app-modal question: its window if on screen; a hidden one (E3 Task 5, closed by the user
+    /// while it wrote) brought to the front first (`WindowRegistry.show`), so the question has a
+    /// window — a hidden window is never restored, so the quit must not go unseen there (C4); nil
+    /// for no window (a closed one whose write still runs) or one not on screen otherwise.
+    static func questionWindow(for writing: RepositoryStore, in registry: WindowRegistry) -> NSWindow? {
+        guard let window = registry.window(of: writing) else { return nil }
+        if writing.isHidden {
+            registry.show(writing)
+            return window
+        }
+        return window.isVisible ? window : nil
     }
 
     /// Replies to the pending terminate once every lane is free — or, once `bound` has passed with
@@ -252,6 +270,15 @@ enum QuitGuard {
     /// its window having closed while its write ran — the alert that says what its banner would
     /// have said, so that no quit is called off silently (Ruling 10). Nil while no store calls it
     /// off (`storeCallingOff`).
+    ///
+    /// **A hidden window's store has a window** (`hasWindow` is `window(of:) != nil`, and a hidden
+    /// store keeps its window, E3 Task 5): its call-off brings no alert of its own, because the
+    /// store's own hidden ending already raises one — `WindowRegistry.hide` watches its work and,
+    /// when the work ends with something to read, says it in `HiddenEnding`'s alert with Show and
+    /// Close, whether a quit is held or not. So a failure under a held quit is told exactly once:
+    /// by this call-off for a store whose window really closed (E2's windowless store), by the
+    /// hidden ending for a hidden one. (A store fronted to be asked about is no longer hidden; its
+    /// banner is on screen.)
     struct CallOff {
         let store: RepositoryStore
         let windowlessAlert: String?

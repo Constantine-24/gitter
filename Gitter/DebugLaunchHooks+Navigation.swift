@@ -96,16 +96,29 @@
     ///                                (`WindowRegistry.open`, `.recentOrFinder`, no front window):
     ///                                a window of its own, or the one showing it brought to the
     ///                                front; then waits for its first snapshot and lists every
-    ///                                registered store. Refused, and the app quits, unless `<path>`
+    ///                                registered store, then how many windows AppKit still has
+    ///                                and how many are on screen. Refused, and the app quits, unless `<path>`
     ///                                is one of `GITTER_DEBUG_ALSO_OPEN`'s. The target stays.
     ///   inwindow:<n>                 makes the n-th registered store (1-based, in the order made)
     ///                                the target. Refused, and the app quits, for no such store.
     ///                                The menus still act on the front window (`menu:` says which).
+    ///
+    /// E3 Task 5's hidden windows (`WindowRegistry.hide`):
+    ///
+    ///   closewindow                  a user's close of the target's window (`performClose`, what
+    ///                                the close button, ⌘W and Close All send, C1), then
+    ///                                `closewindow: hidden | …` when its work keeps it (a write on
+    ///                                its lane, a change running) or `closewindow: closed | …`.
+    ///                                It does not wait for the work. A hidden target is still the
+    ///                                target and its steps still run (it is not closed); after a
+    ///                                real close every step is refused, as for any closed window.
+    ///                                Every store's line (`newwindow:`, `inwindow:`) tags a hidden
+    ///                                one `(hidden)`.
     extension DebugLaunchHooks {
 
         static let navigationCommands: Set<String> = Set([
             "filter", "sidebar", "worktrees", "worktreemenu", "openworktree", "pills", "watchloads", "firstresponder",
-            "reloadtiming", "newwindow", "inwindow",
+            "reloadtiming", "newwindow", "inwindow", "closewindow",
         ]).union(compareCommands).union(worktreeSheetCommands)
 
         private static let worktreeSheetCommands: Set<String> = [
@@ -176,6 +189,7 @@
                 let chosen = AppModel.windows.stores[n - 1]
                 target = chosen
                 log("inwindow: \(n) -> \(describeStore(chosen))")
+            case "closewindow": await closeWindow(store)
             case let compare where compareCommands.contains(compare):
                 await compareStep(command, rest: rest, store: store)
             case let sheet where worktreeSheetCommands.contains(sheet):
@@ -625,11 +639,29 @@
             for (index, store) in registry.stores.enumerated() {
                 log("newwindow: window \(index + 1): \(describeStore(store))")
             }
+            // A window closed for real is freed (C3): it leaves `NSApp.windows` too.
+            log("newwindow: NSApp.windows: \(NSApp.windows.count), on screen: \(NSApp.windows.filter(\.isVisible).count)")
+        }
+
+        /// `closewindow`: the close a user makes, through the window's own `performClose` — the
+        /// proxy hides it, or it closes as before E3 (E3 Task 5).
+        private static func closeWindow(_ store: RepositoryStore) async {
+            guard let window = window(of: store) else {
+                return log("closewindow: no window for \(describeStore(store))")
+            }
+            window.performClose(nil)
+            if !store.isHidden {
+                _ = await wait({ store.isClosed }, seconds: 2, what: "closewindow: the window's close")
+            }
+            let outcome = store.isHidden ? "hidden" : store.isClosed ? "closed" : "still open"
+            log("closewindow: \(outcome) | \(describeStore(store)) | windows on screen: "
+                + "\(NSApp.windows.filter(\.isVisible).count) of \(NSApp.windows.count)")
         }
 
         private static func describeStore(_ store: RepositoryStore) -> String {
             "store \(store.debugSerial) \(store.root?.path ?? "(empty)")"
-                + (store.isClosed ? " (closed)" : "") + (store === target ? " [target]" : "")
+                + (store.isClosed ? " (closed)" : "") + (store.isHidden ? " (hidden)" : "")
+                + (store === target ? " [target]" : "")
                 + (window(of: store)?.isKeyWindow == true || window(of: store)?.attachedSheet?.isKeyWindow == true
                     ? " [key]" : "")
         }

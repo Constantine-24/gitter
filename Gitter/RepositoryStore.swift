@@ -114,6 +114,17 @@ final class RepositoryStore {
     /// steps all honour it. A write already on the lane still finishes (`close()`).
     private(set) var isClosed = false
 
+    /// True while the store's window is hidden instead of closed, its work still running (E3
+    /// Task 5, `WindowRegistry.hide`): not closed — its watcher, lane and change go on, and an open
+    /// of its repository brings the window back. Set and cleared only by `WindowRegistry`
+    /// (`setHidden`): `hide`, `cameBack`, and the real close (`windowClosed`).
+    private(set) var isHidden = false
+
+    // internal (not private(set) write): used by WindowRegistry only
+    func setHidden(_ hidden: Bool) {
+        isHidden = hidden
+    }
+
     /// Told at the end of every `open()` that opened something, with the root before and after (the
     /// same one again for a reopen): the window registry's open-repositories list
     /// (`WindowRegistry.makeStore`). Not observed.

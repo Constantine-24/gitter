@@ -161,9 +161,12 @@ struct TestRegistry {
     let scratch = ScratchDefaults()
     let registry: WindowRegistry
 
-    init(recordsOpenList: Bool = true) {
+    /// `hiddenWindows`: what hiding does to a window — AppKit's own unless a test records it
+    /// (`HiddenWindowRecorder`, E3 Task 5).
+    init(recordsOpenList: Bool = true, hiddenWindows: HiddenWindowEnvironment = .live) {
         precondition(TestGitEnvironment.isolated)
-        registry = WindowRegistry(defaults: scratch.defaults, recordsOpenList: recordsOpenList)
+        registry = WindowRegistry(
+            defaults: scratch.defaults, recordsOpenList: recordsOpenList, hiddenWindows: hiddenWindows)
     }
 
     var defaults: UserDefaults { scratch.defaults }

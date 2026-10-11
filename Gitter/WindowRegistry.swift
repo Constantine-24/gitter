@@ -21,6 +21,16 @@ import Observation
 /// (`RepositoryStore.close()`). A store whose lane is busy stays registered, windowless, until the
 /// lane frees — a write is never cut short, and `QuitGuard` still sees it — and then leaves.
 ///
+/// **A window still working hides instead of closing** (E3 Task 5, spec Design §3): `attach` puts a
+/// `WindowCloseProxy` in as the window's delegate, and a user's close of a window whose store runs a
+/// write on its lane or a local change (`closeDecision`) hides it (`hide`): ordered out, its
+/// repository off the list, the store marked `isHidden` but not closed. An open of its repository
+/// fronts it again, and every way it comes back clears that (`cameBack`, from its
+/// `didBecomeKeyNotification`). If its work ends while it is still hidden, the window is closed for
+/// real — or, when the work ended with something to read, an alert says so first (`HiddenEnding`).
+/// What is done to the window goes through `hiddenWindows` (`HiddenWindowEnvironment`), recorded in
+/// tests.
+///
 /// **The open-repositories list** (`openRepositoriesKey` in `defaults`, a `[String]` of
 /// `RepositoryWindow` paths) is what launch reopens, instead of macOS restoration (which is off,
 /// M2.1):
@@ -42,11 +52,11 @@ final class WindowRegistry {
     /// Whether the open-repositories list is written at all.
     @ObservationIgnored let recordsOpenList: Bool
 
-    /// Every registered store, in the order made: one per open window, and a closed window's for as
-    /// long as its lane is busy.
+    /// Every registered store, in the order made: one per open window — a hidden one's too — and a
+    /// closed window's for as long as its lane is busy.
     private(set) var stores: [RepositoryStore] = []
 
-    /// The stores whose window is still open, in order.
+    /// The stores whose window is still open, in order: on screen, or hidden (`hide`).
     var liveStores: [RepositoryStore] { stores.filter { !$0.isClosed } }
 
     /// Set once the app is quitting for sure — `QuitGuard`'s `.terminateNow` or reply of true — and
@@ -72,14 +82,35 @@ final class WindowRegistry {
 
     @ObservationIgnored private var windows: [ObjectIdentifier: WeakWindow] = [:]
     @ObservationIgnored private var closeObservers: [ObjectIdentifier: any NSObjectProtocol] = [:]
+    /// Each store's window's `didBecomeKeyNotification` observer (`cameBack`), by store.
+    @ObservationIgnored private var keyObservers: [ObjectIdentifier: any NSObjectProtocol] = [:]
+
+    /// What hiding does to a window: AppKit in the app, a recorder in tests.
+    @ObservationIgnored let hiddenWindows: HiddenWindowEnvironment
+
+    /// Each window's `WindowCloseProxy`, by window — its delegate holds it weakly (C1). Kept with
+    /// the window it was made for, since a window freed can leave its address to the next.
+    @ObservationIgnored private var proxies: [ObjectIdentifier: (window: WeakWindow, proxy: WindowCloseProxy)] = [:]
+
+    /// What a hidden store had to read when it was hidden, and which hide that was: a store shown
+    /// again and hidden again is watched by the newest hide only. By store.
+    @ObservationIgnored private var hidden: [ObjectIdentifier: HiddenAt] = [:]
+    @ObservationIgnored private var hides = 0
+
+    private struct HiddenAt {
+        let serial: Int
+        let errorAtHide: String?
+        let messagesAtHide: Int
+    }
 
     private struct WeakWindow {
         weak var window: NSWindow?
     }
 
-    init(defaults: UserDefaults, recordsOpenList: Bool) {
+    init(defaults: UserDefaults, recordsOpenList: Bool, hiddenWindows: HiddenWindowEnvironment = .live) {
         self.defaults = defaults
         self.recordsOpenList = recordsOpenList
+        self.hiddenWindows = hiddenWindows
     }
 
     // MARK: - Stores
@@ -100,7 +131,8 @@ final class WindowRegistry {
     }
 
     /// The open window's store showing `url`, compared as `RepositoryWindow` paths: links followed,
-    /// `.`, `..` and a trailing slash gone (RF2).
+    /// `.`, `..` and a trailing slash gone (RF2). A hidden window's store is one of them: it is
+    /// live, and an open of its repository brings it back (`open`, `.front`).
     func store(showing url: URL) -> RepositoryStore? {
         let wanted = RepositoryWindow(url: url)
         return liveStores.first { $0.root.map(RepositoryWindow.init(url:)) == wanted }
@@ -139,7 +171,7 @@ final class WindowRegistry {
     func open(_ url: URL, kind: OpenKind, front: RepositoryStore?) -> OpenRoute {
         let route = route(url, kind: kind, front: front)
         switch route {
-        case .front(let store): window(of: store)?.makeKeyAndOrderFront(nil)
+        case .front(let store): show(store)
         case .useFront(let store): store.open(url)
         case .refused(let store):
             if let refusal = RepositoryStore.notARepository(url) { store.showStickyError(refusal) }
@@ -176,12 +208,17 @@ final class WindowRegistry {
     // MARK: - Windows
 
     /// `window` shows `store` (weakly held): from now on its `willCloseNotification` closes the
-    /// store. Again for the same window does nothing; nothing for a closed store.
+    /// store, its `didBecomeKeyNotification` brings a hidden one back (`cameBack`), and a user's
+    /// close of it asks `closeDecision` first, through the `WindowCloseProxy` put in as its
+    /// delegate — once per window, keeping the delegate it had (SwiftUI's) as the original. Again
+    /// for the same window does nothing; nothing for a closed store.
     func attach(_ window: NSWindow, to store: RepositoryStore) {
         guard !store.isClosed else { return }
         let key = ObjectIdentifier(store)
         if windows[key]?.window === window { return }
-        if let observer = closeObservers[key] { NotificationCenter.default.removeObserver(observer) }
+        for observers in [closeObservers, keyObservers] {
+            if let observer = observers[key] { NotificationCenter.default.removeObserver(observer) }
+        }
         windows[key] = WeakWindow(window: window)
         closeObservers[key] = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification, object: window, queue: .main
@@ -191,6 +228,36 @@ final class WindowRegistry {
                 self.windowClosed(store)
             }
         }
+        keyObservers[key] = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
+        ) { [weak self, weak store] _ in
+            MainActor.assumeIsolated {
+                guard let self, let store else { return }
+                self.cameBack(store)
+            }
+        }
+        installProxy(on: window)
+    }
+
+    /// Puts a `WindowCloseProxy` in as `window`'s delegate, unless it has one already. The proxy
+    /// asks about whichever store the window shows when the close comes.
+    private func installProxy(on window: NSWindow) {
+        let id = ObjectIdentifier(window)
+        if let installed = proxies[id], installed.window.window === window { return }
+        let proxy = WindowCloseProxy(
+            original: window.delegate,
+            shouldHide: { [weak self, weak window] in
+                guard let self, let window, let store = self.liveStores.first(where: { self.window(of: $0) === window })
+                else { return false }
+                return Self.closeDecision(remoteActivity: store.remoteActivity, isMutating: store.isMutating) == .hide
+            },
+            hide: { [weak self, weak window] in
+                guard let self, let window, let store = self.liveStores.first(where: { self.window(of: $0) === window })
+                else { return }
+                self.hide(store)
+            })
+        proxies[id] = (WeakWindow(window: window), proxy)
+        window.delegate = proxy
     }
 
     /// The window showing `store`; nil before it is attached and once it has closed.
@@ -200,14 +267,18 @@ final class WindowRegistry {
 
     /// `store`'s window has closed: the store is closed (`RepositoryStore.close()`), its repository
     /// leaves the list unless another window shows it or the app is terminating, and the store
-    /// leaves the registry — now, or once its busy lane frees. A second call does nothing.
+    /// leaves the registry — now, or once its busy lane frees. A hidden one is hidden no more. A
+    /// second call does nothing.
     func windowClosed(_ store: RepositoryStore) {
         guard stores.contains(where: { $0 === store }), !store.isClosed else { return }
         store.close()
         let key = ObjectIdentifier(store)
-        if let observer = closeObservers.removeValue(forKey: key) {
-            NotificationCenter.default.removeObserver(observer)
+        for observer in [closeObservers.removeValue(forKey: key), keyObservers.removeValue(forKey: key)] {
+            if let observer { NotificationCenter.default.removeObserver(observer) }
         }
+        hidden[key] = nil
+        store.setHidden(false)
+        if let window = windows[key]?.window { dropProxy(of: window) }
         windows[key] = nil
         if !isTerminating, let root = store.root {
             let path = RepositoryWindow(url: root).path
@@ -216,18 +287,145 @@ final class WindowRegistry {
         dropWhenLaneFree(store)
     }
 
+    /// Lets go of `window`'s proxy — on the next turn, not now: this runs inside the window's
+    /// `willCloseNotification`, which AppKit may still be delivering to the delegate (SwiftUI's own
+    /// `windowWillClose:`, through the proxy), and the window holds its delegate weakly.
+    private func dropProxy(of window: NSWindow) {
+        let id = ObjectIdentifier(window)
+        guard let installed = proxies[id], installed.window.window === window else { return }
+        let proxy = installed.proxy
+        Task { @MainActor [weak self] in
+            guard let self, self.proxies[id]?.proxy === proxy else { return }
+            self.proxies[id] = nil
+        }
+    }
+
     /// Leaves the registry once `store`'s lane is free: at once, or when it frees (watched through
     /// Observation, so the write's own completion is what lets the store go).
     private func dropWhenLaneFree(_ store: RepositoryStore) {
-        let busy = withObservationTracking {
-            store.remoteActivity != nil
+        whenFree(store, busy: { $0.remoteActivity != nil }) { [weak self] store in
+            self?.stores.removeAll { $0 === store }
+        }
+    }
+
+    /// Runs `then` once `busy` is false for `store`: at once, or when what it reads changes so
+    /// (watched through Observation, so the work's own ending is what runs it). `then` is not run
+    /// for a store gone meanwhile; `busy` itself decides when the watching stops.
+    private func whenFree(
+        _ store: RepositoryStore, busy: @escaping @MainActor (RepositoryStore) -> Bool,
+        then: @escaping @MainActor (RepositoryStore) -> Void
+    ) {
+        let isBusy = withObservationTracking {
+            busy(store)
         } onChange: { [weak self, weak store] in
             Task { @MainActor in
                 guard let self, let store else { return }
-                self.dropWhenLaneFree(store)
+                self.whenFree(store, busy: busy, then: then)
             }
         }
-        if !busy { stores.removeAll { $0 === store } }
+        if !isBusy { then(store) }
+    }
+
+    // MARK: - Hiding a window still working (E3 Task 5)
+
+    /// What a user's close of a window does (the proxy's `windowShouldClose`): **hide** when its
+    /// store's lane runs a write (`remoteActivity?.isWrite == true`) or a change is running
+    /// (`isMutating`: a commit, a merge, a pull's merge, a prune's deletes…); otherwise **close**,
+    /// as before E3 — a read on the lane is then stopped by `close()`.
+    static func closeDecision(remoteActivity: RemoteActivity?, isMutating: Bool) -> CloseDecision {
+        remoteActivity?.isWrite == true || isMutating ? .hide : .close
+    }
+
+    /// Hides `store`'s window instead of closing it (its proxy, on a close `closeDecision` says
+    /// to hide): ordered out — out of the Window menu, with nothing that means "closed" firing
+    /// (C2) — the store marked `isHidden` (not closed: its watcher, lane and change go on), its
+    /// repository off the list as a closed window's is, and what it had to read noted
+    /// (`lastError`, `laneMessagesToRead`). Then watched: once its work is no longer busy
+    /// (`closeDecision`) while it is still hidden, `HiddenEnding.decide` says whether the window
+    /// closes for real or an alert comes first. Nothing for a closed, hidden or windowless store; a
+    /// store not busy (the proxy never hides one) is decided at once, so its window closes for real
+    /// — or alerts — before this returns.
+    func hide(_ store: RepositoryStore) {
+        guard !store.isClosed, !store.isHidden, let window = window(of: store) else { return }
+        hiddenWindows.orderOut(window)
+        store.setHidden(true)
+        if !isTerminating, let root = store.root {
+            let path = RepositoryWindow(url: root).path
+            if !isShown(path, besides: store) { writeList(openRepositoryPaths.filter { $0 != path }) }
+        }
+        hides += 1
+        let serial = hides
+        let key = ObjectIdentifier(store)
+        hidden[key] = HiddenAt(serial: serial, errorAtHide: store.lastError, messagesAtHide: store.laneMessagesToRead)
+        whenFree(store, busy: { [weak self] store in
+            // A store shown again, closed, or hidden again since is this hide's no more: stop.
+            guard let self, self.hidden[key]?.serial == serial, store.isHidden, !store.isClosed else { return false }
+            return Self.closeDecision(remoteActivity: store.remoteActivity, isMutating: store.isMutating) == .hide
+        }) { [weak self] store in
+            guard let self, let at = self.hidden[key], at.serial == serial, store.isHidden, !store.isClosed else { return }
+            self.workEnded(store, hiddenAt: at)
+        }
+    }
+
+    /// `store`'s window is back on screen (its `didBecomeKeyNotification`: an open of its
+    /// repository, SwiftUI's `openWindow(value:)` — which fronts the hidden window itself (C2) —
+    /// the alert's Show, `QuitGuard` fronting it to ask): no longer hidden, its repository back on
+    /// the list, and its work no longer watched — it ends on screen as anyone's does. Nothing for
+    /// a store that is not hidden.
+    func cameBack(_ store: RepositoryStore) {
+        guard store.isHidden, !store.isClosed else { return }
+        store.setHidden(false)
+        hidden[ObjectIdentifier(store)] = nil
+        if !isTerminating, let root = store.root {
+            let path = RepositoryWindow(url: root).path
+            let list = openRepositoryPaths
+            if !list.contains(path) { writeList(list + [path]) }
+        }
+    }
+
+    /// Brings `store`'s window to the front — made key, out of the Dock if it was there — and, if
+    /// it was hidden, back (`cameBack`; its own signal would say so too, a moment later).
+    func show(_ store: RepositoryStore) {
+        guard let window = window(of: store) else { return }
+        hiddenWindows.front(window)
+        cameBack(store)
+    }
+
+    /// The work of hidden `store` has ended: its window is closed for real, or the alert comes
+    /// first with what it has to read (`HiddenEnding`). Show brings the window back with its
+    /// banner; Close closes it for real — if it is still this hide's (not shown again since).
+    private func workEnded(_ store: RepositoryStore, hiddenAt at: HiddenAt) {
+        hidden[ObjectIdentifier(store)] = nil
+        let ending = HiddenEnding.decide(
+            repository: store.root?.lastPathComponent, errorAtHide: at.errorAtHide, errorNow: store.lastError,
+            messagesAtHide: at.messagesAtHide, messagesNow: store.laneMessagesToRead,
+            lastMessage: store.lastLaneMessageToRead)
+        switch ending {
+        case .close:
+            closeForReal(store)
+        case .alert(let text):
+            hiddenWindows.alert(text) { [weak self, weak store] choice in
+                guard let self, let store, !store.isClosed else { return }
+                switch choice {
+                case .show: self.show(store)
+                case .close:
+                    // Shown again while the alert was up (or hidden again since): it is on screen,
+                    // or watched by its newer hide.
+                    guard store.isHidden, self.hidden[ObjectIdentifier(store)] == nil else { return }
+                    self.closeForReal(store)
+                }
+            }
+        }
+    }
+
+    /// Closes hidden `store`'s window for real (`HiddenWindowEnvironment.realClose`: ordered in
+    /// first, or it is never freed, C3), then `windowClosed` as for any close — its lane is free of
+    /// a write, so the store leaves the registry (a read still on it is stopped by `close()`).
+    private func closeForReal(_ store: RepositoryStore) {
+        if let window = window(of: store) { hiddenWindows.realClose(window) }
+        // The close's own `willCloseNotification` has run this already in the app; a recorder
+        // closes nothing.
+        windowClosed(store)
     }
 
     // MARK: - Quitting
@@ -316,9 +514,12 @@ final class WindowRegistry {
         writeList(list)
     }
 
-    /// Whether an open window other than `store`'s shows `path`.
+    /// Whether an open window other than `store`'s shows `path` — on screen: a hidden one shows
+    /// nothing.
     private func isShown(_ path: String, besides store: RepositoryStore) -> Bool {
-        liveStores.contains { $0 !== store && $0.root.map { RepositoryWindow(url: $0).path } == path }
+        liveStores.contains {
+            $0 !== store && !$0.isHidden && $0.root.map { RepositoryWindow(url: $0).path } == path
+        }
     }
 
     /// Writes the list — never when this registry keeps none, and not when nothing changed.
@@ -365,4 +566,80 @@ enum OpenRoute: Equatable {
         default: false
         }
     }
+}
+
+/// What a user's close of a repository window does (`WindowRegistry.closeDecision`).
+enum CloseDecision: Equatable {
+    case close
+    case hide
+}
+
+/// How the work of a hidden window ended (`WindowRegistry.hide`).
+enum HiddenEnding: Equatable {
+    /// Nothing new to read: the window closes for real.
+    case close
+    /// `<repository>: <the message>`, for the alert (`RemoteWording.closedWindowFailedTitle`).
+    case alert(String)
+
+    /// Pure: the store had something new to read since it was hidden — a lane ending counted
+    /// (`laneMessagesToRead` moved; its own words, `lastMessage`), or a banner that was not up
+    /// when it was hidden (`lastError`) — → the alert; otherwise close. A banner already up before
+    /// the hide, and unchanged, was seen.
+    static func decide(
+        repository: String?, errorAtHide: String?, errorNow: String?,
+        messagesAtHide: Int, messagesNow: Int, lastMessage: String?
+    ) -> HiddenEnding {
+        let message: String?
+        if messagesNow != messagesAtHide, let lastMessage {
+            message = lastMessage
+        } else if let errorNow, errorNow != errorAtHide {
+            message = errorNow
+        } else {
+            message = nil
+        }
+        guard let message else { return .close }
+        return .alert(repository.map { "\($0): \(message)" } ?? message)
+    }
+}
+
+/// What hiding a window does to it (`WindowRegistry.hiddenWindows`): AppKit in the app (`live`); a
+/// test records the calls instead.
+struct HiddenWindowEnvironment {
+    /// What the alert's two buttons answer.
+    enum Choice: Equatable {
+        case show, close
+    }
+
+    var orderOut: @MainActor (NSWindow) -> Void
+    var front: @MainActor (NSWindow) -> Void
+    /// The real close of a hidden window.
+    var realClose: @MainActor (NSWindow) -> Void
+    /// The app-modal alert for a hidden window's ending, its text the informative text; `answer`
+    /// gets the button pressed.
+    var alert: @MainActor (_ text: String, _ answer: @escaping @MainActor (Choice) -> Void) -> Void
+
+    static let live = HiddenWindowEnvironment(
+        orderOut: { $0.orderOut(nil) },
+        front: { $0.makeKeyAndOrderFront(nil) },
+        // Ordered in first, in the same turn: a window closed while hidden fires `willClose` but is
+        // never freed, its view tree and store with it (C3); ordered in at alpha 0 it is, without a
+        // flash.
+        realClose: { window in
+            window.alphaValue = 0
+            window.orderFront(nil)
+            window.close()
+        },
+        alert: { text, answer in
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = RemoteWording.closedWindowFailedTitle
+            alert.informativeText = text
+            // First button: the default, Return.
+            alert.addButton(withTitle: RemoteWording.closedWindowShow)
+            alert.addButton(withTitle: RemoteWording.closedWindowClose)
+            // From the run loop, so every other window's work goes on under it (C3).
+            ModalAlert.raise(alert) { response in
+                answer(response == .alertFirstButtonReturn ? .show : .close)
+            }
+        })
 }

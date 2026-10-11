@@ -31,10 +31,10 @@
     ///     open:<path>                  menu:<title>        views[:<class>]     badges
     ///     autofetchfailed:<reason>     copyurls
     ///     quit                         alert               alertbutton:<title>
-    ///     quitevent
+    ///     quitevent                    alertsnapshot:<name>
     ///     menuitem:<menu>:<title>
     ///     notice                       openlink
-    ///     newwindow:<path>             inwindow:<n>
+    ///     newwindow:<path>             inwindow:<n>                 closewindow
     ///
     ///   The stash (`RepositoryStore+Stash`, `DebugLaunchHooks+Stash`):
     ///
@@ -166,9 +166,12 @@
     /// window's store the menus act on (the front one's, `menu <title>: front window: …`). Both
     /// make the app frontmost first when none of its windows is key (`bringToFront`). None of
     /// the three waits for a step's work to finish, nor does `quitevent`. `alert` logs every text
-    /// and button (with its key equivalent) of each sheet on screen: the snapshot draws an alert's
-    /// frame and its tinted buttons but not its text, which is drawn with vibrancy (the sidebar's
-    /// problem, below).
+    /// and button (with its key equivalent) of each sheet on screen, and of the app-modal alert
+    /// if one is up (`app-modal …`, `ModalAlert`'s): the snapshot draws an alert's frame and its
+    /// tinted buttons but not its text, which is drawn with vibrancy (the sidebar's problem,
+    /// below). `alertbutton:` looks in the app-modal alert first. `alertsnapshot:<name>` draws
+    /// the app-modal alert's own window (`cacheDisplay`, which draws an alert's text) into the
+    /// snapshot folder, as `snapshot:` renders the target's (E3 Task 5).
     ///
     /// `notice` logs both notice slots — each one's text, links and button titles:
     /// `notice transient: <…> | links: [...] | actions: [...]` and the same for `sticky`.
@@ -227,6 +230,7 @@
                 // opens a sheet sets neither and this returns at once.
                 if started || text.hasPrefix("wait:") || text == "quit" || text == "quitevent"
                     || text == "alert" || text.hasPrefix("alertbutton:") || text.hasPrefix("menuitem:")
+                    || text == "closewindow"
                 {
                     // Nothing to wait for: the point is to carry on while it runs.
                 } else if laneWasBusy && text != "cancel" && text != "idle" {
@@ -372,6 +376,14 @@
                 // Past the banners' insertion animation, so they are drawn at full opacity.
                 try? await Task.sleep(for: .milliseconds(800))
                 first.map { snapshot(named: $0, store: store) }
+            case "alertsnapshot":
+                // The app-modal alert's own window, nothing else on screen (E3 Task 5).
+                try? await Task.sleep(for: .milliseconds(300))
+                if let first, let modal = NSApp.modalWindow {
+                    write(cachedImage(of: modal), named: first)
+                } else {
+                    log("snapshot failed: \(first ?? "") (no app-modal alert)")
+                }
             // "Open Repository…" mid-script, e.g. while a push is on the lane. The path is the
             // rest of the step, colons and all. Once this window shows another repository, the
             // launch guard refuses every step after this one, unless that repository is one
@@ -411,9 +423,16 @@
                 for window in NSApp.windows where window.sheetParent != nil && window.isVisible {
                     logControls(in: window.contentView, window: "\(type(of: window))")
                 }
+                // An app-modal alert (`ModalAlert`): a window of its own, no sheet's parent.
+                if let modal = NSApp.modalWindow, modal.sheetParent == nil {
+                    logControls(in: modal.contentView, window: "app-modal \(type(of: modal))")
+                }
             case "alertbutton":
                 let title = String(step.dropFirst("alertbutton:".count))
-                let button = NSApp.windows.lazy.compactMap { findButton(title, in: $0.contentView) }
+                // The app-modal alert's first: a hidden repository window may draw a button of
+                // the same title (a sheet's Close), and it comes earlier in `NSApp.windows`.
+                let windows = [NSApp.modalWindow].compactMap { $0 } + NSApp.windows
+                let button = windows.lazy.compactMap { findButton(title, in: $0.contentView) }
                     .first
                 if let button {
                     button.performClick(nil)
@@ -586,7 +605,7 @@
         /// its text layers hold vibrancy-tinted contents, `CATintedImage`, which
         /// `render(in:)` skips. The `badges` step logs what its rows draw instead.)
         private static func snapshot(named name: String, store: RepositoryStore) {
-            guard let dir = ProcessInfo.processInfo.environment["GITTER_DEBUG_SNAPSHOT_DIR"],
+            guard ProcessInfo.processInfo.environment["GITTER_DEBUG_SNAPSHOT_DIR"] != nil,
                 let window = window(of: store),
                 let main = image(of: window)
             else {
@@ -603,6 +622,16 @@
                     drawn.draw(in: NSRect(origin: origin, size: drawn.size))
                 }
                 return true
+            }
+            write(composed, named: name)
+        }
+
+        /// `image` as `<GITTER_DEBUG_SNAPSHOT_DIR>/<name>.png`, logged.
+        private static func write(_ image: NSImage?, named name: String) {
+            guard let dir = ProcessInfo.processInfo.environment["GITTER_DEBUG_SNAPSHOT_DIR"], let composed = image
+            else {
+                log("snapshot failed: \(name)")
+                return
             }
             guard let tiff = composed.tiffRepresentation,
                 let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
@@ -640,6 +669,19 @@
                 }
                 for child in view.subviews.reversed() { stack.append((child, depth + 1)) }
             }
+        }
+
+        /// An AppKit-only window (an `NSAlert`'s panel) drawn through `cacheDisplay`, which draws
+        /// its text and buttons — the layer render (`image(of:)`) leaves out what is drawn with
+        /// vibrancy, which in an alert is all of it but the icon (measured, E3 Task 5).
+        private static func cachedImage(of window: NSWindow) -> NSImage? {
+            guard let view = window.contentView?.superview ?? window.contentView,
+                let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+            else { return nil }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            let image = NSImage(size: view.bounds.size)
+            image.addRepresentation(rep)
+            return image
         }
 
         private static func image(of window: NSWindow) -> NSImage? {

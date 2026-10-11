@@ -383,6 +383,13 @@ enum RemoteWording {
         return "\(whose) ended with something to read:\n\n\(told)"
     }
 
+    /// The alert for a hidden window whose work ended with something to read (E3 Task 5,
+    /// `HiddenEnding.alert`): its text is the informative text, **Show** brings the window back
+    /// with its banner, **Close** closes it for real.
+    static let closedWindowFailedTitle = "A closed window's change didn't finish"
+    static let closedWindowShow = "Show"
+    static let closedWindowClose = "Close"
+
     static let quitWait = "Wait"
     static let quitStop = "Stop and Quit"
     static let quitCancel = "Don't Quit"
