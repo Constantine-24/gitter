@@ -235,6 +235,8 @@ anyone, because it holds:
     (`me:p(ss)@host: Permission denied`, as ssh can print it): these are redacted by pattern, and a
     password holding `'`, `(`, `)` or a blank can stay. Such a line takes a URL or an ssh address
     you wrote with its password in it;
+  - in git's words only, a second URL joined to the first with no blank between them (only the
+    first `://` in each blank-separated word is read); git is not known to print one;
 - **as shown:** banners and notices, word for word as they were on screen.
 
 **Bringing a log back.** Use Help › Show Logs, then copy the `gitter*.log` files (or the whole

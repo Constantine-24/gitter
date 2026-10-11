@@ -793,9 +793,9 @@ words when it failed) and every banner, notice and alert it showed go to
 window's open and close. A URL's username and password are removed from every argument, and from
 every `scheme://` URL in git's words, by structure; what is left is in
 [`docs/INSTALL.md`](docs/INSTALL.md) §7 — a password with an unencoded `/`, `?` or `#`, and in git's
-words a password with a blank or an address without `://`, which get a pattern redactor only. The
-file rotates at 2 MB and keeps five; nothing leaves the Mac, and a quit waits at most two seconds for
-its last lines. **Help › Show Logs** opens the folder in Finder. The tests never install the file
+words a password with a blank, an address without `://` or a second URL in the same word, which
+get a pattern redactor only. The file rotates at 2 MB and keeps five; nothing leaves the Mac, and a
+quit waits at most two seconds for its last lines. **Help › Show Logs** opens the folder in Finder. The tests never install the file
 (`TestHost`), and a Debug harness launch writes only to the folder its `GITTER_LOG_DIR` names — none
 at all without one, where Show Logs says "This launch keeps no log."
 

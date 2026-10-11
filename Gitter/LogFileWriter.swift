@@ -7,7 +7,8 @@ import Synchronization
 /// A serial `DispatchQueue`, not an actor (the plan's correction 1): `CommandLog.record` is
 /// synchronous and called from any thread, and `queue.async` keeps the order lines were given in,
 /// which unstructured tasks into an actor would not. Every write happens on the queue; the state
-/// is in a `Mutex` touched only there.
+/// is in a `Mutex` that a write holds for its whole length, so `hasStopped`, the one read from off
+/// the queue, waits behind a write that hangs.
 final class LogFileWriter: Sendable {
     /// folder/gitter.log; rotated files are gitter.1.log … gitter.<keep-1>.log.
     let fileURL: URL

@@ -180,6 +180,7 @@ struct LogTestFolder {
         volume.hang()
         defer { volume.answer() }
         writer.append("second")
+        while volume.hangs == 0 { try? await Task.sleep(for: .milliseconds(5)) }
 
         #expect(!writer.flush(within: .milliseconds(50)))
 
