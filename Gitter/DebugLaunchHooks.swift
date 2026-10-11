@@ -184,7 +184,8 @@
         /// the bottom third of it; asking for the screen's full height is what gets a whole
         /// diff into one frame. (Anything beyond the screen is clipped away by the compositor,
         /// so asking for more than that buys nothing.)
-        private static func resize(to spec: String) {
+        // internal (not private): also the `resize:` step's (DebugLaunchHooks+Layout.swift)
+        static func resize(to spec: String) {
             let parts = spec.split(separator: "x").compactMap { Double($0) }
             guard parts.count == 2, let window = NSApp.windows.first(where: \.isVisible) else {
                 return

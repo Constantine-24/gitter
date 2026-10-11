@@ -1005,7 +1005,7 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   final review probed; and three pins of what is still kept: an scp-form password with a parenthesis
   in git's words, and a password with an unencoded `/` in two URLs.
 
-`GitterTests` reports **forty-one known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
+`GitterTests` reports **forty-four known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
 shows that the operation gate alone lets a branch another worktree holds through, which is why
 the switch asks about the hold first. Three come from `DefaultsIsolationTests`: the check that
 the real defaults are unchanged fails when a store writes the domain it watches (a scratch
@@ -1052,14 +1052,18 @@ queue (`settle`) on a writer stuck on a hung write is reported as never having c
 a banner's line from a store that was not given the recorder, and a window's close line where no quit
 began; `LogLineTests` expects a backslash kept as it is, where it is doubled.
 
+Three come from the window polish: `AppIconTests` looks up an icon the bundle does not have and an
+icon name its `Info.plist` does not give (two), and `SplitViewAutosaveTests` expects the outer split
+view, the sidebar's, where the one a pane sits in is the nearest.
+
 Deleting any of them would take the proof away and the suite would go on looking green.
 
 ## Project layout
 
-Every `.swift` file in the two product targets and the test-support library beside GitCore — 209
+Every `.swift` file in the two product targets and the test-support library beside GitCore — 211
 of them, which is what `find GitCore/Sources Gitter -name '*.swift' | wc -l` prints — with the ones
-inside `Models/`, `Parsers/` and `Views/` named in prose rather than one per line. The 201 test files
-(137 in `GitCore/Tests`, 64 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
+inside `Models/`, `Parsers/` and `Views/` named in prose rather than one per line. The 203 test files
+(137 in `GitCore/Tests`, 66 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
 listed, which is also why the check is that command and not a bare `find . -name '*.swift'`:
 that one reaches them too, and the generated sources under `.build` as well.
 
@@ -1239,10 +1243,13 @@ Gitter/                   macOS app (SwiftUI)
     +Navigation.swift          its filter, compare, worktree and window steps
     +Controls.swift            its sheet-control steps (`controls`, `press:`, `tick:`, `fill:`,
                                `choose:`)
+    +Layout.swift              its window layout steps (`split`, `togglesidebar`, `resize:`,
+                               `divider:`)
   HarnessControls.swift      Debug-only: the registry sheets put their controls in, by label
   DebugLaunchGuard.swift     Debug-only: a scripted launch never reaches the last repository
-  Views/                     MainWindow, SidebarView, SidebarMenus, StashesSection,
-                              CommitListView, CommitGraphCell, DetailView, StashDetailView,
+  Views/                     MainWindow, SplitViewAutosave, SidebarView, SidebarMenus,
+                              StashesSection, CommitListView, CommitGraphCell, DetailView,
+                              StashDetailView,
                               WorkingCopyFileList, CommitComposerView, DiffView, DiffHunkView,
                               DiffLineSelection, Banners, BranchToolbar, BranchNameValidator,
                               BranchSheetHost, RemoteToolbar, TrackingBadge, CompareListView,
@@ -1287,7 +1294,7 @@ GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app):
 `DebugLaunchHooks+Discard.swift`, `DebugLaunchHooks+Conflicts.swift`,
 `DebugLaunchHooks+Continue.swift`, `DebugLaunchHooks+History.swift`,
 `DebugLaunchHooks+RemoteAdmin.swift`, `DebugLaunchHooks+Navigation.swift`,
-`DebugLaunchHooks+Controls.swift`, `HarnessControls.swift` and
+`DebugLaunchHooks+Controls.swift`, `DebugLaunchHooks+Layout.swift`, `HarnessControls.swift` and
 `DebugLaunchGuard.swift` exist only in Debug builds
 (`#if DEBUG`, compiled out of Release) and drive the UI from environment variables, read once at
 startup. They exist because the verification environment has Screen Recording but not
@@ -1314,7 +1321,9 @@ is: import the export, compare the key sets of the export and of the domain afte
 `defaults delete dev.penzin.Gitter <key>` for each key that was absent before (never delete the
 domain), export again and `cmp` the two exports. The keys are not only the launcher's own:
 AppKit writes its own, and a second window adds
-`NSSplitView Subview Frames main-AppWindow-2, SidebarNavigationSplitView`. The launcher also passes `-ApplePersistenceIgnoreState YES`, so a
+`NSSplitView Subview Frames main-AppWindow-2, SidebarNavigationSplitView`; the first launch with a
+repository open adds `NSSplitView Subview Frames CommitListDetail`, where the commit list / detail
+divider is kept. The launcher also passes `-ApplePersistenceIgnoreState YES`, so a
 launch that has to be killed — a refused one, or one whose quit a sheet held — cannot leave your
 saved window state restoring to no window (B3 Task 4, measured). And it sets `GITTER_LOG_DIR` to a
 folder in its own scratch directory (P1), where the launch's diagnostics log goes instead of
@@ -1425,6 +1434,8 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `editurl:<remote>` / `confirmediturl[:<key>=<value>\|…]` | Edit URL…: the read, then the sheet — each configured URL as shown, the fields' starting text, the "git connects to" line, the several-URLs notes; and **act**: its Save with the fields as `prefill` keys say |
 | `renameremote:<remote>` / `confirmrenameremote:<new>` | Rename…'s sheet; and **act**: its button |
 | `removeremote:<remote>` / `confirmremoveremote[:<keep>]` | Remove…: the impact's read, then the sheet — every ref with its id, the stranded count, the keep defaults, each sentence about upstreams, push redirects and refs left behind; and **act**: its button, `<keep>` as for `confirmprune` |
+| `split` | log the window's width, the sidebar's width and whether it is collapsed, the commit list's and the detail's panes, the divider between them and its autosave name: `split: window w=… \| sidebar shown x=… \| commit list x=a..b … \| detail x=… \| divider x=… \| autosave …`, in `views` coordinates |
+| `togglesidebar` / `resize:<w>x<h>` / `divider:<x>` | hide or show the sidebar as its toolbar button does (which a click cannot reach once a narrow window puts it in the toolbar's overflow menu), resize the window as `GITTER_DEBUG_WINDOW` does, or move the commit list / detail divider to x as a drag does (`setPosition`, which the split's minimums constrain); each then logs the `split` line |
 | `filter:<text>` / `sidebar` | set the sidebar filter's text as typing would (`filter:` empties it), and log every section the sidebar draws after it — each remote group and whether it is expanded, "No matches", and the count VoiceOver hears |
 | `worktrees` / `worktreemenu` / `pills` | log every worktree row (folder, branch line, marks and their tooltips, the changes read, this window's path and both titles — and the window number a window-scoped `screencapture -l` needs, since the snapshot cannot draw the sidebar); every worktree menu and every branch's held icon with Switch, Delete and Fast-Forward and their reasons; every "worktree:" pill |
 | `openworktree:<folder>` | Open Worktree on that row, then the root and the titles. It is routed like any open: a window already showing that worktree comes to the front, otherwise this window switches. The launch guard refuses every step after it — another repository is open — and the app quits |

@@ -1,12 +1,19 @@
 import SwiftUI
 
-/// The three-pane browser: refs, commits, detail — with the branch toolbar, the banners and a
-/// loading indicator on top, and whatever sheet the store has asked for.
+/// The browser: the refs in the sidebar, and beside them the commits and the detail, split under
+/// one toolbar strip — with the banners and a loading indicator on top, and whatever sheet the
+/// store has asked for.
+///
+/// Two columns, not three (window polish Task 2): on macOS 26 and later each column of a
+/// `NavigationSplitView` gets its own part of the toolbar and its divider runs up through the
+/// title bar, so a long branch name or title in the commit column's part was drawn across that
+/// divider. The commit list and the detail are an `HSplitView` inside the one detail column
+/// instead, starting below the toolbar, so the toolbar is a single strip no divider runs through.
 struct MainWindow: View {
     @Environment(RepositoryStore.self) private var store
 
-    /// The height of the banners on screen (0 with none), handed to the detail column as
-    /// `bannerInset`. View state, not the store's: it is layout, measured here.
+    /// The height of the banners on screen (0 with none): the commits and the detail move down
+    /// by it. View state, not the store's: it is layout, measured here.
     @State private var bannerHeight: CGFloat = 0
 
     /// The sidebar filter's field has the keyboard: ⌘F sets it (`SidebarFilterCommands`, through
@@ -25,20 +32,25 @@ struct MainWindow: View {
                         // The filter (B3): its text is the store's (Ruling 2), cleared by `open()`.
                         .searchable(text: $store.sidebarFilter, placement: .sidebar, prompt: SidebarFilter.prompt)
                         .searchFocused($filterFocused)
-                } content: {
-                    CommitListView()
-                        // Under the banners too, so the Working Copy row is never covered.
-                        .padding(.top, bannerHeight)
-                        .animation(.default, value: bannerHeight)
-                        .navigationSplitViewColumnWidth(min: 360, ideal: 520)
                 } detail: {
-                    DetailView()
-                        // The banners overlay the window's top; the detail column moves down under
-                        // them, so the operation bar's sentence and its Skip, Continue and Abort
-                        // are never covered while a notice or an error is up (fix round 1, I5).
-                        .padding(.top, bannerHeight)
-                        .animation(.default, value: bannerHeight)
-                        .navigationSplitViewColumnWidth(min: 320, ideal: 440)
+                    // The two hairlines are the toolbar strip's lower edge and the sidebar's, and
+                    // what keeps the split off both: a split view touching an edge of the column
+                    // is laid out under the toolbar or the sidebar, its divider then running up
+                    // through the title (measured; padding by 0, a `GeometryReader`'s inset and
+                    // `.safeAreaPadding` all left it there), and the sidebar's width then counted
+                    // twice in the window's minimum (969 pt instead of 826, measured).
+                    VStack(spacing: 0) {
+                        Divider()
+                        HStack(spacing: 0) {
+                            Divider()
+                            commitsAndDetail
+                        }
+                    }
+                    // Both panes as one, under the banners: a notice or an error never covers the
+                    // Working Copy row or the operation bar's Skip, Continue and Abort (fix round
+                    // 1, I5), and the divider between them stays one straight line.
+                    .padding(.top, bannerHeight)
+                    .animation(.default, value: bannerHeight)
                 }
                 .toolbar {
                     ToolbarItem(placement: .navigation) {
@@ -104,8 +116,8 @@ struct MainWindow: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
-            // Measured, so the detail column can move down under it (`bannerInset`): an inset on
-            // the split view itself does not reach its columns (fix round 1, tried).
+            // Measured, so the commits and the detail can move down under it (`bannerHeight`): an
+            // inset on the navigation split itself does not reach its columns (fix round 1, tried).
             .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { bannerHeight = $0 }
         }
         .animation(.default, value: store.lastError)
@@ -134,6 +146,20 @@ struct MainWindow: View {
                 store.requestForcePush()
             },
         ]
+    }
+
+    /// The commit list and the detail side by side, with the minimums the two columns had. The
+    /// divider is kept where the user leaves it across a resize, a reload and a relaunch
+    /// (`SplitViewAutosave`); `HSplitView` honours the minimums but not the ideal widths, so a
+    /// first launch splits the space evenly (measured).
+    private var commitsAndDetail: some View {
+        HSplitView {
+            CommitListView()
+                .frame(minWidth: 360, idealWidth: 520)
+                .background(SplitViewAutosave(name: "CommitListDetail"))
+            DetailView()
+                .frame(minWidth: 320, idealWidth: 440)
+        }
     }
 
     private var emptyState: some View {

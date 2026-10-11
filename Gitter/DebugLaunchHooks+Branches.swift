@@ -104,6 +104,11 @@
     ///     removeworktree:<folder>      removeworktreestart:<folder> removeallmissing
     ///     worktreesheet                confirmremoveworktree[:none|:<name>]  noticeopen
     ///
+    ///   The window's layout (`DebugLaunchHooks+Layout`):
+    ///
+    ///     split                        togglesidebar                resize:<w>x<h>
+    ///     divider:<x>
+    ///
     ///   The target window's sheet, through its own controls (`HarnessControls`,
     ///   `DebugLaunchHooks+Controls`; the value is split from the label at the first `=`):
     ///
@@ -494,6 +499,8 @@
                 await navigationStep(command, step: step, store: store)
             case let control where controlCommands.contains(control):
                 await controlStep(command, step: step, store: store)
+            case let layout where layoutCommands.contains(layout):
+                await layoutStep(command, rest: String(step.dropFirst(command.count + 1)), store: store)
             case "stashcontinue":
                 guard store.offeredStashAndContinue != nil else {
                     log("stashcontinue: not offered")
