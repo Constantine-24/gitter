@@ -187,6 +187,12 @@ final class RepositoryStore {
     /// must then happen after all.
     private var followUpHeldForQuit: (generation: Int, run: @MainActor () -> Void)?
 
+    /// The banner `QuitGuard` put up when Wait's bound passed with this store's lane still busy
+    /// (`showQuitWaitGaveUp`): it is about a wait that ends with the lane, so `finishRemote` takes
+    /// it down as it does `laneBusy`'s (final review M3: left up on a hidden window whose write
+    /// then went through, it became that window's alert).
+    private var quitWaitGaveUpBanner: String?
+
     /// How many pieces of lane work have ended with something the user has to read: a banner,
     /// a sheet, or a notice that is more than "it worked" (`LaneEnding.mustBeRead`). A count
     /// rather than the text on screen, because the same banner can come back (a second rejected
@@ -999,13 +1005,17 @@ final class RepositoryStore {
         // state that has just ended; left up, it would sit beside the fetch's own notice
         // telling the user to wait for something already done. The same for "wait before
         // opening another repository": the write it waited for is over, and opening is allowed.
+        // And for the quit's "called off: still running after …" (`showQuitWaitGaveUp`): it is
+        // still running no more.
         if let remoteActivity,
             lastError == RemoteWording.laneBusy(remoteActivity)
                 || lastError == RemoteWording.openRefusedDuringWrite(remoteActivity)
+                || (quitWaitGaveUpBanner != nil && lastError == quitWaitGaveUpBanner)
         {
             lastError = nil
             errorIsSticky = false
         }
+        quitWaitGaveUpBanner = nil
         remoteActivity = nil
         remoteTask = nil
     }
@@ -1038,6 +1048,13 @@ final class RepositoryStore {
         errorIsSticky = true
         // Another banner: the refusal Stash and Continue answered is off the screen.
         clearStashAndContinueOffer()
+    }
+
+    /// `QuitGuard`'s banner at Wait's bound (`RemoteWording.quitWaitGaveUp`), sticky, and noted so
+    /// that the lane's end takes it down (`finishRemote`).
+    func showQuitWaitGaveUp(_ message: String) {
+        showStickyError(message)
+        quitWaitGaveUpBanner = message
     }
 
     /// The offer, while the banner on screen is still the refusal it was made for — never

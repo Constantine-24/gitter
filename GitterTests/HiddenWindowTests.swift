@@ -803,6 +803,36 @@ import Testing
         #expect(recorder.alerts.count == 1)
     }
 
+    /// M3 (final review): Wait's bound passes — a short one here — with both hidden pushes still
+    /// running, so each store gets the call-off's banner; the first push then goes through. That
+    /// banner was about a wait that has ended, so its window closes for real with no alert. The
+    /// second push is refused: its own failure, not the call-off's banner, is the alert.
+    @Test(.timeLimit(.minutes(10))) func theCallOffsBannerOnAHiddenWindowGoesWhenItsPushGoesThrough() async throws {
+        let (test, recorder, stores, gates, backends, repos) = try await Self.twoHiddenPushes()
+        defer { for repo in repos { repo.remove() } }
+        defer { test.remove() }
+        defer { for backend in backends { backend.releaseAll() } }
+        let windows = stores.map { test.registry.window(of: $0) }
+        let bound = Duration.milliseconds(1)
+
+        QuitGuard.gaveUpWaiting(stores, after: bound)
+        let activity = try #require(stores[0].remoteActivity)
+        #expect(stores[0].lastError == RemoteWording.quitWaitGaveUp(activity, after: bound))
+        #expect(stores[1].lastError != nil)
+
+        gates[0].release()
+        await waitUntilLaneFree(stores[0])
+        await Self.waitForTheEnding(of: stores[0], recorder)
+        #expect(recorder.alerts.isEmpty, "no alert about a push that went through")
+        #expect(recorder.closed == [try #require(windows[0])])
+        #expect(stores[0].isClosed)
+
+        gates[1].release()
+        await waitUntilLaneFree(stores[1])
+        await waitUntil("the refused push's ending") { recorder.alerts.count + recorder.closed.count == 2 }
+        #expect(recorder.alerts == ["refusing: \(try #require(stores[1].lastLaneMessageToRead))"])
+    }
+
     // MARK: - Hide, show, hide again; the alert after a show; the proxy at the real close
 
     /// The alert's Close after the window was shown again (Open Recent while the alert was up):

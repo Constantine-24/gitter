@@ -223,10 +223,7 @@ enum QuitGuard {
                         quit()
                     case .callOff:
                         log("quit: the lane did not free within \(bound); calling the quit off")
-                        for store in stores { store.endTerminating() }
-                        for (store, activity) in busy {
-                            store.showStickyError(RemoteWording.quitWaitGaveUp(activity, after: bound))
-                        }
+                        gaveUpWaiting(stores, after: bound)
                         callOff()
                     }
                     return true
@@ -238,6 +235,19 @@ enum QuitGuard {
             if replied { timer.invalidate() }
         }
         RunLoop.main.add(timer, forMode: .common)
+    }
+
+    /// Wait's bound has passed with a lane still busy (internal for tests): every store ends its
+    /// terminating, and each one still busy says in its banner that the quit was called off for it
+    /// (`RemoteWording.quitWaitGaveUp`) — a banner about the wait, which its lane's end takes down
+    /// (`RepositoryStore.finishRemote`). The quit itself is called off by the caller.
+    static func gaveUpWaiting(_ stores: [RepositoryStore], after bound: Duration) {
+        // Read first: ending the terminating may start a follow-up that was held for the quit.
+        let busy = stores.compactMap { store in store.remoteActivity.map { (store, $0) } }
+        for store in stores { store.endTerminating() }
+        for (store, activity) in busy {
+            store.showQuitWaitGaveUp(RemoteWording.quitWaitGaveUp(activity, after: bound))
+        }
     }
 
     /// **Wait** was chosen (Ruling 8): every store begins terminating, and every read running on
