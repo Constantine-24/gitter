@@ -697,16 +697,21 @@ working stops its automatic fetch and file watcher and cancels its reads.
 push, a tag pushed, a delete on a remote) is running in the window, or anything else that holds its
 change slot (a commit, a merge, a rebase, a prune, a remote's rename), closing it — the close
 button, ⌘W or File › Close — hides it instead: it leaves the screen and the Window menu, its
-repository leaves the reopen list, and the work goes on; git is never killed mid-write. A fetch
-does not keep a window: it is stopped, as before. Opening that repository again by any route (Open
+repository leaves the reopen list, and the work goes on; git is never killed mid-write. A fetch does
+not keep a window: it is stopped, as before. Opening that repository again by any route (Open
 Recent, a Finder open, Open Repository…, Open in New Window) brings the same window back with the
 work still running there, and puts the repository back at its old place in the list; nothing runs
-twice. When the work ends with the window still hidden, the window closes for real — unless it
-ended with something to read (a failure, a question, a notice that must be read), when an alert
+twice. When the work ends with the window still hidden, the window closes for real — unless it ended
+with something to read (a failure, a question, a notice that must be read; a merge, cherry-pick,
+revert or rebase that stopped on conflicts or part-way, said in the operation bar's own sentence; a
+revert git could not commit, its changes staged and its message in the commit box), when an alert
 comes first: "A closed window's change didn't finish", then `<folder>: <what it says>`, with
-**Show** (the window comes back with its banner) and **Close**. The alert does not bring Gitter
-forward when it is in the background. A click on the Dock icon with only hidden windows opens one
-empty window, since to you the hidden one is closed.
+**Show** (the window comes back with its banner, or its operation bar) and **Close**. The alert does
+not bring Gitter forward when it is in the background, and can sit behind the front app's windows;
+Gitter then asks the Dock for your attention, and Show becomes the default (Return) once Gitter is
+in front — while it is in the background AppKit gives the alert no default button. A Dock reopen
+with only hidden windows opens one empty window (measured with the reopen event a Dock click sends;
+a real click is on the checklist), since to you the hidden one is closed.
 
 **Quit with a sheet up.** ⌘Q, the Dock's Quit and a logout's quit all go through one path: every
 window's sheet is closed (what was typed in it is lost), Gitter waits until AppKit shows none —
@@ -783,7 +788,7 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (773 tests in 63 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (790 tests in 63 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -850,7 +855,7 @@ your git configuration (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`) 
 touches the network: the transports other than `file` (and a fake ssh one test needs) are refused,
 and an inherited `GIT_SSH_COMMAND` or `GIT_CONFIG_*` is cleared first.
 
-The run also reports **95 known issues, and they are meant to be there** — please do not
+The run also reports **107 known issues, and they are meant to be there** — please do not
 "fix" them. They are deliberate negative controls: tests that make an assertion helper fail
 on purpose, inside `withKnownIssue`, to prove it *can* fail.
 
@@ -941,10 +946,11 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   outlived its SIGTERM.
 - One comes from `ProcessExitTests`: `waitForExit`, the shared wait on kqueue's `NOTE_EXIT`, on a
   process that never exits is reported as never having come back once the test is cancelled.
-- Ten come from `ConfigCountTests`: the cross-check every row of `GIT_CONFIG_COUNT`'s table goes
-  through, which asks the real git how it reads the value, catches a parse that is not git's —
-  Swift's `Int(_:)`, the parse before E3, disagrees with git on ten rows (a leading space, a count
-  over `INT_MAX`, a negative that wraps).
+- Twenty-two come from `ConfigCountTests`: the cross-check every row of `GIT_CONFIG_COUNT`'s table
+  goes through, which asks the real git how it reads the value, catches a parse that is not git's —
+  Swift's `Int(_:)`, the parse before E3, disagrees with git on twenty-two rows (a leading space, a
+  count git refuses, which that parse read as 0, a count over `INT_MAX`, a negative that wraps). Only
+  the comparison's own failures are the known issue: anything else the cross-check records fails.
 - Two come from `UpstreamStateTests`: `TestRepo.upstream(of:)` treats a branch that does not
   exist, and one whose name is only a prefix of another's, as a failure rather than "no
   upstream".
@@ -952,7 +958,7 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   submodule really loses the work inside it — the hazard the unstage's
   `--no-recurse-submodules` keeps away, so the fixture can show it.
 
-`GitterTests` reports **thirty-one known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
+`GitterTests` reports **thirty-five known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
 shows that the operation gate alone lets a branch another worktree holds through, which is why
 the switch asks about the hold first. Three come from `DefaultsIsolationTests`: the check that
 the real defaults are unchanged fails when a store writes the domain it watches (a scratch
@@ -971,20 +977,23 @@ and then throws. Twelve are the controls of the helpers added in milestone E2:
 - One comes from `OpenRoutingTests`: before the launch has taken it, an open is held, not handed to
   the window opener.
 
-Fifteen come from milestone E3:
-- Four come from `ModalAlertTests`: a test expecting the alert to have run by the time `raise`
+Nineteen come from milestone E3:
+- Five come from `ModalAlertTests`: a test expecting the alert to have run by the time `raise`
   returns fails, since it is raised from a timer; the
   modal-panel spin the tests use cannot run a main-queue block, nor fire a timer added in `.default`
-  alone (why the alert's timer is in both modes); and under an alert run from a main-queue block,
-  `QuitGuard`'s old form, no other main-actor job runs.
+  alone (why the alert's timer is in both modes); under an alert run from a main-queue block,
+  `QuitGuard`'s old form, no other main-actor job runs; and a timer added in `.common` does run
+  inside a menu's tracking (`.eventTracking`), which is why the alert's is not.
 - One comes from `QuitEventReplyTests`: a called-off quit answers −128, so a test expecting 0 fails
   against the recording fake.
 - Five come from `TestBackendTests`: a call keyed by another method's name is recorded; the call log
   holds no call the store never made, and not in the reverse order (two); the hooks run before, then
-  after, whatever order they were added in; and a hold nobody releases is caught by the hang guard.
-- Four come from `HiddenWindowTests`: the recorder of a hidden window's AppKit calls records nothing it
+  after, whatever order they were added in; a hold nobody releases is caught by the hang guard; and
+  a store whose push is still held never settles (`waitUntilSettled`, the teardown's wait).
+- Six come from `HiddenWindowTests`: the recorder of a hidden window's AppKit calls records nothing it
   was not asked (two); a hidden store whose alert closed it, judged by its window alone, would be told
-  twice under a held quit; and one is a known defect, not a control — a store closed through E2's
+  twice under a held quit; the hidden ending's alert gives Return to Show alone, not to Close nor to a
+  button given Escape (two); and one is a known defect, not a control — a store closed through E2's
   path in the middle of a commit stays mutating (B3.1, in the backlog), now reachable only when a
   window was never attached.
 - One comes from `StagedSideTests`: setting the side and then the path, the old two steps, loads the
@@ -1316,7 +1325,8 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `discardstale` | log whether the discard sheet on screen is out of date now — every read again, which its orange line runs when an `lstat` fingerprint of the files, the index and HEAD has moved |
 | `undodiscard` | **acts**: the sticky notice's **Undo Discard**; logs each receipt (kind, paths, record, Trash URLs) |
 | `stashcontinue[:merge\|:rebase]` | **acts**: the error banner's **Stash and Continue**, waiting for the stash and the retry; with a mode, then answers the pull sheet if the retry opened one. Logs `stashcontinue: not offered` when the banner offers nothing |
-| `alert` / `alertbutton:<title>` / `alertsnapshot:<name>` | log every text and button (with its key equivalent) of each alert sheet on screen and of the app-modal alert if one is up (`app-modal …`: the quit question with no window to ask on, a hidden window's ending) — the snapshot draws an alert's buttons but not its text — and click one of its buttons, the app-modal alert's first; `alertsnapshot:` draws the app-modal alert's own window, text included, into `GITTER_DEBUG_SNAPSHOT_DIR/<name>.png` |
+| `alert` / `alertbutton:<title>` / `alertsnapshot:<name>` | log every text and button (with its key equivalent) of each alert sheet on screen and of the app-modal alert if one is up (`app-modal …`: the quit question with no window to ask on, a hidden window's ending), and for the app-modal alert how it is presented (`state: app active: … \| panel key: … \| default button cell: …`) — the snapshot draws an alert's buttons but not its text — and click one of its buttons, the app-modal alert's first; `alertsnapshot:` draws the app-modal alert's own window, text included, into `GITTER_DEBUG_SNAPSHOT_DIR/<name>.png`. A hidden window's ending alert also logs its buttons as built (`alert built: …`) |
+| `activate` | make Gitter the active app (`NSApp.activate()`), as a click on it would, and log whether it is and which window is key |
 | `select:<path>` / `resolver` | select a working-copy file (a conflicted file's unstaged row, a resolved one's staged row) and wait for the resolver's read; `resolver` logs its state: kind, blocks or the whole-file reason, whether the file is what git wrote, the hash, the side names, the actions offered |
 | `blocks:<path>:<O\|T\|B\|b\|.…>` | choose each block in turn — Ours, Theirs, Both (ours first), Both (theirs first), `.` none — and log the composed file and its SHA-256; writes nothing |
 | `resolve` / `take:ours\|theirs:<path>` / `keep:<path>` / `deletefile:<path>` / `markresolved:<path>` | **act**: Resolve File, Take Ours / Theirs, Keep … Version, Delete the File (`delete:` is the branch step), Mark Resolved — each through the resolver's own entry point, which logs the offer first, so a refused one shows |
