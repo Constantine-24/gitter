@@ -213,7 +213,7 @@ reads otherwise than a newline.
 runs, the next line makes it again. If the folder cannot be made or a write fails, logging stops for
 the rest of that launch, without an alert, and Gitter goes on. At a quit, Gitter waits at most two
 seconds for the last lines, so a log on a volume that does not answer cannot hold the quit up; the
-lines still waiting then are lost.
+lines still waiting then may be lost.
 
 **Privacy.** The log stays on the Mac; nothing in Gitter uploads it. Read it before you send it
 anyone, because it holds:

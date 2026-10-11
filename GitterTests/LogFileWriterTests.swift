@@ -190,6 +190,33 @@ struct LogTestFolder {
         #expect(volume.hangs == 1, "the stuck call was the writer's own check of its file")
     }
 
+    /// The control for `settle`: a queue stuck on a hung write never drains, and the wait for it is
+    /// caught by the hang guard — cancelled here as `.timeLimit` cancels it — with the guard's own
+    /// issue, instead of freezing the run.
+    @Test func aQueueThatNeverDrainsIsCaughtBySettle() async throws {
+        let folder = LogTestFolder()
+        defer { folder.remove() }
+        let volume = HangingFileManager()
+        let writer = LogFileWriter(folder: folder.url, fileManager: volume)
+        writer.append("first")
+        await settle(writer)
+        volume.hang()
+        defer { volume.answer() }
+        writer.append("second")
+
+        await withKnownIssue("the writer's queue is stuck on a hung write and never drains") {
+            let waiter = Task { await settle(writer) }
+            while volume.hangs == 0 { try? await Task.sleep(for: .milliseconds(5)) }
+            try? await Task.sleep(for: .milliseconds(100))
+            waiter.cancel()
+            await waiter.value
+        } matching: { $0.isNeverCameBack }
+
+        volume.answer()
+        await settle(writer)
+        #expect(try folder.lines() == ["first", "second"])
+    }
+
     /// The control: with nothing stuck, the bounded flush says every line is written.
     @Test func anIdleWritersBoundedFlushSaysItIsDone() async throws {
         let folder = LogTestFolder()

@@ -824,7 +824,7 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (834 tests in 67 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (835 tests in 67 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -1003,7 +1003,7 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   final review probed; and three pins of what is still kept: an scp-form password with a parenthesis
   in git's words, and a password with an unencoded `/` in two URLs.
 
-`GitterTests` reports **forty known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
+`GitterTests` reports **forty-one known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
 shows that the operation gate alone lets a branch another worktree holds through, which is why
 the switch asks about the hold first. Three come from `DefaultsIsolationTests`: the check that
 the real defaults are unchanged fails when a store writes the domain it watches (a scratch
@@ -1044,8 +1044,9 @@ Nineteen come from milestone E3:
 - One comes from `StagedSideTests`: setting the side and then the path, the old two steps, loads the
   same diff twice.
 
-Five come from milestone P1: `LogFileWriterTests` expects six rotated files where five are kept in
-all, so four are rotated, and an idle writer's bounded flush to have timed out; `AppLogTests` expects
+Six come from milestone P1: `LogFileWriterTests` expects six rotated files where five are kept in
+all, so four are rotated, and an idle writer's bounded flush to have timed out, and its wait for the
+queue (`settle`) on a writer stuck on a hung write is reported as never having come back; `AppLogTests` expects
 a banner's line from a store that was not given the recorder, and a window's close line where no quit
 began; `LogLineTests` expects a backslash kept as it is, where it is doubled.
 
