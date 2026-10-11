@@ -49,7 +49,7 @@ public struct CommandLogEntry: Sendable, Equatable {
         self.duration = duration
         self.directory = directory.path
         self.arguments = Self.shown(rawArguments)
-        self.outcome = outcome
+        self.outcome = Self.shown(outcome)
         switch outcome {
         case .succeeded, .exitCode(0):
             self.stderr = nil
@@ -66,6 +66,16 @@ public struct CommandLogEntry: Sendable, Equatable {
         }
         return arguments.prefix(argumentsShown).map(RemoteFailureParser.redactingCredentials)
             + ["… and \(arguments.count - argumentsShown) more"]
+    }
+
+    /// The outcome's own strings (a launch failure's message, a refusal's description) redacted and
+    /// cut like stderr, so no field carries a raw credential.
+    static func shown(_ outcome: Outcome) -> Outcome {
+        switch outcome {
+        case .launchFailed(let message): .launchFailed(shown(stderr: message) ?? "")
+        case .refusedBeforeLaunch(let message): .refusedBeforeLaunch(shown(stderr: message) ?? "")
+        default: outcome
+        }
     }
 
     /// `stderr` redacted and cut to `stderrLimit` UTF-8 bytes on a character boundary, "…" after a

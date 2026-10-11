@@ -211,7 +211,6 @@ public struct CLIGitBackend: GitBackend {
         switch error as? GitError {
         case .commandFailed(let code, _)?: return .exitCode(code)
         case .launchFailed(let message)?: return .launchFailed(message)
-        case .tooManyArguments?: return .refusedBeforeLaunch(String(describing: error))
         default: return .refusedBeforeLaunch(String(describing: error))
         }
     }

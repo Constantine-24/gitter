@@ -100,6 +100,35 @@ final class RecordingLog: CommandLog {
         #expect(log.all.map(\.outcome) == [.killed, .killed])
     }
 
+    /// The pin for the BACKLOG entry "The diagnostics log cannot tell a git killed by a signal ...":
+    /// `ProcessRunner.run` throws `commandFailed(9)` for a killed git, so through `run` the entry is
+    /// an exit code, not `.killed`. When the runner is fixed this fails; change it to `.killed`
+    /// (as the streaming seams' test above) and close the entry. A plain expectation rather than
+    /// `withKnownIssue`, so the test states what happens today and fails on the fix, naming the entry.
+    @Test func aKilledGitThroughRunIsAnExitCodeForNow() async throws {
+        let directory = try Self.scratch()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = RecordingLog()
+        let git = try Self.fakeGit("kill -KILL $$", in: directory)
+        _ = await thrownError { _ = try await backend(log, git: git).run(["status"], cwd: directory) }
+        #expect(log.all.map(\.outcome) == [.exitCode(9)], "if this is .killed, ProcessRunner.run was fixed: close the BACKLOG entry")
+    }
+
+    @Test func aCredentialInAnOutcomesPayloadIsRedacted() {
+        let url = "https://u:secret@h.invalid/x"
+        for outcome in [CommandLogEntry.Outcome.launchFailed("cannot run \(url)"), .refusedBeforeLaunch("refused \(url)")] {
+            #expect(!String(describing: entry(outcome: outcome)).contains("secret"))
+        }
+    }
+
+    @Test func aCredentialAmongTheShownOfACutListIsRedacted() {
+        var arguments = (0..<45).map { "a\($0)" }
+        arguments[3] = "https://u:secret@h.invalid/x"
+        let cut = entry(arguments: arguments).arguments
+        #expect(cut.count == 21)
+        #expect(!cut.joined().contains("secret"))
+    }
+
     @Test func aGitThatCannotBeLaunchedIsLaunchFailed() async throws {
         let directory = try Self.scratch()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -140,15 +169,16 @@ final class RecordingLog: CommandLog {
         let call = CallUnderTest {
             await thrownError { _ = try await backend.runStreaming(["status"], cwd: directory, progress: { _ in }) }
         }
-        for _ in 0..<200 where !FileManager.default.fileExists(atPath: marker.path) {
-            try await Task.sleep(nanoseconds: 50_000_000)
-        }
-        guard FileManager.default.fileExists(atPath: marker.path) else {
+        // No bound of our own: a fake git that never starts is ended by the suite's time limit,
+        // which cancels this sleep.
+        do {
+            while !FileManager.default.fileExists(atPath: marker.path) {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        } catch {
             call.cancel()
-            _ = await call.value("the cancelled call")
             killLeftovers([sleep])
-            Issue.record("the fake git never started")
-            return
+            throw error
         }
         call.cancel()
         guard await call.value("the cancelled call") != nil else {
