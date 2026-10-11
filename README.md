@@ -783,6 +783,8 @@ clean tree and a `--sign` with a value get past them to the build.
 past Gatekeeper (Open Anyway, or one `xattr` line), the Command Line Tools, updating, keeping one copy
 in `/Applications`, and the log.
 
+The app icon is drawn by `scripts/make-icon.swift`, once per pixel size, and the PNGs and `Contents.json` it writes are committed; after changing the drawing, re-run `swift scripts/make-icon.swift Gitter/Assets.xcassets/AppIcon.appiconset`.
+
 **Which build is this.** Gitter › About Gitter shows the version, the build number and, for a
 packaged build, the commit: "Version 0.1.0 (440, 99be6f3)". A build from Xcode shows "Version 0.1.0
 (1)".
