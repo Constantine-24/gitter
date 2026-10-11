@@ -26,6 +26,20 @@ never creates, imports or reads keys: the certificate is yours, and only its nam
 The first time `codesign` uses the key, macOS may ask whether it may; **Always Allow** stops it asking
 again.
 
+**If `--sign` fails.** None of these has been measured here, since nothing here may touch the keychain;
+note `codesign`'s own words, and they go on the checklist:
+
+- **The certificate lapses.** Certificate Assistant makes it valid for one year by default. A new
+  certificate is a new identity to macOS (`designated => … certificate root = H"…"` changes), so the
+  folder prompts it exists to avoid come back once, after the first build signed with the new one.
+  To choose a longer period, tick **Let me override defaults** in step 3 and set the validity there.
+- **"ambiguous".** Two certificates with the same name — a second one made, or an old one kept —
+  make `codesign` refuse the name as ambiguous. Pass the one you want by its SHA-1 instead (§2), or
+  delete the other in Keychain Access.
+- **"not trusted", or the identity is not found.** A self-signed root is not trusted by default. If
+  `codesign` reports that, or cannot find the identity, open the certificate in Keychain Access,
+  set **Trust › Code Signing** to **Always Trust**, and run the script again. Record what it took.
+
 ## 2. Packaging
 
 From a clean checkout, with [XcodeGen](https://github.com/yonaskolb/XcodeGen) installed
@@ -44,15 +58,19 @@ GITTER_DIST_DIR="$HOME/Library/Mobile Documents/com~apple~CloudDocs/Gitter" \
 
 What it does, in order:
 
-- **It refuses** (exit 2, before building) when `git status --porcelain` shows anything, so every DMG
-  maps to a commit; when XcodeGen is missing; for an unknown flag, or a `--sign` with no name; and for
-  `--notarize`, which is reserved: "not set up yet: it needs a Developer ID".
+- **It refuses** (exit 2, before building) when `git status --porcelain --untracked-files=all` shows
+  anything, so every DMG maps to a commit (a new file counts even if your `status.showUntrackedFiles`
+  hides it); when XcodeGen is missing; for an unknown flag, or a `--sign` with no name; for a
+  relative `GITTER_DIST_DIR` (give an absolute path: the script works from the repository, not the
+  folder you run it in); and for `--notarize`, which is reserved: "not set up yet: it needs a
+  Developer ID".
 - **It builds** an arm64 Release with `xcodegen generate` and `xcodebuild`, into `dist/DerivedData`, not
   your Xcode folder. The version is `MARKETING_VERSION` in `project.yml`, which you bump by hand. The
   build number is `git rev-list --count HEAD`, so it goes up with every commit on `main`. The commit's
   short hash goes into `Info.plist` as `GitterCommit`. `project.yml` is not edited.
 - **With `--sign`**, it re-signs the built app with that identity: `codesign --force --options runtime
-  --timestamp=none --entitlements <the built app's own> --sign "<identity>"`. The identity is the
+  --timestamp=none --entitlements <the built app's own> --sign "<identity>"`; if the built app's
+  entitlements come out empty, it does not re-sign and fails with exit 3. The identity is the
   certificate's **exact** name, as Keychain Access shows it, or its 40-character SHA-1 fingerprint
   (Keychain Access shows it in the certificate's details; leave out the spaces). A part of the name is
   not enough: `codesign` would accept it, but the script then checks that the signature's
@@ -75,6 +93,8 @@ What it does, in order:
   signing identity, and what `spctl --assess` says. `spctl` judges the app as if it had been
   downloaded, and rejects one that is not notarized, quarantined or not, so "rejected" there is
   expected and is not a failure: the script's exit status is.
+- **Any other failure** — the build, git, `codesign`, `hdiutil` — ends the script with exit 1, after
+  the tool's own words.
 
 ## 3. git, on every Mac that runs Gitter
 
@@ -137,7 +157,8 @@ builds have the same bundle id as the installed app, on purpose: they share its 
 Recent and its log folder. A second copy — a build left in Xcode's DerivedData, or the app inside
 `dist/DerivedData` — is still an app Finder and `open` can start instead of the one in
 `/Applications`. Two Gitters running at once write the same log: their lines interleave rather than
-overwrite each other, but their rotations can trip over each other (the backlog has it).
+overwrite each other, but their rotations can trip over each other, and one of them can then stop
+logging for the rest of its launch (the backlog has it).
 
 ## 7. The logs
 
@@ -145,7 +166,9 @@ Gitter keeps a log of every git call it makes and every message it shows you, so
 Mac can be read afterwards.
 
 **Where.** `~/Library/Logs/Gitter/gitter.log`. **Help › Show Logs** opens that folder in Finder, and
-makes it first if it does not exist yet; if it can neither make nor open it, an alert says why.
+makes it first if it does not exist yet; if it can neither make nor open it, an alert says why. A
+Debug launch made by the test harness without a log folder of its own keeps no log, and Show Logs
+says "This launch keeps no log."
 
 **What a line says.** One line per event, plain UTF-8 text, each starting with the local time to the
 millisecond and its offset from UTC:
@@ -165,8 +188,8 @@ millisecond and its offset from UTC:
 - **`open` / `close`** — each window's repository, with its path; a window switched to another
   repository closes the old one first, and a quit that goes ahead closes every open window.
 - **`git`** — every git call: how long it took, the folder it ran in, its arguments (one with a blank
-  or a quote in it is single-quoted) and how it ended: `ok`, `exit <code>`, `killed`, `cancelled`,
-  `launch failed: …` or `refused before launch: …`. A call that failed is followed by git's own
+  or a quote in it is single-quoted, a `'` in it written `'\''`) and how it ended: `ok`,
+  `exit <code>`, `killed`, `cancelled`, `launch failed: …` or `refused before launch: …`. A call that failed is followed by git's own
   words, each line indented. A git killed while it ran through Gitter's plain runner reads as
   `exit <signal>`, not `killed` (the backlog has it).
 - **`banner`, `notice`, `sticky`** — every error banner and notice as it was shown, with the
@@ -180,10 +203,17 @@ Two things about the order. A git line carries the time the call **started**, bu
 **ends**, so the lines of calls that overlapped can be slightly out of time order. And the `launch:`
 line waits for `git --version`, so it can come after the first window's lines.
 
+**Escapes.** A control character in any text — a newline in a banner, a colour code in git's words,
+a C1 control, a line or paragraph separator (U+2028, U+2029) — is written as an escape (`\n`, `\t`,
+`\u{1B}`, `\u{2028}`), and a backslash as `\\`, so every line is one event and a file named `a\nb`
+reads otherwise than a newline.
+
 **Size.** When `gitter.log` would pass 2 MB it becomes `gitter.1.log`, the older ones move up to
 `gitter.4.log`, and the oldest goes: five files, 10 MB at most. If the folder is deleted while Gitter
 runs, the next line makes it again. If the folder cannot be made or a write fails, logging stops for
-the rest of that launch, without an alert, and Gitter goes on.
+the rest of that launch, without an alert, and Gitter goes on. At a quit, Gitter waits at most two
+seconds for the last lines, so a log on a volume that does not answer cannot hold the quit up; the
+lines still waiting then are lost.
 
 **Privacy.** The log stays on the Mac; nothing in Gitter uploads it. Read it before you send it
 anyone, because it holds:
@@ -195,11 +225,16 @@ anyone, because it holds:
   standard output; and its error output when the call succeeded;
 - **cut:** git's words on a failure, after 2 048 bytes, and an argument list longer than 40, after its
   first 20 ("… and N more");
-- **removed:** a URL's username and password, in every argument (`remote add`, `set-url`) and in
-  git's words. One exception: a password holding an unencoded `/`, `?` or `#`
-  (`https://me:p/ss@host/x`) makes the URL invalid — such a character must be percent-encoded, and
-  git never sends that password to a server — and it stays in clear in that `remote add` or
-  `set-url` line;
+- **removed:** a URL's username and password, in every argument (`remote add`, `set-url`), and from
+  every `https://…`, `ssh://…` or other `scheme://` URL in git's words — whatever the password
+  holds, quotes and brackets included. The exceptions:
+  - a password holding an unencoded `/`, `?` or `#` (`https://me:p/ss@host/x`) makes the URL
+    invalid — such a character must be percent-encoded, and git never sends that password to a
+    server — and it stays in clear in that `remote add` or `set-url` line, or in git's words;
+  - in git's words only, a password holding a blank, and an address without `://`
+    (`me:p(ss)@host: Permission denied`, as ssh can print it): these are redacted by pattern, and a
+    password holding `'`, `(`, `)` or a blank can stay. Such a line takes a URL or an ssh address
+    you wrote with its password in it;
 - **as shown:** banners and notices, word for word as they were on screen.
 
 **Bringing a log back.** Use Help › Show Logs, then copy the `gitter*.log` files (or the whole

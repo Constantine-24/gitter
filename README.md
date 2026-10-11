@@ -777,7 +777,8 @@ commit, re-signs it with the self-signed certificate you made once (without `--s
 checks the signature, the hardened runtime, the architecture, the stamped version and the absence of
 the Debug harness, and writes `dist/Gitter-<version>-<build>.dmg`; `GITTER_DIST_DIR` also gets a copy,
 moved into place whole, for a synced folder. `--notarize` is reserved and refuses: there is no
-Developer ID yet. `bash scripts/package-selftest.sh` pins the refusals on a scratch clone.
+Developer ID yet. `bash scripts/package-selftest.sh` pins the refusals on a scratch clone, and that a
+clean tree and a `--sign` with a value get past them to the build.
 [`docs/INSTALL.md`](docs/INSTALL.md) is the whole path — the certificate, packaging, the first open
 past Gatekeeper (Open Anyway, or one `xattr` line), the Command Line Tools, updating, keeping one copy
 in `/Applications`, and the log.
@@ -789,10 +790,14 @@ packaged build, the commit: "Version 0.1.0 (440, 99be6f3)". A build from Xcode s
 **The log.** Every git call Gitter makes (its folder, arguments, duration and outcome, and git's own
 words when it failed) and every banner, notice and alert it showed go to
 `~/Library/Logs/Gitter/gitter.log`, one timestamped line each, beside a launch header and each
-window's open and close. A URL's username and password are removed from every argument and from git's
-words. The file rotates at 2 MB and keeps five; nothing leaves the Mac. **Help › Show Logs** opens the
-folder in Finder. The tests never install the file (`TestHost`), and a Debug harness launch writes only
-to the folder its `GITTER_LOG_DIR` names — none at all without one.
+window's open and close. A URL's username and password are removed from every argument, and from
+every `scheme://` URL in git's words, by structure; what is left is in
+[`docs/INSTALL.md`](docs/INSTALL.md) §7 — a password with an unencoded `/`, `?` or `#`, and in git's
+words a password with a blank or an address without `://`, which get a pattern redactor only. The
+file rotates at 2 MB and keeps five; nothing leaves the Mac, and a quit waits at most two seconds for
+its last lines. **Help › Show Logs** opens the folder in Finder. The tests never install the file
+(`TestHost`), and a Debug harness launch writes only to the folder its `GITTER_LOG_DIR` names — none
+at all without one, where Show Logs says "This launch keeps no log."
 
 ## Tests
 
@@ -819,7 +824,7 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (826 tests in 67 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (834 tests in 67 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -834,7 +839,8 @@ resolver's choices and previews (the same composition GitCore writes), and every
 operation bar and the composer's prefill, and the launch guard's decisions (`DebugLaunchGuard`),
 and the diagnostics log: its lines (`LogLine`), the file's order, rotation, recreation and stop
 (`LogFileWriter`, in a temporary folder only), the events a store and the window registry write, the
-quit question's answer, Show Logs' failures through a seam, and the About panel's version.
+quit question's answer, Show Logs' failures and a launch with no writer through a seam, the quit's
+bounded flush with a writer stuck on a hung write, and the About panel's version.
 Under a test host the app reopens no repository, starts no automatic fetch and adds nothing to
 Open Recent, and keeps no list of open repositories (`TestHost`). Every test's store keeps its settings in a scratch defaults suite of
 its own, named by a path inside its own temporary folder and removed with it (`makeTestStore`),
@@ -881,7 +887,7 @@ moved before a pop's drop (`StashDropRaceTests`), a reload that fails after a co
 (`InjectedFailureTests`), a window closed during a held commit or push (`HiddenWindowTests`) and
 every request made while a change is held (`RequestsDuringChangeTests`).
 
-`GitCoreTests` has 1 699 tests in 145 suites. Most of them run real `git` against a temporary
+`GitCoreTests` has 1 706 tests in 145 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
 for a server, with a second clone as "the colleague" who pushes in between — including one
 that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
@@ -889,7 +895,7 @@ your git configuration (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`) 
 touches the network: the transports other than `file` (and a fake ssh one test needs) are refused,
 and an inherited `GIT_SSH_COMMAND` or `GIT_CONFIG_*` is cleared first.
 
-The run also reports **109 known issues, and they are meant to be there** — please do not
+The run also reports **114 known issues, and they are meant to be there** — please do not
 "fix" them. They are deliberate negative controls: tests that make an assertion helper fail
 on purpose, inside `withKnownIssue`, to prove it *can* fail.
 
@@ -991,11 +997,13 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
 - Two come from `WorkingCopyBackendTests`: a `restore` that recurses into a registered
   submodule really loses the work inside it — the hazard the unstage's
   `--no-recurse-submodules` keeps away, so the fixture can show it.
-- Two come from `CommandLogTests` (milestone P1): a recording log that was not passed to the backend
-  gets no entry, and the prose redactor alone — the only one before the structural strip — hands a
-  password with a parenthesis back.
+- Seven come from `CommandLogTests` (milestone P1): a recording log that was not passed to the
+  backend gets no entry; the prose redactor alone — the only one before the structural strip — hands
+  a password with a parenthesis back in an argument, and in each of the two lines of git's words the
+  final review probed; and three pins of what is still kept: an scp-form password with a parenthesis
+  in git's words, and a password with an unencoded `/` in two URLs.
 
-`GitterTests` reports **thirty-eight known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
+`GitterTests` reports **forty known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
 shows that the operation gate alone lets a branch another worktree holds through, which is why
 the switch asks about the hold first. Three come from `DefaultsIsolationTests`: the check that
 the real defaults are unchanged fails when a store writes the domain it watches (a scratch
@@ -1036,9 +1044,10 @@ Nineteen come from milestone E3:
 - One comes from `StagedSideTests`: setting the side and then the path, the old two steps, loads the
   same diff twice.
 
-Three come from milestone P1: `LogFileWriterTests` expects six rotated files where five are kept in
-all, so four are rotated; `AppLogTests` expects a banner's line from a store that was not given the
-recorder, and a window's close line where no quit began.
+Five come from milestone P1: `LogFileWriterTests` expects six rotated files where five are kept in
+all, so four are rotated, and an idle writer's bounded flush to have timed out; `AppLogTests` expects
+a banner's line from a store that was not given the recorder, and a window's close line where no quit
+began; `LogLineTests` expects a backslash kept as it is, where it is doubled.
 
 Deleting any of them would take the proof away and the suite would go on looking green.
 
@@ -1532,9 +1541,10 @@ Can be carried to your other Macs, and keeps a log you can carry back (milestone
 `scripts/package.sh`, turns a clean tree into an arm64 DMG signed with your own self-signed
 certificate (so macOS's folder grants survive an update), stamped with the build number and the
 commit that About Gitter shows, and checked before it is wrapped; and every git call and every
-message Gitter showed goes to a rotating `~/Library/Logs/Gitter/gitter.log`, credentials removed,
-which Help › Show Logs opens. [`docs/INSTALL.md`](docs/INSTALL.md) covers the certificate, the first
-open past Gatekeeper, updating and the log.
+message Gitter showed goes to a rotating `~/Library/Logs/Gitter/gitter.log`, with a URL's credentials
+removed (the few exceptions are in `docs/INSTALL.md` §7), which Help › Show Logs opens.
+[`docs/INSTALL.md`](docs/INSTALL.md) covers the certificate, the first open past Gatekeeper, updating
+and the log.
 
 Everything wanted and deliberately deferred is kept in [`docs/BACKLOG.md`](docs/BACKLOG.md), with
 what is already known about each item — including what only a person at the keyboard can still
