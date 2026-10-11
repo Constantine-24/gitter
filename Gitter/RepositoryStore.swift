@@ -125,6 +125,17 @@ final class RepositoryStore {
         isHidden = hidden
     }
 
+    /// `laneMessagesToRead` as it was when a hidden window's ending told it in its own alert
+    /// (`WindowRegistry`, E3 Task 5 fix round 1); nil until then. A held quit's call-off then
+    /// says it no second time, whichever came first — the alert's answer or the quit's Wait
+    /// (`QuitGuard.hasWindow`).
+    private(set) var laneMessagesTold: Int?
+
+    // internal (not private(set) write): used by WindowRegistry only, as it raises that alert
+    func noteLaneMessagesTold() {
+        laneMessagesTold = laneMessagesToRead
+    }
+
     /// Told at the end of every `open()` that opened something, with the root before and after (the
     /// same one again for a reopen): the window registry's open-repositories list
     /// (`WindowRegistry.makeStore`). Not observed.

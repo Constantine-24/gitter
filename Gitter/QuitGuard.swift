@@ -35,7 +35,8 @@ import AppKit
 ///
 /// A window closed while its store writes is hidden, not closed (E3 Task 5): the question fronts it
 /// (`questionWindow`), and a hidden store's failure under Wait is told by its own hidden ending's
-/// alert, not a second time by the call-off (`callingOff`).
+/// alert, not a second time by the call-off — whether that alert is answered before or after Wait
+/// (`callingOff`, `hasWindow`).
 ///
 /// **Not covered:** a SIGTERM (`kill`, a logout that force-quits) never reaches
 /// `applicationShouldTerminate`, and git is left running as before; and a mutation that is not
@@ -203,7 +204,7 @@ enum QuitGuard {
             let replied = MainActor.assumeIsolated { () -> Bool in
                 let waited = ContinuousClock.now - started
                 if let before,
-                    let calling = callingOff(stores, before: before, hasWindow: { AppModel.windows.window(of: $0) != nil })
+                    let calling = callingOff(stores, before: before, hasWindow: { hasWindow($0, in: AppModel.windows) })
                 {
                     log(
                         "quit: called off, the lane ended with something to read: "
@@ -271,17 +272,28 @@ enum QuitGuard {
     /// have said, so that no quit is called off silently (Ruling 10). Nil while no store calls it
     /// off (`storeCallingOff`).
     ///
-    /// **A hidden window's store has a window** (`hasWindow` is `window(of:) != nil`, and a hidden
+    /// **A hidden window's store has a window** (`hasWindow`: `window(of:) != nil`, and a hidden
     /// store keeps its window, E3 Task 5): its call-off brings no alert of its own, because the
     /// store's own hidden ending already raises one — `WindowRegistry.hide` watches its work and,
     /// when the work ends with something to read, says it in `HiddenEnding`'s alert with Show and
-    /// Close, whether a quit is held or not. So a failure under a held quit is told exactly once:
-    /// by this call-off for a store whose window really closed (E2's windowless store), by the
-    /// hidden ending for a hidden one. (A store fronted to be asked about is no longer hidden; its
-    /// banner is on screen.)
+    /// Close, whether a quit is held or not. That alert may be answered Close before the quit's
+    /// Wait, closing the window for real: the store then has no window, but what its alert told is
+    /// marked (`laneMessagesTold`), and `hasWindow` counts it as told. So a failure under a held
+    /// quit is told exactly once, on every ordering: by this call-off for a store whose window
+    /// really closed while it wrote with nothing told (E2's windowless store), by the hidden
+    /// ending's alert for a hidden one. The quit is called off either way, as Wait says. (A store
+    /// fronted to be asked about is no longer hidden; its banner is on screen.)
     struct CallOff {
         let store: RepositoryStore
         let windowlessAlert: String?
+    }
+
+    /// What the held quit's poll hands `callingOff` as `hasWindow` (internal for tests): whether
+    /// `store`'s lane ending is told without the call-off's own alert — its window is there (on
+    /// screen, or hidden: the hidden ending's alert tells it), or that alert has already told it
+    /// and its Close then closed the window for real (fix round 1, Important 1).
+    static func hasWindow(_ store: RepositoryStore, in registry: WindowRegistry) -> Bool {
+        registry.window(of: store) != nil || store.laneMessagesTold == store.laneMessagesToRead
     }
 
     static func callingOff(

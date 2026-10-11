@@ -205,7 +205,8 @@ import Testing
         #expect(recorder.alerts.isEmpty)
     }
 
-    /// The control: a window that is not hidden and not on screen (minimized) is asked about
+    /// The control: a window that is not hidden and not on screen (never ordered in here; a
+    /// minimized window is not visible either, the same `isVisible` branch) is asked about
     /// app-modally, as before, and nothing is brought to the front.
     @Test(.timeLimit(.minutes(10))) func aQuitAboutAWindowNotHiddenAndNotOnScreenFrontsNothing() async throws {
         let repo = try ScratchRepo()
@@ -262,7 +263,7 @@ import Testing
         #expect(test.registry.open(link, kind: .recentOrFinder, front: front) == .front(hidden))
         #expect(recorder.fronted == [window])
         #expect(!hidden.isHidden)
-        #expect(test.registry.openRepositoryPaths == [shownPath(other), shownPath(repo)])
+        #expect(test.registry.openRepositoryPaths == [shownPath(repo), shownPath(other)], "back at its old place")
 
         gate.release()
         await waitUntilIdle(hidden)
@@ -494,7 +495,8 @@ import Testing
     /// Two hidden windows pushing, and a quit: its question fronts the first; under Wait the
     /// second's push is refused by the server while it is still hidden. The failure is told once —
     /// by the hidden ending's alert — and the quit is called off by it without its own windowless
-    /// alert: a hidden store counts as having a window in `callingOff(hasWindow:)`.
+    /// alert: a hidden store counts as having a window in `callingOff(hasWindow:)`
+    /// (`QuitGuard.hasWindow`, the poll's own predicate).
     @Test(.timeLimit(.minutes(10))) func underAHeldQuitAHiddenWindowsFailureIsToldOnce() async throws {
         let (test, recorder, stores, gates, backends, repos) = try await Self.twoHiddenPushes()
         defer { for repo in repos { repo.remove() } }
@@ -514,7 +516,7 @@ import Testing
         await waitUntil("the hidden ending's alert") { !recorder.alerts.isEmpty }
 
         let calling = try #require(
-            QuitGuard.callingOff(stores, before: compared) { test.registry.window(of: $0) != nil })
+            QuitGuard.callingOff(stores, before: compared) { QuitGuard.hasWindow($0, in: test.registry) })
         #expect(calling.store === stores[1])
         #expect(calling.windowlessAlert == nil, "not told a second time")
         #expect(recorder.alerts == ["refusing: \(try #require(stores[1].lastLaneMessageToRead))"])
@@ -538,10 +540,203 @@ import Testing
         await waitUntil("the closed store's message") { stores[1].laneMessagesToRead != messagesBefore[1] }
 
         let calling = try #require(
-            QuitGuard.callingOff(stores, before: compared) { test.registry.window(of: $0) != nil })
+            QuitGuard.callingOff(stores, before: compared) { QuitGuard.hasWindow($0, in: test.registry) })
         #expect(calling.store === stores[1])
         #expect(calling.windowlessAlert != nil)
         #expect(recorder.alerts.isEmpty)
+    }
+
+    /// Important 1 (fix round 1): the hidden window's push is refused while the quit's question is
+    /// still up, its alert is answered Close — the window closes for real, so the store has no window
+    /// any more — and only then is Wait chosen. The failure was told by the alert, so the call-off
+    /// says nothing more: told once.
+    @Test(.timeLimit(.minutes(10))) func failedThenItsAlertClosedThenWaitIsToldOnce() async throws {
+        let (test, recorder, stores, gates, backends, repos) = try await Self.twoHiddenPushes()
+        defer { for repo in repos { repo.remove() } }
+        defer { test.remove() }
+        defer { for backend in backends { backend.releaseAll() } }
+        defer { for store in stores { store.endTerminating() } }
+        let lanes = stores.map(\.remoteActivity)
+        let messagesBefore = stores.map(\.laneMessagesToRead)
+        #expect(QuitGuard.questionWindow(for: stores[0], in: test.registry) != nil)
+
+        // The question is up: the hidden push is refused, and its alert answered Close.
+        gates[1].release()
+        await waitUntil("the hidden ending's alert") { !recorder.alerts.isEmpty }
+        let answer = try #require(recorder.answer)
+        answer(.close)
+        await waitUntilGone(stores[1], from: test.registry)
+        #expect(test.registry.window(of: stores[1]) == nil)
+
+        // Then Wait.
+        let compared = QuitGuard.beginWaiting(
+            stores, writesAsked: lanes.map { $0?.isWrite == true }, messagesBefore: messagesBefore)
+        let calling = try #require(
+            QuitGuard.callingOff(stores, before: compared) { QuitGuard.hasWindow($0, in: test.registry) })
+        #expect(calling.store === stores[1], "Gitter stays open, as Wait says")
+        #expect(calling.windowlessAlert == nil, "told once, by the alert")
+        #expect(recorder.alerts.count == 1)
+
+        // The control: judged by its window alone, as before the fix, the call-off tells it again.
+        let byWindowAlone = try #require(
+            QuitGuard.callingOff(stores, before: compared) { test.registry.window(of: $0) != nil })
+        withKnownIssue("by its window alone, a hidden store whose alert closed it is windowless: told twice") {
+            #expect(byWindowAlone.windowlessAlert == nil)
+        }
+    }
+
+    /// The reverse order: Wait first, then the hidden push is refused (its alert goes up), then the
+    /// alert is answered Close. Before and after the answer, the call-off adds no alert of its own.
+    @Test(.timeLimit(.minutes(10))) func waitThenFailedThenItsAlertClosedIsToldOnce() async throws {
+        let (test, recorder, stores, gates, backends, repos) = try await Self.twoHiddenPushes()
+        defer { for repo in repos { repo.remove() } }
+        defer { test.remove() }
+        defer { for backend in backends { backend.releaseAll() } }
+        defer { for store in stores { store.endTerminating() } }
+        let lanes = stores.map(\.remoteActivity)
+        let messagesBefore = stores.map(\.laneMessagesToRead)
+        #expect(QuitGuard.questionWindow(for: stores[0], in: test.registry) != nil)
+        let compared = QuitGuard.beginWaiting(
+            stores, writesAsked: lanes.map { $0?.isWrite == true }, messagesBefore: messagesBefore)
+
+        gates[1].release()
+        await waitUntil("the hidden ending's alert") { !recorder.alerts.isEmpty }
+        let before = try #require(
+            QuitGuard.callingOff(stores, before: compared) { QuitGuard.hasWindow($0, in: test.registry) })
+        #expect(before.store === stores[1])
+        #expect(before.windowlessAlert == nil)
+
+        let answer = try #require(recorder.answer)
+
+        answer(.close)
+        await waitUntilGone(stores[1], from: test.registry)
+        let after = try #require(
+            QuitGuard.callingOff(stores, before: compared) { QuitGuard.hasWindow($0, in: test.registry) })
+        #expect(after.windowlessAlert == nil)
+        #expect(recorder.alerts.count == 1)
+    }
+
+    // MARK: - Hide, show, hide again; the alert after a show; the proxy at the real close
+
+    /// The alert's Close after the window was shown again (Open Recent while the alert was up):
+    /// the window is on screen, so it is not closed.
+    @Test(.timeLimit(.minutes(10))) func theAlertsCloseAfterTheWindowWasShownAgainClosesNothing() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try Self.refusingRemote(repo)
+        let recorder = HiddenWindowRecorder()
+        let test = TestRegistry(hiddenWindows: recorder.environment)
+        defer { test.remove() }
+        let (store, backend, window) = await Self.attachedStore(repo, in: test)
+        defer { backend.releaseAll() }
+        let gate = backend.hold(.push)
+        store.push()
+        #expect(await waitUntil("the push parked") { gate.waiting })
+        #expect(window.delegate?.windowShouldClose?(window) == false)
+        gate.release()
+        await waitUntil("the alert") { !recorder.alerts.isEmpty }
+
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        #expect(!store.isHidden)
+        let answer = try #require(recorder.answer)
+        answer(.close)
+
+        #expect(recorder.closed.isEmpty)
+        #expect(!store.isClosed)
+        #expect(test.registry.window(of: store) === window)
+    }
+
+    /// Hidden, shown again, hidden again while the same push runs: only the newest hide watches, so
+    /// its refusal is told once and the window is not closed before the answer.
+    @Test(.timeLimit(.minutes(10))) func hiddenShownAndHiddenAgainIsWatchedOnce() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try Self.refusingRemote(repo)
+        let recorder = HiddenWindowRecorder()
+        let test = TestRegistry(hiddenWindows: recorder.environment)
+        defer { test.remove() }
+        let (store, backend, window) = await Self.attachedStore(repo, in: test)
+        defer { backend.releaseAll() }
+        let gate = backend.hold(.push)
+        store.push()
+        #expect(await waitUntil("the push parked") { gate.waiting })
+
+        #expect(window.delegate?.windowShouldClose?(window) == false)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        #expect(!store.isHidden)
+        #expect(window.delegate?.windowShouldClose?(window) == false)
+        #expect(store.isHidden)
+        #expect(recorder.orderedOut == [window, window])
+
+        gate.release()
+        await waitUntil("the alert") { !recorder.alerts.isEmpty }
+        await waitUntilLaneFree(store)
+        // Every turn that could still run an older watcher.
+        for _ in 0..<5 { await Task.yield() }
+
+        #expect(recorder.alerts.count == 1)
+        #expect(recorder.closed.isEmpty)
+        let answer = try #require(recorder.answer)
+        answer(.close)
+        #expect(recorder.closed == [window])
+    }
+
+    /// The real close lets go of the proxy and gives the window its own delegate back (SwiftUI's,
+    /// in the app), on the turn after the close.
+    @Test(.timeLimit(.minutes(10))) func theRealCloseGivesTheWindowItsOwnDelegateBack() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        _ = try TestBackendTests.remoteOneCommitBehind(repo)
+        let recorder = HiddenWindowRecorder()
+        let test = TestRegistry(hiddenWindows: recorder.environment)
+        defer { test.remove() }
+        let backend = TestBackend()
+        let store = test.registry.makeStore(backend: backend)
+        await open(store, repo.url)
+        defer { backend.releaseAll() }
+        let window = Self.window()
+        let original = RecordingDelegate()
+        window.delegate = original
+        test.registry.attach(window, to: store)
+        #expect(window.delegate is WindowCloseProxy)
+        #expect(test.registry.hasProxy(on: window))
+        let gate = backend.hold(.push)
+        store.push()
+        #expect(await waitUntil("the push parked") { gate.waiting })
+        #expect(window.delegate?.windowShouldClose?(window) == false)
+
+        gate.release()
+        await waitUntilGone(store, from: test.registry)
+        await waitUntil("the proxy let go") { !test.registry.hasProxy(on: window) }
+
+        #expect(window.delegate === original)
+    }
+
+    /// Minor 8: shown again, a hidden window's repository goes back to its place in the list, not
+    /// to the end.
+    @Test(.timeLimit(.minutes(10))) func shownAgainItsRepositoryTakesItsOldPlaceInTheList() async throws {
+        let repo = try ScratchRepo("hidden")
+        defer { repo.remove() }
+        _ = try TestBackendTests.remoteOneCommitBehind(repo)
+        let after = try ScratchRepo("after")
+        defer { after.remove() }
+        try after.commit("a.txt", "one\n", "first")
+        let recorder = HiddenWindowRecorder()
+        let test = TestRegistry(hiddenWindows: recorder.environment)
+        defer { test.remove() }
+        let (store, backend, window) = await Self.attachedStore(repo, in: test)
+        defer { backend.releaseAll() }
+        _ = await test.opened(after)
+        #expect(test.registry.openRepositoryPaths == [shownPath(repo), shownPath(after)])
+        let gate = backend.hold(.push)
+        store.push()
+        #expect(await waitUntil("the push parked") { gate.waiting })
+
+        #expect(window.delegate?.windowShouldClose?(window) == false)
+        #expect(test.registry.openRepositoryPaths == [shownPath(after)])
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+
+        #expect(test.registry.openRepositoryPaths == [shownPath(repo), shownPath(after)])
     }
 
     // MARK: - The recorder's control

@@ -95,6 +95,8 @@ final class WindowRegistry {
     /// What a hidden store had to read when it was hidden, and which hide that was: a store shown
     /// again and hidden again is watched by the newest hide only. By store.
     @ObservationIgnored private var hidden: [ObjectIdentifier: HiddenAt] = [:]
+    /// Where a hidden store's repository was in the open list, for `cameBack` to put it back there.
+    @ObservationIgnored private var listPlaces: [ObjectIdentifier: Int] = [:]
     @ObservationIgnored private var hides = 0
 
     private struct HiddenAt {
@@ -199,7 +201,7 @@ final class WindowRegistry {
     func store(of window: NSWindow?) -> RepositoryStore? {
         var candidate = window
         while let current = candidate {
-            if let store = liveStores.first(where: { self.window(of: $0) === current }) { return store }
+            if let store = store(in: current) { return store }
             candidate = current.sheetParent
         }
         return nil
@@ -239,6 +241,16 @@ final class WindowRegistry {
         installProxy(on: window)
     }
 
+    /// The open window's store whose own window is `window` (not a sheet of it).
+    private func store(in window: NSWindow) -> RepositoryStore? {
+        liveStores.first { self.window(of: $0) === window }
+    }
+
+    /// Whether the registry still holds a proxy for `window` (internal for tests).
+    func hasProxy(on window: NSWindow) -> Bool {
+        proxies[ObjectIdentifier(window)].map { $0.window.window === window } ?? false
+    }
+
     /// Puts a `WindowCloseProxy` in as `window`'s delegate, unless it has one already. The proxy
     /// asks about whichever store the window shows when the close comes.
     private func installProxy(on window: NSWindow) {
@@ -247,13 +259,11 @@ final class WindowRegistry {
         let proxy = WindowCloseProxy(
             original: window.delegate,
             shouldHide: { [weak self, weak window] in
-                guard let self, let window, let store = self.liveStores.first(where: { self.window(of: $0) === window })
-                else { return false }
+                guard let self, let window, let store = self.store(in: window) else { return false }
                 return Self.closeDecision(remoteActivity: store.remoteActivity, isMutating: store.isMutating) == .hide
             },
             hide: { [weak self, weak window] in
-                guard let self, let window, let store = self.liveStores.first(where: { self.window(of: $0) === window })
-                else { return }
+                guard let self, let window, let store = self.store(in: window) else { return }
                 self.hide(store)
             })
         proxies[id] = (WeakWindow(window: window), proxy)
@@ -277,25 +287,26 @@ final class WindowRegistry {
             if let observer { NotificationCenter.default.removeObserver(observer) }
         }
         hidden[key] = nil
+        listPlaces[key] = nil
         store.setHidden(false)
         if let window = windows[key]?.window { dropProxy(of: window) }
         windows[key] = nil
-        if !isTerminating, let root = store.root {
-            let path = RepositoryWindow(url: root).path
-            if !isShown(path, besides: store) { writeList(openRepositoryPaths.filter { $0 != path }) }
-        }
+        leaveList(store)
         dropWhenLaneFree(store)
     }
 
     /// Lets go of `window`'s proxy — on the next turn, not now: this runs inside the window's
     /// `willCloseNotification`, which AppKit may still be delivering to the delegate (SwiftUI's own
-    /// `windowWillClose:`, through the proxy), and the window holds its delegate weakly.
+    /// `windowWillClose:`, through the proxy), and the window holds its delegate weakly. The
+    /// window's own delegate (SwiftUI's) is put back first, so a closed window that lingers (M3.2)
+    /// keeps it rather than a nil one.
     private func dropProxy(of window: NSWindow) {
         let id = ObjectIdentifier(window)
         guard let installed = proxies[id], installed.window.window === window else { return }
         let proxy = installed.proxy
-        Task { @MainActor [weak self] in
+        Task { @MainActor [weak self, weak window] in
             guard let self, self.proxies[id]?.proxy === proxy else { return }
+            if let window, window.delegate === proxy { window.delegate = proxy.original }
             self.proxies[id] = nil
         }
     }
@@ -349,13 +360,10 @@ final class WindowRegistry {
         guard !store.isClosed, !store.isHidden, let window = window(of: store) else { return }
         hiddenWindows.orderOut(window)
         store.setHidden(true)
-        if !isTerminating, let root = store.root {
-            let path = RepositoryWindow(url: root).path
-            if !isShown(path, besides: store) { writeList(openRepositoryPaths.filter { $0 != path }) }
-        }
+        let key = ObjectIdentifier(store)
+        listPlaces[key] = leaveList(store)
         hides += 1
         let serial = hides
-        let key = ObjectIdentifier(store)
         hidden[key] = HiddenAt(serial: serial, errorAtHide: store.lastError, messagesAtHide: store.laneMessagesToRead)
         whenFree(store, busy: { [weak self] store in
             // A store shown again, closed, or hidden again since is this hide's no more: stop.
@@ -370,16 +378,22 @@ final class WindowRegistry {
     /// `store`'s window is back on screen (its `didBecomeKeyNotification`: an open of its
     /// repository, SwiftUI's `openWindow(value:)` — which fronts the hidden window itself (C2) —
     /// the alert's Show, `QuitGuard` fronting it to ask): no longer hidden, its repository back on
-    /// the list, and its work no longer watched — it ends on screen as anyone's does. Nothing for
-    /// a store that is not hidden.
+    /// the list at the place it had there, and its work no longer watched — it ends on screen as
+    /// anyone's does. Nothing for a store that is not hidden.
     func cameBack(_ store: RepositoryStore) {
         guard store.isHidden, !store.isClosed else { return }
         store.setHidden(false)
-        hidden[ObjectIdentifier(store)] = nil
+        let key = ObjectIdentifier(store)
+        hidden[key] = nil
+        let place = listPlaces.removeValue(forKey: key)
         if !isTerminating, let root = store.root {
             let path = RepositoryWindow(url: root).path
-            let list = openRepositoryPaths
-            if !list.contains(path) { writeList(list + [path]) }
+            var list = openRepositoryPaths
+            if !list.contains(path) {
+                // Back where it was (Minor 8), so a hide and a show keep the next launch's order.
+                list.insert(path, at: min(place ?? list.count, list.count))
+                writeList(list)
+            }
         }
     }
 
@@ -404,6 +418,8 @@ final class WindowRegistry {
         case .close:
             closeForReal(store)
         case .alert(let text):
+            // Told here: a held quit's call-off says it no second time (`QuitGuard.hasWindow`).
+            store.noteLaneMessagesTold()
             hiddenWindows.alert(text) { [weak self, weak store] choice in
                 guard let self, let store, !store.isClosed else { return }
                 switch choice {
@@ -512,6 +528,20 @@ final class WindowRegistry {
             list.append(newPath)
         }
         writeList(list)
+    }
+
+    /// `store`'s window has left the screen (closed or hidden): its repository leaves the list,
+    /// unless another window on screen shows it or the app is terminating. The index it had, if it
+    /// was removed.
+    @discardableResult
+    private func leaveList(_ store: RepositoryStore) -> Int? {
+        guard !isTerminating, let root = store.root else { return nil }
+        let path = RepositoryWindow(url: root).path
+        guard !isShown(path, besides: store) else { return nil }
+        let list = openRepositoryPaths
+        let place = list.firstIndex(of: path)
+        writeList(list.filter { $0 != path })
+        return place
     }
 
     /// Whether an open window other than `store`'s shows `path` — on screen: a hidden one shows
