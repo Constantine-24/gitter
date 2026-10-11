@@ -60,12 +60,12 @@ expect "modified file" 2 "package.sh: the tree is not clean" --
 # Controls for the Release-name scan: the same code must FIND a name that is present. The needle
 # is on the first line of a 20 MB file, the case where grep -q under pipefail used to miss it.
 big="$SCRATCH/big.txt"
-{ echo "PLANTED_NEEDLE_NAME"; head -c 20000000 /dev/zero | tr '\0' 'x' | fold -w 80; } > "$big"
+{ echo "KNOWN_NEEDLE_NAME"; head -c 20000000 /dev/zero | tr '\0' 'x' | fold -w 80; } > "$big"
 check() { # check <name> <command...>: the command must succeed
     local name="$1"; shift
     if "$@"; then echo "ok   $name"; else echo "FAIL $name"; FAILS=$((FAILS + 1)); fi
 }
-check "control: text_has finds a name on the first line of 20 MB" text_has "$(cat "$big")" PLANTED_NEEDLE_NAME
+check "control: text_has finds a name on the first line of 20 MB" text_has "$(cat "$big")" KNOWN_NEEDLE_NAME
 check "control: text_has does not find an absent name" bash -c '! { . "$0"; text_has "abc" zzz; }' "$HERE/package-lib.sh"
 check "control: strings scan finds a present name" binary_has strings /bin/ls CLICOLOR
 check "control: nm scan finds a present symbol" binary_has symbols /bin/ls __mh_execute_header
