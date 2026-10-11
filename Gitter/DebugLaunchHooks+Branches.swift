@@ -31,7 +31,7 @@
     ///     open:<path>                  menu:<title>        views[:<class>]     badges
     ///     autofetchfailed:<reason>     copyurls
     ///     quit                         alert               alertbutton:<title>
-    ///     quitevent                    alertsnapshot:<name>
+    ///     quitevent                    alertsnapshot:<name>         activate
     ///     menuitem:<menu>:<title>
     ///     notice                       openlink
     ///     newwindow:<path>             inwindow:<n>                 closewindow
@@ -171,7 +171,11 @@
     /// tinted buttons but not its text, which is drawn with vibrancy (the sidebar's problem,
     /// below). `alertbutton:` looks in the app-modal alert first. `alertsnapshot:<name>` draws
     /// the app-modal alert's own window (`cacheDisplay`, which draws an alert's text) into the
-    /// snapshot folder, as `snapshot:` renders the target's (E3 Task 5).
+    /// snapshot folder, as `snapshot:` renders the target's (E3 Task 5). For the app-modal alert,
+    /// `alert` also logs how it is presented — whether the app is active, the panel key, and its
+    /// default button cell — and the hidden ending's alert logs its buttons' key equivalents as it
+    /// is built (`alert built: …`). `activate` makes Gitter the active app (`NSApp.activate()`), as
+    /// a click on it would, and logs whether it is and which window is key (final review M1).
     ///
     /// `notice` logs both notice slots — each one's text, links and button titles:
     /// `notice transient: <…> | links: [...] | actions: [...]` and the same for `sticky`.
@@ -230,7 +234,7 @@
                 // opens a sheet sets neither and this returns at once.
                 if started || text.hasPrefix("wait:") || text == "quit" || text == "quitevent"
                     || text == "alert" || text.hasPrefix("alertbutton:") || text.hasPrefix("menuitem:")
-                    || text == "closewindow"
+                    || text == "closewindow" || text == "activate"
                 {
                     // Nothing to wait for: the point is to carry on while it runs.
                 } else if laneWasBusy && text != "cancel" && text != "idle" {
@@ -426,7 +430,20 @@
                 // An app-modal alert (`ModalAlert`): a window of its own, no sheet's parent.
                 if let modal = NSApp.modalWindow, modal.sheetParent == nil {
                     logControls(in: modal.contentView, window: "app-modal \(type(of: modal))")
+                    // How it is presented (final review M1): AppKit draws and honours a default
+                    // button only in a key window.
+                    log(
+                        "alert app-modal \(type(of: modal)) state: app active: \(NSApp.isActive) | panel key: "
+                            + "\(modal.isKeyWindow) | default button cell: \(modal.defaultButtonCell?.title ?? "none") "
+                            + "| key window: \(NSApp.keyWindow.map { "\(type(of: $0))" } ?? "none")")
                 }
+            case "activate":
+                // Makes Gitter the active app, as a click on it would (final review M1's proof).
+                NSApp.activate()
+                try? await Task.sleep(for: .milliseconds(500))
+                log(
+                    "activate: app active: \(NSApp.isActive) | key window: "
+                        + "\(NSApp.keyWindow.map { "\(type(of: $0))" } ?? "none")")
             case "alertbutton":
                 let title = String(step.dropFirst("alertbutton:".count))
                 // The app-modal alert's first: a hidden repository window may draw a button of
@@ -482,6 +499,21 @@
                 store.commit()
             default: log("unknown step: \(step)")
             }
+        }
+
+        /// The hidden ending's alert as `HiddenWindowEnvironment.live` built it, before it is raised:
+        /// each button's key equivalent then, whether the app is active, and the Dock attention
+        /// request made for an inactive app (its number; `none` when active) (final review M1).
+        static func logAlertBuilt(_ alert: NSAlert, attention: Int?) {
+            let buttons = alert.buttons.map { button in
+                let key = button.keyEquivalent
+                    .replacingOccurrences(of: "\r", with: "Return")
+                    .replacingOccurrences(of: "\u{1b}", with: "Escape")
+                return "\(button.title) [key: \(key.isEmpty ? "none" : key)]"
+            }
+            log(
+                "alert built: \(alert.messageText) | buttons: \(buttons.joined(separator: ", ")) "
+                    + "| app active: \(NSApp.isActive) | attention request: \(attention.map(String.init) ?? "none")")
         }
 
         private static func logControls(in view: NSView?, window: String) {

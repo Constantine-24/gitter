@@ -958,6 +958,29 @@ import Testing
         #expect(test.registry.openRepositoryPaths == [shownPath(repo), shownPath(after)])
     }
 
+    // MARK: - The alert as built (final review M1)
+
+    /// The builder's half of M1: the hidden ending's alert, as built and before it is raised, has
+    /// its title and text, Show first with Return — the default — and Close with no key. The
+    /// control: the same check on a button AppKit gave no Return (the second), and on one given
+    /// Escape as QuitGuard's Don't Quit is, fails.
+    @Test func theHiddenEndingsAlertIsBuiltWithShowAsTheDefault() {
+        let alert = HiddenWindowEnvironment.makeAlert("repo: it failed")
+
+        #expect(alert.messageText == RemoteWording.closedWindowFailedTitle)
+        #expect(alert.informativeText == "repo: it failed")
+        #expect(alert.buttons.map(\.title) == [RemoteWording.closedWindowShow, RemoteWording.closedWindowClose])
+        #expect(alert.buttons.first?.keyEquivalent == "\r")
+        #expect(alert.buttons.last?.keyEquivalent == "")
+
+        let escape = NSAlert().addButton(withTitle: RemoteWording.quitCancel)
+        escape.keyEquivalent = "\u{1b}"
+        withKnownIssue("only the first button is given Return") {
+            #expect(alert.buttons.last?.keyEquivalent == "\r")
+            #expect(escape.keyEquivalent == "\r")
+        }
+    }
+
     // MARK: - The recorder's control
 
     /// The recorder's checks can fail: before any ending, nothing is recorded as closed or alerted.

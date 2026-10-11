@@ -703,16 +703,32 @@ struct HiddenWindowEnvironment {
             window.close()
         },
         alert: { text, answer in
-            let alert = NSAlert()
-            alert.alertStyle = .warning
-            alert.messageText = RemoteWording.closedWindowFailedTitle
-            alert.informativeText = text
-            // First button: the default, Return.
-            alert.addButton(withTitle: RemoteWording.closedWindowShow)
-            alert.addButton(withTitle: RemoteWording.closedWindowClose)
+            let alert = makeAlert(text)
+            // Gitter in the background — the usual case, the user having closed the window and
+            // gone elsewhere — leaves the panel not key: AppKit then neither draws Show as the
+            // default nor lets Return press it, and the panel can sit behind the front app's
+            // windows (measured, final review M1; C3). The Dock icon bounces until Gitter is
+            // brought forward, which makes the panel key and Show the default again.
+            let attention = NSApp.isActive ? nil : NSApp.requestUserAttention(.criticalRequest)
+            #if DEBUG
+                DebugLaunchHooks.logAlertBuilt(alert, attention: attention)
+            #endif
             // From the run loop, so every other window's work goes on under it (C3).
             ModalAlert.raise(alert) { response in
                 answer(response == .alertFirstButtonReturn ? .show : .close)
             }
         })
+
+    /// The hidden ending's alert, built and not raised (internal for tests): a warning titled
+    /// `RemoteWording.closedWindowFailedTitle` over `text`, with Show first — the default, which
+    /// AppKit gives Return as it is added — then Close.
+    @MainActor static func makeAlert(_ text: String) -> NSAlert {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = RemoteWording.closedWindowFailedTitle
+        alert.informativeText = text
+        alert.addButton(withTitle: RemoteWording.closedWindowShow)
+        alert.addButton(withTitle: RemoteWording.closedWindowClose)
+        return alert
+    }
 }
