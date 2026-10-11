@@ -1383,7 +1383,7 @@ private final class TerminationHold: @unchecked Sendable {
         // Read while the shell is surely unreaped, so the number is its group's.
         let markerGroup = getpgid(markerPID)
         marker.terminate()
-        let reaped = await waitForReap(markerPID, "the marker shell's exit")
+        let reaped = await waitForReap(markerPID, "the marker shell's exit", sourceLocation: sourceLocation)
         let groupGone = reaped ? await groupIsGone(markerGroup) : false
         guard !(reaped && groupGone) else { return }
         Issue.record(
@@ -1414,14 +1414,23 @@ private final class TerminationHold: @unchecked Sendable {
         try? FileManager.default.removeItem(at: trapped)
         #expect(Self.processCount(matching: token) == 1)
 
+        // Both issues, each by its own kind, not either: the wait's (it never came back) and the
+        // marker's own (it outlived its SIGTERM).
+        let matched = Locked<Set<String>>([])
         await withKnownIssue("the marker ignores its SIGTERM, so its wait is cancelled and its reap fails") {
             let ending = Task { await Self.endStressMarker(marker) }
             try? await Task.sleep(for: .milliseconds(100))
             ending.cancel()
             await ending.value
-        } matching: {
-            $0.isNeverCameBack || $0.comments.contains { $0.rawValue.contains("outlived its SIGTERM") }
+        } matching: { issue in
+            let kind =
+                issue.isNeverCameBack
+                ? "never came back"
+                : issue.comments.contains { $0.rawValue.contains("outlived its SIGTERM") } ? "outlived" : nil
+            if let kind { matched.mutate { $0.insert(kind) } }
+            return kind != nil
         }
+        #expect(matched.current == ["never came back", "outlived"])
 
         #expect(await Self.groupIsGone(group), "the marker outlived the failed reap")
         #expect(await Self.waitForNoProcess(matching: token))
@@ -1595,9 +1604,11 @@ private final class TerminationHold: @unchecked Sendable {
     /// an exited, unreaped pid is ESRCH (measured, E3 Task 2) — so that last step, which is the
     /// reaper's (`Process`, the runner, launchd) and prompt rather than instant, is polled for
     /// up to two seconds.
-    private static func waitForReap(_ pid: Int32, _ what: String = "the exit") async -> Bool {
+    private static func waitForReap(
+        _ pid: Int32, _ what: String = "the exit", sourceLocation: SourceLocation = #_sourceLocation
+    ) async -> Bool {
         let exit = CallUnderTest { await waitForExit(pid) }
-        guard await exit.value("\(what) of pid \(pid)") != nil else { return false }
+        guard await exit.value("\(what) of pid \(pid)", sourceLocation: sourceLocation) != nil else { return false }
         for _ in 0..<200 {
             errno = 0
             if kill(pid, 0) == -1, errno == ESRCH { return true }

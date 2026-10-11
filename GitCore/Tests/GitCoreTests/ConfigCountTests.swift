@@ -68,18 +68,31 @@ import Testing
     }
 
     /// The cross-check's control: `gitsReading` does catch a parse that is not git's. Swift's
-    /// `Int(_:)` — `withConfig`'s parse before E3 — disagrees with git's own answer on every
-    /// leading space, a count over `INT_MAX` and a negative that wraps.
+    /// `Int(_:)` — `withConfig`'s parse before E3, which read whatever it could not parse as 0 —
+    /// disagrees with git's own answer on every leading space, on every count git refuses (a
+    /// refusal is not a count of 0: the readings are compared in full, `Int??`), a count over
+    /// `INT_MAX` and a negative that wraps. Only the comparison's own failures are the known issue
+    /// (`matching:`): an issue `gitsReading` records about an answer that is no reading still fails.
     @Test func theCrossCheckCatchesAParseThatIsNotGits() async throws {
         let repo = try await TestRepo.makeEmpty()
         defer { repo.cleanUp() }
 
         await withKnownIssue("Int(_:) is not git's reading") {
             for row in Self.table {
-                let swift = row.value.flatMap { Int($0) }.map { max($0, 0) } ?? 0
-                let git = try await Self.gitsReading(of: row.value, in: repo)
-                #expect(git.map { $0 ?? 0 } == swift, "\(String(reflecting: row.value))")
+                let swift: Int?? = .some(row.value.flatMap { Int($0) }.map { max($0, 0) } ?? 0)
+                let git: Int??
+                do {
+                    git = try await Self.gitsReading(of: row.value, in: repo)
+                } catch {
+                    // Not the known issue: a git that did not run is no reading at all.
+                    Issue.record(error)
+                    continue
+                }
+                #expect(git == swift, "\(String(reflecting: row.value))")
             }
+        } matching: { issue in
+            guard case .expectationFailed = issue.kind else { return false }
+            return true
         }
     }
 

@@ -165,7 +165,8 @@ enum ConflictFixtures {
 
     /// `format-patch -1 --stdout <branch>` through a temporary `gitter-am-<UUID>.patch`, then
     /// `am` (with `-3` for `threeWay`) of it on the repository's checkout, which exits 128 on
-    /// the conflict. The one place the dance lives: `am(kind:…)` and `DiscardUndoTests` call it.
+    /// the conflict. Shared by `am(kind:…)` and `DiscardUndoTests.begin(.am)`; the other suites
+    /// that start an `am` keep near-copies of their own, by design (Task 7).
     static func beginAm(in repo: TestRepo, of branch: String, threeWay: Bool) async throws {
         let patch = try await repo.git(["format-patch", "-1", "--stdout", branch])
         let file = FileManager.default.temporaryDirectory
