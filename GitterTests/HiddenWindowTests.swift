@@ -53,42 +53,107 @@ import Testing
     // MARK: - How the work ended
 
     @Test func nothingNewToReadClosesTheWindow() {
-        #expect(
-            HiddenEnding.decide(
-                repository: "repo", errorAtHide: nil, errorNow: nil, messagesAtHide: 2, messagesNow: 2,
-                lastMessage: "an older one") == .close)
+        let reading = HiddenReading(laneMessages: 2, lastLaneMessage: "an older one")
+        #expect(HiddenEnding.decide(repository: "repo", atHide: reading, now: reading) == .close)
     }
 
     @Test func aNewBannerIsTheAlert() {
         #expect(
             HiddenEnding.decide(
-                repository: "repo", errorAtHide: nil, errorNow: "Commit failed.", messagesAtHide: 0,
-                messagesNow: 0, lastMessage: nil) == .alert("repo: Commit failed."))
+                repository: "repo", atHide: HiddenReading(), now: HiddenReading(error: "Commit failed."))
+                == .alert("repo: Commit failed."))
         #expect(
             HiddenEnding.decide(
-                repository: "repo", errorAtHide: "An older banner.", errorNow: "Commit failed.",
-                messagesAtHide: 0, messagesNow: 0, lastMessage: nil) == .alert("repo: Commit failed."))
+                repository: "repo", atHide: HiddenReading(error: "An older banner."),
+                now: HiddenReading(error: "Commit failed.")) == .alert("repo: Commit failed."))
     }
 
     @Test func aLaneMessageToReadIsTheAlertInItsOwnWords() {
         #expect(
             HiddenEnding.decide(
-                repository: "repo", errorAtHide: nil, errorNow: "The banner.", messagesAtHide: 1,
-                messagesNow: 2, lastMessage: "The push was rejected.") == .alert("repo: The push was rejected."))
+                repository: "repo", atHide: HiddenReading(laneMessages: 1),
+                now: HiddenReading(error: "The banner.", laneMessages: 2, lastLaneMessage: "The push was rejected."))
+                == .alert("repo: The push was rejected."))
     }
 
     @Test func aBannerAlreadyUpBeforeTheHideIsNotToldAgain() {
+        let reading = HiddenReading(error: "Seen already.", laneMessages: 1, lastLaneMessage: "Seen already.")
+        #expect(HiddenEnding.decide(repository: "repo", atHide: reading, now: reading) == .close)
+    }
+
+    /// I1: a change that fails since the hide in the very words of the banner already up is told:
+    /// the failures are counted, not compared by their text.
+    @Test func aChangeFailingInTheWordsOfTheBannerUpAtTheHideIsTold() {
         #expect(
             HiddenEnding.decide(
-                repository: "repo", errorAtHide: "Seen already.", errorNow: "Seen already.", messagesAtHide: 1,
-                messagesNow: 1, lastMessage: "Seen already.") == .close)
+                repository: "repo", atHide: HiddenReading(error: "Commit failed.", mutationFailures: 3),
+                now: HiddenReading(error: "Commit failed.", mutationFailures: 4)) == .alert("repo: Commit failed."))
     }
 
     @Test func withNoRepositoryTheAlertIsTheMessageAlone() {
         #expect(
-            HiddenEnding.decide(
-                repository: nil, errorAtHide: nil, errorNow: "Failed.", messagesAtHide: 0, messagesNow: 0,
-                lastMessage: nil) == .alert("Failed."))
+            HiddenEnding.decide(repository: nil, atHide: HiddenReading(), now: HiddenReading(error: "Failed."))
+                == .alert("Failed."))
+    }
+
+    // MARK: - How the work ended: an operation that stopped (final review, I1)
+
+    static let mergeStop = OperationPlace.stopped(
+        .merge, OperationProgress(operation: .merge, mergedName: "feature"))
+    static let rebaseAt2 = OperationPlace.stopped(
+        .rebase, OperationProgress(operation: .rebase, step: 2, total: 5, current: CommitRef(sha: "b", subject: "B")))
+    static let rebaseAt3 = OperationPlace.stopped(
+        .rebase, OperationProgress(operation: .rebase, step: 3, total: 5, current: CommitRef(sha: "c", subject: "C")))
+
+    /// An operation in progress now that was not at the hide — a merge's conflicts, a pick that
+    /// stopped — is the alert, in the bar's words.
+    @Test func anOperationStoppedSinceTheHideIsTheAlertInTheBarsWords() {
+        let now = HiddenReading(
+            place: Self.mergeStop, placeSentence: "Merging feature into main. Resolve the conflicts, then commit.")
+        #expect(
+            HiddenEnding.decide(repository: "repo", atHide: HiddenReading(), now: now)
+                == .alert("repo: Merging feature into main. Resolve the conflicts, then commit."))
+    }
+
+    /// A Continue that stops again, at another commit, is told; the same place — a stage during
+    /// the merge, which changes only the bar's next step — is not.
+    @Test func anOperationAtAnotherPlaceIsToldAndAtTheSamePlaceIsNot() {
+        let at2 = HiddenReading(place: Self.rebaseAt2, placeSentence: "at 2")
+        let at3 = HiddenReading(place: Self.rebaseAt3, placeSentence: "at 3")
+        #expect(HiddenEnding.decide(repository: "repo", atHide: at2, now: at3) == .alert("repo: at 3"))
+        let resolving = HiddenReading(place: Self.mergeStop, placeSentence: "Resolve the conflicts, then commit.")
+        let resolved = HiddenReading(place: Self.mergeStop, placeSentence: "Commit to complete the merge.")
+        #expect(HiddenEnding.decide(repository: "repo", atHide: resolving, now: resolved) == .close)
+    }
+
+    /// An operation that was in progress at the hide and is gone now — the commit that concluded
+    /// a merge, an abort — has nothing to tell.
+    @Test func anOperationEndedSinceTheHideClosesTheWindow() {
+        let merging = HiddenReading(place: Self.mergeStop, placeSentence: "Merging feature into main.")
+        #expect(HiddenEnding.decide(repository: "repo", atHide: merging, now: HiddenReading()) == .close)
+    }
+
+    /// A range left halted with no operation is told in its bar's words.
+    @Test func aRangeHaltedSinceTheHideIsTheAlert() {
+        let halted = HaltedSequence(operation: .cherryPick, notApplied: [CommitRef(sha: "a", subject: "A")], total: 1)
+        let now = HiddenReading(place: .halted(halted), placeSentence: "The cherry-pick stopped part-way.")
+        #expect(
+            HiddenEnding.decide(repository: "repo", atHide: HiddenReading(), now: now)
+                == .alert("repo: The cherry-pick stopped part-way."))
+    }
+
+    /// The staged revert's notice, up since the hide, is the alert; the same notice up at the hide
+    /// was seen. A banner comes first.
+    @Test func theStagedRevertsNoticeIsTheAlertAfterAnyBanner() {
+        let staged = HiddenReading(stagedRevert: "The revert's changes are staged.")
+        #expect(
+            HiddenEnding.decide(repository: "repo", atHide: HiddenReading(), now: staged)
+                == .alert("repo: The revert's changes are staged."))
+        #expect(HiddenEnding.decide(repository: "repo", atHide: staged, now: staged) == .close)
+        var both = staged
+        both.error = "A banner."
+        #expect(
+            HiddenEnding.decide(repository: "repo", atHide: HiddenReading(), now: both) == .alert("repo: A banner."))
     }
 
     // MARK: - The proxy
@@ -433,6 +498,128 @@ import Testing
         }
     }
 
+    // MARK: - A local change that stops while hidden (final review, I1)
+
+    /// A merge that stops on conflicts while its window is hidden says nothing in a banner — the
+    /// operation bar does — so the alert tells the bar's sentence, and the window is not closed
+    /// before its answer: a repository left mid-merge is never closed on silently.
+    @Test(.timeLimit(.minutes(10))) func aMergeThatStopsOnConflictsWhileHiddenRaisesTheAlertWithTheBarsSentence() async throws {
+        let repo = try Self.branches(conflicting: true)
+        defer { repo.remove() }
+        let recorder = HiddenWindowRecorder()
+        let test = TestRegistry(hiddenWindows: recorder.environment)
+        defer { test.remove() }
+        let (store, backend, window) = await Self.attachedStore(repo, in: test)
+        defer { backend.releaseAll() }
+        let gate = backend.hold(.merge)
+        store.merge("feature", mode: .fastForwardIfPossible)
+        #expect(await waitUntil("the merge parked") { gate.waiting })
+        #expect(window.delegate?.windowShouldClose?(window) == false)
+        #expect(store.isHidden)
+
+        gate.release()
+        await Self.waitForTheEnding(of: store, recorder)
+
+        #expect(store.operationInProgress == .merge)
+        #expect(store.lastError == nil, "a merge's conflicts are no banner")
+        #expect(recorder.alerts == ["repo: \(store.operationBarSentence)"])
+        #expect(store.operationBarSentence.hasPrefix("Merging feature into main."))
+        #expect(recorder.closed.isEmpty, "not closed before the alert's answer")
+        #expect(store.isHidden)
+    }
+
+    /// The control: a merge that goes through cleanly while hidden closes the window for real,
+    /// with no alert — its "Merged" notice is not one that must be read.
+    @Test(.timeLimit(.minutes(10))) func aCleanMergeWhileHiddenClosesTheWindowWithNoAlert() async throws {
+        let repo = try Self.branches(conflicting: false)
+        defer { repo.remove() }
+        let recorder = HiddenWindowRecorder()
+        let test = TestRegistry(hiddenWindows: recorder.environment)
+        defer { test.remove() }
+        let (store, backend, window) = await Self.attachedStore(repo, in: test)
+        defer { backend.releaseAll() }
+        let gate = backend.hold(.merge)
+        store.merge("feature", mode: .fastForwardIfPossible)
+        #expect(await waitUntil("the merge parked") { gate.waiting })
+        #expect(window.delegate?.windowShouldClose?(window) == false)
+
+        gate.release()
+        await Self.waitForTheEnding(of: store, recorder)
+        await waitUntilGone(store, from: test.registry)
+
+        #expect(store.operationInProgress == nil)
+        #expect(recorder.alerts.isEmpty)
+        #expect(recorder.closed == [window])
+        #expect(try repo.git("log", "-1", "--format=%s").hasPrefix("Merge branch 'feature'"))
+    }
+
+    /// A cherry-pick that stops on a conflict while hidden (`HistoryOutcome.stopped`, "the
+    /// operation bar's to say"): the alert tells the bar's sentence.
+    @Test(.timeLimit(.minutes(10))) func aCherryPickThatStopsWhileHiddenRaisesTheAlertWithTheBarsSentence() async throws {
+        let repo = try Self.branches(conflicting: true)
+        defer { repo.remove() }
+        let recorder = HiddenWindowRecorder()
+        let test = TestRegistry(hiddenWindows: recorder.environment)
+        defer { test.remove() }
+        let (store, backend, window) = await Self.attachedStore(repo, in: test)
+        defer { backend.releaseAll() }
+        store.requestHistoryAction(.cherryPick, shas: [store.featureTip])
+        await waitUntil("the plan's sheet") { store.activeSheet != nil }
+        guard case .historyAction(let plan) = try #require(store.activeSheet) else {
+            Issue.record("not the plan's sheet: \(String(describing: store.activeSheet))")
+            return
+        }
+        let gate = backend.hold(.run)
+        store.confirmHistoryAction(plan)
+        #expect(await waitUntil("the pick parked") { gate.waiting })
+        #expect(window.delegate?.windowShouldClose?(window) == false)
+        #expect(store.isHidden)
+
+        gate.release()
+        await Self.waitForTheEnding(of: store, recorder)
+
+        #expect(store.operationInProgress == .cherryPick)
+        #expect(recorder.alerts == ["repo: \(store.operationBarSentence)"])
+        #expect(store.operationBarSentence.hasPrefix("Cherry-picking "))
+        #expect(recorder.closed.isEmpty)
+    }
+
+    /// A single revert git could not commit (a `prepare-commit-msg` hook that says no, as an
+    /// unsigned one does) leaves the revert staged, its notice up and its message in the draft:
+    /// the alert tells the notice, and the window — the draft with it — is not closed before the
+    /// answer.
+    @Test(.timeLimit(.minutes(10))) func aRevertLeftStagedWhileHiddenRaisesTheAlertWithItsNotice() async throws {
+        let repo = try Self.branches(conflicting: false)
+        defer { repo.remove() }
+        let hook = repo.url.appending(path: ".git/hooks/prepare-commit-msg")
+        try "#!/bin/sh\necho 'refused by the test'\nexit 1\n".write(to: hook, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path)
+        let recorder = HiddenWindowRecorder()
+        let test = TestRegistry(hiddenWindows: recorder.environment)
+        defer { test.remove() }
+        let (store, backend, window) = await Self.attachedStore(repo, in: test)
+        defer { backend.releaseAll() }
+        store.requestHistoryAction(.revert, shas: [store.mainTip])
+        await waitUntil("the plan's sheet") { store.activeSheet != nil }
+        guard case .historyAction(let plan) = try #require(store.activeSheet) else {
+            Issue.record("not the plan's sheet: \(String(describing: store.activeSheet))")
+            return
+        }
+        let gate = backend.hold(.run)
+        store.confirmHistoryAction(plan)
+        #expect(await waitUntil("the revert parked") { gate.waiting })
+        #expect(window.delegate?.windowShouldClose?(window) == false)
+
+        gate.release()
+        await Self.waitForTheEnding(of: store, recorder)
+
+        let notice = try #require(store.stickyNotice)
+        #expect(store.operationInProgress == nil)
+        #expect(recorder.alerts == ["repo: \(notice.text)"])
+        #expect(!store.draft.message.isEmpty, "the revert's message is in the draft")
+        #expect(recorder.closed.isEmpty)
+    }
+
     // MARK: - RF2: the work ends just as the window comes back
 
     /// RF2: the hidden window shown again (its `didBecomeKeyNotification`, as SwiftUI's
@@ -774,6 +961,34 @@ import Testing
         let window = window()
         test.registry.attach(window, to: store)
         return (store, backend, window)
+    }
+
+    /// `main` and `feature` from a first commit of `a.txt`, each one commit on: `feature` changes
+    /// `a.txt` too when `conflicting` (a merge or a pick of it stops on that file), or adds
+    /// `f.txt` otherwise (a clean merge). `main` is checked out.
+    static func branches(conflicting: Bool) throws -> ScratchRepo {
+        let repo = try ScratchRepo()
+        try repo.commit("a.txt", "one\n", "first")
+        try repo.git("switch", "-c", "feature")
+        if conflicting {
+            try repo.commit("a.txt", "feature\n", "feature work")
+        } else {
+            try repo.commit("f.txt", "f\n", "feature work")
+        }
+        try repo.git("switch", "main")
+        try repo.commit("a.txt", "main\n", "main work")
+        return repo
+    }
+
+    /// Returns once `store`'s change has ended and its hidden ending has run: an alert, or the real
+    /// close. Never on the alert alone, so a test that expects one sees the close instead.
+    static func waitForTheEnding(
+        of store: RepositoryStore, _ recorder: HiddenWindowRecorder,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async {
+        await waitUntil("the hidden ending", sourceLocation: sourceLocation) {
+            !store.isMutating && (!recorder.alerts.isEmpty || !recorder.closed.isEmpty)
+        }
     }
 
     /// `remoteOneCommitBehind`'s repository, its bare remote refusing every push (`pre-receive`).

@@ -154,8 +154,8 @@ final class RepositoryStore {
     /// The sticky notice of a revert git could not commit (`HistoryOutcome
     /// .unsignedRevertLeftStaged`), while it may still be the one on screen: it says the revert's
     /// changes are staged, so the first snapshot with nothing staged — committed or discarded —
-    /// takes it down (`setSnapshot`).
-    private var stagedRevertNotice: Notice?
+    /// takes it down (`setSnapshot`). Read by a hidden window's ending (`HiddenReading`).
+    private(set) var stagedRevertNotice: Notice?
 
     /// The auto-clear for `notice`. Bookkeeping only; views must not touch it.
     // internal (not private): used by +Notices.swift's `showNotice(_:)`
@@ -197,6 +197,12 @@ final class RepositoryStore {
 
     /// The last of those, for `QuitGuard`'s log line.
     private(set) var lastLaneMessageToRead: String?
+
+    /// How many claims of the mutation slot (`beginMutation`: a local change, or a lane write
+    /// that holds it) have ended with a banner (`finishMutation` with a failure). A count, as
+    /// `laneMessagesToRead` is, because a change can fail in the very words of a banner already
+    /// up: a hidden window's ending compares it (`HiddenReading`, final review I1).
+    private(set) var mutationFailures = 0
 
     /// The push the server just refused for having commits this branch lacks — the only state
     /// "Force Push…" is reachable from. Cleared by the next mutation or network action.
@@ -808,6 +814,7 @@ final class RepositoryStore {
     func finishMutation(generation: Int, failure: Error?) {
         guard self.generation == generation else { return }
         if let failure {
+            mutationFailures += 1
             lastError = Self.describe(failure)
             // Protected from the reloads this mutation set off — its own, and the
             // watcher-driven one that git's writes inside `.git` trigger in parallel.

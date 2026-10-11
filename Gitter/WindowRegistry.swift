@@ -101,8 +101,7 @@ final class WindowRegistry {
 
     private struct HiddenAt {
         let serial: Int
-        let errorAtHide: String?
-        let messagesAtHide: Int
+        let reading: HiddenReading
     }
 
     private struct WeakWindow {
@@ -351,7 +350,7 @@ final class WindowRegistry {
     /// to hide): ordered out — out of the Window menu, with nothing that means "closed" firing
     /// (C2) — the store marked `isHidden` (not closed: its watcher, lane and change go on), its
     /// repository off the list as a closed window's is, and what it had to read noted
-    /// (`lastError`, `laneMessagesToRead`). Then watched: once its work is no longer busy
+    /// (`HiddenReading`). Then watched: once its work is no longer busy
     /// (`closeDecision`) while it is still hidden, `HiddenEnding.decide` says whether the window
     /// closes for real or an alert comes first. Nothing for a closed, hidden or windowless store; a
     /// store not busy (the proxy never hides one) is decided at once, so its window closes for real
@@ -364,7 +363,7 @@ final class WindowRegistry {
         listPlaces[key] = leaveList(store)
         hides += 1
         let serial = hides
-        hidden[key] = HiddenAt(serial: serial, errorAtHide: store.lastError, messagesAtHide: store.laneMessagesToRead)
+        hidden[key] = HiddenAt(serial: serial, reading: HiddenReading(store))
         whenFree(store, busy: { [weak self] store in
             // A store shown again, closed, or hidden again since is this hide's no more: stop.
             guard let self, self.hidden[key]?.serial == serial, store.isHidden, !store.isClosed else { return false }
@@ -411,14 +410,14 @@ final class WindowRegistry {
     private func workEnded(_ store: RepositoryStore, hiddenAt at: HiddenAt) {
         hidden[ObjectIdentifier(store)] = nil
         let ending = HiddenEnding.decide(
-            repository: store.root?.lastPathComponent, errorAtHide: at.errorAtHide, errorNow: store.lastError,
-            messagesAtHide: at.messagesAtHide, messagesNow: store.laneMessagesToRead,
-            lastMessage: store.lastLaneMessageToRead)
+            repository: store.root?.lastPathComponent, atHide: at.reading, now: HiddenReading(store))
         switch ending {
         case .close:
             closeForReal(store)
         case .alert(let text):
             // Told here: a held quit's call-off says it no second time (`QuitGuard.hasWindow`).
+            // (A local change's ending — a failure, a stop, the staged revert — never moves
+            // `laneMessagesToRead`, which is all the call-off compares, so it never tells one.)
             store.noteLaneMessagesTold()
             hiddenWindows.alert(text) { [weak self, weak store] choice in
                 guard let self, let store, !store.isClosed else { return }
@@ -598,6 +597,46 @@ enum CloseDecision: Equatable {
     case hide
 }
 
+/// What a hidden store had to read, taken when it is hidden and again when its work ends
+/// (`HiddenEnding.decide` compares the two).
+struct HiddenReading: Equatable {
+    /// The banner (`lastError`).
+    var error: String?
+    /// `laneMessagesToRead`, and the last of those in its own words.
+    var laneMessages = 0
+    var lastLaneMessage: String?
+    /// `mutationFailures`: a change's failure, even in the words of a banner already up.
+    var mutationFailures = 0
+    /// Where an operation stands (`operationPlace`), and what the bar says about it
+    /// (`operationPlaceSentence`: told, not compared).
+    var place: OperationPlace?
+    var placeSentence: String?
+    /// The staged revert's notice, while it is the one on screen (`stagedRevertNotice`).
+    var stagedRevert: String?
+
+    init(
+        error: String? = nil, laneMessages: Int = 0, lastLaneMessage: String? = nil, mutationFailures: Int = 0,
+        place: OperationPlace? = nil, placeSentence: String? = nil, stagedRevert: String? = nil
+    ) {
+        self.error = error
+        self.laneMessages = laneMessages
+        self.lastLaneMessage = lastLaneMessage
+        self.mutationFailures = mutationFailures
+        self.place = place
+        self.placeSentence = placeSentence
+        self.stagedRevert = stagedRevert
+    }
+
+    /// `store`'s, now.
+    @MainActor init(_ store: RepositoryStore) {
+        self.init(
+            error: store.lastError, laneMessages: store.laneMessagesToRead,
+            lastLaneMessage: store.lastLaneMessageToRead, mutationFailures: store.mutationFailures,
+            place: store.operationPlace, placeSentence: store.operationPlaceSentence,
+            stagedRevert: store.stagedRevertNotice.flatMap { $0 == store.stickyNotice ? $0.text : nil })
+    }
+}
+
 /// How the work of a hidden window ended (`WindowRegistry.hide`).
 enum HiddenEnding: Equatable {
     /// Nothing new to read: the window closes for real.
@@ -605,19 +644,29 @@ enum HiddenEnding: Equatable {
     /// `<repository>: <the message>`, for the alert (`RemoteWording.closedWindowFailedTitle`).
     case alert(String)
 
-    /// Pure: the store had something new to read since it was hidden — a lane ending counted
-    /// (`laneMessagesToRead` moved; its own words, `lastMessage`), or a banner that was not up
-    /// when it was hidden (`lastError`) — → the alert; otherwise close. A banner already up before
-    /// the hide, and unchanged, was seen.
-    static func decide(
-        repository: String?, errorAtHide: String?, errorNow: String?,
-        messagesAtHide: Int, messagesNow: Int, lastMessage: String?
-    ) -> HiddenEnding {
+    /// Pure: whether the store had something new to read since it was hidden, in this order —
+    /// - a lane ending counted (`laneMessages` moved): its own words, `lastLaneMessage`;
+    /// - a banner (`error`) that was not up at the hide, or one up at the hide said again by a
+    ///   change that failed since (`mutationFailures` moved);
+    /// - an operation that stopped since the hide (final review, I1): one in progress now that was
+    ///   not, or stopped at another place (`place`: a merge's conflicts, a cherry-pick, revert or
+    ///   rebase that stopped, a Continue that stopped again, a range left halted) — none of which
+    ///   says anything in a banner, the operation bar does: its sentence, `placeSentence`;
+    /// - the staged revert's notice, up since the hide (git could not make the revert commit; its
+    ///   message is in the draft) —
+    /// → the alert; otherwise close. A banner already up before the hide, and unchanged, was seen;
+    /// so was an operation at the same place (a stage during a merge changes only the bar's next
+    /// step).
+    static func decide(repository: String?, atHide: HiddenReading, now: HiddenReading) -> HiddenEnding {
         let message: String?
-        if messagesNow != messagesAtHide, let lastMessage {
-            message = lastMessage
-        } else if let errorNow, errorNow != errorAtHide {
-            message = errorNow
+        if now.laneMessages != atHide.laneMessages, let lane = now.lastLaneMessage {
+            message = lane
+        } else if let error = now.error, error != atHide.error || now.mutationFailures != atHide.mutationFailures {
+            message = error
+        } else if let place = now.place, place != atHide.place, let sentence = now.placeSentence {
+            message = sentence
+        } else if let revert = now.stagedRevert, revert != atHide.stagedRevert {
+            message = revert
         } else {
             message = nil
         }

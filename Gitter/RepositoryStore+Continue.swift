@@ -12,6 +12,16 @@ enum BarActionState: Hashable {
     }
 }
 
+/// Where an operation stands, as a hidden window's ending compares it (`RepositoryStore
+/// .operationPlace`): the operation in progress and where it stopped — `OperationProgress`, the
+/// commit and the step, never the bar's next step, which staging a resolution changes ("Resolve
+/// the conflicts, then commit." becomes "Commit to complete the merge.") — or a range git left
+/// halted with no operation.
+enum OperationPlace: Hashable {
+    case stopped(RepositoryOperation, OperationProgress?)
+    case halted(HaltedSequence)
+}
+
 /// What the store knows about where the operation in progress stopped, read with the snapshot
 /// that shows it (`RepositoryStore.readOperationStop`).
 struct OperationStop: Hashable {
@@ -408,6 +418,23 @@ extension RepositoryStore {
         return ContinueWording.bar(
             operation, progress, branch: currentBranch, hasConflicts: hasUnmergedFiles,
             continueBlocked: continueReasonLine != nil, stale: staleSequence != nil)
+    }
+
+    /// Where the repository's operation stands (`OperationPlace`), or nil with none in progress
+    /// and no range halted: what a hidden window's ending compares (`HiddenReading`, final
+    /// review I1).
+    var operationPlace: OperationPlace? {
+        if let operation = operationInProgress {
+            return .stopped(operation, operationStop?.operation == operation ? operationStop?.progress : nil)
+        }
+        return haltedSequence.map(OperationPlace.halted)
+    }
+
+    /// What the bar says about `operationPlace`: the operation bar's sentence, or the halted
+    /// range's bar's first line (`ContinueWording.halted`). Nil with neither.
+    var operationPlaceSentence: String? {
+        if operationInProgress != nil { return operationBarSentence }
+        return haltedSequence.map(ContinueWording.halted)
     }
 
     /// The composer's note under a cherry-pick's or revert's message.
