@@ -208,6 +208,9 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
     /// Holds the next `call` before it reaches git until the returned gate is released; `waiting`
     /// turns true once the call is parked. Release only once `waiting` is true: a release before
     /// the call parks finds nothing to resume (`releaseAll()` does not have that limit).
+    /// Releasing at teardown is the test's to do, and so is waiting for what it lets run: declare
+    /// `defer { await releaseAndSettle([backend], [store]) }` after the repository's `defer`, or a
+    /// test that fails before its own release leaves the call parked, or racing the removal.
     func hold(_ call: Call) -> StuckCall {
         let gate = StuckCall()
         state.withLock { $0.holds[call, default: []].append(gate) }

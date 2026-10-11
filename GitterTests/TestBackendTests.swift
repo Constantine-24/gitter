@@ -72,7 +72,6 @@ import Testing
         #expect(store.lastError == nil)
         #expect(store.snapshot?.commits.map(\.summary) == ["first"])
         #expect(backend.calls.first == .snapshot)
-        #expect(backend.calls.contains(.snapshot))
     }
 
     /// The log is in order: a stage, then the reload `mutate` ends it with.
@@ -160,6 +159,47 @@ import Testing
         #expect(try Self.staged(repo) == "")
     }
 
+    /// An `.after` hook runs only once git has: a call that throws before it (here a `fail`) never
+    /// reaches it.
+    @Test(.timeLimit(.minutes(10))) func anAfterHookDoesNotRunWhenTheCallThrows() async throws {
+        let (repo, store, backend, cleanup) = try await Self.storeWithAChange()
+        defer { repo.remove() }
+        defer { cleanup() }
+        let failure = GitError.commandFailed(exitCode: 1, stderr: "injected by the test: the stage was refused")
+        let after = Recorded<Int>(0)
+        backend.hook(.stage, .after) { after.update { $0 += 1 } }
+        backend.fail(.stage, with: failure)
+
+        store.stage(try #require(Self.file("a.txt", in: store)))
+        await waitUntilIdle(store)
+
+        #expect(store.lastError == RepositoryStore.describe(failure))
+        #expect(after.value == 0)
+        #expect(try Self.staged(repo) == "")
+
+        // The control: the next stage runs git, and the hook after it.
+        store.dismissError()
+        store.stage(try #require(Self.file("a.txt", in: store)))
+        await waitUntilIdle(store)
+        #expect(after.value == 1)
+    }
+
+    /// An `.after` hook that throws replaces the call's result with its error — git having run:
+    /// the stage is in the index, and the store shows the hook's error.
+    @Test(.timeLimit(.minutes(10))) func aThrowingAfterHookReplacesTheResultGitHavingRun() async throws {
+        let (repo, store, backend, cleanup) = try await Self.storeWithAChange()
+        defer { repo.remove() }
+        defer { cleanup() }
+        let refusal = GitError.commandFailed(exitCode: 1, stderr: "refused by the test's after hook")
+        backend.hook(.stage, .after) { throw refusal }
+
+        store.stage(try #require(Self.file("a.txt", in: store)))
+        await waitUntilIdle(store)
+
+        #expect(store.lastError == RepositoryStore.describe(refusal))
+        #expect(try Self.staged(repo) == "a.txt", "git ran before the hook threw")
+    }
+
     // MARK: - fail
 
     /// The next commit throws the error it was given, git never runs, and the one after it is
@@ -195,7 +235,7 @@ import Testing
     @Test(.timeLimit(.minutes(10))) func aHeldPushHoldsTheLaneUntilReleased() async throws {
         let repo = try ScratchRepo()
         defer { repo.remove() }
-        let bare = try Self.remoteOneCommitBehind(repo)
+        let bare = try HeldTransport.remoteOneCommitBehind(repo)
         let before = try repo.git("-C", bare.path, "rev-parse", "main")
         let local = try repo.git("rev-parse", "main")
         #expect(before != local)
@@ -244,6 +284,33 @@ import Testing
         #expect(!gate.waiting)
     }
 
+    /// `waitUntilSettled`'s control (`releaseAndSettle`, final review M2): a push still held is a
+    /// store that has not settled — the wait is cancelled as `.timeLimit` cancels it — and released
+    /// and settled, its lane is free.
+    @Test(.timeLimit(.minutes(10))) func aStoreWithAHeldWriteDoesNotSettleUntilReleased() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try HeldTransport.remoteOneCommitBehind(repo)
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        defer { backend.releaseAll() }
+        let gate = backend.hold(.push)
+        store.push()
+        #expect(await waitUntil("the push parked") { gate.waiting })
+
+        await withKnownIssue("the push is held, so the store never settles") {
+            let waiter = Task { @MainActor in await waitUntilSettled(store) }
+            try? await Task.sleep(for: .milliseconds(150))
+            waiter.cancel()
+            await waiter.value
+        } matching: { $0.isNeverCameBack }
+
+        await releaseAndSettle([backend], [store])
+        #expect(store.remoteActivity == nil)
+        #expect(!store.isMutating)
+    }
+
     /// `releaseAll()` also drops a hold no call has reached yet, so a later call goes straight
     /// through instead of parking with nobody left to release it.
     @Test(.timeLimit(.minutes(10))) func releaseAllDropsAHoldNoCallReachedYet() async throws {
@@ -276,17 +343,6 @@ import Testing
         let backend = TestBackend()
         let (store, cleanup) = await openedTestStore(repo, backend: backend)
         return (repo, store, backend, cleanup)
-    }
-
-    /// `repo` with a first commit pushed to a local bare `origin` it tracks, and a second commit
-    /// to push (`HeldTransport.heldPush`'s repository, without its held transport).
-    static func remoteOneCommitBehind(_ repo: ScratchRepo) throws -> URL {
-        try repo.commit("a.txt", "one\n", "first")
-        let bare = try repo.makeBareRemote()
-        try repo.git("remote", "add", "origin", bare.path)
-        try repo.git("push", "-u", "origin", "main")
-        try repo.commit("b.txt", "two\n", "second")
-        return bare
     }
 
     static func file(_ path: String, in store: RepositoryStore) -> FileStatus? {

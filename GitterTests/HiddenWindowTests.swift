@@ -226,7 +226,7 @@ import Testing
     @Test(.timeLimit(.minutes(10))) func closeAllHidesTheBusyWindowAndClosesTheIdleOneAndAQuitFrontsTheHidden() async throws {
         let busyRepo = try ScratchRepo("busy")
         defer { busyRepo.remove() }
-        _ = try TestBackendTests.remoteOneCommitBehind(busyRepo)
+        _ = try HeldTransport.remoteOneCommitBehind(busyRepo)
         let idleRepo = try ScratchRepo("idle")
         defer { idleRepo.remove() }
         try idleRepo.commit("a.txt", "one\n", "first")
@@ -237,7 +237,7 @@ import Testing
         let busy = test.registry.makeStore(backend: backend)
         await open(busy, busyRepo.url)
         let idle = await test.opened(idleRepo)
-        defer { backend.releaseAll() }
+        defer { await releaseAndSettle([backend], [busy]) }
         let busyWindow = Self.window()
         let idleWindow = Self.window()
         test.registry.attach(busyWindow, to: busy)
@@ -296,7 +296,7 @@ import Testing
     @Test(.timeLimit(.minutes(10))) func everyOpenOfAHiddenWindowsRepositoryFrontsIt() async throws {
         let repo = try ScratchRepo()
         defer { repo.remove() }
-        _ = try TestBackendTests.remoteOneCommitBehind(repo)
+        _ = try HeldTransport.remoteOneCommitBehind(repo)
         let link = repo.directory.appending(path: "link")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: repo.url)
         let other = try ScratchRepo("other")
@@ -309,7 +309,7 @@ import Testing
         let hidden = test.registry.makeStore(backend: backend)
         await open(hidden, repo.url)
         let front = await test.opened(other)
-        defer { backend.releaseAll() }
+        defer { await releaseAndSettle([backend], [hidden]) }
         let window = Self.window()
         test.registry.attach(window, to: hidden)
         let gate = backend.hold(.push)
@@ -343,12 +343,12 @@ import Testing
     @Test(.timeLimit(.minutes(10))) func aPushThatSucceedsWhileHiddenClosesTheWindowForReal() async throws {
         let repo = try ScratchRepo()
         defer { repo.remove() }
-        let bare = try TestBackendTests.remoteOneCommitBehind(repo)
+        let bare = try HeldTransport.remoteOneCommitBehind(repo)
         let recorder = HiddenWindowRecorder()
         let test = TestRegistry(hiddenWindows: recorder.environment)
         defer { test.remove() }
         let (store, backend, window) = await Self.attachedStore(repo, in: test)
-        defer { backend.releaseAll() }
+        defer { await releaseAndSettle([backend], [store]) }
         let gate = backend.hold(.push)
         store.push()
         #expect(await waitUntil("the push parked") { gate.waiting })
@@ -382,7 +382,7 @@ import Testing
         let test = TestRegistry(hiddenWindows: recorder.environment)
         defer { test.remove() }
         let (store, backend, window) = await Self.attachedStore(repo, in: test)
-        defer { backend.releaseAll() }
+        defer { await releaseAndSettle([backend], [store]) }
         let gate = backend.hold(.push)
         store.push()
         #expect(await waitUntil("the push parked") { gate.waiting })
@@ -414,7 +414,7 @@ import Testing
         let test = TestRegistry(hiddenWindows: recorder.environment)
         defer { test.remove() }
         let (store, backend, window) = await Self.attachedStore(repo, in: test)
-        defer { backend.releaseAll() }
+        defer { await releaseAndSettle([backend], [store]) }
         let gate = backend.hold(.push)
         store.push()
         #expect(await waitUntil("the push parked") { gate.waiting })
@@ -445,7 +445,7 @@ import Testing
         let test = TestRegistry(hiddenWindows: recorder.environment)
         defer { test.remove() }
         let (store, backend, window) = await Self.attachedStore(repo, in: test)
-        defer { backend.releaseAll() }
+        defer { await releaseAndSettle([backend], [store]) }
         let gate = backend.hold(.commit)
         store.draft.subject = "second"
         store.commit()
@@ -479,6 +479,8 @@ import Testing
         let backend = TestBackend()
         let store = test.registry.makeStore(backend: backend)
         await open(store, repo.url)
+        // Not `releaseAndSettle`: this store stays mutating by design (the known issue below), so
+        // it would never settle; the body waits for the commit's landing itself.
         defer { backend.releaseAll() }
         let gate = backend.hold(.commit)
         store.draft.subject = "second"
@@ -510,7 +512,7 @@ import Testing
         let test = TestRegistry(hiddenWindows: recorder.environment)
         defer { test.remove() }
         let (store, backend, window) = await Self.attachedStore(repo, in: test)
-        defer { backend.releaseAll() }
+        defer { await releaseAndSettle([backend], [store]) }
         let gate = backend.hold(.merge)
         store.merge("feature", mode: .fastForwardIfPossible)
         #expect(await waitUntil("the merge parked") { gate.waiting })
@@ -537,7 +539,7 @@ import Testing
         let test = TestRegistry(hiddenWindows: recorder.environment)
         defer { test.remove() }
         let (store, backend, window) = await Self.attachedStore(repo, in: test)
-        defer { backend.releaseAll() }
+        defer { await releaseAndSettle([backend], [store]) }
         let gate = backend.hold(.merge)
         store.merge("feature", mode: .fastForwardIfPossible)
         #expect(await waitUntil("the merge parked") { gate.waiting })
@@ -562,7 +564,7 @@ import Testing
         let test = TestRegistry(hiddenWindows: recorder.environment)
         defer { test.remove() }
         let (store, backend, window) = await Self.attachedStore(repo, in: test)
-        defer { backend.releaseAll() }
+        defer { await releaseAndSettle([backend], [store]) }
         store.requestHistoryAction(.cherryPick, shas: [store.featureTip])
         await waitUntil("the plan's sheet") { store.activeSheet != nil }
         guard case .historyAction(let plan) = try #require(store.activeSheet) else {
@@ -598,7 +600,7 @@ import Testing
         let test = TestRegistry(hiddenWindows: recorder.environment)
         defer { test.remove() }
         let (store, backend, window) = await Self.attachedStore(repo, in: test)
-        defer { backend.releaseAll() }
+        defer { await releaseAndSettle([backend], [store]) }
         store.requestHistoryAction(.revert, shas: [store.mainTip])
         await waitUntil("the plan's sheet") { store.activeSheet != nil }
         guard case .historyAction(let plan) = try #require(store.activeSheet) else {
@@ -633,7 +635,7 @@ import Testing
         let test = TestRegistry(hiddenWindows: recorder.environment)
         defer { test.remove() }
         let (store, backend, window) = await Self.attachedStore(repo, in: test)
-        defer { backend.releaseAll() }
+        defer { await releaseAndSettle([backend], [store]) }
         let gate = backend.hold(.push)
         store.push()
         #expect(await waitUntil("the push parked") { gate.waiting })
@@ -657,12 +659,12 @@ import Testing
     @Test(.timeLimit(.minutes(10))) func endedBeforeItIsShownAgainTheOpenMakesANewWindow() async throws {
         let repo = try ScratchRepo()
         defer { repo.remove() }
-        _ = try TestBackendTests.remoteOneCommitBehind(repo)
+        _ = try HeldTransport.remoteOneCommitBehind(repo)
         let recorder = HiddenWindowRecorder()
         let test = TestRegistry(hiddenWindows: recorder.environment)
         defer { test.remove() }
         let (store, backend, window) = await Self.attachedStore(repo, in: test)
-        defer { backend.releaseAll() }
+        defer { await releaseAndSettle([backend], [store]) }
         let gate = backend.hold(.push)
         store.push()
         #expect(await waitUntil("the push parked") { gate.waiting })
@@ -688,7 +690,7 @@ import Testing
         let (test, recorder, stores, gates, backends, repos) = try await Self.twoHiddenPushes()
         defer { for repo in repos { repo.remove() } }
         defer { test.remove() }
-        defer { for backend in backends { backend.releaseAll() } }
+        defer { await releaseAndSettle(backends, stores) }
         defer { for store in stores { store.endTerminating() } }
         let lanes = stores.map(\.remoteActivity)
         #expect(QuitGuard.decision(lanes) == .ask(writeAt: 0))
@@ -715,7 +717,7 @@ import Testing
         let (test, recorder, stores, gates, backends, repos) = try await Self.twoHiddenPushes(closeSecond: true)
         defer { for repo in repos { repo.remove() } }
         defer { test.remove() }
-        defer { for backend in backends { backend.releaseAll() } }
+        defer { await releaseAndSettle(backends, stores) }
         defer { for store in stores { store.endTerminating() } }
         let lanes = stores.map(\.remoteActivity)
         let messagesBefore = stores.map(\.laneMessagesToRead)
@@ -741,7 +743,7 @@ import Testing
         let (test, recorder, stores, gates, backends, repos) = try await Self.twoHiddenPushes()
         defer { for repo in repos { repo.remove() } }
         defer { test.remove() }
-        defer { for backend in backends { backend.releaseAll() } }
+        defer { await releaseAndSettle(backends, stores) }
         defer { for store in stores { store.endTerminating() } }
         let lanes = stores.map(\.remoteActivity)
         let messagesBefore = stores.map(\.laneMessagesToRead)
@@ -778,7 +780,7 @@ import Testing
         let (test, recorder, stores, gates, backends, repos) = try await Self.twoHiddenPushes()
         defer { for repo in repos { repo.remove() } }
         defer { test.remove() }
-        defer { for backend in backends { backend.releaseAll() } }
+        defer { await releaseAndSettle(backends, stores) }
         defer { for store in stores { store.endTerminating() } }
         let lanes = stores.map(\.remoteActivity)
         let messagesBefore = stores.map(\.laneMessagesToRead)
@@ -811,7 +813,7 @@ import Testing
         let (test, recorder, stores, gates, backends, repos) = try await Self.twoHiddenPushes()
         defer { for repo in repos { repo.remove() } }
         defer { test.remove() }
-        defer { for backend in backends { backend.releaseAll() } }
+        defer { await releaseAndSettle(backends, stores) }
         let windows = stores.map { test.registry.window(of: $0) }
         let bound = Duration.milliseconds(1)
 
@@ -845,7 +847,7 @@ import Testing
         let test = TestRegistry(hiddenWindows: recorder.environment)
         defer { test.remove() }
         let (store, backend, window) = await Self.attachedStore(repo, in: test)
-        defer { backend.releaseAll() }
+        defer { await releaseAndSettle([backend], [store]) }
         let gate = backend.hold(.push)
         store.push()
         #expect(await waitUntil("the push parked") { gate.waiting })
@@ -873,7 +875,7 @@ import Testing
         let test = TestRegistry(hiddenWindows: recorder.environment)
         defer { test.remove() }
         let (store, backend, window) = await Self.attachedStore(repo, in: test)
-        defer { backend.releaseAll() }
+        defer { await releaseAndSettle([backend], [store]) }
         let gate = backend.hold(.push)
         store.push()
         #expect(await waitUntil("the push parked") { gate.waiting })
@@ -903,14 +905,14 @@ import Testing
     @Test(.timeLimit(.minutes(10))) func theRealCloseGivesTheWindowItsOwnDelegateBack() async throws {
         let repo = try ScratchRepo()
         defer { repo.remove() }
-        _ = try TestBackendTests.remoteOneCommitBehind(repo)
+        _ = try HeldTransport.remoteOneCommitBehind(repo)
         let recorder = HiddenWindowRecorder()
         let test = TestRegistry(hiddenWindows: recorder.environment)
         defer { test.remove() }
         let backend = TestBackend()
         let store = test.registry.makeStore(backend: backend)
         await open(store, repo.url)
-        defer { backend.releaseAll() }
+        defer { await releaseAndSettle([backend], [store]) }
         let window = Self.window()
         let original = RecordingDelegate()
         window.delegate = original
@@ -934,7 +936,7 @@ import Testing
     @Test(.timeLimit(.minutes(10))) func shownAgainItsRepositoryTakesItsOldPlaceInTheList() async throws {
         let repo = try ScratchRepo("hidden")
         defer { repo.remove() }
-        _ = try TestBackendTests.remoteOneCommitBehind(repo)
+        _ = try HeldTransport.remoteOneCommitBehind(repo)
         let after = try ScratchRepo("after")
         defer { after.remove() }
         try after.commit("a.txt", "one\n", "first")
@@ -942,7 +944,7 @@ import Testing
         let test = TestRegistry(hiddenWindows: recorder.environment)
         defer { test.remove() }
         let (store, backend, window) = await Self.attachedStore(repo, in: test)
-        defer { backend.releaseAll() }
+        defer { await releaseAndSettle([backend], [store]) }
         _ = await test.opened(after)
         #expect(test.registry.openRepositoryPaths == [shownPath(repo), shownPath(after)])
         let gate = backend.hold(.push)
@@ -1023,7 +1025,7 @@ import Testing
 
     /// `remoteOneCommitBehind`'s repository, its bare remote refusing every push (`pre-receive`).
     static func refusingRemote(_ repo: ScratchRepo) throws {
-        let bare = try TestBackendTests.remoteOneCommitBehind(repo)
+        let bare = try HeldTransport.remoteOneCommitBehind(repo)
         let hook = bare.appending(path: "hooks/pre-receive")
         try "#!/bin/sh\necho 'refused by the test' >&2\nexit 1\n".write(to: hook, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path)
@@ -1035,7 +1037,7 @@ import Testing
         TestRegistry, HiddenWindowRecorder, [RepositoryStore], [StuckCall], [TestBackend], [ScratchRepo]
     ) {
         let accepting = try ScratchRepo("accepting")
-        _ = try TestBackendTests.remoteOneCommitBehind(accepting)
+        _ = try HeldTransport.remoteOneCommitBehind(accepting)
         let refusing = try ScratchRepo("refusing")
         try refusingRemote(refusing)
         let recorder = HiddenWindowRecorder()

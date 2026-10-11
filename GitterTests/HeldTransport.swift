@@ -78,12 +78,20 @@ struct HeldTransport {
     /// push, and the hold on `origin`'s `receive-pack`: `store.push()` then holds the lane with a
     /// write until `letGo()`.
     static func heldPush(in repo: ScratchRepo) throws -> HeldTransport {
+        try remoteOneCommitBehind(repo)
+        return try HeldTransport(in: repo, remote: "origin", side: .receivePack)
+    }
+
+    /// `heldPush`'s repository without its held transport: a first commit pushed to a local bare
+    /// `origin` it tracks, and a second commit to push. The bare remote's URL.
+    @discardableResult
+    static func remoteOneCommitBehind(_ repo: ScratchRepo) throws -> URL {
         try repo.commit("a.txt", "one\n", "first")
         let bare = try repo.makeBareRemote()
         try repo.git("remote", "add", "origin", bare.path)
         try repo.git("push", "-u", "origin", "main")
         try repo.commit("b.txt", "two\n", "second")
-        return try HeldTransport(in: repo, remote: "origin", side: .receivePack)
+        return bare
     }
 
     /// `repo` with a commit and a local bare `origin` whose `upload-pack` is held: `store.fetch()`

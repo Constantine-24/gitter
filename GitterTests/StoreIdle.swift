@@ -91,6 +91,30 @@ func waitUntil(
     return met
 }
 
+/// Returns once `store` has no git write left running: its lane free and its change ended — or,
+/// for a closed store, its lane free (a closed store's change ends unseen, B3.1). A test's
+/// teardown waits on this (`releaseAndSettle`), so that a released write does not race the
+/// removal of its repository and bare remote (final review M2, as Ruling 10 did in Task 6).
+@MainActor
+func waitUntilSettled(_ store: RepositoryStore, sourceLocation: SourceLocation = #_sourceLocation) async {
+    await waitUntil("the store's git work ending", sourceLocation: sourceLocation) {
+        store.remoteActivity == nil && (!store.isMutating || store.isClosed)
+    }
+}
+
+/// A test's teardown with `TestBackend` holds: releases every hold of `backends`
+/// (`TestBackend.releaseAll`) and returns once each of `stores` has settled (`waitUntilSettled`).
+/// Declared as `defer { await releaseAndSettle(…) }` after the repository's and the registry's
+/// own `defer`s, so that it runs before them — and after a `defer` that ends a store's
+/// terminating, whose held follow-up fetch it then waits for too.
+@MainActor
+func releaseAndSettle(
+    _ backends: [TestBackend], _ stores: [RepositoryStore], sourceLocation: SourceLocation = #_sourceLocation
+) async {
+    for backend in backends { backend.releaseAll() }
+    for store in stores { await waitUntilSettled(store, sourceLocation: sourceLocation) }
+}
+
 /// Returns once `store`'s network lane is free (E2 Task 3).
 @MainActor
 func waitUntilLaneFree(_ store: RepositoryStore, sourceLocation: SourceLocation = #_sourceLocation) async {
