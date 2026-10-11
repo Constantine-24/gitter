@@ -244,6 +244,25 @@ extension QuitFlowTests {
             #expect(QuitFlow.heldQuitEvents.isEmpty)
         }
 
+        /// The net (final review M5): a quit event still held when the app goes is answered 0 by
+        /// `AppDelegate.applicationWillTerminate`, and nothing stays held. Its control, first: with
+        /// nothing held it answers nothing. The delegate is made bare — never
+        /// `applicationWillFinishLaunching`, which would install the real Apple Event handler.
+        @Test func applicationWillTerminateAnswersAHeldEventWithZero() {
+            let (fake, restore) = installRecording()
+            defer { restore() }
+            let delegate = AppDelegate()
+            let goes = Notification(name: NSApplication.willTerminateNotification)
+
+            delegate.applicationWillTerminate(goes)
+            #expect(fake.answers.isEmpty, "nothing held, nothing answered")
+
+            QuitFlow.holdCurrentQuitEvent()
+            delegate.applicationWillTerminate(goes)
+            #expect(fake.answers == [.init(1, 0)])
+            #expect(QuitFlow.heldQuitEvents.isEmpty)
+        }
+
         /// The fake's control: the comparison these tests rest on can fail.
         @Test func control_wrongExpectedAnswersAreCaught() {
             let (fake, restore) = installRecording()

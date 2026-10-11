@@ -83,6 +83,23 @@ import Testing
         #expect(probe.runs == 1)
     }
 
+    /// The control for `runs == 0` above (Task 1 review, Minor 2): the same spin in
+    /// `.eventTracking` does run a one-shot timer added in `.common`, which includes that mode — so
+    /// the check can fail, and would for an alert raised in `.common`.
+    @Test func aCommonModeTimerRunsInTheSameEventTrackingSpin() {
+        let probe = Probe()
+        let timer = Timer(timeInterval: 0, repeats: false) { _ in
+            MainActor.assumeIsolated { probe.runs += 1 }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        defer { timer.invalidate() }
+
+        for _ in 0..<20 { _ = RunLoop.main.run(mode: .eventTracking, before: Date(timeIntervalSinceNow: 0.01)) }
+        withKnownIssue("a .common timer runs inside .eventTracking") {
+            #expect(probe.runs == 0)
+        }
+    }
+
     // MARK: - Other main-actor work goes on under the alert (C3)
 
     /// Set when the test is cancelled (its time limit). The drain's spins run inside a timer's
