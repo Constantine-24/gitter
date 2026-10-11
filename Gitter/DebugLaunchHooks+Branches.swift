@@ -107,7 +107,7 @@
     ///   The window's layout (`DebugLaunchHooks+Layout`):
     ///
     ///     split                        togglesidebar                resize:<w>x<h>
-    ///     divider:<x>
+    ///     divider:<x>                  sidebarwidth:<x>
     ///
     ///   The target window's sheet, through its own controls (`HarnessControls`,
     ///   `DebugLaunchHooks+Controls`; the value is split from the label at the first `=`):

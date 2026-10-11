@@ -13,13 +13,16 @@
     ///                    in `views` coordinates (x from the content area's left edge).
     ///   togglesidebar    the sidebar's show/hide, as the toolbar button sends it
     ///                    (`NSSplitViewController.toggleSidebar(_:)`), then `split`.
-    ///   resize:<w>x<h>   the window resized, as `GITTER_DEBUG_WINDOW` does at launch, then `split`.
+    ///   resize:<w>x<h>   the target's window resized, as `GITTER_DEBUG_WINDOW` resizes the first
+    ///                    one at launch, then `split`.
     ///   divider:<x>      the commit list / detail divider moved to x, as a drag moves it
     ///                    (`NSSplitView.setPosition(_:ofDividerAt:)`, which the split view's
     ///                    delegate constrains to the panes' minimums), then `split`.
+    ///   sidebarwidth:<x> the sidebar's edge dragged to x the same way (its split's delegate
+    ///                    holds it to the column's minimum), then `split`.
     extension DebugLaunchHooks {
 
-        static let layoutCommands: Set<String> = ["split", "togglesidebar", "resize", "divider"]
+        static let layoutCommands: Set<String> = ["split", "togglesidebar", "resize", "divider", "sidebarwidth"]
 
         static func layoutStep(_ command: String, rest: String, store: RepositoryStore) async {
             guard let window = window(of: store) else {
@@ -33,7 +36,7 @@
                     return
                 }
                 controller.toggleSidebar(nil)
-            case "resize": resize(to: rest)
+            case "resize": resize(to: rest, window: window)
             case "divider":
                 guard let x = Double(rest), let split = contentSplit(in: window) else {
                     log("divider: no commit list / detail split, or no x in \(rest)")
@@ -41,6 +44,12 @@
                 }
                 let local = split.convert(NSPoint(x: x + window.contentLayoutRect.minX, y: 0), from: nil).x
                 split.setPosition(local, ofDividerAt: 0)
+            case "sidebarwidth":
+                guard let x = Double(rest), let split = sidebarController(in: window)?.splitView else {
+                    log("sidebarwidth: no sidebar split, or no x in \(rest)")
+                    return
+                }
+                split.setPosition(split.convert(NSPoint(x: x + window.contentLayoutRect.minX, y: 0), from: nil).x, ofDividerAt: 0)
             default: break
             }
             // A drawn frame, so the lines say what the window settled on.

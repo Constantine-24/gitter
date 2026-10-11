@@ -1005,7 +1005,7 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   final review probed; and three pins of what is still kept: an scp-form password with a parenthesis
   in git's words, and a password with an unencoded `/` in two URLs.
 
-`GitterTests` reports **forty-four known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
+`GitterTests` reports **forty-five known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
 shows that the operation gate alone lets a branch another worktree holds through, which is why
 the switch asks about the hold first. Three come from `DefaultsIsolationTests`: the check that
 the real defaults are unchanged fails when a store writes the domain it watches (a scratch
@@ -1052,9 +1052,10 @@ queue (`settle`) on a writer stuck on a hung write is reported as never having c
 a banner's line from a store that was not given the recorder, and a window's close line where no quit
 began; `LogLineTests` expects a backslash kept as it is, where it is doubled.
 
-Three come from the window polish: `AppIconTests` looks up an icon the bundle does not have and an
+Four come from the window polish: `AppIconTests` looks up an icon the bundle does not have and an
 icon name its `Info.plist` does not give (two), and `SplitViewAutosaveTests` expects the outer split
-view, the sidebar's, where the one a pane sits in is the nearest.
+view, the sidebar's, where the one a pane sits in is the nearest, and expects a split view that
+already has an autosave name to be the one it names (two).
 
 Deleting any of them would take the proof away and the suite would go on looking green.
 
@@ -1244,7 +1245,7 @@ Gitter/                   macOS app (SwiftUI)
     +Controls.swift            its sheet-control steps (`controls`, `press:`, `tick:`, `fill:`,
                                `choose:`)
     +Layout.swift              its window layout steps (`split`, `togglesidebar`, `resize:`,
-                               `divider:`)
+                               `divider:`, `sidebarwidth:`)
   HarnessControls.swift      Debug-only: the registry sheets put their controls in, by label
   DebugLaunchGuard.swift     Debug-only: a scripted launch never reaches the last repository
   Views/                     MainWindow, SplitViewAutosave, SidebarView, SidebarMenus,
@@ -1435,7 +1436,7 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `renameremote:<remote>` / `confirmrenameremote:<new>` | Rename…'s sheet; and **act**: its button |
 | `removeremote:<remote>` / `confirmremoveremote[:<keep>]` | Remove…: the impact's read, then the sheet — every ref with its id, the stranded count, the keep defaults, each sentence about upstreams, push redirects and refs left behind; and **act**: its button, `<keep>` as for `confirmprune` |
 | `split` | log the window's width, the sidebar's width and whether it is collapsed, the commit list's and the detail's panes, the divider between them and its autosave name: `split: window w=… \| sidebar shown x=… \| commit list x=a..b … \| detail x=… \| divider x=… \| autosave …`, in `views` coordinates |
-| `togglesidebar` / `resize:<w>x<h>` / `divider:<x>` | hide or show the sidebar as its toolbar button does (which a click cannot reach once a narrow window puts it in the toolbar's overflow menu), resize the window as `GITTER_DEBUG_WINDOW` does, or move the commit list / detail divider to x as a drag does (`setPosition`, which the split's minimums constrain); each then logs the `split` line |
+| `togglesidebar` / `resize:<w>x<h>` / `divider:<x>` / `sidebarwidth:<x>` | hide or show the sidebar as its toolbar button does (which a click cannot reach once a narrow window puts it in the toolbar's overflow menu), resize the target's window as `GITTER_DEBUG_WINDOW` resizes the first one, or move the commit list / detail divider, or the sidebar's edge, to x as a drag does (`setPosition`, which the splits' minimums constrain); each then logs the `split` line |
 | `filter:<text>` / `sidebar` | set the sidebar filter's text as typing would (`filter:` empties it), and log every section the sidebar draws after it — each remote group and whether it is expanded, "No matches", and the count VoiceOver hears |
 | `worktrees` / `worktreemenu` / `pills` | log every worktree row (folder, branch line, marks and their tooltips, the changes read, this window's path and both titles — and the window number a window-scoped `screencapture -l` needs, since the snapshot cannot draw the sidebar); every worktree menu and every branch's held icon with Switch, Delete and Fast-Forward and their reasons; every "worktree:" pill |
 | `openworktree:<folder>` | Open Worktree on that row, then the root and the titles. It is routed like any open: a window already showing that worktree comes to the front, otherwise this window switches. The launch guard refuses every step after it — another repository is open — and the app quits |

@@ -17,6 +17,14 @@ struct SplitViewAutosave: NSViewRepresentable {
         sequence(first: view, next: \.superview).dropFirst().lazy.compactMap { $0 as? NSSplitView }.first
     }
 
+    /// The split view to name for `view`: the nearest enclosing one, if it has no autosave name yet.
+    /// A named one is left alone: should `HSplitView` stop being built on an `NSSplitView`, the
+    /// nearest would be the sidebar's, which SwiftUI has named (fix round 1, M1).
+    static func splitToName(above view: NSView) -> NSSplitView? {
+        guard let split = enclosingSplitView(of: view), (split.autosaveName ?? "").isEmpty else { return nil }
+        return split
+    }
+
     private final class Finder: NSView {
         let name: String
 
@@ -30,8 +38,7 @@ struct SplitViewAutosave: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            guard let split = SplitViewAutosave.enclosingSplitView(of: self), split.autosaveName != name else { return }
-            split.autosaveName = name
+            SplitViewAutosave.splitToName(above: self)?.autosaveName = name
         }
     }
 }

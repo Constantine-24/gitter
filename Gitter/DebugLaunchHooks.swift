@@ -184,10 +184,10 @@
         /// the bottom third of it; asking for the screen's full height is what gets a whole
         /// diff into one frame. (Anything beyond the screen is clipped away by the compositor,
         /// so asking for more than that buys nothing.)
-        // internal (not private): also the `resize:` step's (DebugLaunchHooks+Layout.swift)
-        static func resize(to spec: String) {
+        /// The `resize:` step (DebugLaunchHooks+Layout.swift) passes the target store's own window.
+        static func resize(to spec: String, window given: NSWindow? = nil) {
             let parts = spec.split(separator: "x").compactMap { Double($0) }
-            guard parts.count == 2, let window = NSApp.windows.first(where: \.isVisible) else {
+            guard parts.count == 2, let window = given ?? NSApp.windows.first(where: \.isVisible) else {
                 return
             }
             let top = window.frame.maxY

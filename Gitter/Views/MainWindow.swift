@@ -16,6 +16,9 @@ struct MainWindow: View {
     /// by it. View state, not the store's: it is layout, measured here.
     @State private var bannerHeight: CGFloat = 0
 
+    /// Whether the sidebar is shown, for the leading hairline (shown with it, gone without it).
+    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+
     /// The sidebar filter's field has the keyboard: ⌘F sets it (`SidebarFilterCommands`, through
     /// `focusSidebarFilter`).
     @FocusState private var filterFocused: Bool
@@ -26,23 +29,31 @@ struct MainWindow: View {
             if store.root == nil {
                 emptyState
             } else {
-                NavigationSplitView {
+                NavigationSplitView(columnVisibility: $columnVisibility) {
                     SidebarView()
-                        .navigationSplitViewColumnWidth(min: 200, ideal: 240)
                         // The filter (B3): its text is the store's (Ruling 2), cleared by `open()`.
                         .searchable(text: $store.sidebarFilter, placement: .sidebar, prompt: SidebarFilter.prompt)
                         .searchFocused($filterFocused)
+                        // Outermost, or the split never reads it: under `.searchable` even a
+                        // `min: 300` changed nothing, and the sidebar opened at 144 pt and could be
+                        // dragged below 200 (measured, Task 2 review I1).
+                        .navigationSplitViewColumnWidth(min: 200, ideal: 240)
                 } detail: {
                     // The two hairlines are the toolbar strip's lower edge and the sidebar's, and
                     // what keeps the split off both: a split view touching an edge of the column
                     // is laid out under the toolbar or the sidebar, its divider then running up
                     // through the title (measured; padding by 0, a `GeometryReader`'s inset and
                     // `.safeAreaPadding` all left it there), and the sidebar's width then counted
-                    // twice in the window's minimum (969 pt instead of 826, measured).
+                    // twice in the window's minimum (measured with a 144 pt sidebar: 969 pt
+                    // without the hairline, 826 with it; with the 240 pt sidebar it is 922). With
+                    // the sidebar hidden there is nothing to keep off, and the leading one would
+                    // sit at the window's edge: it goes.
                     VStack(spacing: 0) {
                         Divider()
                         HStack(spacing: 0) {
-                            Divider()
+                            if columnVisibility != .detailOnly {
+                                Divider()
+                            }
                             commitsAndDetail
                         }
                     }
