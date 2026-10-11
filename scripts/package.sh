@@ -6,11 +6,15 @@
 # Without --sign the app stays ad-hoc signed, as the build leaves it. With --sign the built app
 # is re-signed with that identity (hardened runtime, the built entitlements kept). The script never
 # creates, imports or reads keys; the identity is the user's.
-# GITTER_DIST_DIR, if set, also receives a copy of the DMG. GITTER_PACKAGE_ROOT overrides the
+# GITTER_DIST_DIR, if set, also receives a copy of the DMG; it must be an absolute path, as the
+# script works from the repository, not the caller's folder. GITTER_PACKAGE_ROOT overrides the
 # repository to package (the selftest uses it); by default it is this script's own.
 #
-# Exit codes: 2 refused before building, 3 a check on the built app or DMG failed, 1 anything else.
-set -euo pipefail
+# Exit codes: 2 refused before building, 3 a check on the built app or DMG failed, 1 anything else
+# (a tool that failed, whatever its own status: the ERR trap below; -E carries it into functions
+# and command substitutions).
+set -Eeuo pipefail
+trap 'exit 1' ERR
 
 ROOT="${GITTER_PACKAGE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 . "$(dirname "${BASH_SOURCE[0]}")/package-lib.sh"
@@ -19,7 +23,7 @@ USAGE='package.sh: usage: bash scripts/package.sh [--sign "<identity>"]'
 refuse() { echo "package.sh: $1" >&2; exit 2; }
 check_failed() { echo "package.sh: check failed: $1" >&2; exit 3; }
 
-# 1. Arguments first, then the tree.
+# 1. Arguments and GITTER_DIST_DIR first, then the tree.
 IDENTITY=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -38,10 +42,18 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-cd "$ROOT"
-if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
-    refuse "the tree is not clean"
+if [ -n "${GITTER_DIST_DIR:-}" ]; then
+    case "$GITTER_DIST_DIR" in
+        /*) ;;
+        *) refuse "GITTER_DIST_DIR must be an absolute path, not $GITTER_DIST_DIR" ;;
+    esac
 fi
+
+cd "$ROOT"
+# Its own statement, so a git that fails stops the script (exit 1) rather than reading as clean;
+# --untracked-files=all, so the user's status.showUntrackedFiles cannot hide a new file.
+TREE_STATUS="$(git -C "$ROOT" status --porcelain --untracked-files=all)"
+[ -z "$TREE_STATUS" ] || refuse "the tree is not clean"
 
 # 2. Version, build, commit.
 BUILD="$(git -C "$ROOT" rev-list --count HEAD)"
@@ -84,7 +96,7 @@ xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Release \
 if [ -n "$IDENTITY" ]; then
     ENTITLEMENTS="$SCRATCH/entitlements.plist"
     codesign -d --entitlements - --xml "$APP" > "$ENTITLEMENTS" 2>/dev/null || true
-    [ -s "$ENTITLEMENTS" ] || { echo "package.sh: the built app has no entitlements to keep; not re-signing" >&2; exit 1; }
+    [ -s "$ENTITLEMENTS" ] || check_failed "the built app has no entitlements to keep; not re-signing"
     codesign --force --options runtime --timestamp=none \
         --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP"
 fi

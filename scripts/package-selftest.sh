@@ -5,7 +5,9 @@
 #
 # Runs this working tree's package.sh against a scratch `git clone --no-hardlinks` of the
 # repository (GITTER_PACKAGE_ROOT), so it works before anything is committed. Checks each
-# refusal by exit status and first stderr line. The scratch folder is removed on exit.
+# refusal by exit status and first stderr line, and — the controls — that a clean tree and a
+# --sign with a value get past every refusal to the build (exit 99, GITTER_PACKAGE_NO_BUILD). The
+# scratch folder is removed on exit.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,6 +17,8 @@ trap '/bin/rm -rf "$SCRATCH"' EXIT
 
 export GIT_ALLOW_PROTOCOL=file GIT_SSH_COMMAND=/usr/bin/false GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 unset SSH_AUTH_SOCK
+# Only the rows that set them pass a copy folder or another root.
+unset GITTER_DIST_DIR ROW_ROOT
 # A regressed refusal must exit 99 here, never fall through to a build.
 export GITTER_PACKAGE_NO_BUILD=1
 . "$HERE/package-lib.sh"
@@ -28,7 +32,7 @@ expect() {
     local name="$1" want_code="$2" want_line="$3"
     shift 4
     local err="$SCRATCH/err" code=0
-    GITTER_PACKAGE_ROOT="$CLONE" bash "$HERE/package.sh" "$@" >/dev/null 2>"$err" || code=$?
+    GITTER_PACKAGE_ROOT="${ROW_ROOT:-$CLONE}" bash "$HERE/package.sh" "$@" >/dev/null 2>"$err" || code=$?
     local first
     first="$(head -n 1 "$err")"
     if [ "$code" != "$want_code" ]; then
@@ -44,14 +48,35 @@ expect() {
 }
 
 USAGE='package.sh: usage: bash scripts/package.sh [--sign "<identity>"]'
+BUILD_REACHED="package.sh: reached the build with GITTER_PACKAGE_NO_BUILD set"
 
 expect "--notarize" 2 "package.sh: --notarize is not set up yet: it needs a Developer ID" -- --notarize
 expect "--bogus" 2 "$USAGE" -- --bogus
 expect "--sign with no value" 2 "" -- --sign
 expect "--sign with an empty value" 2 "" -- --sign ""
 
+# The controls: on the clean clone, with no arguments and with a --sign that has a value, nothing
+# refuses and the run reaches the build. A refusal that fired every time would fail these.
+expect "clean tree reaches the build" 99 "$BUILD_REACHED" --
+expect "clean tree with --sign <value> reaches the build" 99 "$BUILD_REACHED" -- --sign "Some Name"
+GITTER_DIST_DIR="$SCRATCH/dist-copy" expect "an absolute GITTER_DIST_DIR reaches the build" 99 "$BUILD_REACHED" --
+
+# A relative GITTER_DIST_DIR is refused: package.sh works from the repository, not the caller's
+# folder, so it would land there (and make the next run's tree dirty).
+GITTER_DIST_DIR="dist-copy" expect "a relative GITTER_DIST_DIR" 2 \
+    "package.sh: GITTER_DIST_DIR must be an absolute path, not dist-copy" --
+
+# A failing tool is exit 1, whatever its own status: git's 128 for a folder that is no repository.
+NOT_A_REPO="$SCRATCH/not-a-repo"
+mkdir -p "$NOT_A_REPO"
+ROW_ROOT="$NOT_A_REPO" expect "a root that is no repository: exit 1, not git's 128" 1 "" --
+
 touch "$CLONE/untracked-file"
 expect "untracked file" 2 "package.sh: the tree is not clean" --
+# The user's status.showUntrackedFiles does not hide one.
+git -C "$CLONE" config status.showUntrackedFiles no
+expect "untracked file with status.showUntrackedFiles=no" 2 "package.sh: the tree is not clean" --
+git -C "$CLONE" config --unset status.showUntrackedFiles
 # A modified tracked file is just as dirty.
 /bin/rm "$CLONE/untracked-file"
 echo "x" >> "$CLONE/project.yml"
