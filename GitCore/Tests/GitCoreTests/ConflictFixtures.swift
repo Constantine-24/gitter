@@ -151,19 +151,28 @@ enum ConflictFixtures {
 
     /// `git am -3` of `theirs`' commit on `main`: stage 2 is main, stage 3 the patch's side.
     /// Exits 128 on the conflict (measured, A2 Task 4) and stops with `rebase-apply/`. Not a
-    /// `ConflictOperation` case, so the suites iterating those keep their five.
+    /// `ConflictOperation` case, so the suites iterating those keep their five. `threeWay: false`
+    /// is a plain `am`, which stops the same way on a conflicting patch.
     static func am(
-        kind: ConflictFixtureKind, prepare: Prepare = { _ in }, onTheirs: Prepare = { _ in }
+        kind: ConflictFixtureKind, prepare: Prepare = { _ in }, onTheirs: Prepare = { _ in },
+        threeWay: Bool = true
     ) async throws -> TestRepo {
         let repo = try await history(kind, prepare: prepare, onTheirs: onTheirs)
-        let patch = try await repo.git(["format-patch", "-1", "--stdout", "theirs"])
+        try await beginAm(in: repo, of: "theirs", threeWay: threeWay)
+        try await requireStopped(repo, marker: "rebase-apply")
+        return repo
+    }
+
+    /// `format-patch -1 --stdout <branch>` through a temporary `gitter-am-<UUID>.patch`, then
+    /// `am` (with `-3` for `threeWay`) of it on the repository's checkout, which exits 128 on
+    /// the conflict. The one place the dance lives: `am(kind:…)` and `DiscardUndoTests` call it.
+    static func beginAm(in repo: TestRepo, of branch: String, threeWay: Bool) async throws {
+        let patch = try await repo.git(["format-patch", "-1", "--stdout", branch])
         let file = FileManager.default.temporaryDirectory
             .appendingPathComponent("gitter-am-\(UUID().uuidString).patch")
         defer { try? FileManager.default.removeItem(at: file) }
         try patch.write(to: file)
-        try await repo.git(["am", "-3", file.path], allowedExitCodes: [128])
-        try await requireStopped(repo, marker: "rebase-apply")
-        return repo
+        try await repo.git(["am"] + (threeWay ? ["-3"] : []) + [file.path], allowedExitCodes: [128])
     }
 
     /// `cherry-pick base..theirs` over three commits, each adding `pick-<n>.txt`; commit

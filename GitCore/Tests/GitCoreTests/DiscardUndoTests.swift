@@ -430,12 +430,7 @@ import Testing
             try await repo.git(["merge", "--squash", "feature"], allowedExitCodes: [1])
             return .squash
         case .am:
-            let patch = try await repo.git(["format-patch", "-1", "--stdout", "feature"])
-            let file = FileManager.default.temporaryDirectory
-                .appendingPathComponent("gitter-am-\(UUID().uuidString).patch")
-            defer { try? FileManager.default.removeItem(at: file) }
-            try patch.write(to: file)
-            try await repo.git(["am", file.path], allowedExitCodes: [128])
+            try await ConflictFixtures.beginAm(in: repo, of: "feature", threeWay: false)
             return .applyingPatches
         }
     }
