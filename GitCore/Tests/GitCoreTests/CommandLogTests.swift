@@ -287,6 +287,98 @@ final class RecordingLog: CommandLog {
         #expect(!stderr.contains("secret"))
     }
 
+    // MARK: - A URL's userinfo in git's words, by structure (P1 final review I1)
+
+    /// git's words — stderr, a launch failure's message, a refusal's description — are prose, so
+    /// each blank-separated token of them loses a `scheme://` URL's userinfo by structure before the
+    /// prose redactor runs, the quotes and punctuation around it kept. The two lines are the final
+    /// review's probes, which the prose redactor alone handed back in clear.
+    @Test(arguments: [
+        ("fatal: could not read from 'https://me:p(ss)@example.invalid/x'",
+         "fatal: could not read from 'https://example.invalid/x'", "p(ss)"),
+        ("remote: https://tok:se'cret@example.invalid/x", "remote: https://example.invalid/x", "se'cret"),
+        ("error: one\n\tssh://me:p)ss@[::1]:22/x.git, two\r\nfatal: three",
+         "error: one\n\tssh://[::1]:22/x.git, two\r\nfatal: three", "p)ss"),
+        ("(https://me:p(ss)@example.invalid)", "(https://example.invalid)", "p(ss)"),
+    ])
+    func aURLsUserinfoInGitsWordsIsStrippedWhateverItHolds(stderr: String, shown: String, secret: String) throws {
+        let kept = try #require(entry(stderr: stderr).stderr)
+        #expect(kept == shown)
+        #expect(!kept.contains(secret))
+        for outcome in [CommandLogEntry.Outcome.launchFailed(stderr), .refusedBeforeLaunch(stderr)] {
+            let described = String(describing: entry(outcome: outcome).outcome)
+            #expect(!described.contains(secret), "\(described)")
+            #expect(!described.contains("me:") && !described.contains("tok:"), "\(described)")
+        }
+    }
+
+    /// What holds no `scheme://` URL with userinfo comes back as git wrote it, blanks, tabs and line
+    /// ends included.
+    @Test(arguments: [
+        "fatal: invalid reference: nosuchbranch", "To https://example.invalid/r.git",
+        "  two  blanks\tand a tab\n", "fatal: 'origin' does not appear to be a git repository",
+    ])
+    func gitsWordsWithNoURLUserinfoAreKept(stderr: String) {
+        #expect(entry(stderr: stderr).stderr == stderr)
+    }
+
+    /// The scp rule is not applied to git's words: it would cut `'a:b@c.txt'` to `c.txt'`, and a file
+    /// name with a colon and an `@` is ordinary there. The structural pass leaves it alone; the prose
+    /// redactor after it already reads `a:b@` as userinfo and logs `'c.txt'`, as it did before this
+    /// fix (docs/BACKLOG.md, "The prose redactor still rewrites some logged arguments").
+    @Test func theStructuralPassOverGitsWordsLeavesAnScpShapeAlone() {
+        let words = "error: pathspec 'a:b@c.txt' did not match any file(s) known to git"
+        #expect(CommandLogEntry.strippingURLUserinfo(inWords: words) == words)
+        #expect(entry(stderr: words).stderr == "error: pathspec 'c.txt' did not match any file(s) known to git")
+    }
+
+    /// The controls: the prose redactor alone — all git's words had before this fix — hands each
+    /// probe line's password back.
+    @Test(arguments: [
+        ("fatal: could not read from 'https://me:p(ss)@example.invalid/x'", "p(ss)"),
+        ("remote: https://tok:se'cret@example.invalid/x", "se'cret"),
+    ])
+    func theProseRedactorAloneLeaksThePasswordInGitsWords(stderr: String, secret: String) {
+        withKnownIssue("the prose redactor ends its run at `'` or `(`, so the userinfo is never seen") {
+            #expect(!RemoteFailureParser.redactingCredentials(stderr).contains(secret))
+        }
+    }
+
+    /// An scp-form address in git's or ssh's words (`user:password@host: Permission denied`, ssh
+    /// echoing an `ssh://` URL's userinfo) gets the prose redactor only, so a password holding `'`,
+    /// `(`, `)` or a blank stays (docs/BACKLOG.md, "GitCore's prose redactor misses a sub-delim
+    /// credential"). The fix is not the scp rule, which over-strips file names here.
+    @Test func anScpFormPasswordWithAParenthesisInGitsWordsStaysForNow() throws {
+        let kept = try #require(entry(stderr: "me:p(ss)@example.invalid: Permission denied (publickey).").stderr)
+        withKnownIssue("git's words get only the `://` rule and the prose redactor, which ends its run at `(`") {
+            #expect(!kept.contains("p(ss)"))
+        }
+    }
+
+    /// A URL password holding an unencoded `/`, `?` or `#` (not a valid URL: its authority ends
+    /// early) stays in clear (spec §3, docs/BACKLOG.md); pinned so a fix of the strip shows here.
+    @Test(arguments: [
+        ("https://me:p/ss@example.invalid/x", "p/ss"),
+        ("https://me:p@ss/x@example.invalid/r.git", "ss/x"),
+    ])
+    func aPasswordWithAnUnencodedSlashStaysForNow(url: String, secret: String) {
+        let arguments = entry(arguments: ["remote", "add", "--end-of-options", "origin", url]).arguments
+        withKnownIssue("the authority ends at the first `/`, `?` or `#`, before the `@`") {
+            #expect(!arguments.joined(separator: " ").contains(secret), "\(arguments)")
+        }
+    }
+
+    /// The scp rule over-strips a `<sha>:<path>` whose root-level path holds an `@` — the shape of
+    /// Discard's `cat-file blob|--filters "<sha>:<path>"` (CLIGitBackend+Discard.swift) for an
+    /// `icon@2x.png`: today it logs as `2x.png`. Nothing leaks; the line reads wrong
+    /// (docs/BACKLOG.md, "The structural strip's scp rule over-strips"). A path in a folder is kept.
+    @Test func aRevisionWithARootFileHoldingAnAtIsOverStrippedForNow() {
+        #expect(entry(arguments: ["cat-file", "blob", "0123abc:icon@2x.png"]).arguments == ["cat-file", "blob", "2x.png"],
+                "if this keeps 0123abc:icon@2x.png, the scp rule was fixed: close the BACKLOG entry")
+        #expect(entry(arguments: ["cat-file", "blob", "0123abc:dir/icon@2x.png"]).arguments
+                == ["cat-file", "blob", "0123abc:dir/icon@2x.png"])
+    }
+
     // MARK: - Cuts
 
     private func entry(arguments: [String] = [], outcome: CommandLogEntry.Outcome = .exitCode(1),

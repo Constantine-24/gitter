@@ -34,7 +34,8 @@ public struct CommandLogEntry: Sendable, Equatable {
     /// `argumentThreshold` are cut to the first `argumentsShown` plus "… and N more".
     public let arguments: [String]
     public let outcome: Outcome
-    /// For an outcome other than `.succeeded` and `.exitCode(0)` only: git's stderr, redacted, cut to
+    /// For an outcome other than `.succeeded` and `.exitCode(0)` only: git's stderr, redacted
+    /// (`strippingURLUserinfo(inWords:)`, then the prose redactor), cut to
     /// at most `stderrLimit` UTF-8 bytes on a character boundary, with "…" appended when cut. Nil when
     /// empty.
     public let stderr: String?
@@ -94,14 +95,7 @@ public struct CommandLogEntry: Sendable, Equatable {
         {
             return string(scalars[...equals]) + strippingUserinfo(string(scalars[(equals + 1)...]))
         }
-        if let colon = scalars.indices.dropLast(2).first(where: {
-            scalars[$0] == ":" && scalars[$0 + 1] == "/" && scalars[$0 + 2] == "/"
-        }) {
-            let rest = colon + 3
-            let end = (rest..<scalars.count).first { "/?\u{23}".unicodeScalars.contains(scalars[$0]) } ?? scalars.count
-            guard let at = (rest..<end).last(where: { scalars[$0] == "@" }) else { return argument }
-            return string(scalars[..<rest]) + string(scalars[(at + 1)...])
-        }
+        if let stripped = strippingSchemeUserinfo(scalars) { return stripped }
         guard let first = scalars.first, !"/.~".unicodeScalars.contains(first),
             let colon = scalars.firstIndex(of: ":"), !scalars[..<colon].contains("/")
         else { return argument }
@@ -117,6 +111,51 @@ public struct CommandLogEntry: Sendable, Equatable {
             isUserinfo(scalars[..<colon], before: at)
         else { return argument }
         return string(scalars[(at + 1)...])
+    }
+
+    /// The `scheme://` rule of `strippingUserinfo` on one token: nil when the token holds no `://`;
+    /// otherwise the token, its authority's userinfo gone — the authority runs to the first `/`, `?`
+    /// or `#`, and everything in it up to its last `@` goes.
+    private static func strippingSchemeUserinfo(_ scalars: [Unicode.Scalar]) -> String? {
+        guard let colon = scalars.indices.dropLast(2).first(where: {
+            scalars[$0] == ":" && scalars[$0 + 1] == "/" && scalars[$0 + 2] == "/"
+        }) else { return nil }
+        let rest = colon + 3
+        let end = (rest..<scalars.count).first { "/?\u{23}".unicodeScalars.contains(scalars[$0]) } ?? scalars.count
+        guard let at = (rest..<end).last(where: { scalars[$0] == "@" }) else { return string(scalars[...]) }
+        return string(scalars[..<rest]) + string(scalars[(at + 1)...])
+    }
+
+    /// git's words (stderr, a launch failure's message, a refusal's description) with each
+    /// blank-separated token's `scheme://` userinfo stripped by structure (`strippingSchemeUserinfo`),
+    /// so a password holding `'`, `(`, `)`, `@` or `:` cannot end the run early as it ends the prose
+    /// redactor's (the final review's I1). The blanks, tabs and line ends between tokens, and the
+    /// quotes and punctuation around a URL, are kept as they were. Only the `://` rule: the scp rule
+    /// would cut a file name such as `'a:b@c.txt'` in a message. Left as they are: a password with a
+    /// blank (it ends the token) or an unencoded `/`, `?` or `#` (it ends the authority), and an
+    /// scp-form address (`me:p(ss)@host: Permission denied`), which only the prose redactor sees.
+    static func strippingURLUserinfo(inWords text: String) -> String {
+        var result = String.UnicodeScalarView()
+        var token: [Unicode.Scalar] = []
+        func flush() {
+            guard !token.isEmpty else { return }
+            if let stripped = strippingSchemeUserinfo(token) {
+                result.append(contentsOf: stripped.unicodeScalars)
+            } else {
+                result.append(contentsOf: token)
+            }
+            token = []
+        }
+        for scalar in text.unicodeScalars {
+            if scalar.properties.isWhitespace {
+                flush()
+                result.append(scalar)
+            } else {
+                token.append(scalar)
+            }
+        }
+        flush()
+        return String(result)
     }
 
     private static func string(_ slice: ArraySlice<Unicode.Scalar>) -> String {
@@ -141,10 +180,11 @@ public struct CommandLogEntry: Sendable, Equatable {
         }
     }
 
-    /// `stderr` redacted and cut to `stderrLimit` UTF-8 bytes on a character boundary, "…" after a
-    /// cut; nil when empty.
+    /// `stderr` redacted — each token's `scheme://` userinfo stripped by structure
+    /// (`strippingURLUserinfo(inWords:)`), then the prose redactor — and cut to `stderrLimit` UTF-8
+    /// bytes on a character boundary, "…" after a cut; nil when empty.
     static func shown(stderr: String) -> String? {
-        let redacted = RemoteFailureParser.redactingCredentials(stderr)
+        let redacted = RemoteFailureParser.redactingCredentials(strippingURLUserinfo(inWords: stderr))
         guard !redacted.isEmpty else { return nil }
         guard redacted.utf8.count > stderrLimit else { return redacted }
         var kept = ""
