@@ -8,8 +8,9 @@ public protocol GitBackend: Sendable {
     /// --topo-order`), or nil when no branch, tag or HEAD reaches it. `sha` is a full object id,
     /// refused otherwise (`BranchOperationError.invalidName`) before git runs.
     func historyRow(of sha: String, at root: URL) async throws -> Int?
-    /// The commit `sha` names, read as History reads its commits; nil when git knows no such
-    /// object. `sha` is a full object id, refused otherwise before git runs.
+    /// The commit `sha` names, read as History reads its commits; nil for an id git doesn't know
+    /// as an object (`bad object`). `sha` is a full object id, refused otherwise before git runs;
+    /// a 64-hex id in a SHA-1 repository throws (git: unknown revision).
     func commit(_ sha: String, at root: URL) async throws -> Commit?
     /// Diff for one working-copy path. staged=true → index vs HEAD; false → worktree vs index.
     /// For untracked files (staged=false) returns the whole file as added lines.

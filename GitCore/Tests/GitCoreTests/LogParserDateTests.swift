@@ -29,8 +29,6 @@ import Testing
         let expected = try #require(old.date(from: date))
 
         #expect(try Self.parsedDate(date) == expected)
-        // The offsets really are read, not dropped: the four instants are not all the same.
-        #expect(expected.timeIntervalSince1970 != 0)
     }
 
     /// The offsets give different instants, so the equality above can tell a dropped offset.

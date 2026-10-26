@@ -210,6 +210,43 @@ import Testing
         #expect(try await backend.commit(head, at: repo.root)?.sha == head)
     }
 
+    /// `log.showSignature=true` in the repository's config would put gpg's lines into the `-z`
+    /// record ahead of the commit's id, garbling a signed commit (final review F2). No real gpg:
+    /// the commit carries a `gpgsig` header and `gpg.program` is a script that writes a line to
+    /// stderr, which git prints into the log. Control: the probe below shows git does print it
+    /// without `--no-show-signature`, so the read's answer is not vacuous.
+    @Test func commitIgnoresShowSignature() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try await repo.git(["commit", "-q", "--allow-empty", "-m", "base"])
+        let tree = try await repo.revParse("HEAD^{tree}")
+        let parent = try await repo.headSha()
+        try repo.write(
+            "signed-commit.txt",
+            "tree \(tree)\nparent \(parent)\nauthor Tester <t@t> 1700000000 +0000\n"
+                + "committer Tester <t@t> 1700000000 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n abc\n"
+                + " -----END PGP SIGNATURE-----\n\nsigned\n")
+        let signed = String(
+            decoding: try await repo.git(["hash-object", "-t", "commit", "-w", "signed-commit.txt"]), as: UTF8.self
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        try repo.writeExecutable(
+            ".git/fake-gpg",
+            "#!/bin/sh\necho 'gpg: a fake signature line' >&2\necho '[GNUPG:] GOODSIG 0 Tester'\nexit 0\n")
+        try await repo.git(["config", "log.showSignature", "true"])
+        try await repo.git(["config", "gpg.program", repo.root.appendingPathComponent(".git/fake-gpg").path])
+
+        // The control: git does print the fake gpg's line with the setting on.
+        let shown = String(
+            decoding: try await repo.git(["log", "-1", "--no-walk", "--format=%H", "--end-of-options", signed]),
+            as: UTF8.self)
+        #expect(shown.contains("gpg: a fake signature line"))
+
+        let read = try #require(try await backend.commit(signed, at: repo.root))
+        #expect(read.sha == signed)
+        #expect(read.summary == "signed")
+        #expect(read.parents == [parent])
+    }
+
     // MARK: - The fixtures themselves
 
     /// `HistoryFixture`'s repositories have the shape the tests above rely on. Control: a count

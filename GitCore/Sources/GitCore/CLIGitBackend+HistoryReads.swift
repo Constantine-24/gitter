@@ -11,7 +11,8 @@ extension CLIGitBackend {
     /// The whole output is read and then searched, not streamed with a stop at the match: the
     /// streaming seam (`runStreaming`) hands back stdout only when git has finished — it reports
     /// stderr as it arrives, not stdout — and stopping early would mean changing it. 100,001 ids
-    /// are about 4 MB and git writes them in under 0.1 s (measured, H1). The search compares
+    /// are about 4 MB, read in 0.27–0.30 s without a commit-graph file and 0.08 s with one
+    /// (measured, H1). The search compares
     /// bytes, so no `String` is made per line. The id is never passed to git, but is still
     /// refused unless it is a full object id: a short one could match no line or, read as a
     /// prefix, the wrong one.
@@ -45,12 +46,13 @@ extension CLIGitBackend {
     /// `log -1 --no-walk` of the one id, in History's own format and through History's own
     /// parser, so the commit equals the one a deep enough snapshot would list. git answers an id
     /// that names no object with `fatal: bad object <id>`, exit 128 (git 2.54, measured): that is
-    /// nil. Any other failure is thrown.
+    /// nil. Any other failure is thrown. `--no-show-signature`: `log.showSignature=true` would put
+    /// gpg's lines into the record ahead of the id (final review F2).
     public func commit(_ sha: String, at root: URL) async throws -> Commit? {
         guard Self.isFullObjectID(sha) else { throw BranchOperationError.invalidName(sha) }
         do {
             let data = try await run(
-                ["log", "-1", "--no-walk", "--format=\(Self.logFormat)", "-z", "--end-of-options", sha], cwd: root)
+                ["log", "-1", "--no-walk", "--no-show-signature", "--format=\(Self.logFormat)", "-z", "--end-of-options", sha], cwd: root)
             return LogParser.parse(data).first
         } catch let GitError.commandFailed(128, stderr) where stderr.contains("bad object \(sha)") {
             return nil
