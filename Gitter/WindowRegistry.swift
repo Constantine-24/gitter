@@ -533,6 +533,14 @@ final class WindowRegistry {
         return LaunchPlan(first: pending, rest: paths.filter { RepositoryWindow(url: $0) != shown })
     }
 
+    /// Whether a launch has to ask for its first window (B4 Task 5): no window has taken the launch
+    /// (`launchHandled`) and none is on screen. With "Close windows when quitting" off, macOS hands
+    /// SwiftUI saved state holding no window and SwiftUI opens none, so nothing runs the launch
+    /// (measured on a probe: `.defaultLaunchBehavior(.presented)` does not change that).
+    static func launchNeedsWindow(launchHandled: Bool, visibleMainWindows: Int) -> Bool {
+        !launchHandled && visibleMainWindows == 0
+    }
+
     /// `store` opened `new` in place of `old`: the new repository takes the old one's place in the
     /// list — unless another window still shows the old one, or the new one is listed already —
     /// and is added at the end otherwise.

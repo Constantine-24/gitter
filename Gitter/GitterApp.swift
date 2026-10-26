@@ -228,15 +228,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The log's launch header (P1 Task 2), once: Gitter's version, macOS's and git's, the last
     /// read off the main actor — so it may follow the first window's first lines. No header under
-    /// the test host, which has no log.
+    /// the test host, which has no log. And, at every launch, a window if none came
+    /// (`askForAWindowIfNoneCame`).
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
+            // Before the guard: every launch, not only one with a log.
+            DispatchQueue.main.async { Self.askForAWindowIfNoneCame() }
             guard AppLog.writer != nil else { return }
             let info = Bundle.main.infoDictionary ?? [:]
             Task {
                 AppLog.events.write(await AppLog.header(info: info, gitPath: "/usr/bin/git"))
             }
         }
+    }
+
+    /// B4 Task 5: with "Close windows when quitting" off, macOS hands SwiftUI saved state holding no
+    /// window and SwiftUI opens none (`.restorationBehavior(.disabled)`; measured on a probe, where
+    /// `.defaultLaunchBehavior(.presented)` changed nothing) — so no `onAppear` runs the launch, and
+    /// there is no `openWindow` to call. One run-loop turn after launch, with no window taken and
+    /// none on screen (`WindowRegistry.launchNeedsWindow`), Gitter asks for one the way a Dock click
+    /// does: a reopen Apple Event to its own port, from a background thread (E3, C2b), answered by
+    /// `applicationShouldHandleReopen` with the scene's empty window, whose `appeared` runs the
+    /// launch. It checks again a turn later, just before asking; and a reopen that lands with a
+    /// window already up opens nothing (C2b, and the B4 probe), so a late SwiftUI window never gets a
+    /// second one.
+    @MainActor private static func askForAWindowIfNoneCame() {
+        guard launchNeedsWindow() else { return }
+        DispatchQueue.main.async {
+            guard launchNeedsWindow() else { return }
+            let events = AppLog.events
+            events.write("launch: no window, asking for one")
+            Thread.detachNewThread {
+                var port = AEGetRegisteredMachPort()
+                let me = NSAppleEventDescriptor(
+                    descriptorType: DescType(typeMachPort), bytes: &port, length: MemoryLayout.size(ofValue: port))
+                let reopen = NSAppleEventDescriptor(
+                    eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEReopenApplication),
+                    targetDescriptor: me, returnID: AEReturnID(kAutoGenerateReturnID),
+                    transactionID: AETransactionID(kAnyTransactionID))
+                do {
+                    _ = try reopen.sendEvent(options: [.noReply], timeout: 5)
+                } catch {
+                    events.write("launch: asking for a window failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    @MainActor private static func launchNeedsWindow() -> Bool {
+        WindowRegistry.launchNeedsWindow(
+            launchHandled: AppModel.windows.launchHandled,
+            visibleMainWindows: NSApp.windows.filter { $0.isVisible && $0.canBecomeMain }.count)
     }
 
     /// The net: a quit event still held when the app goes is answered 0 before exit (A2b). And

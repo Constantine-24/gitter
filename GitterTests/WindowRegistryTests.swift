@@ -150,6 +150,16 @@ import Testing
         #expect(AppModel.windows.stores.allSatisfy { $0.root == nil })
     }
 
+    /// B4 Task 5: a launch asks for a window only when no window has taken the launch and none is
+    /// on screen — the launch macOS restores with no window ("Close windows when quitting" off).
+    /// A window that took the launch, or one SwiftUI has shown and not yet appeared, asks for none.
+    @Test func aLaunchAsksForAWindowOnlyWithNoneTakenAndNoneShown() {
+        #expect(WindowRegistry.launchNeedsWindow(launchHandled: false, visibleMainWindows: 0))
+        #expect(!WindowRegistry.launchNeedsWindow(launchHandled: false, visibleMainWindows: 1))
+        #expect(!WindowRegistry.launchNeedsWindow(launchHandled: true, visibleMainWindows: 0))
+        #expect(!WindowRegistry.launchNeedsWindow(launchHandled: true, visibleMainWindows: 1))
+    }
+
     // MARK: - QuitGuard over several stores (Ruling 8)
 
     /// Under Wait every store's running read is stopped, and only a store that had a write can call
