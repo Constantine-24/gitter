@@ -80,6 +80,9 @@ final class RepositoryStore {
     /// unless the working copy's selected file is unmerged and its read has landed. It can lag
     /// the selection for the moment a read takes, so the views go through `selectedConflict`.
     private(set) var conflictDocument: ConflictDocument?
+    /// The selected conflicted file whose read failed (B4 item 4): the resolver shows it, with
+    /// git's words, in place of a spinner. Cleared by a read that lands and by another path.
+    private(set) var conflictLoadFailure: ConflictLoadFailure?
     /// Where the operation is, read with the document, for the side labels.
     private(set) var conflictProgress: OperationProgress?
     /// The resolver's block choices, in memory only (nothing is written while the user
@@ -541,6 +544,7 @@ final class RepositoryStore {
         stashContents = nil
         setDiff([], staged: stagedView)
         setConflict(nil, progress: nil)
+        setConflictLoadFailure(nil)
         reopenablePath = nil
         operationStop = nil
         prefilledStopKey = nil
@@ -1255,6 +1259,11 @@ final class RepositoryStore {
         conflictDocument = document
         conflictProgress = progress
         resolverChoices.show(document?.snapshot, blockCount: document.flatMap(ResolverOffer.blocks(of:))?.count ?? 0)
+    }
+
+    /// internal (not private(set) write): used by +Conflicts.swift's `loadConflict()`
+    func setConflictLoadFailure(_ failure: ConflictLoadFailure?) {
+        conflictLoadFailure = failure
     }
 
     /// internal (not private(set) write): used by +Conflicts.swift's `chooseBlock`

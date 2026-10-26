@@ -30,6 +30,15 @@ import Testing
         sha: sha, index: 0, reflogSubject: "On main: Replaced by Gitter: f.txt", parents: ["p1", "p2"],
         date: Date(timeIntervalSince1970: 1_800_000_000))
 
+    // MARK: - A conflict that cannot be read (B4 item 4)
+
+    @Test func theFailedReadSaysWhatCanStillBeDone() {
+        #expect(ConflictWording.loadFailed("git went away")
+            == "Gitter couldn't read this conflict: git went away. You can still open the file in its editor, "
+            + "or mark it resolved as it is.")
+        #expect(ConflictWording.tryAgain == "Try Again")
+    }
+
     // MARK: - Side labels
 
     @Test func withNoOperationTheSidesAreHeadAndIncoming() {

@@ -186,6 +186,17 @@ enum ConflictWording {
     static let previous = "Previous Conflict"
     static let next = "Next Conflict"
 
+    // MARK: - A conflict that cannot be read
+
+    /// The resolver's failed state (B4 item 4): `message` is git's own words, and the two
+    /// buttons under it are the ones that need no read.
+    static func loadFailed(_ message: String) -> String {
+        "Gitter couldn't read this conflict: \(message). You can still open the file in its editor, "
+            + "or mark it resolved as it is."
+    }
+
+    static let tryAgain = "Try Again"
+
     static func resolveHelp(remaining: Int) -> String {
         remaining == 0
             ? "Write the chosen blocks to the file and stage it"

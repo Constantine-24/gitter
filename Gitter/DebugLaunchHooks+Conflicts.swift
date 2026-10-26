@@ -4,6 +4,7 @@
     import CryptoKit
     import Foundation
     import GitCore
+    import Synchronization
 
     /// The resolver's steps of `GITTER_DEBUG_BRANCH_ACTION` (see `DebugLaunchHooks+Branches` for
     /// the grammar and the waiting):
@@ -26,6 +27,12 @@
     ///                           Reopen Conflict… (nothing more); logs `reopen: not offered` when
     ///                           it is not.
     ///   confirmreopen           the Reopen sheet's destructive button.
+    ///   conflictreadfails:on|off  makes the resolver's read of a conflicted file throw while it
+    ///                           is on (the store checks `conflictReadFails` before asking the
+    ///                           backend), so the failed state shows; `off` stops it. Logs the
+    ///                           setting. Try Again, or `select:`, then reads for real.
+    ///   tryagain                the failed state's Try Again (`loadConflict()`); waits for the
+    ///                           document or the failure, and logs `resolver: …`.
     ///   resolver                logs the resolver's state without doing anything.
     ///   noticeshow              the sticky notice's Show Copy, as its button runs it.
     ///   cancelsheet             what a sheet's Cancel does (`activeSheet = nil`): a sheet up
@@ -38,7 +45,18 @@
         static let conflictCommands: Set<String> = [
             "select", "blocks", "resolve", "take", "deletefile", "keep", "confirmreplace", "markresolved",
             "confirmmarkers", "reopen", "confirmreopen", "resolver", "noticeshow", "cancelsheet",
+            "conflictreadfails", "tryagain",
         ]
+
+        private static let readFails = Mutex(false)
+
+        /// Whether the resolver's read of a conflict throws (`conflictreadfails:`).
+        static var conflictReadFails: Bool { readFails.withLock { $0 } }
+
+        /// What the failing read throws.
+        struct ConflictReadFailed: Error, LocalizedError {
+            var errorDescription: String? { "the harness made this read fail" }
+        }
 
         static func conflictStep(_ command: String, step: String, store: RepositoryStore) async {
             let rest = String(step.dropFirst(command.count + 1))
@@ -133,6 +151,21 @@
                     return
                 }
                 store.confirmReopen(path)
+            case "conflictreadfails":
+                guard rest == "on" || rest == "off" else {
+                    log("conflictreadfails: expected on|off")
+                    return
+                }
+                readFails.withLock { $0 = rest == "on" }
+                log("conflictreadfails: \(rest)")
+            case "tryagain":
+                guard store.conflictLoadFailure != nil else {
+                    log("tryagain: no failed read")
+                    return
+                }
+                store.loadConflict()
+                await store.conflictTask?.value
+                logResolver(store)
             case "resolver":
                 logResolver(store)
             case "cancelsheet":
@@ -169,7 +202,7 @@
                 store.select(path, staged: !conflicted && file.unstaged == nil)
             }
             if conflicted {
-                guard await wait({ store.selectedConflict != nil }, what: "select \(path): its resolver") else {
+                guard await wait({ store.selectedConflict != nil || store.conflictLoadFailure?.path == path }, what: "select \(path): its resolver") else {
                     log("select: no resolver for \(path) after ten seconds | error: \(store.lastError ?? "nil")")
                     return false
                 }
@@ -192,6 +225,10 @@
 
         static func logResolver(_ store: RepositoryStore) {
             guard let document = store.selectedConflict else {
+                if let failure = store.conflictLoadFailure {
+                    log("resolver: failed to read \(failure.path) | \(ConflictWording.loadFailed(failure.message))")
+                    return
+                }
                 log("resolver: none | selected: \(store.selectedPath ?? "nil") reopenable: \(store.reopenablePath ?? "nil")")
                 return
             }

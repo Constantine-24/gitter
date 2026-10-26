@@ -17,6 +17,10 @@ struct ConflictResolverView: View {
         Group {
             if let document = store.selectedConflict {
                 resolver(document)
+            } else if let failure = store.conflictLoadFailure, failure.path == store.selectedPath,
+                let file = store.snapshot?.status.files.first(where: { $0.path == failure.path })?.conflict
+            {
+                failed(failure, file)
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -38,6 +42,38 @@ struct ConflictResolverView: View {
             }
             Divider()
             actions(document, sides)
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    /// The third state (B4 item 4): the read failed. Git's words, and the actions that need no
+    /// document — Mark Resolved through the row's own entry, which takes its own snapshot.
+    private func failed(_ failure: ConflictLoadFailure, _ file: ConflictedFile) -> some View {
+        let sides = store.conflictSides
+        let blocked = store.conflictActionBlockedReason
+        return VStack(alignment: .leading, spacing: 0) {
+            header(file, sides)
+            Divider()
+            ScrollView(.vertical) {
+                note(ConflictWording.loadFailed(failure.message), systemImage: "exclamationmark.triangle")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+            Divider()
+            HStack(spacing: 8) {
+                Button(ConflictWording.title(.openInEditor, file)) { store.openInEditor(file.path) }
+                    .disabled(blocked != nil, help: blocked ?? ConflictWording.help(.openInEditor, file, sides))
+                if file.kind != .bothDeleted {
+                    Button(ConflictWording.title(.markResolved, file)) { store.markResolved(file) }
+                        .disabled(blocked != nil, help: blocked ?? ConflictWording.help(.markResolved, file, sides))
+                }
+                Spacer().frame(width: 8)
+                Button(ConflictWording.tryAgain) { store.loadConflict() }
+                Spacer(minLength: 0)
+            }
+            .controlSize(.regular)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
         }
         .background(Color(nsColor: .textBackgroundColor))
     }

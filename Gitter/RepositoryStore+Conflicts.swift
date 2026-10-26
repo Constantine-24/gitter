@@ -92,6 +92,12 @@ enum ResolverPreview {
     }
 }
 
+/// A conflicted file whose read failed: its path and git's words (B4 item 4).
+struct ConflictLoadFailure: Equatable {
+    let path: String
+    let message: String
+}
+
 /// The resolver: reading the selected conflict, the in-memory block choices, and the writes —
 /// Resolve File, Take Ours/Theirs, Delete, Keep, Mark Resolved, Reopen Conflict.
 ///
@@ -139,10 +145,13 @@ extension RepositoryStore {
             let file = snapshot?.status.files.first(where: { $0.path == path })
         else {
             setConflict(nil, progress: nil)
+            setConflictLoadFailure(nil)
             setReopenablePath(nil)
             return
         }
         if conflictDocument?.snapshot.file.path != path { setConflict(nil, progress: nil) }
+        // Kept while the same path is read again, as the document is.
+        if conflictLoadFailure?.path != path { setConflictLoadFailure(nil) }
         if reopenablePath != path { setReopenablePath(nil) }
         let generation = self.generation
         let operation = operationInProgress
@@ -151,23 +160,34 @@ extension RepositoryStore {
             setReopenablePath(nil)
             conflictTask = Task { [self] in
                 do {
+                    #if DEBUG
+                        if DebugLaunchHooks.conflictReadFails { throw DebugLaunchHooks.ConflictReadFailed() }
+                    #endif
                     let document = try await backend.conflictDocument(for: conflicted, at: root)
                     let progress = operation == nil ? nil : try? await backend.operationProgress(at: root)
                     guard !Task.isCancelled, self.generation == generation, selectedPath == path,
                         selection == .workingCopy
                     else { return }
                     setConflict(document, progress: progress)
+                    setConflictLoadFailure(nil)
                 } catch {
-                    guard !Task.isCancelled, self.generation == generation, selectedPath == path else { return }
+                    guard !Task.isCancelled, self.generation == generation, selectedPath == path,
+                        selection == .workingCopy
+                    else { return }
+                    // The failed state carries the message; a banner would be erased by the next
+                    // reload within moments.
                     setConflict(nil, progress: nil)
-                    setError(Self.describe(error))
-                    clearSticky()
+                    setConflictLoadFailure(
+                        ConflictLoadFailure(
+                            path: path,
+                            message: Self.describe(error).trimmingCharacters(in: .whitespacesAndNewlines)))
                 }
             }
             return
         }
 
         setConflict(nil, progress: nil)
+        setConflictLoadFailure(nil)
         // Only a resolved path can be reopened, and only while its operation is in progress.
         guard operation != nil, file.staged != nil, !isUnmerged(file) else {
             setReopenablePath(nil)
