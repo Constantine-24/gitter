@@ -3,7 +3,8 @@ import GitCore
 
 /// A message about something that worked, in one of the store's two slots: the transient
 /// `notice`, which fades after a few seconds, or the sticky `stickyNotice`, which stays until it
-/// is dismissed or replaced (`RepositoryStore+Notices`).
+/// is dismissed or replaced. Which one is the notice's to say (`NoticeSlot.choose`), and
+/// `RepositoryStore.show(_:)` puts it there (`RepositoryStore+Notices`).
 struct Notice: Equatable {
     /// What the banner says. Built from outside text only through `RemoteWording.plain`, so
     /// each line of it is capped; the `links` are not.
@@ -12,6 +13,35 @@ struct Notice: Equatable {
     var links: [URL] = []
     /// The banner's buttons, in order, before its ×.
     var actions: [NoticeAction] = []
+    /// `.warning` for a success with a warning in it ("Pushed, but the upstream could not be
+    /// set"): drawn with the warning symbol, and it stays.
+    var tone: NoticeTone = .done
+    /// It holds the only copy of a way back — a commit id, a receipt or an undo command for
+    /// something just moved, rewritten or deleted — so it stays until it is closed.
+    var keep = false
+}
+
+/// How a notice reads: something that worked, or something that worked with a warning in it.
+enum NoticeTone: Equatable {
+    case done
+    case warning
+}
+
+/// The two notice slots: the transient `notice` and the sticky `stickyNotice`.
+enum NoticeSlot: Equatable {
+    case fading
+    case sticky
+
+    /// The one rule for which notices stay (B4 item 2). A button or a link always takes the
+    /// sticky slot, replacing whatever is there, as before. A notice that stays only by the
+    /// newer rule — `keep`, or a `.warning` — takes it only when the notice already there
+    /// (`current`) has no button: it never pushes out a Pop Stash or an Undo Discard, and shows
+    /// in the fading slot instead (the log has it as it has every notice). Everything else fades.
+    static func choose(for notice: Notice, replacing current: Notice?) -> NoticeSlot {
+        if !notice.actions.isEmpty || !notice.links.isEmpty { return .sticky }
+        guard notice.keep || notice.tone == .warning else { return .fading }
+        return current?.actions.isEmpty == false ? .fading : .sticky
+    }
 }
 
 extension Notice {

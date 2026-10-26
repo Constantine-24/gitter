@@ -45,7 +45,8 @@ public protocol GitHistoryBackend: Sendable {
 
     /// Runs `plan`: refuses `.headMoved` (another commit, another branch, or detached — the
     /// branch the sheet named is `plan.headRef`), then the plan's own refusals, then `.planChanged`
-    /// (the target moved, or anything the sheet showed changed). Then rebases onto
+    /// (the target moved, or anything the sheet showed changed — except a count of commits
+    /// already pushed that fell, `RebasePlan.runsAs`). Then rebases onto
     /// `plan.target` — the full object id — and reads the outcome back as
     /// `GitRemoteBackend.rebase(onto:at:)` does.
     func rebase(_ plan: RebasePlan, at root: URL) async throws -> RebaseOutcome

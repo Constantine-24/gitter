@@ -119,7 +119,8 @@ public struct RebasePlan: Sendable, Hashable {
     /// skipped.
     public let skippedAsApplied: Int
     /// Commits in `target..HEAD` already on some remote-tracking branch (B15): rewriting them
-    /// rewrites published history.
+    /// rewrites published history. `rebase(_:at:)` refuses with `.planChanged` when it rose
+    /// since the plan, and runs when it fell (`runsAs`).
     public let alreadyPushed: Int
     /// The target as the caller named it (a branch, a full ref name, a sha). `rebase(_:at:)`
     /// resolves it again and refuses with `.planChanged` when it no longer names `target`.
@@ -142,5 +143,18 @@ public struct RebasePlan: Sendable, Hashable {
         self.skippedAsApplied = skippedAsApplied
         self.alreadyPushed = alreadyPushed
         self.targetName = targetName ?? target
+    }
+
+    /// Whether this plan, made again just before the run, still runs as `shown` — the plan the
+    /// sheet showed — so the run may go ahead (B4 2d). Everything must be equal but
+    /// `alreadyPushed`, which may have **fallen**: the sheet's warning was then stronger than the
+    /// truth (a remote-tracking branch went). A count that rose means the warning was too weak.
+    /// An automatic fetch in between can move it either way.
+    func runsAs(_ shown: RebasePlan) -> Bool {
+        let unpushedCount = RebasePlan(
+            head: head, target: target, replayed: replayed, flattenedMerges: flattenedMerges,
+            skippedAsApplied: skippedAsApplied, alreadyPushed: shown.alreadyPushed, targetName: targetName,
+            headRef: headRef)
+        return unpushedCount == shown && alreadyPushed <= shown.alreadyPushed
     }
 }

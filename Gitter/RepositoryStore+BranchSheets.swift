@@ -122,7 +122,8 @@ extension RepositoryStore {
                 try await backend.forceDeleteBranch(name, expectedTip: tip, at: root)
             }
         }, onSuccess: { [self] in
-            showNotice("Deleted \"\(name)\". Recreate it with: git branch \(name) \(tip)")
+            // The only copy of the tip the branch had: kept until it is closed.
+            show(Notice(text: "Deleted \"\(name)\". Recreate it with: git branch \(name) \(tip)", keep: true))
         })
     }
 

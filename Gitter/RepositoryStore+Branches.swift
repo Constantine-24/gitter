@@ -75,7 +75,7 @@ extension RepositoryStore {
     /// never taken as answered). A pull is run again whole, fetch and decision included, since
     /// its refused step (the merge or the sheet's Rebase) was decided on tracking that a fetch
     /// may since have changed; if it ends in the Merge-or-Rebase sheet, the user answers it again.
-    // internal (not private): used by +StashAndContinue.swift
+    // internal (not private): used by +StashAndContinue.swift, and by `askAgain()`
     func retry(_ action: PendingBranchAction) {
         switch action {
         case .pull:
@@ -90,6 +90,15 @@ extension RepositoryStore {
         case .switchTo, .track, .detach, .merge, .createAndSwitch:
             perform(action)
         }
+    }
+
+    /// The banner's Ask Again, beside a history action refused because HEAD moved or its plan
+    /// changed while the sheet was open: plans it again and puts its sheet back up (`retry`). The
+    /// offer goes with the banner, so a second press finds nothing.
+    func askAgain() {
+        guard let action = offeredAskAgain else { return }
+        dismissError()
+        retry(action)
     }
 
     // MARK: - Actions that do not move HEAD
@@ -195,9 +204,10 @@ extension RepositoryStore {
                 // The detail pane may be showing a commit that the new HEAD's log no longer
                 // lists, and after a merge the working copy is what the user needs to look at.
                 select(.workingCopy)
-                let lines = [message, warned.flatMap(Self.leftBehindNotice)]
-                let notice = lines.compactMap { $0 }.joined(separator: " ")
-                if !notice.isEmpty { showNotice(notice) }
+                let leftBehind = warned.flatMap(Self.leftBehindNotice)
+                let notice = [message, leftBehind].compactMap { $0 }.joined(separator: " ")
+                // With commits left behind it is the only copy of their sha: kept.
+                if !notice.isEmpty { show(Notice(text: notice, keep: leftBehind != nil)) }
             }
         })
     }

@@ -138,7 +138,8 @@ struct MainWindow: View {
 
     /// "Pull" and "Force Push…" beside the banner of a push the server refused for having
     /// commits this branch lacks — the one place Force Push is reachable from. "Stash and
-    /// Continue" beside a switch, merge or pull refused over local changes.
+    /// Continue" beside a switch, merge or pull refused over local changes. "Ask Again" beside a
+    /// cherry-pick, revert or rebase refused because HEAD or its plan changed meanwhile.
     private var bannerActions: [BannerAction] {
         if store.offeredStashAndContinue != nil {
             return [
@@ -146,6 +147,13 @@ struct MainWindow: View {
                     title: StashWording.continueButton,
                     disabledReason: store.stashAndContinueBlockedReason
                 ) { store.stashAndContinue() }
+            ]
+        }
+        if store.offeredAskAgain != nil {
+            return [
+                BannerAction(
+                    title: HistoryWording.askAgain, disabledReason: store.changeRunningBlockedReason
+                ) { store.askAgain() }
             ]
         }
         guard store.bannerOffersForcePush else { return [] }

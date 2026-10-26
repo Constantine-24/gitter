@@ -8,18 +8,37 @@ import Foundation
 /// sticky one, and it is also ended by opening another repository (`open()`) and, for a notice
 /// with links, by the next push, publish or force push starting (`beginRemote`). A transient
 /// notice never clears the sticky one; both can be on screen, the transient one above.
+///
+/// **Which slot** is the notice's to say, through `show(_:)` and its one rule
+/// (`NoticeSlot.choose`): a button or a link stays; so does a notice that is the only copy of a
+/// way back (`keep`) or a success with a warning in it (`.warning`), unless the sticky notice up
+/// has a button; everything else fades.
 extension RepositoryStore {
+
+    /// Shows `notice` in the slot `NoticeSlot.choose` picks for it over the sticky notice on
+    /// screen.
+    func show(_ notice: Notice) {
+        switch NoticeSlot.choose(for: notice, replacing: stickyNotice) {
+        case .sticky: setStickyNotice(notice)
+        case .fading: fade(notice)
+        }
+    }
 
     // MARK: - Transient
 
     /// Shows a transient, non-error message and schedules its own removal.
+    func showNotice(_ message: String) {
+        fade(Notice(text: message))
+    }
+
+    /// Shows `notice` in the transient slot and schedules its removal.
     ///
     /// The timer is cancelled by the next notice and by `open()`, and it re-checks `generation`
     /// before clearing, so a notice raised for a repository opened since is not cleared by an
     /// older one's timer.
-    func showNotice(_ message: String) {
+    private func fade(_ notice: Notice) {
         noticeTask?.cancel()
-        setNotice(Notice(text: message))
+        setNotice(notice)
         let generation = self.generation
         noticeTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(4))
@@ -35,7 +54,8 @@ extension RepositoryStore {
 
     // MARK: - Sticky
 
-    /// Shows `notice` until it is dismissed or replaced; replaces the sticky one on screen.
+    /// Shows `notice` until it is dismissed or replaced; replaces the sticky one on screen,
+    /// whatever it is. For a notice whose stay is the rule's to decide, `show(_:)`.
     func showStickyNotice(_ notice: Notice) {
         setStickyNotice(notice)
     }

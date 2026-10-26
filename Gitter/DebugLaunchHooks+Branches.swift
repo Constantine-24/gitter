@@ -598,7 +598,7 @@
         private static func describe(_ notice: Notice?) -> String {
             guard let notice else { return "nil" }
             return "\(flat(notice.text)) | links: \(notice.links.map(\.absoluteString)) "
-                + "| actions: \(notice.actions.map(NoticeWording.title))"
+                + "| actions: \(notice.actions.map(NoticeWording.title)) | tone: \(notice.tone) | keep: \(notice.keep)"
         }
 
         /// The sticky banner's Open, as its button runs it, except that the opener only logs.

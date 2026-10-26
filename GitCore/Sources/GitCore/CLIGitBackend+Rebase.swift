@@ -121,7 +121,7 @@ extension CLIGitBackend {
             throw HistoryRefusal.headMoved
         }
         let now = try await rebasePlan(onto: plan.targetName, at: root)
-        guard now == plan else { throw HistoryRefusal.planChanged }
+        guard now.runsAs(plan) else { throw HistoryRefusal.planChanged }
         // The full object id, never the name: a tag spelled like a branch takes the short name
         // over in git (B17).
         return try await runRebase(onto: plan.target, headBefore: plan.head, at: root)

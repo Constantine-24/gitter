@@ -530,15 +530,7 @@ extension RepositoryStore {
             // on screen may be behind by it, so it gets the reload it was denied.
             if missedWatcherEvent { scheduleRefresh() }
             if let rejected = ending.rejected { setRejectedPush(rejected) }
-            if let notice = ending.notice {
-                // A link must outlive the four-second fade, and so must a notice that is the only
-                // record of what was deleted (a prune's); everything else fades as before.
-                if !notice.links.isEmpty || ending.stickyNotice {
-                    showStickyNotice(notice)
-                } else if !notice.text.isEmpty {
-                    showNotice(notice.text)
-                }
-            }
+            if let notice = ending.shownNotice { show(notice) }
             // Quitting: a pull's merge or a write's follow-up fetch would only be cut short. Kept,
             // though, in case the quit is called off (`endTerminating`).
             guard !isTerminating else {
@@ -589,8 +581,7 @@ enum PushKind: Equatable {
 /// What one piece of lane work came to: what to say, what to open, and what to start once the
 /// lane (and the slot) are free again.
 struct LaneEnding {
-    /// Shown by `runOnLane`: in the sticky slot when it carries links (a pushed branch's
-    /// pull-request link), in the transient one otherwise.
+    /// Shown by `runOnLane` as `shownNotice` says.
     var notice: Notice?
     var failure: String?
     var sheet: BranchSheet?
@@ -630,6 +621,19 @@ struct LaneEnding {
         self.init(mustBeRead: mustBeRead)
         self.notice = notice
         self.stickyNotice = sticky
+    }
+
+    /// `notice` as `runOnLane` hands it to `show(_:)`, which picks the slot: a link stays; so
+    /// does the only record of what was deleted (`stickyNotice`, kept) and a success with a
+    /// warning in it (`mustBeRead`, a warning) — "Pushed, but the upstream could not be set"
+    /// fading after four seconds was BACKLOG:81. Nil when there is nothing to show: no notice,
+    /// or a plain one with no text.
+    var shownNotice: Notice? {
+        guard var notice else { return nil }
+        if stickyNotice { notice.keep = true }
+        if mustBeRead { notice.tone = .warning }
+        let stays = NoticeSlot.choose(for: notice, replacing: nil) == .sticky
+        return stays || !notice.text.isEmpty ? notice : nil
     }
 }
 

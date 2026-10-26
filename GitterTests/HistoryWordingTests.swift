@@ -414,8 +414,9 @@ import Testing
                 + "again to see what it would do now.")
         #expect(
             HistoryWording.rebaseRefusal(.planChanged, target: "refs/heads/feature")
-                == "\"feature\" or the commits to replay changed while this was open, so nothing was "
-                + "rebased. Ask again to see what it would do now.")
+                == "What the rebase would do changed while this was open (the target, the commits to "
+                + "replay, or how many are already pushed), so nothing was rebased. Ask again to see what "
+                + "it would do now.")
     }
 
     // MARK: - Stash and Continue
@@ -498,7 +499,7 @@ import Testing
     @Test func theStagedRevertNoticeEndsWhenNothingIsStaged() {
         let (store, _, cleanup) = makeTestStore()
         defer { cleanup() }
-        store.showStagedRevertNotice(Notice(text: "staged"))
+        store.showStagedRevertNotice(Notice(text: "staged", tone: .warning))
         store.setSnapshot(Self.snapshot(staged: true))
         #expect(store.stickyNotice?.text == "staged")
         store.setSnapshot(Self.snapshot(staged: false))
@@ -509,7 +510,7 @@ import Testing
     @Test func aReplacedStagedRevertNoticeIsLeftAlone() {
         let (store, _, cleanup) = makeTestStore()
         defer { cleanup() }
-        store.showStagedRevertNotice(Notice(text: "staged"))
+        store.showStagedRevertNotice(Notice(text: "staged", tone: .warning))
         store.showStickyNotice(Notice(text: "other"))
         store.setSnapshot(Self.snapshot(staged: false))
         #expect(store.stickyNotice?.text == "other")

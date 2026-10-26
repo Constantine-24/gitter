@@ -254,6 +254,16 @@ final class RepositoryStore {
     /// The banner `stashAndContinueOffer` was made for, word for word.
     private var stashAndContinueBanner: String?
 
+    /// What the error banner's Ask Again would plan again: set with the banner of a history action
+    /// refused because HEAD moved or its plan changed while the sheet was open
+    /// (`HistoryActionRefused.retry`, in `finishMutation`), and cleared where
+    /// `stashAndContinueOffer` is. Read through `offeredAskAgain`, which also checks the banner on
+    /// screen is still the one it answers.
+    private(set) var askAgainOffer: PendingBranchAction?
+
+    /// The banner `askAgainOffer` was made for, word for word.
+    private var askAgainBanner: String?
+
     /// The task running the lane's work, so `cancelRemoteActivity()` can cancel it. Bookkeeping
     /// only, views must not touch it.
     // internal (not private): used by +Remotes.swift
@@ -564,6 +574,7 @@ final class RepositoryStore {
         remoteActivity = nil
         rejectedPush = nil
         clearStashAndContinueOffer()
+        clearAskAgainOffer()
         remoteTagsSeen = RemoteTagsSeen()
         deletedTags = DeletedTags()
         deletedTagsNotice = nil
@@ -749,11 +760,13 @@ final class RepositoryStore {
         reconcileAmendWithOperation()
     }
 
-    /// Shows `notice` in the sticky slot as the staged revert's (`stagedRevertNotice`).
+    /// Shows `notice` as the staged revert's (`stagedRevertNotice`) — through `show(_:)`, so it
+    /// has no button of its own and does not push out a sticky notice that has one. Shown in the
+    /// fading slot then, it is nothing this store takes down later.
     /// internal (not private(set) write): used by +History.swift's `confirmHistoryAction`
     func showStagedRevertNotice(_ notice: Notice) {
-        stickyNotice = notice
-        stagedRevertNotice = notice
+        show(notice)
+        stagedRevertNotice = stickyNotice == notice ? notice : nil
     }
 
     private func endStagedRevertNoticeIfDone() {
@@ -845,14 +858,14 @@ final class RepositoryStore {
         stashContents = contents
     }
 
-    /// internal (not private(set) write): used by +Notices.swift's `showNotice(_:)`/
+    /// internal (not private(set) write): used by +Notices.swift's `fade(_:)`/
     /// `dismissNotice()`, which own the auto-clear timing.
     func setNotice(_ newNotice: Notice?) {
         notice = newNotice
     }
 
-    /// internal (not private(set) write): used by +Notices.swift's `showStickyNotice(_:)`/
-    /// `dismissStickyNotice()`.
+    /// internal (not private(set) write): used by +Notices.swift's `show(_:)`,
+    /// `showStickyNotice(_:)` and `dismissStickyNotice()`.
     func setStickyNotice(_ newNotice: Notice?) {
         stickyNotice = newNotice
     }
@@ -895,8 +908,9 @@ final class RepositoryStore {
         // branch may not be where it was, and the banner offering it goes with it.
         rejectedPush = nil
         // Stash and Continue answers the refusal on screen, which this attempt supersedes —
-        // and it is itself a mutation, which must not find its own offer still up.
+        // and it is itself a mutation, which must not find its own offer still up. Ask Again too.
         clearStashAndContinueOffer()
+        clearAskAgainOffer()
         // A new attempt supersedes the last one's message: it has been read or ignored by
         // now, and nothing should keep protecting it from the reloads that follow.
         if errorIsSticky {
@@ -925,6 +939,11 @@ final class RepositoryStore {
             if let offered = failure as? RefusalWithStashOffer {
                 stashAndContinueOffer = offered.offer
                 stashAndContinueBanner = lastError
+            }
+            // A refusal that means "look again": the banner and its Ask Again, the same way.
+            if let refused = failure as? HistoryActionRefused, let retry = refused.retry {
+                askAgainOffer = retry
+                askAgainBanner = lastError
             }
         } else if lastError == RemoteWording.mutationBusy {
             // A refusal that said a change was running, put up while this one ran (every gated
@@ -1077,6 +1096,7 @@ final class RepositoryStore {
         if kind != .autoFetch {
             rejectedPush = nil
             clearStashAndContinueOffer()
+            clearAskAgainOffer()
         }
         // A pushed branch's link is about the push before this one; this one says its own.
         switch kind {
@@ -1146,8 +1166,9 @@ final class RepositoryStore {
     func showStickyError(_ message: String) {
         lastError = message
         errorIsSticky = true
-        // Another banner: the refusal Stash and Continue answered is off the screen.
+        // Another banner: the refusal Stash and Continue (or Ask Again) answered is off the screen.
         clearStashAndContinueOffer()
+        clearAskAgainOffer()
     }
 
     /// `QuitGuard`'s banner at Wait's bound (`RemoteWording.quitWaitGaveUp`), sticky, and noted so
@@ -1170,6 +1191,19 @@ final class RepositoryStore {
     func clearStashAndContinueOffer() {
         stashAndContinueOffer = nil
         stashAndContinueBanner = nil
+    }
+
+    /// Ask Again's action, while the banner on screen is still the refusal it was made for — as
+    /// `offeredStashAndContinue` checks its own.
+    var offeredAskAgain: PendingBranchAction? {
+        guard let offer = askAgainOffer, let lastError, lastError == askAgainBanner else { return nil }
+        return offer
+    }
+
+    // internal (not private(set) write): used by +Errors.swift's `dismissError()`
+    func clearAskAgainOffer() {
+        askAgainOffer = nil
+        askAgainBanner = nil
     }
 
     // internal (not private(set) write): used by +Tags.swift, once a remote has answered

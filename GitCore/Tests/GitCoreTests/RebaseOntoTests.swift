@@ -181,6 +181,70 @@ import Testing
         try await before.assertUnchanged(repo)
     }
 
+    /// `makeTopic` with `origin` (a bare repository beside it) holding `topic~1`, fetched: five
+    /// of `main..topic` already pushed. Returns the bare repository's URL, for the caller to remove.
+    static func publishAllButTheTip(_ repo: TestRepo) async throws -> URL {
+        let bare = repo.root.deletingLastPathComponent().appendingPathComponent("\(repo.root.lastPathComponent)-bare.git")
+        try FileManager.default.createDirectory(at: bare, withIntermediateDirectories: true)
+        try await bareGit(bare, ["init", "-q", "--bare", "-b", "main", "."])
+        try await repo.git(["remote", "add", "origin", bare.path])
+        try await repo.git(["push", "-q", "origin", "topic~1:refs/heads/topic"])
+        try await repo.git(["fetch", "-q", "origin"])
+        return bare
+    }
+
+    /// B4 2d: fewer commits already pushed than the sheet warned about (a remote-tracking branch
+    /// gone since) — the warning the user saw was stronger than the truth, so the rebase runs.
+    @Test func fewerCommitsPushedThanThePlanSaidStillRuns() async throws {
+        let repo = try await Self.makeTopic()
+        defer { repo.cleanUp() }
+        let bare = try await Self.publishAllButTheTip(repo)
+        defer { try? FileManager.default.removeItem(at: bare) }
+        let plan = try await backend.rebasePlan(onto: "main", at: repo.root)
+        #expect(plan.alreadyPushed == 5)
+        try await repo.git(["update-ref", "-d", "refs/remotes/origin/topic"])
+        #expect(try await backend.rebasePlan(onto: "main", at: repo.root).alreadyPushed == 0)
+        let main = try await repo.revParse("main")
+
+        #expect(try await backend.rebase(plan, at: repo.root) == .rebased)
+        #expect(try await repo.revParse("HEAD~4") == main)
+        #expect(try await repo.currentBranch() == "topic")
+    }
+
+    /// B4 2d: more commits already pushed than the sheet warned about — its warning was too weak,
+    /// so nothing runs.
+    @Test func moreCommitsPushedThanThePlanSaidRunsNothing() async throws {
+        let repo = try await Self.makeTopic()
+        defer { repo.cleanUp() }
+        let plan = try await backend.rebasePlan(onto: "main", at: repo.root)
+        #expect(plan.alreadyPushed == 0)
+        let bare = try await Self.publishAllButTheTip(repo)
+        defer { try? FileManager.default.removeItem(at: bare) }
+        let before = try await HistorySnapshot.capture(repo)
+
+        await #expect(throws: HistoryRefusal.planChanged) {
+            try await backend.rebase(plan, at: repo.root)
+        }
+        try await before.assertUnchanged(repo)
+    }
+
+    /// B4 2d: a pushed count that fell does not excuse a target that moved.
+    @Test func fewerPushedWithAMovedTargetRunsNothing() async throws {
+        let repo = try await Self.makeTopic()
+        defer { repo.cleanUp() }
+        let bare = try await Self.publishAllButTheTip(repo)
+        defer { try? FileManager.default.removeItem(at: bare) }
+        let plan = try await backend.rebasePlan(onto: "main", at: repo.root)
+        try await repo.git(["update-ref", "-d", "refs/remotes/origin/topic"])
+        try await repo.git(["branch", "-f", "main", "main~1"])
+        let before = try await HistorySnapshot.capture(repo)
+
+        await #expect(throws: HistoryRefusal.planChanged) {
+            try await backend.rebase(plan, at: repo.root)
+        }
+        try await before.assertUnchanged(repo)
+    }
+
     @Test func headMovedSinceThePlanRunsNothing() async throws {
         let repo = try await Self.makeTopic()
         defer { repo.cleanUp() }

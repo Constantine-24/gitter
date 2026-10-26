@@ -255,6 +255,10 @@ enum HistoryWording {
 
     static let rebaseButton = "Rebase"
 
+    /// The button beside a `headMoved` or `planChanged` refusal: plans the action again and puts
+    /// its sheet back up (`RepositoryStore.askAgain`).
+    static let askAgain = "Ask Again"
+
     // MARK: - Notices
 
     /// `.applied`: how many, which were dropped as already applied, and the way back — HEAD's
@@ -370,8 +374,8 @@ enum HistoryWording {
         case .headMoved:
             return "The branch changed while this was open, so nothing was rebased. \(again)"
         case .planChanged:
-            return "\(self.target(target)) or the commits to replay changed while this was open, so "
-                + "nothing was rebased. \(again)"
+            return "What the rebase would do changed while this was open (the target, the commits to "
+                + "replay, or how many are already pushed), so nothing was rebased. \(again)"
         default:
             return common(refusal, attempt: attempt) ?? "Can't \(attempt)."
         }
@@ -408,7 +412,8 @@ enum HistoryWording {
                 case .rebaseOnto(let target): rebaseRefusal(refusal, target: target)
                 default: action.summary
                 }
-            let refused = HistoryActionRefused(sentence: sentence)
+            let refused = HistoryActionRefused(
+                sentence: sentence, retry: refusal == .headMoved || refusal == .planChanged ? action : nil)
             guard let offer = StashAndContinue.offer(forHistory: refusal, action: action) else {
                 return refused
             }
@@ -426,6 +431,10 @@ enum HistoryWording {
 /// A history action refused before git ran, in `HistoryWording`'s sentence: nothing changed.
 struct HistoryActionRefused: LocalizedError {
     let sentence: String
+    /// The action to plan again, for the refusals that mean "look again" — HEAD moved, or the
+    /// plan changed, while the sheet was open: the banner offers Ask Again with it
+    /// (`RepositoryStore.offeredAskAgain`). Nil for every other refusal.
+    var retry: PendingBranchAction? = nil
 
     var errorDescription: String? { sentence }
 }

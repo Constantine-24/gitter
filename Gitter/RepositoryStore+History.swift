@@ -67,13 +67,17 @@ extension RepositoryStore {
             select(.workingCopy)
             switch outcome {
             case .applied(let count, let dropped):
-                showNotice(HistoryWording.applied(plan, count: count, dropped: dropped))
+                // Its undo command is kept: a run that made commits has HEAD's old one to go back
+                // to; one that dropped everything has nothing to undo, and fades.
+                show(Notice(text: HistoryWording.applied(plan, count: count, dropped: dropped), keep: count > 0))
             case .alreadyReverted(let commit):
                 showNotice(HistoryWording.alreadyReverted(commit, plan: plan))
             case .unsignedRevertLeftStaged(let words):
                 let filled = prefillRevertMessage(plan)
                 showStagedRevertNotice(
-                    Notice(text: HistoryWording.revertLeftStaged(gitsWords: words, messageInComposer: filled)))
+                    Notice(
+                        text: HistoryWording.revertLeftStaged(gitsWords: words, messageInComposer: filled),
+                        tone: .warning))
             case .stopped, .failed:
                 // A stop is the operation bar's to say; a failure was thrown above.
                 break
@@ -130,7 +134,11 @@ extension RepositoryStore {
             }
         }, onSuccess: { [self] outcome in
             select(.workingCopy)
-            if let notice = HistoryWording.rebaseNotice(outcome, plan: plan) { showNotice(notice) }
+            // A rewrite's undo names the old tip, which ORIG_HEAD keeps only until the next
+            // rewrite: kept. Up to date and a fast-forward have nothing to undo, and fade.
+            if let text = HistoryWording.rebaseNotice(outcome, plan: plan) {
+                show(Notice(text: text, keep: outcome == .rebased))
+            }
         })
     }
 

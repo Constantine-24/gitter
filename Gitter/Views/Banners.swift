@@ -148,7 +148,9 @@ struct ErrorBanner: View {
 ///
 /// Neutral grey rather than the accent colour for the strip itself: the accent is the user's
 /// choice and on an orange-accented Mac an accent-tinted banner is the yellow warning again.
-/// The tick keeps the accent, which is the one place it cannot be mistaken for anything.
+/// The tick keeps the accent, which is the one place it cannot be mistaken for anything. A
+/// `.warning` notice — it worked, with a warning in it — draws the warning symbol instead, on the
+/// same strip.
 struct NoticeBanner: View {
     let notice: Notice
     /// Runs a button's `NoticeAction` — `RepositoryStore.perform(_:)`.
@@ -156,8 +158,11 @@ struct NoticeBanner: View {
     let dismiss: () -> Void
 
     var body: some View {
+        let warning = notice.tone == .warning
         Banner(
-            message: notice.text, systemImage: "checkmark.circle.fill", iconTint: .accentColor,
+            message: notice.text,
+            systemImage: warning ? "exclamationmark.triangle.fill" : "checkmark.circle.fill",
+            iconTint: warning ? .orange : .accentColor,
             tint: .secondary, dismissLabel: "Dismiss message",
             actions: notice.actions.map { action in
                 BannerAction(title: NoticeWording.title(action)) { perform(action) }
