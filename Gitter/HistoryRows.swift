@@ -101,7 +101,6 @@ struct HistoryRows: Equatable {
         return HistoryRows(rows: rows, graphWidth: width, shas: shas, loaded: loaded, merges: merges)
     }
 
-
     /// The end row's state for `snapshot`: complete when git had nothing older, capped when the
     /// depth is at `HistoryDepth.cap` with older commits left, loading otherwise.
     private static func end(of snapshot: RepoSnapshot) -> CommitRow.End {

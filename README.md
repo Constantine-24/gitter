@@ -600,7 +600,7 @@ Prune, clean-up, rename and remove are not yet waited for by quitting (see the b
 ### Navigation
 
 **History.** The list opens with the newest 500 commits and loads the next 500 as you scroll to
-its end — or reach it with ↓, Page Down or ⌥↓ — with a "Loading older commits…" row at the
+its end — ⌥↓ scrolls there — with a "Loading older commits…" row at the
 bottom meanwhile; the graph carries on across each join, and the last row says "Start of
 history" once git has nothing older. A refresh (a fetch, a commit, a checkout, a change on disk)
 keeps every row already loaded, and another repository opens at 500 again. A click on a branch,

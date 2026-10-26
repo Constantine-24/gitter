@@ -525,6 +525,7 @@ import Testing
         #expect(!pick.canStrandCommits(leavingHeadAt: Self.head))
         #expect(!rebase.canStrandCommits(leavingHeadAt: Self.head))
     }
+
     // MARK: - History's depth (H1)
 
     @Test func theEndRowAndTheRevealNoticesReadAsPlanned() {

@@ -7,9 +7,9 @@ import Testing
 
 /// Returns once `store` has nothing in flight: no mutation, no network lane, no worktree read, no
 /// queued reload, no load-more (`isLoadingOlderCommits`) and no reveal (`revealTask`, H1 Task 2:
-/// its row read runs before any reload is queued), and the last scheduled reload (`refreshTask`) has ended — the very task seen
-/// before waiting, not one that replaced it meanwhile (`scheduleRefresh` replaces it, and a wait on
-/// the old task returns at once). Polls every 20 ms, with no bound of its own: a hang is the
+/// its row read runs before any reload is queued), and the last scheduled reload (`refreshTask`)
+/// has ended — the very task seen before waiting, not one that replaced it meanwhile
+/// (`scheduleRefresh` replaces it, and a wait on the old task returns at once). Polls every 20 ms, with no bound of its own: a hang is the
 /// test's `.timeLimit`, ending the wait through `CallUnderTest`, which records `neverCameBack`
 /// (E1 pattern); that includes the wait on `refreshTask`, which nothing else can end.
 ///
