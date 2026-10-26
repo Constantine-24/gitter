@@ -121,6 +121,118 @@ import Testing
         #expect(store.snapshotLoadCount - loads >= 1)
     }
 
+    // MARK: - A failed load-more (final review F1)
+
+    /// A failed load-more shows the usual banner, leaves the depth raised and clears its flag, so
+    /// the end row stops spinning; the next refresh lands the page the failure missed.
+    @Test(.timeLimit(.minutes(10))) func failedLoadMoreKeepsDepthAndClears() async throws {
+        let fixture = try DeepHistory.make()
+        defer { fixture.repo.remove() }
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(fixture.repo, backend: backend)
+        defer { cleanup() }
+        let failure = GitError.commandFailed(exitCode: 128, stderr: "injected by the test: the snapshot failed")
+        backend.fail(.snapshot, with: failure)
+
+        store.loadOlderCommits()
+        await waitUntilIdle(store)
+        #expect(store.lastError == RepositoryStore.describe(failure))
+        #expect(store.historyDepth == 1000)
+        #expect(!store.isLoadingOlderCommits)
+        #expect(!store.historyEndIsLoading)
+        #expect(store.snapshot?.commits.count == 500)
+        #expect(store.historyRows.rows.last == .end(.loading))
+
+        await store.refresh()
+        await waitUntilIdle(store)
+        #expect(store.snapshot?.commits.count == 1000)
+        #expect(store.lastError == nil)
+    }
+
+    /// The retry after a failure loads the page the snapshot lacks — 1000, not 1500.
+    @Test(.timeLimit(.minutes(10))) func retryAfterAFailureSkipsNoPage() async throws {
+        let fixture = try DeepHistory.make()
+        defer { fixture.repo.remove() }
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(fixture.repo, backend: backend)
+        defer { cleanup() }
+        backend.fail(.snapshot, with: GitError.commandFailed(exitCode: 128, stderr: "injected by the test"))
+        store.loadOlderCommits()
+        await waitUntilIdle(store)
+        #expect(store.historyDepth == 1000)
+        #expect(store.snapshot?.historyDepth == HistoryDepth.page)
+
+        store.loadOlderCommits()
+        #expect(store.isLoadingOlderCommits)
+        await waitUntilIdle(store)
+        #expect(store.historyDepth == 1000)
+        #expect(store.snapshot?.historyDepth == 1000)
+        #expect(store.snapshot?.commits.count == 1000)
+    }
+
+    /// At the cap with the snapshot short of it (the 49,500 → 50,000 load failed), the retry is
+    /// still allowed: it loads at the cap. Set directly — no 50,000-commit fixture. Control: with
+    /// the snapshot itself at the cap, nothing loads.
+    @Test(.timeLimit(.minutes(10))) func retryIsAllowedAtTheCap() async throws {
+        let fixture = try DeepHistory.make()
+        defer { fixture.repo.remove() }
+        let (store, cleanup) = await openedTestStore(fixture.repo)
+        defer { cleanup() }
+        store.setHistoryDepth(HistoryDepth.cap)
+        #expect(store.snapshot?.historyIsComplete == false)
+        let loads = store.snapshotLoadCount
+
+        store.loadOlderCommits()
+        #expect(store.isLoadingOlderCommits)
+        await waitUntilIdle(store)
+        #expect(store.snapshotLoadCount > loads)
+        #expect(store.historyDepth == HistoryDepth.cap)
+        #expect(store.snapshot?.historyDepth == HistoryDepth.cap)
+        #expect(store.snapshot?.commits.count == 1102)
+
+        // Control: the snapshot at the cap and incomplete — the store loads no further.
+        let capped = try #require(store.snapshot)
+        store.setSnapshot(
+            RepoSnapshot(
+                root: capped.root, status: capped.status, refs: capped.refs, commits: capped.commits,
+                graph: capped.graph, stashes: capped.stashes, historyDepth: HistoryDepth.cap, historyIsComplete: false))
+        let before = store.snapshotLoadCount
+        store.loadOlderCommits()
+        #expect(!store.isLoadingOlderCommits)
+        await waitUntilIdle(store)
+        #expect(store.snapshotLoadCount == before)
+    }
+
+    /// The end row spins only while a load reaching deeper runs — a load-more, or a reveal's deep
+    /// load — and not once it has landed.
+    @Test(.timeLimit(.minutes(10))) func endRowSpinsOnlyWhileLoading() async throws {
+        let fixture = try DeepHistory.make()
+        defer { fixture.repo.remove() }
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(fixture.repo, backend: backend)
+        defer { cleanup() }
+        defer { backend.releaseAll() }
+        #expect(!store.historyEndIsLoading)
+
+        let gate = backend.hold(.snapshot)
+        store.loadOlderCommits()
+        #expect(await waitUntil("the load-more parked") { gate.waiting })
+        #expect(store.historyEndIsLoading)
+        gate.release()
+        await waitUntilIdle(store)
+        #expect(!store.historyEndIsLoading)
+
+        // A reveal's deep load: no load-more flag, the depth ahead while the load runs.
+        let revealGate = backend.hold(.snapshot)
+        store.reveal(fixture.root)
+        #expect(await waitUntil("the reveal's load parked") { revealGate.waiting })
+        #expect(!store.isLoadingOlderCommits)
+        #expect(store.historyEndIsLoading)
+        revealGate.release()
+        await waitUntilIdle(store)
+        #expect(!store.historyEndIsLoading)
+    }
+
     // MARK: - Reveal
 
     @Test(.timeLimit(.minutes(10))) func revealSelectsAtOnceThenLoadsToTheRow() async throws {

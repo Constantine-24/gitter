@@ -16,13 +16,18 @@ extension RepositoryStore {
     /// the snapshot reloads. Nothing with no repository or a closed store, while the history is
     /// complete or no snapshot says otherwise yet, at the cap, or while a load-more is already
     /// queued or running. A failed load shows the usual banner and leaves the depth raised, so
-    /// the next scroll retries.
+    /// the next scroll retries — at that depth, not a page past it: while the depth is ahead of
+    /// the snapshot's, the call loads the page the snapshot lacks, at the cap too (F1). An
+    /// appearance during a reveal's deep load likewise joins that depth.
     func loadOlderCommits() {
-        guard root != nil, !isClosed, !isLoadingOlderCommits, let snapshot, !snapshot.historyIsComplete,
-            historyDepth < HistoryDepth.cap
+        guard root != nil, !isClosed, !isLoadingOlderCommits, let snapshot, !snapshot.historyIsComplete
         else { return }
+        let behind = historyDepth > snapshot.historyDepth
+        guard behind || historyDepth < HistoryDepth.cap else { return }
         setLoadingOlderCommits(true)
-        setHistoryDepth(min(historyDepth + HistoryDepth.page, HistoryDepth.cap))
+        if !behind {
+            setHistoryDepth(min(historyDepth + HistoryDepth.page, HistoryDepth.cap))
+        }
         let capturedGeneration = generation
         // Queued now, not from inside the task: a refresh between this call and the task's start
         // then shares this load instead of running one at the old depth's moment.
@@ -32,6 +37,16 @@ extension RepositoryStore {
             guard generation == capturedGeneration else { return }
             setLoadingOlderCommits(false)
         }
+    }
+
+    /// Whether the end row shows its spinner: a load reaching deeper is under way — a load-more,
+    /// or a load queued or running while the depth is ahead of the snapshot's (a reveal's). Not
+    /// after a failed load, which leaves the depth ahead with nothing loading: the row then says
+    /// "Loading older commits…" without a spinner, and its next appearance retries (F1).
+    var historyEndIsLoading: Bool {
+        if isLoadingOlderCommits { return true }
+        guard let snapshot, historyDepth > snapshot.historyDepth else { return false }
+        return isLoading || refreshIsQueued
     }
 
     // MARK: - Reveal

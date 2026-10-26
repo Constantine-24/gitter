@@ -150,7 +150,7 @@ struct CommitListView: View {
                         Text(commit.summary).lineLimit(1)
                     }
                 case .end(let end):
-                    EndRowCell(end: end) { store.loadOlderCommits() }
+                    EndRowCell(end: end, isLoading: { store.historyEndIsLoading }) { store.loadOlderCommits() }
                 }
             }
             .width(min: 180, ideal: 420)
@@ -227,24 +227,27 @@ struct CommitListView: View {
     }
 }
 
-/// The row after the last commit (H1): "Loading older commits…" with a small spinner while older
-/// commits may exist, and its appearing — scrolled to, or reached with ↓ / Page Down / End — loads
-/// the next page (`loadOlderCommits`, which runs one load at a time and nothing while complete or
-/// at the cap). "Start of history", or at the cap the line saying the list stops there, in
+/// The row after the last commit (H1): "Loading older commits…" while older commits may exist,
+/// with a small spinner only while a load reaching deeper runs (`historyEndIsLoading`: not after a
+/// failed load, F1), and its appearing — scrolled to, or with ⌥↓ — loads the next page
+/// (`loadOlderCommits`, which runs one load at a time, retries the page a failed load missed, and
+/// loads nothing while complete or at the cap). "Start of history", or at the cap the line saying the list stops there, in
 /// secondary text and loading nothing. Not a selection, and with no menu: the table's
 /// `forSelectionType` menu takes commits only.
 ///
-/// The load is handed in, not read from the environment: a `Table` cell does not always get the
+/// The load and its state are handed in, not read from the environment: a `Table` cell does not always get the
 /// window's environment objects — `@Environment(RepositoryStore.self)` here trapped ("No
 /// Observable object of type RepositoryStore found") the first time the row scrolled in, in the
 /// real app (H1 Task 3).
 private struct EndRowCell: View {
     let end: CommitRow.End
+    /// Read in this cell's own body, so only the cell redraws when it changes, not the table.
+    let isLoading: () -> Bool
     let loadOlder: () -> Void
 
     var body: some View {
         HStack(spacing: 6) {
-            if end.loadsMore {
+            if end.loadsMore, isLoading() {
                 ProgressView().controlSize(.small)
             }
             Text(end.text).foregroundStyle(.secondary)
