@@ -253,15 +253,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// window already up opens nothing (C2b, and the B4 probe), so a late SwiftUI window never gets a
     /// second one.
     @MainActor private static func askForAWindowIfNoneCame() {
-        guard launchNeedsWindow() else { return }
+        let launchHandled = AppModel.windows.launchHandled
+        let visible = visibleMainWindows()
+        // Once, so a launch left with no window and no ask below says why (the user's checklist).
+        if !launchHandled { AppLog.events.write("launch: \(visible) main windows visible, launch handled: false") }
+        guard WindowRegistry.launchNeedsWindow(launchHandled: launchHandled, visibleMainWindows: visible) else { return }
         DispatchQueue.main.async {
-            guard launchNeedsWindow() else { return }
+            guard
+                WindowRegistry.launchNeedsWindow(
+                    launchHandled: AppModel.windows.launchHandled, visibleMainWindows: visibleMainWindows())
+            else { return }
             let events = AppLog.events
             events.write("launch: no window, asking for one")
             Thread.detachNewThread {
                 var port = AEGetRegisteredMachPort()
-                let me = NSAppleEventDescriptor(
-                    descriptorType: DescType(typeMachPort), bytes: &port, length: MemoryLayout.size(ofValue: port))
+                guard
+                    let me = NSAppleEventDescriptor(
+                        descriptorType: DescType(typeMachPort), bytes: &port, length: MemoryLayout.size(ofValue: port))
+                else {
+                    events.write("launch: asking for a window failed: no descriptor for the app's Mach port")
+                    return
+                }
                 let reopen = NSAppleEventDescriptor(
                     eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEReopenApplication),
                     targetDescriptor: me, returnID: AEReturnID(kAutoGenerateReturnID),
@@ -275,10 +287,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @MainActor private static func launchNeedsWindow() -> Bool {
-        WindowRegistry.launchNeedsWindow(
-            launchHandled: AppModel.windows.launchHandled,
-            visibleMainWindows: NSApp.windows.filter { $0.isVisible && $0.canBecomeMain }.count)
+    /// The windows that count as a launch's window: on screen and able to be main. A normal launch
+    /// has one, the repository window; the input method's `TUINSWindow` (500×500, appearing later)
+    /// is neither visible nor able to be main, so it never counts (B4 Task 5 fix, measured).
+    @MainActor private static func visibleMainWindows() -> Int {
+        NSApp.windows.filter { $0.isVisible && $0.canBecomeMain }.count
     }
 
     /// The net: a quit event still held when the app goes is answered 0 before exit (A2b). And
