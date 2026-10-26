@@ -29,7 +29,7 @@ struct StashDetailView: View {
                 HStack(spacing: 6) {
                     Image(systemName: StashesSection.symbol(for: stash.kind))
                         .foregroundStyle(.secondary)
-                    Text(stash.message.isEmpty ? "stash@{\(stash.index)}" : stash.message)
+                    Text(StashWording.title(stash))
                         .font(.headline)
                         .textSelection(.enabled)
                 }

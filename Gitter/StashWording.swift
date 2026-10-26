@@ -20,10 +20,22 @@ enum StashWording {
         list(paths.map { "\"\($0)\"" })
     }
 
-    /// A stash in a sentence: its message in quotes, or its position when the message is empty.
-    static func name(_ stash: Stash) -> String {
-        stash.message.isEmpty ? "stash@{\(stash.index)}" : "\"\(stash.message)\""
+    /// What a stash is called, in the list, its header and every sentence: *named by what wrote
+    /// it*. The user's message is shown as they wrote it; a subject git wrote (`WIP on main:
+    /// 2153ff9 root`) or Gitter wrote (`Discarded by Gitter: a.txt`) is shown whole; an empty one
+    /// is its position.
+    static func title(_ stash: Stash) -> String {
+        let text = stash.isGitDefault ? stash.reflogSubject : stash.message
+        return text.isEmpty ? position(stash) : text
     }
+
+    /// A stash in a sentence: its title in quotes, or its position when it has no title.
+    static func name(_ stash: Stash) -> String {
+        let title = title(stash)
+        return title == position(stash) ? title : "\"\(title)\""
+    }
+
+    private static func position(_ stash: Stash) -> String { "stash@{\(stash.index)}" }
 
     /// The message a path-limited stash gets when the sheet's field was left empty: the files,
     /// unquoted, capped like `names`. (`stashPaths` files `On <branch>: <message>` and has no

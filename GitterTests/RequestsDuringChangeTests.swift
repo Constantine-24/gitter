@@ -200,10 +200,9 @@ import Testing
         await waitUntilIdle(store)
     }
 
-    /// The refusal is a sticky banner and it stays when the change ends (the same as every
-    /// request that was gated before; BACKLOG): what is on screen after the release is the
-    /// sentence, until it is dismissed.
-    @Test(.timeLimit(.minutes(10))) func theRefusalBannerStaysAfterTheChangeEnds() async throws {
+    /// The refusal is a sticky banner that says a change is running; it goes when that change
+    /// ends, since the sentence is then untrue. (Before B4 it stayed until dismissed.)
+    @Test(.timeLimit(.minutes(10))) func theRefusalBannerGoesWhenTheChangeEnds() async throws {
         let repo = try Self.repository()
         defer { repo.remove() }
         let (store, backend, gate, cleanup) = await Self.storeWithAHeldCommit(repo)
@@ -216,7 +215,81 @@ import Testing
         await waitUntilIdle(store)
 
         #expect(!store.isMutating)
+        #expect(store.lastError == nil)
+    }
+
+    /// A change that fails replaces the refusal with its own failure, as before.
+    @Test(.timeLimit(.minutes(10))) func aFailedChangeReplacesTheRefusalWithItsFailure() async throws {
+        let repo = try Self.repository()
+        defer { repo.remove() }
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        defer { backend.releaseAll() }
+        let gate = backend.hold(.commit)
+        let failure = GitError.commandFailed(exitCode: 1, stderr: "injected by the test: the commit was refused")
+        // `fail` is checked before `hold`, so it would end the commit before it parked: the
+        // failure comes from an `.after` hook, once the held commit has run.
+        backend.hook(.commit, .after) { throw failure }
+        store.draft.amend = true
+        store.draft.subject = "second"
+        store.commit()
+        await waitUntil("the commit parked") { gate.waiting }
+        store.requestNewBranch()
         #expect(store.lastError == RepositoryStore.changeRunningReason)
+
+        gate.release()
+        await waitUntilIdle(store)
+
+        #expect(store.lastError == RepositoryStore.describe(failure))
+    }
+
+    /// The refusal dismissed and another banner put up meanwhile: the end of the change leaves
+    /// the other one alone.
+    @Test(.timeLimit(.minutes(10))) func anotherBannerPutUpMeanwhileIsKept() async throws {
+        let repo = try Self.repository()
+        defer { repo.remove() }
+        let (store, backend, gate, cleanup) = await Self.storeWithAHeldCommit(repo)
+        defer { cleanup() }
+        defer { backend.releaseAll() }
+        store.requestNewBranch()
+        store.dismissError()
+        store.showStickyError("Some other trouble.")
+
+        gate.release()
+        await waitUntilIdle(store)
+
+        #expect(store.lastError == "Some other trouble.")
+    }
+
+    /// The older refusals share the sentence, so they go the same way: Add Remote's confirm,
+    /// refused during the held commit (its sheet stays up for another try).
+    @Test(.timeLimit(.minutes(10))) func aRemoteAdminRefusalIsClearedToo() async throws {
+        let repo = try Self.repository()
+        defer { repo.remove() }
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        defer { backend.releaseAll() }
+        store.requestAddRemote()
+        guard case .addRemote = store.activeSheet else {
+            Issue.record("Add Remote did not open: \(String(describing: store.activeSheet))")
+            return
+        }
+        let gate = backend.hold(.commit)
+        store.draft.amend = true
+        store.draft.subject = "second"
+        store.commit()
+        await waitUntil("the commit parked") { gate.waiting }
+
+        store.confirmAddRemote(name: "other", url: "/nowhere", fetchAfter: false)
+        #expect(store.lastError == RemoteWording.mutationBusy)
+        #expect(store.activeSheet != nil)
+
+        gate.release()
+        await waitUntilIdle(store)
+
+        #expect(store.lastError == nil)
     }
 
     /// The remote branch menu's Rebase item reads this: off while a change runs, with the same

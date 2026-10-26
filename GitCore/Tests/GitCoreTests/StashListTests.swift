@@ -45,6 +45,7 @@ import Testing
         #expect(stashes.map(\.reflogSubject) == ["On main: second", "On main: first"])
         #expect(stashes.map(\.branch) == ["main", "main"])
         #expect(stashes.map(\.kind) == [.user, .user])
+        #expect(stashes.map(\.isGitDefault) == [false, false])
         #expect(stashes[0].sha == (try await repo.revParse("stash@{0}")))
         #expect(stashes[1].sha == (try await repo.revParse("stash@{1}")))
         #expect(stashes[0].id == stashes[0].sha)
@@ -72,6 +73,20 @@ import Testing
         #expect(stash.branch == "main")
         #expect(stash.message.hasSuffix(" root"))
         #expect(stash.message.hasPrefix(String(short.prefix(7))))
+        #expect(stash.isGitDefault)
+    }
+
+    @Test func aUserMessageThatLooksLikeGitsDefaultIsStillTheUsers() async throws {
+        let repo = try await makeRepo()
+        defer { repo.cleanUp() }
+        try repo.write("a.txt", "two\n")
+        try await repo.git(["stash", "push", "-q", "-m", "WIP on x: y"])
+
+        let stash = try #require(try await CLIGitBackend().stashes(at: repo.root).first)
+
+        #expect(stash.reflogSubject == "On main: WIP on x: y")
+        #expect(stash.message == "WIP on x: y")
+        #expect(!stash.isGitDefault)
     }
 
     @Test func aStashOnADetachedHeadHasNoBranch() async throws {

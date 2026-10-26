@@ -35,6 +35,24 @@ import Testing
         #expect(StashWording.name(Self.stash("On main: ", index: 2)) == "stash@{2}")
     }
 
+    @Test func aTitleIsWhatWroteTheStashShownAsItWasWritten() {
+        #expect(StashWording.title(Self.stash("WIP on main: 2153ff9 root")) == "WIP on main: 2153ff9 root")
+        #expect(StashWording.title(Self.stash("On main: fix")) == "fix")
+        #expect(StashWording.title(Self.stash("Discarded by Gitter: a.txt")) == "Discarded by Gitter: a.txt")
+        #expect(StashWording.title(Self.stash("On main: ", index: 3)) == "stash@{3}")
+        // The user's own words, even when they look like git's: the prefix is `On main: `.
+        #expect(StashWording.title(Self.stash("On main: WIP on x: y")) == "WIP on x: y")
+    }
+
+    @Test func aGitDefaultStashIsNamedByItsWholeSubjectInASentence() {
+        #expect(
+            StashWording.name(Self.stash("WIP on main: 2153ff9 root")) == "\"WIP on main: 2153ff9 root\"")
+        #expect(
+            StashWording.pushOutcome(
+                .saved(Self.stash("WIP on main: 2153ff9 root")), includeUntracked: false, onlySelected: false)
+                == "Your changes are in stash \"WIP on main: 2153ff9 root\".")
+    }
+
     // MARK: - Push outcomes
 
     @Test func savedSaysWhereTheChangesAre() {

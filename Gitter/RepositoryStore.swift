@@ -926,6 +926,11 @@ final class RepositoryStore {
                 stashAndContinueOffer = offered.offer
                 stashAndContinueBanner = lastError
             }
+        } else if lastError == RemoteWording.mutationBusy {
+            // A refusal that said a change was running, put up while this one ran (every gated
+            // request shares the sentence): the change has ended, so the sentence is no longer true.
+            lastError = nil
+            errorIsSticky = false
         }
         isMutating = false
     }

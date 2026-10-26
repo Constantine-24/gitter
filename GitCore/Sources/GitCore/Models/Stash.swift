@@ -41,6 +41,14 @@ public struct Stash: Sendable, Hashable, Identifiable {
         reflogSubject.hasPrefix(Self.discardPrefix) ? .discarded : .user
     }
 
+    /// Whether git wrote the subject itself: a plain `git stash` (no message) files
+    /// `WIP on <branch>: <short sha> <commit subject>`, whose remainder is a commit line, not
+    /// anything a person wrote. An `On <branch>: …` entry is a person's message, even one that
+    /// starts with "WIP on".
+    public var isGitDefault: Bool {
+        reflogSubject.hasPrefix(Self.wipPrefix) && splitPrefix() != nil
+    }
+
     public var hasUntrackedPart: Bool { parents.count == 3 }
 
     /// The branch the entry was made on, from `On <branch>: ` or `WIP on <branch>: `. Nil for a
@@ -58,6 +66,7 @@ public struct Stash: Sendable, Hashable, Identifiable {
     }
 
     private static let detached = "(no branch)"
+    private static let wipPrefix = "WIP on "
 
     private func splitPrefix() -> (branch: String, message: String)? {
         for prefix in ["On ", "WIP on "] where reflogSubject.hasPrefix(prefix) {

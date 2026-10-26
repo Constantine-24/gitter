@@ -36,7 +36,7 @@ struct StashesSection: View {
                 Image(systemName: Self.symbol(for: stash.kind))
                     .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(stash.message.isEmpty ? "stash@{\(stash.index)}" : stash.message)
+                    Text(StashWording.title(stash))
                         .fontWeight(store.selection == .stash(stash.sha) ? .semibold : .regular)
                         .lineLimit(1)
                         .truncationMode(.tail)
