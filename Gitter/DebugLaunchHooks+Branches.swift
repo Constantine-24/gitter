@@ -100,6 +100,7 @@
     ///     compareselect:<id|changes>   comparepath:<path>           compareswap
     ///     comparerefresh               comparedone                  comparemenu
     ///     comparecopy:<id>             sidebarclick:<branch>        reload
+    ///     loadolder                    reveal:<branch|tag|id>
     ///     addworktree[:<b>]            folderproblem:<path>         confirmaddworktree:<kind>:…:<path>
     ///     removeworktree:<folder>      removeworktreestart:<folder> removeallmissing
     ///     worktreesheet                confirmremoveworktree[:none|:<name>]  noticeopen

@@ -121,6 +121,9 @@ enum HistoryWording {
     static let loadingOlder = "Loading older commits…"
     /// The end row once the history is complete.
     static let startOfHistory = "Start of history"
+    /// The end row at `HistoryDepth.cap` with older commits left (Ruling 5): nothing more loads.
+    /// The number is written out, as in `beyondCap`.
+    static let capReached = "The list stops at 50,000 commits; older ones aren't loaded."
 
     /// A reveal of a commit no branch, tag or HEAD reaches (a stash's): it stays selected.
     static func notInHistory(shortSha: String) -> String {

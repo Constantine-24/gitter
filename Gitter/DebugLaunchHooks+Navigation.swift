@@ -62,6 +62,21 @@
     ///   reload                     a snapshot load (what the watcher would start), then
     ///                              `comparestate`.
     ///
+    ///   With no comparison, `comparestate`'s line is the history line: `depth=<n>
+    ///   complete=<bool>`, the store's depth, the rows, the end row's state and how often its cell
+    ///   appeared and disappeared (H1).
+    ///
+    /// H1 Task 3's history depth:
+    ///
+    ///   loadolder                  one `loadOlderCommits()` (one page, what the end row appearing
+    ///                              does), waited until it lands, then a frame and
+    ///                              `loadolder: … | <history line>` with the time it took.
+    ///   reveal:<branch|tag|id>     a sidebar row's click on that commit (`selectFromSidebar`, which
+    ///                              reveals one that isn't loaded), waited until the table has
+    ///                              scrolled to it or a notice ended it, then `reveal …` with
+    ///                              whether it was selected at once, `pendingReveal`, the times,
+    ///                              the selection, the notice, the header and the history line.
+    ///
     /// B3 Task 5's worktree sheets. The harness cannot type into or click inside a sheet, so the
     /// confirms are driven through the store's own `confirm…`, which refuses without its sheet on
     /// screen — each step opens the sheet first, as a user does:
@@ -118,8 +133,14 @@
 
         static let navigationCommands: Set<String> = Set([
             "filter", "sidebar", "worktrees", "worktreemenu", "openworktree", "pills", "watchloads", "firstresponder",
-            "reloadtiming", "newwindow", "inwindow", "closewindow",
+            "reloadtiming", "newwindow", "inwindow", "closewindow", "loadolder", "reveal",
         ]).union(compareCommands).union(worktreeSheetCommands)
+
+        /// How often the end row's cell appeared and disappeared (`CommitListView`'s `EndRowCell`):
+        /// whether `Table` fires its `onAppear` again when a load lands with the row still on
+        /// screen (H1 Task 3, the tall window). Logged by the history line.
+        static var endRowAppearances = 0
+        static var endRowDisappearances = 0
 
         private static let worktreeSheetCommands: Set<String> = [
             "addworktree", "folderproblem", "confirmaddworktree", "removeworktree", "removeworktreestart",
@@ -190,6 +211,8 @@
                 target = chosen
                 log("inwindow: \(n) -> \(describeStore(chosen))")
             case "closewindow": await closeWindow(store)
+            case "loadolder": await loadOlder(store)
+            case "reveal": await reveal(rest, store: store)
             case let compare where compareCommands.contains(compare):
                 await compareStep(command, rest: rest, store: store)
             case let sheet where worktreeSheetCommands.contains(sheet):
@@ -294,6 +317,63 @@
             }
             _ = await wait({ !store.isMutating && !store.isReadingWorktreeState }, seconds: 60, what: "confirmremoveworktree: the removal and the worktree read")
             logOutcome(store)
+        }
+
+        // MARK: - History's depth (H1 Task 3)
+
+        /// `loadolder`: one `loadOlderCommits()` — what the end row appearing does — waited until
+        /// it lands (it claims no mutation slot, so the step list's own wait would not), then a
+        /// frame and the history line. Timed from the call to the rows set.
+        private static func loadOlder(_ store: RepositoryStore) async {
+            let clock = ContinuousClock()
+            let before = store.historyDepth
+            let start = clock.now
+            store.loadOlderCommits()
+            let started = store.isLoadingOlderCommits
+            _ = await wait({ !store.isLoadingOlderCommits }, seconds: 120, what: "loadolder: the load to land")
+            let landed = clock.now - start
+            try? await Task.sleep(for: .milliseconds(300))
+            log("loadolder: started: \(started) | depth \(before) -> \(store.historyDepth) | landed after "
+                + "\(Int(landed / .milliseconds(1))) ms | \(historyLine(store))")
+        }
+
+        /// `reveal:<branch|tag|full id>`: a sidebar row's click on that commit (`selectFromSidebar`,
+        /// which reveals it), waited until the reveal's row read and load have run and the table has
+        /// scrolled to it (`pendingReveal` back to nil, which only the table's scroll does for a
+        /// commit found) or a notice ended it; timed from the click.
+        private static func reveal(_ name: String, store: RepositoryStore) async {
+            let sha =
+                store.localBranches.first { $0.name == name }?.sha
+                ?? store.snapshot?.refs.tags.first { $0.name == name }?.sha
+                ?? ((name.count == 40 || name.count == 64) && name.allSatisfy(\.isHexDigit) ? name : nil)
+            guard let sha else { return log("reveal: no branch, tag or full id \(name)") }
+            let clock = ContinuousClock()
+            let wasLoaded = store.historyRows.isLoaded(sha)
+            let start = clock.now
+            store.selectFromSidebar(.commit(sha))
+            let selectedAt = store.selection == .commit(sha)
+            await store.revealTask?.value
+            let loadedAt = clock.now - start
+            _ = await wait({ store.pendingReveal == nil }, seconds: 60, what: "reveal: the table's scroll to the row")
+            let scrolledAt = clock.now - start
+            await settleDetail(store)
+            func ms(_ duration: Duration) -> Int { Int(duration / .milliseconds(1)) }
+            log("reveal \(name) \(sha.prefix(7)): loaded before: \(wasLoaded) | selected at once: \(selectedAt) "
+                + "| loaded now: \(store.historyRows.isLoaded(sha)) | pendingReveal: \(store.pendingReveal ?? "nil") "
+                + "| read+load \(ms(loadedAt)) ms, scrolled \(ms(scrolledAt)) ms | selection: \(store.selection) "
+                + "| notice: \(store.notice.map { flatten($0.text) } ?? "nil") | header commit: \(selectedCommitLine(store)) "
+                + "| \(historyLine(store))")
+        }
+
+        /// The history's depth as the table has it: `depth=<n> complete=<bool>`, the rows, the end
+        /// row's state and how often its cell appeared and disappeared.
+        static func historyLine(_ store: RepositoryStore) -> String {
+            let end: String =
+                if case .end(let end) = store.historyRows.rows.last { "\(end)" } else { "none" }
+            return "depth=\(store.snapshot?.historyDepth ?? 0) complete=\(store.snapshot?.historyIsComplete ?? false) "
+                + "| store depth: \(store.historyDepth) | rows: \(store.snapshot?.commits.count ?? 0) | end row: \(end) "
+                + "| loading older: \(store.isLoadingOlderCommits) | graph width: \(store.historyRows.graphWidth) "
+                + "| end row appeared \(endRowAppearances), disappeared \(endRowDisappearances)"
         }
 
         /// The notices and banner after a write, and the worktrees git lists now.
@@ -489,7 +569,7 @@
         private static func logCompare(_ store: RepositoryStore) {
             guard let c = store.comparison else {
                 log("compare: none | selection: \(store.selection) | error: \(store.lastError.map(flatten) ?? "nil") "
-                    + "| history rows shown: \(store.snapshot?.commits.count ?? 0)")
+                    + "| history rows shown: \(store.snapshot?.commits.count ?? 0) | \(historyLine(store))")
                 return
             }
             let staleness = store.comparisonStaleness

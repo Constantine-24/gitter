@@ -28,7 +28,7 @@ import Testing
         #expect(!store.isLoadingOlderCommits)
         #expect(store.historyDepth == 1000)
         #expect(store.snapshot?.commits.count == 1000)
-        #expect(store.historyRows.rows.last == .end(complete: false))
+        #expect(store.historyRows.rows.last == .end(.loading))
 
         await store.refresh()
         await waitUntilIdle(store)
@@ -76,13 +76,13 @@ import Testing
         let (store, cleanup) = await openedTestStore(repo)
         defer { cleanup() }
         #expect(store.snapshot?.historyIsComplete == false)
-        #expect(store.historyRows.rows.last == .end(complete: false))
+        #expect(store.historyRows.rows.last == .end(.loading))
 
         store.loadOlderCommits()
         await waitUntilIdle(store)
         #expect(store.snapshot?.historyIsComplete == true)
         #expect(store.snapshot?.commits.count == 600)
-        #expect(store.historyRows.rows.last == .end(complete: true))
+        #expect(store.historyRows.rows.last == .end(.complete))
 
         let loads = store.snapshotLoadCount
         store.loadOlderCommits()

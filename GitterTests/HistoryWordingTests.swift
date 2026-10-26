@@ -534,5 +534,8 @@ import Testing
             == "1a2b3c4 isn't in the history list: no branch, tag or HEAD reaches it.")
         #expect(HistoryWording.beyondCap(shortSha: "1a2b3c4")
             == "1a2b3c4 is more than 50,000 commits back, past what the history list loads.")
+        #expect(HistoryWording.capReached == "The list stops at 50,000 commits; older ones aren't loaded.")
+        // Both sentences write the cap out as "50,000": it is pinned here so they can't drift.
+        #expect(HistoryDepth.cap == 50_000)
     }
 }

@@ -19,14 +19,15 @@ import Testing
     }
 
     static func snapshot(
-        commits: [Commit], graph: [GraphRow] = [], files: [FileStatus] = [], complete: Bool = true
+        commits: [Commit], graph: [GraphRow] = [], files: [FileStatus] = [], complete: Bool = true,
+        depth: Int = HistoryDepth.page
     ) -> RepoSnapshot {
         RepoSnapshot(
             root: URL(fileURLWithPath: "/nonexistent"),
             status: WorkingCopyStatus(
                 headSha: commits.first?.sha, branch: "main", upstream: nil, ahead: 0, behind: 0, files: files),
             refs: RefCollection(localBranches: [], remoteBranches: [], tags: []),
-            commits: commits, graph: graph, historyIsComplete: complete)
+            commits: commits, graph: graph, historyDepth: depth, historyIsComplete: complete)
     }
 
     // MARK: - Pure
@@ -39,13 +40,55 @@ import Testing
 
         let complete = HistoryRows.build(Self.snapshot(commits: [Self.commit(Self.a)]), previousWidth: nil)
         #expect(complete.rows.count == 2)
-        #expect(complete.rows.last == .end(complete: true))
+        #expect(complete.rows.last == .end(.complete))
         #expect(complete.shas == [.commit(Self.a)])
 
         let more = HistoryRows.build(
             Self.snapshot(commits: [Self.commit(Self.a)], complete: false), previousWidth: nil)
-        #expect(more.rows.last == .end(complete: false))
+        #expect(more.rows.last == .end(.loading))
         #expect(more.rows.last?.id == .historyEnd)
+    }
+
+    /// Ruling 5: at the cap with older commits left, the end row says the list stops there — not
+    /// "Loading…" forever, since the store loads no further — and triggers nothing. A history that
+    /// ends exactly at the cap is complete, and one short of the cap still loads.
+    @Test func theEndRowHasThreeStates() {
+        let one = [Self.commit(Self.a)]
+        func end(complete: Bool, depth: Int) -> CommitRow? {
+            HistoryRows.build(Self.snapshot(commits: one, complete: complete, depth: depth), previousWidth: nil)
+                .rows.last
+        }
+        #expect(end(complete: false, depth: HistoryDepth.page) == .end(.loading))
+        #expect(end(complete: false, depth: HistoryDepth.cap - HistoryDepth.page) == .end(.loading))
+        #expect(end(complete: true, depth: HistoryDepth.page) == .end(.complete))
+        #expect(end(complete: true, depth: HistoryDepth.cap) == .end(.complete))
+        #expect(end(complete: false, depth: HistoryDepth.cap) == .end(.capped))
+
+        #expect(CommitRow.End.loading.loadsMore)
+        #expect(!CommitRow.End.complete.loadsMore)
+        #expect(!CommitRow.End.capped.loadsMore)
+        #expect(CommitRow.End.loading.text == HistoryWording.loadingOlder)
+        #expect(CommitRow.End.complete.text == HistoryWording.startOfHistory)
+        #expect(CommitRow.End.capped.text == HistoryWording.capReached)
+    }
+
+    /// Ruling 6: the table scrolls for a reveal once its row is loaded, and only then — handled
+    /// before the row is in, the store would drop the deep load.
+    @Test func aRevealScrollsOnlyOnceItsRowIsLoaded() {
+        let rows = HistoryRows.build(Self.snapshot(commits: [Self.commit(Self.a)]), previousWidth: nil)
+        #expect(rows.revealTarget(Self.a) == .commit(Self.a))
+        #expect(rows.revealTarget(Self.b) == nil)
+        #expect(rows.revealTarget(nil) == nil)
+        #expect(HistoryRows.empty.revealTarget(Self.a) == nil)
+    }
+
+    /// Ruling 6: the selection's own scroll skips the commit a reveal is for — the reveal's path
+    /// scrolls to it — so a reveal never scrolls twice; any other selection still scrolls.
+    @Test func theSelectionScrollLeavesAPendingRevealToItsOwnPath() {
+        #expect(!HistoryRows.selectionScrolls(to: .commit(Self.a), pendingReveal: Self.a))
+        #expect(HistoryRows.selectionScrolls(to: .commit(Self.a), pendingReveal: nil))
+        #expect(HistoryRows.selectionScrolls(to: .commit(Self.a), pendingReveal: Self.b))
+        #expect(HistoryRows.selectionScrolls(to: .workingCopy, pendingReveal: Self.a))
     }
 
     /// The working-copy row, the commits with their graph rows, the end row; `shas` is every

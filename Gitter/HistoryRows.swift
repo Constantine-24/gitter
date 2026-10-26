@@ -2,12 +2,32 @@ import CoreGraphics
 import GitCore
 
 /// One line of the commit table: the synthetic working-copy row, a commit, or the end row after
-/// the last commit (H1) — "Loading older commits…" while there may be more, "Start of history"
-/// once there is none.
+/// the last commit (H1, `End`).
 enum CommitRow: Identifiable, Hashable {
     case workingCopy(changeCount: Int)
     case commit(Commit, GraphRow?, hasIncomingEdge: Bool)
-    case end(complete: Bool)
+    case end(End)
+
+    /// What the end row says, and whether its appearing loads the next page.
+    enum End: Hashable {
+        /// Older commits may exist: "Loading older commits…", and the next page loads as it shows.
+        case loading
+        /// git has nothing older: "Start of history".
+        case complete
+        /// The list is at `HistoryDepth.cap` with older commits left (Ruling 5): the store loads
+        /// no further, so the row says so instead of "Loading…" forever, and loads nothing.
+        case capped
+
+        var loadsMore: Bool { self == .loading }
+
+        var text: String {
+            switch self {
+            case .loading: HistoryWording.loadingOlder
+            case .complete: HistoryWording.startOfHistory
+            case .capped: HistoryWording.capReached
+            }
+        }
+    }
 
     var id: Selection {
         switch self {
@@ -76,8 +96,33 @@ struct HistoryRows: Equatable {
         }
         let shas = rows.map(\.id)
         if !snapshot.commits.isEmpty {
-            rows.append(.end(complete: snapshot.historyIsComplete))
+            rows.append(.end(end(of: snapshot)))
         }
         return HistoryRows(rows: rows, graphWidth: width, shas: shas, loaded: loaded, merges: merges)
+    }
+
+
+    /// The end row's state for `snapshot`: complete when git had nothing older, capped when the
+    /// depth is at `HistoryDepth.cap` with older commits left, loading otherwise.
+    private static func end(of snapshot: RepoSnapshot) -> CommitRow.End {
+        if snapshot.historyIsComplete { return .complete }
+        return snapshot.historyDepth >= HistoryDepth.cap ? .capped : .loading
+    }
+
+    // MARK: - The table's scrolls (Ruling 6)
+
+    /// The row a pending reveal (`RepositoryStore.pendingReveal`) scrolls to: its commit's, once
+    /// that is loaded — nil before, so the reveal is not handled while its deep load still runs.
+    func revealTarget(_ pendingReveal: String?) -> Selection? {
+        guard let pendingReveal, isLoaded(pendingReveal) else { return nil }
+        return .commit(pendingReveal)
+    }
+
+    /// Whether a new selection scrolls the table through the selection's own path: not for the
+    /// commit a reveal is pending for, which the reveal's path scrolls to (`revealTarget`), so a
+    /// reveal never scrolls twice.
+    static func selectionScrolls(to selection: Selection, pendingReveal: String?) -> Bool {
+        guard let pendingReveal else { return true }
+        return selection != .commit(pendingReveal)
     }
 }

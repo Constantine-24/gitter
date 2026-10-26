@@ -57,6 +57,12 @@ struct CommitListView: View {
                     let clickedInTable = newValue == selectedInTable
                     selectedInTable = nil
                     guard !clickedInTable else { return }
+                    // A reveal's commit is scrolled to by the reveal's own path below, once its
+                    // row is in (Ruling 6): scrolling here too would scroll twice — or, for a
+                    // commit not loaded yet, to a row that isn't there.
+                    guard HistoryRows.selectionScrolls(to: newValue, pendingReveal: store.pendingReveal) else {
+                        return
+                    }
                     // `x: 0` rather than `.center`: the columns are wider than the pane, and
                     // centring on both axes pushed the Summary column off to the left until
                     // only Author was readable. This keeps the leading edge where it is and
@@ -71,7 +77,20 @@ struct CommitListView: View {
                     // animation given 20 s to settle.
                     withAnimation { proxy.scrollTo(newValue, anchor: UnitPoint(x: 0, y: 0.5)) }
                 }
+                // A reveal (`RepositoryStore.reveal`, a sidebar click or Done): the selection
+                // was made before its row was loaded, so the scroll waits for the row — the deep
+                // load landing, or at once for a commit already loaded — and only then is the
+                // reveal handled. Handled earlier, the store would drop the load (Ruling 6).
+                .onChange(of: store.historyRows) { scrollToReveal(proxy) }
+                .onChange(of: store.pendingReveal) { scrollToReveal(proxy) }
         }
+    }
+
+    private func scrollToReveal(_ proxy: ScrollViewProxy) {
+        guard let pending = store.pendingReveal, let row = store.historyRows.revealTarget(pending) else { return }
+        // The same anchor as the selection's scroll above, for the same reasons.
+        withAnimation { proxy.scrollTo(row, anchor: UnitPoint(x: 0, y: 0.5)) }
+        store.revealHandled(pending)
     }
 
     @ViewBuilder
@@ -130,10 +149,8 @@ struct CommitListView: View {
                         }
                         Text(commit.summary).lineLimit(1)
                     }
-                case .end(let complete):
-                    // Its own look, and the load-more it triggers, are H1 Task 3's.
-                    Text(complete ? HistoryWording.startOfHistory : HistoryWording.loadingOlder)
-                        .foregroundStyle(.secondary)
+                case .end(let end):
+                    EndRowCell(end: end) { store.loadOlderCommits() }
                 }
             }
             .width(min: 180, ideal: 420)
@@ -207,6 +224,40 @@ struct CommitListView: View {
                 if store.selection != before { selectedInTable = store.selection }
             }
         )
+    }
+}
+
+/// The row after the last commit (H1): "Loading older commits…" with a small spinner while older
+/// commits may exist, and its appearing — scrolled to, or reached with ↓ / Page Down / End — loads
+/// the next page (`loadOlderCommits`, which runs one load at a time and nothing while complete or
+/// at the cap). "Start of history", or at the cap the line saying the list stops there, in
+/// secondary text and loading nothing. Not a selection, and with no menu: the table's
+/// `forSelectionType` menu takes commits only.
+///
+/// The load is handed in, not read from the environment: a `Table` cell does not always get the
+/// window's environment objects — `@Environment(RepositoryStore.self)` here trapped ("No
+/// Observable object of type RepositoryStore found") the first time the row scrolled in, in the
+/// real app (H1 Task 3).
+private struct EndRowCell: View {
+    let end: CommitRow.End
+    let loadOlder: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if end.loadsMore {
+                ProgressView().controlSize(.small)
+            }
+            Text(end.text).foregroundStyle(.secondary)
+        }
+        .onAppear {
+            #if DEBUG
+                DebugLaunchHooks.endRowAppearances += 1
+            #endif
+            if end.loadsMore { loadOlder() }
+        }
+        #if DEBUG
+            .onDisappear { DebugLaunchHooks.endRowDisappearances += 1 }
+        #endif
     }
 }
 

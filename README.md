@@ -28,7 +28,8 @@ removed, a removal only behind a check of what it would delete.
 
 ## What it can do
 
-- Browse commit history with a lane graph (gitk-style)
+- Browse commit history with a lane graph (gitk-style), all the way to the first commit: older
+  commits load as you scroll
 - View diffs of a commit, or of the working copy, with wrapping long lines
 - Stage and unstage whole files, individual hunks, or a hand-picked set of lines
 - Commit, amend the last commit, or commit every tracked change in one step
@@ -598,6 +599,17 @@ Prune, clean-up, rename and remove are not yet waited for by quitting (see the b
 
 ### Navigation
 
+**History.** The list opens with the newest 500 commits and loads the next 500 as you scroll to
+its end — or reach it with ↓, Page Down or ⌥↓ — with a "Loading older commits…" row at the
+bottom meanwhile; the graph carries on across each join, and the last row says "Start of
+history" once git has nothing older. A refresh (a fetch, a commit, a checkout, a change on disk)
+keeps every row already loaded, and another repository opens at 500 again. A click on a branch,
+tag or deleted tag in the sidebar whose commit isn't loaded yet selects it at once (its header
+and files show straight away), loads down to it and scrolls to it; one no branch, tag or HEAD
+reaches (a stash's) stays selected with a notice saying so. The list stops at 50,000 commits —
+its last row then says so, and a click on a commit further back selects it with a notice — so a
+very large repository never loads everything at once.
+
 **Filter.** ⌘F (Edit › Filter Sidebar) puts the cursor in the field at the top of the sidebar.
 Local branches, remote branches and tags narrow as you type: every word you type must appear,
 case and accents ignored (`cafe` finds `Café-menu`), and a remote branch matches as
@@ -882,7 +894,7 @@ window closed while its push is still running (a push held by a `receivepack` sc
 test lets it go) are tested the same way.
 
 **A test backend over real git.** `TestBackend` (GitterTests) forwards every one of the twelve
-backend protocols' 102 calls to a real `CLIGitBackend` on the test's scratch repository, and lets a
+backend protocols' 104 calls to a real `CLIGitBackend` on the test's scratch repository, and lets a
 test act at any one call: run code before or after it (`hook`), make the next one throw without
 running git (`fail`), park the next one until the test lets it go (`hold`, on a `StuckCall`),
 replace the stash pop with one that changes the repository between its apply and its drop
@@ -1194,6 +1206,7 @@ Gitter/                   macOS app (SwiftUI)
                                   the composer's prefill
   RepositoryStore+History.swift   The commit set, cherry-pick, revert, rebase onto: plan, sheet,
                                   run, notices
+  RepositoryStore+Depth.swift     History's depth: load older commits, reveal one not loaded
   RepositoryStore+Tags.swift      New, delete, restore, push and remote-delete a tag; the
                                   deleted tags' receipts
   RepositoryStore+RemoteAdmin.swift  Prune, clean-up, push / fast-forward another branch,
@@ -1223,6 +1236,8 @@ Gitter/                   macOS app (SwiftUI)
   ConflictWording.swift      Every sentence of the resolver and its sheets; side labels
   ContinueWording.swift      Every sentence of the operation bar, Continue, Skip and the
                               halted and stale ranges
+  HistoryRows.swift          The commit table's rows, built once per snapshot, with the end
+                             row and the graph column's width (H1)
   HistoryWording.swift       Every sentence of the cherry-pick, revert and rebase sheets,
                               refusals and notices
   TagWording.swift           Every sentence about a tag; the rows, the pills, the receipts
@@ -1454,6 +1469,7 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `comparesheet` / `comparefilter:<text>` / `confirmcompare:<a>:<b>` | Compare Branches…'s presets and options, the options a filter leaves, and its Compare with those refs |
 | `compareselect:<id\|changes>` / `comparepath:<path>` / `compareswap` / `comparerefresh` / `comparedone` / `comparemenu` / `comparecopy:<id>` | click a commit or the changes row, a file of the changes; Swap, Refresh, Done; log every branch's compare items with their reasons; Copy Commit ID onto a private pasteboard, read back |
 | `sidebarclick:<branch>` / `reload` | a sidebar branch row's click (which ends compare mode); a snapshot load, as the watcher would start one |
+| `loadolder` / `reveal:<branch\|tag\|id>` | one page more of History (what the end row scrolling in does), waited and timed; a sidebar click on that commit, waited until the table has scrolled to it or a notice ended the reveal, with whether it was selected at once and the times. Both log the history line, `depth=<n> complete=<bool>` with the end row's state, which `comparestate` logs too with no comparison |
 | `addworktree[:<b>]` / `folderproblem:<path>` / `confirmaddworktree:existing:<b>:<path>` (or `new:<name>:<start>:<path>`, `tracking:<name>:<remote ref>:<path>`) | Add Worktree… and what it offers; the folder field's live check for that text; and **acts**: its Add with that choice — the sheet's own controls are `press:`, `tick:`, `fill:` and `choose:` — then the notice or banner and the worktree list |
 | `removeworktree:<folder>` / `removeworktreestart:<folder>` / `removeallmissing` / `worktreesheet` / `confirmremoveworktree[:none\|:<name>]` | Remove Worktree… (after the check, or at once so the progress state can be shot), Remove All Missing…, the sheet's every line; and **acts**: its button with the keep boxes as they start, none, or the one kept as `<name>` |
 | `noticeopen` | the sticky notice's **Open** after an add (routed like Open Worktree); the launch guard then refuses the rest, and the app quits |
@@ -1535,6 +1551,12 @@ Finds its way around (milestone B3): filters the sidebar's branches and tags as 
 compares two branches — the commits only on each side and the changes one brings, from ids read
 once — and lists, opens, adds and removes worktrees, a removal only behind Gitter's own check of
 what git would delete, made again before git runs.
+
+Shows the whole history (milestone H1): older commits load 500 at a time as you scroll, to the
+first commit and a "Start of history" row, every refresh keeps the depth, and a sidebar click on
+an old branch or tag loads down to it, selects it and scrolls to it — up to 50,000 commits back.
+Reading the log is faster at every depth: a refresh of the newest 500 on a 100,000-commit
+repository went from 0.32 s to 0.26 s.
 
 Its tests are green on their first run (milestone E1): the GitCore gate is capped and the tests
 pass uncapped too, no test has a wall-clock upper bound that load can exceed, a test signals only
