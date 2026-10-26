@@ -53,7 +53,7 @@ extension RepositoryStore {
         setPendingReveal(sha)
         revealTask?.cancel()
         revealTask = nil
-        guard let root, !isClosed, !historyRows.shas.contains(.commit(sha)) else { return }
+        guard let root, !isClosed, !historyRows.isLoaded(sha) else { return }
         let capturedGeneration = generation
         revealTask = Task {
             let row: Int?

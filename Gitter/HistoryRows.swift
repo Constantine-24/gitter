@@ -32,6 +32,13 @@ struct HistoryRows: Equatable {
     /// The selectable rows' ids in the order shown — the working copy and the commits, not the end
     /// row: the `shown` order `CommitSelection` takes, and what "is this commit loaded" asks.
     let shas: [Selection]
+    /// The loaded commits' shas, for "is this commit loaded" in O(1) (`isLoaded`).
+    let loaded: Set<String>
+    /// The loaded merge commits' shas: the menus' merge test (`historyBlockedReason`).
+    let merges: Set<String>
+
+    /// Whether `sha` is one of the loaded commits.
+    func isLoaded(_ sha: String) -> Bool { loaded.contains(sha) }
 
     /// No snapshot: no rows.
     static let empty = HistoryRows.build(nil, previousWidth: nil)
@@ -39,7 +46,9 @@ struct HistoryRows: Equatable {
     static func build(_ snapshot: RepoSnapshot?, previousWidth: CGFloat?) -> HistoryRows {
         let lanesWidth = CommitGraphCell.contentWidth(for: snapshot?.graph ?? [])
         let width = max(lanesWidth, previousWidth ?? 0)
-        guard let snapshot else { return HistoryRows(rows: [], graphWidth: width, shas: []) }
+        guard let snapshot else {
+            return HistoryRows(rows: [], graphWidth: width, shas: [], loaded: [], merges: [])
+        }
         var rows: [CommitRow] = []
         rows.reserveCapacity(snapshot.commits.count + 2)
         let changed = snapshot.status.files.count
@@ -50,7 +59,11 @@ struct HistoryRows: Equatable {
         graphBySha.reserveCapacity(snapshot.graph.count)
         for row in snapshot.graph { graphBySha[row.sha] = row }
         var previous: GraphRow?
+        var loaded = Set<String>(minimumCapacity: snapshot.commits.count)
+        var merges = Set<String>()
         for commit in snapshot.commits {
+            loaded.insert(commit.sha)
+            if commit.isMerge { merges.insert(commit.sha) }
             let graphRow = graphBySha[commit.sha]
             let hasIncomingEdge =
                 if let graphRow, let previous {
@@ -65,6 +78,6 @@ struct HistoryRows: Equatable {
         if !snapshot.commits.isEmpty {
             rows.append(.end(complete: snapshot.historyIsComplete))
         }
-        return HistoryRows(rows: rows, graphWidth: width, shas: shas)
+        return HistoryRows(rows: rows, graphWidth: width, shas: shas, loaded: loaded, merges: merges)
     }
 }

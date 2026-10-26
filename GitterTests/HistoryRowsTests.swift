@@ -85,6 +85,44 @@ import Testing
         #expect(wider.graphWidth == first.graphWidth)
     }
 
+    /// The loaded commits and their merges, as sets built with the rows.
+    @Test func loadedAndMergeSetsAreTheSnapshots() {
+        let merge = Self.commit(Self.a, parents: [Self.b, "3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f"])
+        let rows = HistoryRows.build(Self.snapshot(commits: [merge, Self.commit(Self.b)]), previousWidth: nil)
+        #expect(rows.loaded == [Self.a, Self.b])
+        #expect(rows.merges == [Self.a])
+        #expect(rows.isLoaded(Self.b))
+        #expect(!rows.isLoaded("3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f"))
+        #expect(HistoryRows.empty.loaded.isEmpty)
+    }
+
+    /// The merge test over every loaded row selected (⌘A): a loaded merge among them is found from
+    /// the loaded merges; without it, nothing is refused.
+    @Test(.timeLimit(.minutes(10))) func aLoadedMergeAmongManySelectedIsFound() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        var stream = ""
+        for n in 1...300 {
+            if n == 101 {
+                stream += DeepHistory.commit("s", mark: 5_002, time: DeepHistory.time(100) + 30, message: "s1", from: 100)
+            }
+            stream += DeepHistory.commit(
+                "main", mark: n, time: DeepHistory.time(n), message: "m\(n)", from: n == 1 ? nil : n - 1,
+                merge: n == 110 ? 5_002 : nil)
+        }
+        try repo.fastImport(stream)
+        try repo.git("update-ref", "-d", "refs/heads/s")
+        let merge = try repo.git("rev-parse", "refs/heads/main~190").trimmingCharacters(in: .whitespacesAndNewlines)
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        let all = try #require(store.snapshot?.commits.map(\.sha))
+        #expect(all.count == 301)
+        #expect(store.historyRows.merges == [merge])
+
+        #expect(store.historyBlockedReason(for: all) == HistoryWording.mergesInSelection)
+        #expect(store.historyBlockedReason(for: all.filter { $0 != merge }) == nil)
+    }
+
     @Test func endRowIsNeverResolvedAsASelection() {
         #expect(CommitSelection.resolve([.historyEnd], previous: [.workingCopy], shown: [.workingCopy]) == nil)
         let both = CommitSelection.resolve(

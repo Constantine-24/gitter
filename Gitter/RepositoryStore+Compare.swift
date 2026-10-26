@@ -152,7 +152,7 @@ extension RepositoryStore {
         setComparison(nil)
         if selection == .comparisonChanges {
             select(.workingCopy)
-        } else if revealingSelection, case .commit(let sha) = selection, !historyRows.shas.contains(.commit(sha)) {
+        } else if revealingSelection, case .commit(let sha) = selection, !historyRows.isLoaded(sha) {
             reveal(sha)
         }
     }

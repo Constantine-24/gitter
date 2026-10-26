@@ -147,14 +147,25 @@ extension RepositoryStore {
     /// Why Cherry-Pick / Revert is off for `shas`, or nil: an operation in progress, or a merge
     /// commit among them (GitCore refuses both too; this says it before the click).
     ///
-    /// Each commit's own parents say whether it is a merge (`commitForDetail`: the loaded rows, the
-    /// comparison's lists, or the selected commit's own read), not the loaded merges alone: since
-    /// H1 a selected commit can be one the rows haven't loaded — a reveal's, until its deep load
-    /// lands, or one past the cap. A commit found in none of them (its read not landed yet) counts
-    /// as no merge here; GitCore's plan still refuses it.
+    /// A loaded commit is looked up in the loaded merges (`HistoryRows.merges`, a set built once
+    /// per snapshot): the menu's shas are every selected row, thousands after ⌘A at H1's depths.
+    /// Since H1 a selected commit can also be one the rows haven't loaded — a reveal's, until its
+    /// deep load lands, or one past the cap — and only for those its own parents are read, from
+    /// the comparison's lists or the selected commit's own read (`detailCommit`). A commit found in
+    /// none of them (its read not landed yet) counts as no merge here; GitCore's plan still
+    /// refuses it.
     func historyBlockedReason(for shas: [String]) -> String? {
         if let reason = branchSwitchingBlockedReason ?? changeRunningBlockedReason { return reason }
-        if shas.contains(where: { commitForDetail($0)?.isMerge == true }) { return HistoryWording.mergesInSelection }
+        let rows = historyRows
+        let unloaded = shas.filter { !rows.isLoaded($0) }
+        if shas.contains(where: rows.merges.contains) { return HistoryWording.mergesInSelection }
+        if !unloaded.isEmpty {
+            var others: [String: Commit] = [:]
+            for commit in (comparison?.commitsOnlyB ?? []) + (comparison?.commitsOnlyA ?? []) + [detailCommit].compactMap({ $0 }) {
+                others[commit.sha] = commit
+            }
+            if unloaded.contains(where: { others[$0]?.isMerge == true }) { return HistoryWording.mergesInSelection }
+        }
         return nil
     }
 
