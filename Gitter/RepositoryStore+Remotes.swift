@@ -206,7 +206,7 @@ extension RepositoryStore {
                         showStickyError(RemoteWording.pullSlotBusy)
                         return
                     }
-                    integratePull(upstream: upstreamNow, mode: .fastForwardIfPossible)
+                    integratePull(upstream: upstreamNow, answer: nil)
                 }
             case .askHowToIntegrate(let ahead, let behind):
                 return LaneEnding(
@@ -219,6 +219,62 @@ extension RepositoryStore {
                 return LaneEnding(
                     failure: RemoteWording.upstreamGone(now), alreadyRefreshed: true)
             }
+        }
+    }
+
+    /// Stash and Continue's retry of a pull refused over local changes (`retry`): only the
+    /// integrate step was ever refused — the fetch had succeeded — so it is not run again. This
+    /// decides again (`PullPlan.decide`) on the tracking Stash and Continue's reload has just
+    /// read, and runs on the mutation slot alone, with no lane: a Fetch on the lane meanwhile
+    /// neither blocks it nor is blocked by it.
+    ///
+    /// - Still diverged from the **same** upstream with an answer: that Merge or Rebase, without
+    ///   asking again — the answer was about *how* to integrate, so it stands even if the counts
+    ///   moved. The pull mode is still remembered only once the step has run.
+    /// - A fast-forward, or nothing to do: what a fresh pull does now, whatever the answer.
+    /// - Diverged with no answer, or from another upstream: the Merge-or-Rebase sheet.
+    ///
+    /// It decides again rather than replaying the step: `--ff` on a branch that has diverged
+    /// since (an automatic fetch) would make a merge commit the user never asked for.
+    // internal (not private): used by +Branches.swift (`retry`)
+    func retryPull(upstream: String, answer: PullMode?) {
+        // The retry runs in the same main-actor run that freed the slot, so it is free here; a
+        // retry that cannot claim it says why rather than nothing (`mutate` would drop it).
+        guard !isMutating else {
+            showStickyError(RemoteWording.pullSlotBusy)
+            return
+        }
+        guard let now = currentBranchRef else {
+            // `pullBlocked`'s sentences for no branch to pull into.
+            showStickyError(isDetached ? RemoteWording.detachedPull : RemoteWording.noCommitsYet)
+            return
+        }
+        let upstreamNow = now.upstream ?? upstream
+        switch PullPlan.decide(now.tracking) {
+        case .nothingToDo:
+            showNotice(RemoteWording.alreadyUpToDate(with: upstreamNow))
+        case .fastForward:
+            integratePull(upstream: upstreamNow, answer: nil)
+        case .askHowToIntegrate(let ahead, let behind):
+            switch upstreamNow == upstream ? answer : nil {
+            case .merge:
+                integratePull(upstream: upstreamNow, answer: .merge)
+            case .rebase:
+                rebase(now, onto: upstreamNow)
+            case nil:
+                let sheet = BranchSheet.pullDiverged(
+                    ahead: ahead, behind: behind, upstream: upstreamNow)
+                // Never over a sheet the user opened while the stash ran (`runOnLane`'s rule).
+                if let open = activeSheet, !open.asksTheSameQuestion(as: sheet) {
+                    showStickyError(RemoteWording.sheetNotShown(sheet))
+                } else {
+                    activeSheet = sheet
+                }
+            }
+        case .noUpstream:
+            showStickyError(RemoteWording.noUpstream(now.name))
+        case .upstreamGone:
+            showStickyError(RemoteWording.upstreamGone(now))
         }
     }
 

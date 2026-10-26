@@ -65,21 +65,26 @@ extension RepositoryStore {
     /// "Merge" — through the same `perform` as every other HEAD-moving action, so every existing
     /// refusal (`wouldOverwrite`, `indexNotClean`, an operation in progress) and its wording is
     /// reused as it stands.
+    ///
+    /// `answer` is nil for the fast-forward (no question was asked) and `.merge` for the sheet's
+    /// Merge; the sheet's Rebase is `rebase(_:onto:)`, never this.
     // internal (not private): used by +Remotes.swift and +RemoteSheets.swift
-    func integratePull(upstream: String, mode: MergeMode) {
-        perform(.pull(upstream: upstream, mode: mode))
+    func integratePull(upstream: String, answer: PullMode?) {
+        assert(answer != .rebase, "a pull's Rebase runs on rebase(_:onto:)")
+        perform(.pull(upstream: upstream, answer: answer))
     }
 
     /// Stash and Continue's second half: `action` again, from scratch, with every gate it had
     /// the first time — an operation in progress, a detached HEAD holding commits (asked again,
-    /// never taken as answered). A pull is run again whole, fetch and decision included, since
-    /// its refused step (the merge or the sheet's Rebase) was decided on tracking that a fetch
-    /// may since have changed; if it ends in the Merge-or-Rebase sheet, the user answers it again.
+    /// never taken as answered). A pull is the exception: its fetch had succeeded and only its
+    /// integrate step was refused, so `retryPull` runs no fetch and needs no lane. It decides
+    /// again on the tracking the stash's reload read, and keeps the sheet's Merge or Rebase
+    /// answer while the branch is still diverged from the same upstream; another upstream asks.
     // internal (not private): used by +StashAndContinue.swift, and by `askAgain()`
     func retry(_ action: PendingBranchAction) {
         switch action {
-        case .pull:
-            pull()
+        case .pull(let upstream, let answer):
+            retryPull(upstream: upstream, answer: answer)
         // Planned again and put back on screen: a stash never runs a history action without
         // its confirmation (the plan may differ now — the stash itself changed nothing it
         // reads, but a terminal may have).
@@ -282,7 +287,13 @@ extension RepositoryStore {
             // was a real one — silently declining to remember it would be its own small lie).
             rememberMergeMode(mode, in: defaults)
             return notice(for: outcome, branch: branch)
-        case .pull(let upstream, let mode):
+        case .pull(let upstream, .rebase):
+            // Never performed here: the sheet's Rebase, first time or retried, is
+            // `rebase(_:onto:)` (`+RemoteSheets`).
+            assertionFailure("a pull's rebase onto \(upstream) reached perform")
+            return nil
+        case .pull(let upstream, let answer):
+            let mode: MergeMode = answer == .merge ? .alwaysMergeCommit : .fastForwardIfPossible
             let outcome = try await reporting(.merge, upstream) {
                 try await backend.merge(upstream, mode: mode, at: root)
             }
@@ -290,7 +301,7 @@ extension RepositoryStore {
             // pull that fast-forwarded asked the user nothing. Here for the reason
             // `rememberMergeMode` is above — every refusal is a throw, so reaching this line
             // means the merge ran.
-            if mode == .alwaysMergeCommit { rememberPullMode(.merge, in: defaults) }
+            if answer == .merge { rememberPullMode(.merge, in: defaults) }
             return notice(for: outcome, branch: upstream)
         case .history, .rebaseOnto:
             // Never performed here: `retry` sends both to their own request (`+History`), which

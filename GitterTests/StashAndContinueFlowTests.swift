@@ -113,4 +113,224 @@ import Testing
         #expect(store.stashes.isEmpty)
         #expect(store.isDetached)
     }
+
+    // MARK: - A retried pull keeps its answer (B4 Task 4)
+
+    /// `main` tracking `origin/main` (a local bare repository), whose new commit changing `a.txt`
+    /// has not been fetched yet, and an uncommitted edit of `a.txt`. `diverged`: `main` also has
+    /// a commit of its own, on `b.txt`, so the pull asks Merge or Rebase; otherwise it would
+    /// fast-forward. Returns the remote commit's sha.
+    private static func repoBehindOrigin(diverged: Bool) throws -> (ScratchRepo, remoteSha: String) {
+        let repo = try ScratchRepo()
+        try repo.commit("a.txt", "base\n", "base")
+        let bare = try repo.makeBareRemote()
+        try repo.git("remote", "add", "origin", bare.path)
+        try repo.git("push", "-u", "origin", "main")
+        try repo.commit("a.txt", "remote\n", "remote change")
+        let sha = try repo.git("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines)
+        try repo.git("push", "origin", "main")
+        try repo.git("reset", "--hard", "HEAD~1")
+        // Unfetched: the pull's own fetch is what brings the commit in.
+        try repo.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        if diverged { try repo.commit("b.txt", "local\n", "local change") }
+        try repo.write("a.txt", "local edit\n")
+        return (repo, sha)
+    }
+
+    /// A store on `repo` through a `TestBackend` whose `fetch` hook counts every fetch (Ruling 2;
+    /// `Recorded` is a `Mutex<Int>` that a tuple can carry).
+    private static func countingStore(_ repo: ScratchRepo) async
+        -> (RepositoryStore, TestBackend, fetches: Recorded<Int>, cleanup: () -> Void)
+    {
+        let backend = TestBackend()
+        let fetches = Recorded(0)
+        backend.hook(.fetch) { fetches.update { $0 += 1 } }
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        return (store, backend, fetches, cleanup)
+    }
+
+    /// The pull, up to its Merge-or-Rebase sheet: one fetch, and the question about
+    /// `origin/main`.
+    private static func pullUpToTheSheet(
+        _ store: RepositoryStore, fetches: Recorded<Int>,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async {
+        store.pull()
+        await waitUntilIdle(store)
+        #expect(
+            store.activeSheet == .pullDiverged(ahead: 1, behind: 1, upstream: "origin/main"),
+            sourceLocation: sourceLocation)
+        #expect(fetches.value == 1, sourceLocation: sourceLocation)
+    }
+
+    private static func parents(of revision: String, in repo: ScratchRepo) throws -> Int {
+        try repo.git("rev-list", "--parents", "-n", "1", revision)
+            .split(separator: " ").count - 1
+    }
+
+    /// Rebase answered, refused over the edit, then stashed: the retry rebases without asking
+    /// again and without a second fetch, and Pop Stash stays the sticky notice beside the
+    /// rebase's own (RF1).
+    @Test(.timeLimit(.minutes(10))) func aRetriedPullKeepsItsRebaseAnswer() async throws {
+        let (repo, remoteSha) = try Self.repoBehindOrigin(diverged: true)
+        defer { repo.remove() }
+        let (store, _, fetches, cleanup) = await Self.countingStore(repo)
+        defer { cleanup() }
+
+        await Self.pullUpToTheSheet(store, fetches: fetches)
+        try await Self.refusedThenStashedAndContinued(
+            store, expected: .pull(upstream: "origin/main", answer: .rebase), stashesBefore: 0
+        ) { store.confirmPull(.rebase) }
+
+        #expect(store.activeSheet == nil, "the answer was kept, not asked for again")
+        #expect(store.lastError == nil)
+        try repo.git("merge-base", "--is-ancestor", remoteSha, "HEAD")
+        #expect(try Self.parents(of: "HEAD", in: repo) == 1, "rebased, not merged")
+        #expect(try repo.git("log", "-1", "--format=%s").hasPrefix("local change"))
+        #expect(store.notice?.text == RemoteWording.rebaseNotice(.rebased, branch: "main", upstream: "origin/main"))
+        #expect(fetches.value == 1, "the retry ran no fetch")
+        #expect(store.defaults.string(forKey: RepositoryStore.pullModeKey) == PullMode.rebase.rawValue)
+    }
+
+    /// Merge answered: the same, ending with a merge commit.
+    @Test(.timeLimit(.minutes(10))) func aRetriedPullKeepsItsMergeAnswer() async throws {
+        let (repo, remoteSha) = try Self.repoBehindOrigin(diverged: true)
+        defer { repo.remove() }
+        let (store, _, fetches, cleanup) = await Self.countingStore(repo)
+        defer { cleanup() }
+
+        await Self.pullUpToTheSheet(store, fetches: fetches)
+        try await Self.refusedThenStashedAndContinued(
+            store, expected: .pull(upstream: "origin/main", answer: .merge), stashesBefore: 0
+        ) { store.confirmPull(.merge) }
+
+        #expect(store.activeSheet == nil, "the answer was kept, not asked for again")
+        #expect(store.lastError == nil)
+        #expect(try Self.parents(of: "HEAD", in: repo) == 2, "a merge commit")
+        try repo.git("merge-base", "--is-ancestor", remoteSha, "HEAD")
+        #expect(fetches.value == 1, "the retry ran no fetch")
+        #expect(store.defaults.string(forKey: RepositoryStore.pullModeKey) == PullMode.merge.rawValue)
+    }
+
+    /// Control: a pull refused at its fast-forward asked nothing, and its retry fast-forwards
+    /// with no sheet, no fetch and no pull mode remembered.
+    @Test(.timeLimit(.minutes(10))) func aRetriedFastForwardAsksNothing() async throws {
+        let (repo, remoteSha) = try Self.repoBehindOrigin(diverged: false)
+        defer { repo.remove() }
+        let (store, _, fetches, cleanup) = await Self.countingStore(repo)
+        defer { cleanup() }
+
+        try await Self.refusedThenStashedAndContinued(
+            store, expected: .pull(upstream: "origin/main", answer: nil), stashesBefore: 0
+        ) { store.pull() }
+
+        #expect(store.activeSheet == nil)
+        #expect(store.lastError == nil)
+        #expect(store.headSha == remoteSha)
+        #expect(fetches.value == 1, "the retry ran no fetch")
+        #expect(store.defaults.string(forKey: RepositoryStore.pullModeKey) == nil)
+    }
+
+    /// RF4: the branch's upstream changed between the answer and the retry. The answer was about
+    /// `origin/main`, so the retry asks again, about the new upstream.
+    @Test(.timeLimit(.minutes(10))) func aRetriedPullAsksAgainWhenTheUpstreamChanged() async throws {
+        let (repo, remoteSha) = try Self.repoBehindOrigin(diverged: true)
+        defer { repo.remove() }
+        let (store, _, fetches, cleanup) = await Self.countingStore(repo)
+        defer { cleanup() }
+
+        await Self.pullUpToTheSheet(store, fetches: fetches)
+        store.confirmPull(.rebase)
+        await waitUntilIdle(store)
+        #expect(store.offeredStashAndContinue?.action == .pull(upstream: "origin/main", answer: .rebase))
+
+        try repo.git("branch", "other", remoteSha)
+        try repo.git("branch", "--set-upstream-to=other", "main")
+        await store.refresh()
+        await waitUntilIdle(store)
+        store.stashAndContinue()
+        await waitUntilIdle(store)
+
+        #expect(store.stashes.count == 1)
+        #expect(store.activeSheet == .pullDiverged(ahead: 1, behind: 1, upstream: "other"))
+        #expect(try Self.parents(of: "HEAD", in: repo) == 1)
+        #expect(try repo.git("log", "-1", "--format=%s").hasPrefix("local change"), "nothing ran")
+        #expect(fetches.value == 1)
+    }
+
+    /// Whether the retried pull's rebase has landed on `remoteSha`, or the store said why not.
+    private static func retryEnded(_ store: RepositoryStore, _ repo: ScratchRepo, onto remoteSha: String) -> Bool {
+        guard !store.isMutating else { return false }
+        if store.lastError != nil { return true }
+        guard store.stashes.count == 1 else { return false }
+        return (try? repo.git("merge-base", "--is-ancestor", remoteSha, "HEAD")) != nil
+            && (try? Self.parents(of: "HEAD", in: repo)) == 1
+    }
+
+    /// M4 (BACKLOG "A manual Fetch can pre-empt Stash and Continue's retried pull"): a Fetch
+    /// clicked while the stash runs takes the lane, and the retry, which needs only the mutation
+    /// slot, still runs while the fetch is held.
+    @Test(.timeLimit(.minutes(10))) func aFetchStartedDuringTheStashDoesNotPreemptTheRetry() async throws {
+        let (repo, remoteSha) = try Self.repoBehindOrigin(diverged: true)
+        defer { repo.remove() }
+        let (store, backend, fetches, cleanup) = await Self.countingStore(repo)
+        defer { cleanup() }
+        defer { await releaseAndSettle([backend], [store]) }
+
+        await Self.pullUpToTheSheet(store, fetches: fetches)
+        store.confirmPull(.rebase)
+        await waitUntilIdle(store)
+        #expect(store.offeredStashAndContinue?.action == .pull(upstream: "origin/main", answer: .rebase))
+
+        let stash = backend.hold(.stashAll)
+        store.stashAndContinue()
+        #expect(await waitUntil("the stash parked") { stash.waiting })
+        let fetch = backend.hold(.fetch)
+        store.fetch()
+        #expect(await waitUntil("the fetch parked") { fetch.waiting })
+        stash.release()
+        #expect(await waitUntil("the stash and its retry") { Self.retryEnded(store, repo, onto: remoteSha) })
+
+        #expect(store.lastError == nil)
+        try repo.git("merge-base", "--is-ancestor", remoteSha, "HEAD")
+        #expect(store.remoteActivity != nil, "the fetch is still held: the retry did not wait for it")
+        #expect(store.activeSheet == nil)
+
+        fetch.release()
+        await waitUntilIdle(store)
+        #expect(store.lastError == nil)
+        #expect(store.stickyNotice?.actions.count == 1, "Pop Stash")
+        #expect(fetches.value == 2, "the pull's fetch and the manual one, none for the retry")
+    }
+
+    /// A pull offer is ready while the lane is busy: refused while a Fetch runs, Stash and
+    /// Continue is not turned off by it (the pull's own gate is), and the retry runs under the
+    /// held fetch.
+    @Test(.timeLimit(.minutes(10))) func aPullOfferIsReadyWhileTheLaneIsBusy() async throws {
+        let (repo, remoteSha) = try Self.repoBehindOrigin(diverged: true)
+        defer { repo.remove() }
+        let (store, backend, fetches, cleanup) = await Self.countingStore(repo)
+        defer { cleanup() }
+        defer { await releaseAndSettle([backend], [store]) }
+
+        await Self.pullUpToTheSheet(store, fetches: fetches)
+        let fetch = backend.hold(.fetch)
+        store.fetch()
+        #expect(await waitUntil("the fetch parked") { fetch.waiting })
+        store.confirmPull(.rebase)
+        #expect(await waitUntil("the refusal") { !store.isMutating && store.offeredStashAndContinue != nil })
+        #expect(store.offeredStashAndContinue?.action == .pull(upstream: "origin/main", answer: .rebase))
+
+        #expect(store.pullBlockedReason != nil, "the lane is busy")
+        #expect(store.stashAndContinueBlockedReason == nil)
+        store.stashAndContinue()
+        #expect(await waitUntil("the stash and its retry") { Self.retryEnded(store, repo, onto: remoteSha) })
+
+        #expect(store.lastError == nil)
+        try repo.git("merge-base", "--is-ancestor", remoteSha, "HEAD")
+        #expect(store.remoteActivity != nil, "the fetch is still held")
+        fetch.release()
+        await waitUntilIdle(store)
+        #expect(store.stickyNotice?.actions.count == 1, "Pop Stash")
+    }
 }

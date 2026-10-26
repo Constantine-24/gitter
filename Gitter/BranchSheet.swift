@@ -192,11 +192,16 @@ enum PendingBranchAction: Hashable {
     case detach(String)
     case merge(String, MergeMode)
     case createAndSwitch(name: String, startPoint: String?)
-    /// A pull's merge step: `merge` of the upstream in `mode`, which records the **pull** mode
-    /// rather than the merge sheet's — a fast-forward pull was no choice at all, and must not
-    /// change what the merge sheet comes up on. Never parked behind the detached-HEAD
-    /// confirmation (a pull needs a branch), and like a merge it only moves HEAD forward.
-    case pull(upstream: String, mode: MergeMode)
+    /// A pull's integrate step, with the Merge-or-Rebase sheet's `answer`: nil when no question
+    /// was asked (a fast-forward), `.merge` or `.rebase`. Stash and Continue keeps it, so a
+    /// retried pull that is still diverged from the same upstream runs that answer without
+    /// asking again (`retryPull`). Through `perform` only without an answer (a fast-forward
+    /// `merge`) or with `.merge` (`merge --no-ff`), which records the **pull** mode rather than
+    /// the merge sheet's — a fast-forward pull was no choice at all, and must not change what the
+    /// merge sheet comes up on; `.rebase` runs on `rebase(_:onto:)`. Never parked behind the
+    /// detached-HEAD confirmation: a pull needs a branch, and whether it merges or rebases, the
+    /// branch keeps every commit it held.
+    case pull(upstream: String, answer: PullMode?)
     /// Cherry-pick or revert of these commits (full object ids, as selected): never parked
     /// behind the detached-HEAD confirmation — both only add commits on top of HEAD. Here for
     /// Stash and Continue, whose `retry` plans it again and puts its sheet back up.

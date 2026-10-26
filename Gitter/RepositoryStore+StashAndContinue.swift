@@ -4,9 +4,10 @@ import GitCore
 /// What Stash and Continue would do for one refusal: stash every change under `message` —
 /// untracked files too when the refusal named one — then run `action` again as it was asked.
 struct StashAndContinueOffer: Equatable {
-    /// Run again as it is (`RepositoryStore.retry`). A `.pull` is run again whole — `pull()`,
-    /// its fetch included — whichever step refused: the merge step and the diverged sheet's
-    /// Rebase both record `.pull` here.
+    /// Run again as it is (`RepositoryStore.retry`). A `.pull` is the exception: only its
+    /// integrate step was refused (the merge step, or the diverged sheet's Rebase, both recorded
+    /// here with the sheet's answer), so `retryPull` runs no fetch: it decides again on the
+    /// stash's reload and keeps the answer while the branch is diverged from the same upstream.
     let action: PendingBranchAction
     /// The refusal named an untracked file: a stash without `-u` would leave it in the way, and
     /// the retry would be refused over it again.
@@ -92,9 +93,10 @@ struct RefusalWithStashOffer: LocalizedError {
 /// 1. `stashAll(message:includeUntracked:)`, through `beginMutation`/`finishMutation` like any
 ///    other write, its refusals in `StashWording`'s sentences.
 /// 2. Filed (`.saved`): the sticky notice `Your changes are in stash "…".` with Pop Stash goes
-///    up **first**, then the action runs again from scratch (`retry`). Whatever the retry ends
-///    in — done, a conflict, another refusal, the pull's Merge-or-Rebase sheet, a failed fetch
-///    — the notice is already there, and nothing on those paths replaces a sticky notice.
+///    up **first**, then the action runs again (`retry`; a pull without its fetch, `retryPull`).
+///    Whatever the retry ends in — done, a conflict, another refusal, the pull's Merge-or-Rebase
+///    sheet when its upstream changed — the notice is already there, and a notice the retry
+///    shows after it does not replace one with a button (`NoticeSlot.choose`).
 /// 3. Anything else runs nothing more: nothing filed (the refusal may or may not still apply),
 ///    a stash git refused, or one filed with an error (the changes may be in both places). The
 ///    banner says which.
@@ -105,12 +107,13 @@ extension RepositoryStore {
     /// Why Stash and Continue is off right now, or nil (also nil when nothing is offered): a
     /// sheet is up, another change is running, or the action it would run again is itself
     /// blocked — checked **before** stashing, so a stash is never filed for a retry that could
-    /// not start.
+    /// not start. A pull offer is checked like the others, on the mutation slot and an
+    /// operation in progress, and **not** on the lane: its retry runs no fetch (`retryPull`),
+    /// so a Fetch on the lane does not turn the button off.
     var stashAndContinueBlockedReason: String? {
-        guard let offer = offeredStashAndContinue else { return nil }
+        guard offeredStashAndContinue != nil else { return nil }
         if activeSheet != nil { return StashWording.blockedBySheet }
         if isMutating { return StashWording.busy }
-        if case .pull = offer.action { return pullBlockedReason }
         return branchSwitchingBlockedReason
     }
 

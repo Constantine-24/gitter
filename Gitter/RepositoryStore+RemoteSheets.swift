@@ -37,7 +37,7 @@ extension RepositoryStore {
         }
         switch mode {
         case .merge:
-            integratePull(upstream: upstream, mode: .alwaysMergeCommit)
+            integratePull(upstream: upstream, answer: .merge)
         case .rebase:
             rebase(branch, onto: upstream)
         }
@@ -47,7 +47,8 @@ extension RepositoryStore {
     /// that moves HEAD; then `GitRemoteBackend.rebase` refuses a dirty tree before git runs
     /// (`.treeNotClean`, the existing sentence). A rebase that stops is `.conflicts`: the
     /// existing operation note and Abort sheet take over, and nothing more is said here.
-    private func rebase(_ branch: Branch, onto upstream: String) {
+    // internal (not private): used by +Remotes.swift (`retryPull`)
+    func rebase(_ branch: Branch, onto upstream: String) {
         if let reason = branchSwitchingBlockedReason {
             mutate { _, _ in throw BranchActionBlocked(reason: reason) }
             return
@@ -60,10 +61,11 @@ extension RepositoryStore {
                     try await backend.rebase(onto: target, at: root)
                 }
             } catch {
-                // A dirty tree: Stash and Continue runs the pull again (`retry`). The mode is
-                // the diverged sheet's; a retried pull asks again rather than reading it.
+                // A dirty tree: Stash and Continue retries the pull with this answer kept
+                // (`retryPull`), so a branch still diverged from this upstream is rebased
+                // without the sheet asking again.
                 throw StashAndContinue.offering(
-                    error, for: .pull(upstream: upstream, mode: .alwaysMergeCommit))
+                    error, for: .pull(upstream: upstream, answer: .rebase))
             }
         }, onSuccess: { [self] outcome in
             Self.rememberPullMode(.rebase, in: defaults)

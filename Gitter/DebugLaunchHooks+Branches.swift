@@ -508,8 +508,9 @@
                     return
                 }
                 store.stashAndContinue()
-                // The stash, then the retry it starts in the same main-actor run: the slot or
-                // the lane is claimed again before either wait below can see them free.
+                // The stash, then the retry it starts in the same main-actor run: the slot is
+                // claimed again before the wait below can see it free (a retried pull runs no
+                // fetch, so it never takes the lane).
                 _ = await wait({ store.remoteActivity == nil && !store.isMutating }, seconds: 120, what: "stashcontinue: the stash and its retry")
                 if let mode = first.flatMap(PullMode.init(rawValue:)) {
                     // Does nothing without its sheet on screen.
