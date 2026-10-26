@@ -36,7 +36,14 @@ Everything Gitter does, and how it keeps your work safe. The short version is in
 - Fetch, Pull and Push from the toolbar (Repository menu: ⇧⌘F, ⇧⌘L, ⇧⌘P). The running one
   shows, once it has run for 0.4 s, a spinner, git's own progress line and a Stop button
   (⌘. works from the start); browsing is never
-  blocked, and a fetch does not block staging or committing either
+  blocked, and a fetch does not block staging or committing either. In a window narrower than
+  1,280 points — the default window, 1,200, is one — the progress line is left out, so the
+  running item keeps its Stop and spinner in the toolbar instead of going into the »
+  overflow menu; git's words are then the spinner's tooltip (and what VoiceOver reads). The
+  item changes only when you resize the window across that width, never when a fetch starts
+  or ends. A window that jumps in size while something runs (the zoom button, tiling, a
+  display change) from wider than the line needs to narrower than 1,280 can still leave the
+  running item in » until it finishes
 - Pull fast-forwards when it can and says so in a notice (`Fast-forwarded to
   "origin/main".`); when both sides have moved on it asks, Merge or Rebase, with the counts —
   the last answer is remembered
@@ -44,8 +51,15 @@ Everything Gitter does, and how it keeps your work safe. The short version is in
   than one (`origin` preselected); Re-publish one whose upstream was deleted on the server
 - A hosting service's pull-request link after a push stays on screen, with **Open** and
   **Copy Link**, until you close it, push again or open another repository — the link whole,
-  without any user name or token; so do the notices with a button (Pop Stash, Undo Discard)
-  and the one after a drop, while plain notices still fade after a few seconds
+  without any user name or token. So does every notice with a button (Pop Stash, Undo Discard)
+  or one that holds the only way back: the dropped stash's sha, the `git reset --keep <sha>`
+  after a cherry-pick, revert or rebase, the `git branch <name> <tip>` after a force delete or
+  after leaving commits behind on a detached HEAD. A success with a warning in it, such as
+  "Pushed, but the upstream could not be set", stays too and is drawn with an orange warning
+  sign instead of the checkmark, as is a revert left staged. Such a notice never pushes a
+  notice with a button (Pop Stash, Undo Discard, Restore Tag) off the screen: with one of those
+  up it shows in the fading place instead (the log keeps every notice). Every other notice
+  fades after four seconds
 - When the server refuses a push because it has commits you don't, the banner offers
   **Pull** and **Force Push…**; the force push is leased on the exact sha it showed you
 - Delete a branch on a remote from the sidebar ("Delete on "origin"…"), with a warning that
@@ -72,13 +86,15 @@ Everything Gitter does, and how it keeps your work safe. The short version is in
   files too (Repository ▸ Stash Changes…, ⌥⌘S, or **Stash…** in the working copy). The sidebar's
   **Stashes** section lists them; selecting one shows its files and diff read-only, untracked
   files under their own heading. Apply, Pop, and Drop Stash… behind a confirmation, from the
-  row's menu
+  row's menu. A stash with a message you wrote is named by it; one git named, made with an empty
+  message, is named the way git wrote it, `WIP on main: 2153ff9 root`, in its row, its detail
+  and every sentence about it
 - **Discard** unstaged changes by file, hunk or line, a staged file back to the last commit, or
   an untracked file into the Trash — always behind a sheet that says what goes and where the
   copy is kept, and always with **Undo Discard** afterwards (see below)
 - **Stash and Continue**: a switch, merge or pull refused because of your local changes offers
-  to stash them and run the same action again; the stash is then offered back (**Pop Stash**),
-  never popped by itself
+  to stash them and run the same action again (a pull keeps your Merge or Rebase answer and
+  does not fetch again); the stash is then offered back (**Pop Stash**), never popped by itself
 - Fetch quietly in the background: when a repository opens and every 10 minutes after,
   unless **Repository ▸ Fetch Automatically** is unticked (on by default). It never shows a
   banner — a failure is only a small mark on the Fetch button, with the reason in its
@@ -347,8 +363,16 @@ files cannot be discarded before the first commit, since the record needs one.
 When a switch, a checkout, a merge (a squash too) or a pull is refused because of your local
 changes, the error banner offers **Stash and Continue**. It stashes every change — untracked
 files too when git named one in the way — as `Gitter: before switching to b`, `Gitter: before
-merging b` or `Gitter: before pulling`, then runs the same action again from the start (a pull
-fetches again). A notice, `Your changes are in stash "Gitter: before pulling".`, stays with a
+merging b` or `Gitter: before pulling`, then runs the same action again from the start. A pull
+does not fetch again — its fetch had already worked; only the merge or rebase was refused — so
+the retry needs no network and a Fetch you start meanwhile does not stand in its way. It decides
+again from what the stash's reload read: still diverged from the same upstream, on the same
+branch, it runs the Merge or Rebase you had answered without asking again; a fast-forward now, or
+nothing to do, it does what a fresh pull would; on another branch or another upstream it asks.
+A fast-forward checks once more, just before it merges, that your branch has nothing the upstream
+lacks; if a fetch moved the upstream meanwhile, nothing is merged and the banner says to pull
+again and choose Merge or Rebase (the first pull's fast-forward checks the same). A notice,
+`Your changes are in stash "Gitter: before pulling".`, stays with a
 **Pop Stash** button, which pops that entry wherever it has moved in the list. Nothing is
 popped by itself: if the retried merge conflicts, your changes wait in the stash. If there was
 nothing a stash could hold, or the stash failed, the action is not run again and the banner
@@ -373,6 +397,12 @@ driver of yours, a file one side deleted — the resolver says why and offers th
 choices: **Take Ours** / **Take Theirs**, or for a deletion **Delete the File** and **Keep Their
 Version** (we deleted it, they changed it) or **Keep Our Version** (the other way round). A side that has no version is not offered (git would delete the file and say
 nothing). A submodule conflict is shown and explained, not resolved here.
+
+**A conflict Gitter cannot read.** If reading a conflicted file's versions fails, the resolver
+says so instead of spinning: "Gitter couldn't read this conflict: <git's words>. You can still
+open the file in its editor, or mark it resolved as it is.", with **Open in Editor**, **Mark
+Resolved** (its usual check and sheet; not for a file both sides deleted) and **Try Again**,
+which reads it again. A read that works, or selecting another file, ends it.
 
 **Your own edits.** **Open in Editor** opens the file; resolve it there, then **Mark Resolved**
 stages it as it is — and asks first when git still finds conflict markers in it, as do the
@@ -463,14 +493,21 @@ still halt it, and the halted bar then lists what is left. The banner offers **S
 Continue**, which stashes and then asks again — the sheet comes back; nothing runs unasked. The
 sheet is a snapshot: if the branch moved, you switched to another branch (even at the same
 commit), the target moved or the commits changed while it was open, nothing runs and the banner
-says "The branch changed while this was open … Ask again to see what it would do now."
+says "The branch changed while this was open … Ask again to see what it would do now." A rebase
+also refuses when more of its commits are already on a remote than the sheet said (its warning
+was then too weak), with "What the rebase would do changed while this was open (the target, the
+commits to replay, or how many are already pushed), so nothing was rebased. Ask again to see
+what it would do now."; fewer than it said is no reason to refuse. Both banners have an **Ask
+Again** button, which plans the action again and puts the sheet back up.
 
 **The way back.** The notice after a cherry-pick or revert says the reflog keeps where the branch
 was, with the command: `git reset --keep <full sha>`; after a rebase, that the old tip is
-`ORIG_HEAD` for now (the next reset, merge or rebase overwrites it), with the same command. A
-single revert that git could not commit — a signing failure, or a `prepare-commit-msg` hook
-saying no — leaves the revert staged with no operation git can show; a notice says so in git's
-words and stays, and git's revert message waits in the composer: Commit it, or Discard it.
+`ORIG_HEAD` for now (the next reset, merge or rebase overwrites it), with the same command. Both
+stay until you close them (a rebase that only fast-forwards, or finds nothing to do, rewrites
+nothing, and its notice fades). A single revert that git could not commit — a signing failure,
+or a `prepare-commit-msg` hook saying no — leaves the revert staged with no operation git can
+show; a notice says so in git's words, with the orange warning sign, and stays, and git's revert
+message waits in the composer: Commit it, or Discard it.
 
 **Tags.** **New Tag…** on a commit's menu: annotated, with a message stored exactly as typed (`#`
 lines and blank lines kept), or lightweight; never signed, whatever `tag.gpgSign` says. The name is
@@ -683,7 +720,11 @@ own.
 window restoration is off, so no killed launch can leave saved state that restores no window. A
 Finder open at launch comes first, then the list. Closing a window takes its repository off the
 list, except while the app is quitting, so the list survives a quit. A path that no longer opens is
-dropped. Window frames and sidebar state are not kept across launches. Closing a window that is not
+dropped. Window frames and sidebar state are not kept across launches. With System Settings ›
+Desktop & Dock › "Close windows when quitting an application" off, macOS relaunches Gitter with
+no window at all, every time; Gitter then asks for one itself, the way a click on its Dock icon
+does, and the reopen list goes on from there (`gitter.log` has `launch: no window, asking for
+one`). Closing a window that is not
 working stops its automatic fetch and file watcher and cancels its reads.
 
 **Closing a window that is still working hides it.** If a push or another write (publish, force

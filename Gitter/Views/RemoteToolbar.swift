@@ -222,8 +222,9 @@ struct RemoteToolbarItem: View {
 /// line) — so a `remote: Total 3 (delta 0) … done.` segment never reads as though the whole
 /// action were done. Until git prints one — and for the whole of a deletion, which prints none —
 /// it is just what is running, remote included. The tooltip and VoiceOver get the long form
-/// (`progressHelp`), remote and all.
-private struct RemoteActivityItem: View {
+/// (`progressHelp`), remote and all. In a window narrower than `progressLineMinimumWindowWidth`
+/// the line is left out and the spinner carries that tooltip and label instead.
+struct RemoteActivityItem: View {
     let activity: RemoteActivity
 
     @Environment(RepositoryStore.self) private var store
@@ -232,14 +233,34 @@ private struct RemoteActivityItem: View {
     /// middle cut ate the percentage, the one number worth reading, where a tail cut loses only
     /// the byte counts and the rate.
     ///
-    /// **The width is what the default 1200-point window allows.** Measured with the `views`
-    /// step (Task 9, fix round 2) at 1200 with the longest labels ("Pull ↓12", "Push ↑12"): the
-    /// three network items have the toolbar from x≈670 to 1191, so the active item — Stop,
-    /// spinner, this line and the item's own button — may be about 320 points with the Fetch
-    /// button (fix round 1's 360-point line made it 485–506 and pushed a pull's or a push's own
+    /// **The width was sized for the default 1200-point window, which no longer has room for it.**
+    /// Measured with the `views` step (Task 9, fix round 2) at 1200 with the longest labels
+    /// ("Pull ↓12", "Push ↑12"): the three network items then had the toolbar from x≈670 to 1191,
+    /// so the active item — Stop, spinner, this line and the item's own button — could be about
+    /// 320 points (fix round 1's 360-point line made it 485–506 and pushed a pull's or a push's own
     /// Stop into the overflow menu). 196 points at the subheadline size holds "Fetching…
-    /// Receiving objects: 100%" plus the truncation mark (measured 187 + 8).
+    /// Receiving objects: 100%" plus the truncation mark (measured 187 + 8). Since the window
+    /// title moved into the one toolbar strip it keeps at least 160 points there, and the network
+    /// items start at x≈731 at 1200 (B4 Task 6), so the line is drawn only from
+    /// `progressLineMinimumWindowWidth` up.
     static let progressWidth: CGFloat = 196
+
+    /// Below this window width the line is not drawn: Stop and the spinner only, with git's words
+    /// in the spinner's tooltip and accessibility label (B4 fix 7, the user's choice). Measured
+    /// with the `views` step during held lanes (B4 Task 6), branch "main", the longest labels
+    /// ("Pull ↓12", "Push ↑12"): with the line the active item is 315 (Fetch), 330 (Pull) and 340
+    /// points (Push; Re-publish is 346), and all three items and the active one's Stop stay in
+    /// the toolbar from a 1265-point window up; at 1260 and below the toolbar puts an item, or a
+    /// push's own Stop, into ››. 1280 leaves room for Re-publish and a little more. Without the
+    /// line the active item is 115–140 points and fits at 1100. A longer branch name in the
+    /// branch menu takes from the same toolbar, so this is a measured default, not a guarantee.
+    /// The item changes size only when the window is resized across this width, never when a
+    /// lane starts or ends (`ActivityReveal`).
+    static let progressLineMinimumWindowWidth: CGFloat = 1280
+
+    static func showsProgressLine(windowWidth: CGFloat) -> Bool {
+        windowWidth >= progressLineMinimumWindowWidth
+    }
 
     private var line: String { RemoteWording.progressLine(activity) }
 
@@ -251,16 +272,24 @@ private struct RemoteActivityItem: View {
             .buttonStyle(.borderless)
             .help("Stop \(RemoteWording.describe(activity))")
             .accessibilityLabel("Stop \(RemoteWording.describe(activity))")
-            ProgressView()
-                .controlSize(.small)
-            Text(line)
-                .font(.subheadline)
-                .monospacedDigit()
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(width: Self.progressWidth, alignment: .leading)
-                .help(RemoteWording.progressHelp(activity))
-                .accessibilityLabel(RemoteWording.progressHelp(activity))
+            if Self.showsProgressLine(windowWidth: store.windowWidth) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(line)
+                    .font(.subheadline)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(width: Self.progressWidth, alignment: .leading)
+                    .help(RemoteWording.progressHelp(activity))
+                    .accessibilityLabel(RemoteWording.progressHelp(activity))
+            } else {
+                // A narrow window: no line, so git's words are the spinner's.
+                ProgressView()
+                    .controlSize(.small)
+                    .help(RemoteWording.progressHelp(activity))
+                    .accessibilityLabel(RemoteWording.progressHelp(activity))
+            }
         }
         .accessibilityElement(children: .contain)
     }

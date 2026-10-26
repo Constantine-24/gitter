@@ -98,4 +98,16 @@ import Testing
         #expect(ActivityReveal.delay > .milliseconds(300))
         #expect(ActivityReveal.delay < .milliseconds(500))
     }
+
+    /// The running item's progress line is drawn only from `progressLineMinimumWindowWidth` (1280
+    /// pt, measured: the line fits from 1265) up: below it, Stop and the spinner alone, so the item
+    /// keeps its place in the toolbar instead of going into the overflow menu (B4 fix 7). The
+    /// default 1200-point window is below it.
+    @Test func theProgressLineIsDrawnOnlyFromTheMinimumWidth() {
+        #expect(!RemoteActivityItem.showsProgressLine(windowWidth: 1200))
+        #expect(!RemoteActivityItem.showsProgressLine(windowWidth: 1279))
+        #expect(RemoteActivityItem.showsProgressLine(windowWidth: 1280))
+        #expect(RemoteActivityItem.showsProgressLine(windowWidth: 1400))
+        #expect(RemoteActivityItem.progressLineMinimumWindowWidth == 1280)
+    }
 }

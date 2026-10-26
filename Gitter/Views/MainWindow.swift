@@ -134,6 +134,9 @@ struct MainWindow: View {
         .animation(.default, value: store.lastError)
         .animation(.default, value: store.notice)
         .animation(.default, value: store.stickyNotice)
+        // The window content's width, for the toolbar's running item (B4 fix 7): its progress
+        // line is drawn only in a window wide enough for it (`RemoteActivityItem`).
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { store.setWindowWidth($0) }
     }
 
     /// "Pull" and "Force Push…" beside the banner of a push the server refused for having
