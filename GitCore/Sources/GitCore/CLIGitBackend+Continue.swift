@@ -75,9 +75,9 @@ extension CLIGitBackend: GitOperationBackend {
                 operation: operation,
                 step: Self.contents(of: directory.appendingPathComponent("msgnum")).flatMap { Int($0) },
                 total: Self.contents(of: directory.appendingPathComponent("end")).flatMap { Int($0) },
-                current: try await commit("REBASE_HEAD", at: root)?.ref,
+                current: try await namedCommit("REBASE_HEAD", at: root)?.ref,
                 headName: headName,
-                onto: try await onto.asyncFlatMap { try await commit($0, at: root)?.ref })
+                onto: try await onto.asyncFlatMap { try await namedCommit($0, at: root)?.ref })
         case .cherryPick, .revert:
             // `sequencer/todo` exists for a range only, and lists the current commit first (M 16).
             let todo = Self.contents(of: try await gitPath("sequencer/todo", at: root), trimmed: false)
@@ -89,12 +89,12 @@ extension CLIGitBackend: GitOperationBackend {
             }
             let head = operation == .cherryPick ? "CHERRY_PICK_HEAD" : "REVERT_HEAD"
             return OperationProgress(
-                operation: operation, remaining: remaining, current: try await commit(head, at: root)?.ref)
+                operation: operation, remaining: remaining, current: try await namedCommit(head, at: root)?.ref)
         case .merge:
             let message = Self.contents(of: try await gitPath("MERGE_MSG", at: root), trimmed: false)
             let firstLine = message?.split(separator: "\n", omittingEmptySubsequences: false).first
             return OperationProgress(
-                operation: operation, mergeHead: try await commit("MERGE_HEAD", at: root)?.ref,
+                operation: operation, mergeHead: try await namedCommit("MERGE_HEAD", at: root)?.ref,
                 mergedName: firstLine.flatMap { Self.mergedName(String($0)) })
         case .squash, .applyingPatches:
             return OperationProgress(operation: operation)
@@ -589,7 +589,7 @@ extension CLIGitBackend: GitOperationBackend {
         // skip discards them, resolved or not).
         var recorded: Stash?
         if !paths.isEmpty {
-            let summary = try await commit(sha, at: root).map { "\($0.short) \($0.ref.subject)" } ?? sha
+            let summary = try await namedCommit(sha, at: root).map { "\($0.short) \($0.ref.subject)" } ?? sha
             recorded = try await StashRecord.record(
                 paths: paths, message: Self.skippedByGitter + summary, allowingUnmerged: true, backend: self, at: root)
         }
@@ -651,9 +651,9 @@ extension CLIGitBackend: GitOperationBackend {
         -> CommitRef?
     {
         guard let safety = Self.contents(of: try await gitPath("sequencer/abort-safety", at: root)),
-            let head = try await commit("HEAD", at: root)?.ref, head.sha != safety,
-            try await commit("HEAD^", at: root)?.ref.sha == safety,
-            let listed = try await commit(first.name, at: root)?.ref,
+            let head = try await namedCommit("HEAD", at: root)?.ref, head.sha != safety,
+            try await namedCommit("HEAD^", at: root)?.ref.sha == safety,
+            let listed = try await namedCommit(first.name, at: root)?.ref,
             let made = try await authorship("HEAD", at: root)
         else { return nil }
         if first.revert {
@@ -665,8 +665,8 @@ extension CLIGitBackend: GitOperationBackend {
         // Identity alone can coincide (one author, the same second, in a scripted history): HEAD
         // also changes nothing but paths that commit changes (its own resolution of them). A
         // root or merge commit is not judged: nil, a halt — the conservative reading.
-        guard let parent = try await commit("\(listed.sha)^", at: root)?.ref.sha,
-            try await commit("\(listed.sha)^2", at: root) == nil
+        guard let parent = try await namedCommit("\(listed.sha)^", at: root)?.ref.sha,
+            try await namedCommit("\(listed.sha)^2", at: root) == nil
         else { return nil }
         let changed = Set(try await namesChanged(from: safety, to: head.sha, at: root))
         let ownPaths = Set(try await namesChanged(from: parent, to: listed.sha, at: root))
@@ -694,8 +694,8 @@ extension CLIGitBackend: GitOperationBackend {
         // the pseudo-ref names, with the same command. Anything else is an older range's list —
         // also a first line that no longer resolves: nothing proves it is this stop's.
         let pseudo = operation == .cherryPick ? "CHERRY_PICK_HEAD" : "REVERT_HEAD"
-        let stopped = try await commit(pseudo, at: root)?.ref.sha
-        let listedFirst = try await commit(first.name, at: root)?.ref.sha
+        let stopped = try await namedCommit(pseudo, at: root)?.ref.sha
+        let listedFirst = try await namedCommit(first.name, at: root)?.ref.sha
         if first.revert == (operation == .revert), let stopped, stopped == listedFirst { return nil }
         return try await sequence(entries, at: root)
     }
@@ -704,7 +704,7 @@ extension CLIGitBackend: GitOperationBackend {
         guard let operation = try await operationInProgress(at: root), operation == .cherryPick || operation == .revert,
             let start = Self.contents(of: try await gitPath("sequencer/head", at: root)), Self.isObjectName(start),
             let safety = Self.contents(of: try await gitPath("sequencer/abort-safety", at: root)),
-            let head = try await commit("HEAD", at: root)?.ref.sha, head == safety, head != start
+            let head = try await namedCommit("HEAD", at: root)?.ref.sha, head == safety, head != start
         else { return [] }
         // The range git's `--abort` resets past, both ends full object names read above.
         let data = try await run(["log", "--reverse", "--no-show-signature", "--format=%H%x00%s", "--end-of-options", "\(start)..\(head)"], cwd: root)
@@ -721,7 +721,7 @@ extension CLIGitBackend: GitOperationBackend {
     {
         var listed: [CommitRef] = []
         for entry in entries.prefix(HaltedSequence.listed) {
-            listed.append(try await commit(entry.name, at: root)?.ref ?? CommitRef(sha: entry.name, subject: entry.subject))
+            listed.append(try await namedCommit(entry.name, at: root)?.ref ?? CommitRef(sha: entry.name, subject: entry.subject))
         }
         return HaltedSequence(
             operation: entries.first?.revert == true ? .revert : .cherryPick, notApplied: listed, total: entries.count)
@@ -753,9 +753,11 @@ extension CLIGitBackend: GitOperationBackend {
         return !String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// The commit `rev` names, and its abbreviated id; nil when it does not resolve.
+    /// The commit `rev` names, and its abbreviated id; nil when it does not resolve. Any name
+    /// git resolves, unlike `GitBackend.commit(_:at:)`, which takes full object ids only (it was
+    /// `commit(_:at:)` until H1 gave that name to the public read).
     /// `--no-show-signature`: `log.showSignature=true` would put gpg's lines into the text.
-    func commit(_ rev: String, at root: URL) async throws -> (ref: CommitRef, short: String)? {
+    func namedCommit(_ rev: String, at root: URL) async throws -> (ref: CommitRef, short: String)? {
         let data = try await run(
             ["log", "-1", "--no-show-signature", "--format=%H%x00%h%x00%s", "--end-of-options", rev], cwd: root,
             allowedExitCodes: [128])

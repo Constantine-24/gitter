@@ -55,13 +55,13 @@ public struct CLIGitBackend: GitBackend {
 
     // MARK: - GitBackend
 
-    public func snapshot(at root: URL) async throws -> RepoSnapshot {
+    public func snapshot(at root: URL, historyDepth: Int) async throws -> RepoSnapshot {
         async let statusData = run(["status", "--porcelain=v2", "-z", "--branch"], cwd: root)
         async let refData = run(["for-each-ref", "--format=\(Self.refFormat)"], cwd: root)
         // Which remotes exist is configuration, not refs: a remote nothing has been fetched
         // from has no `refs/remotes/<name>/…` at all, and a remote's name may contain a slash.
         async let remoteData = run(["remote", "-v"], cwd: root)
-        async let commits = commitLog(at: root)
+        async let commits = commitLog(at: root, depth: historyDepth)
         // Porcelain v2 says nothing about a merge, cherry-pick, revert or rebase that is
         // part-way through, so that comes from its own commands alongside these.
         async let operation = operationInProgress(at: root)
@@ -73,12 +73,12 @@ public struct CLIGitBackend: GitBackend {
         let refs = Self.withoutBareRepositoryCheckouts(
             RefParser.parse(try await refData)
                 .with(remotes: RemoteParser.parse(String(decoding: try await remoteData, as: UTF8.self))))
-        let log = try await commits
+        let (log, isComplete) = try await commits
         let graph = GraphLayout.layout(log)
 
         return RepoSnapshot(
             root: root, status: status, refs: refs, commits: log, graph: graph,
-            stashes: try await stashList)
+            stashes: try await stashList, historyDepth: historyDepth, historyIsComplete: isComplete)
     }
 
     /// Porcelain v2 lists a nested repository as an ordinary untracked directory (`? nested/`,
@@ -348,18 +348,25 @@ public struct CLIGitBackend: GitBackend {
     /// them as rows to check out. `--exclude` applies to the `--all` after it, so its place in
     /// the argv is before it (measured on git 2.54: after it, it excludes nothing). HEAD stays:
     /// `--all` adds it whatever the exclusion says.
-    private func commitLog(at root: URL) async throws -> [Commit] {
+    ///
+    /// `depth` commits deep (H1), and whether that is all of history: git is asked for one more
+    /// than `depth`, so a history of exactly `depth` commits is known to be complete without a
+    /// second read. A shallower read is a prefix of a deeper one — the walk's order does not
+    /// depend on `-n` (measured at 500/1000, 1000/5000, 5000/100,001; `deeperIsAPrefix`).
+    private func commitLog(at root: URL, depth requested: Int) async throws -> (commits: [Commit], isComplete: Bool) {
+        let depth = max(requested, 0)
         do {
             let data = try await run(
                 [
-                    "log", "--exclude=refs/stash", "--all", "--topo-order", "-n", "500", "-z",
+                    "log", "--exclude=refs/stash", "--all", "--topo-order", "-n", "\(depth + 1)", "-z",
                     "--format=\(Self.logFormat)",
                 ],
                 cwd: root
             )
-            return LogParser.parse(data)
+            let commits = LogParser.parse(data)
+            return (Array(commits.prefix(depth)), commits.count <= depth)
         } catch let GitError.commandFailed(_, stderr) where stderr.contains("does not have any commits") {
-            return []
+            return ([], true)
         }
     }
 

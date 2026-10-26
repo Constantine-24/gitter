@@ -7,7 +7,7 @@ import Testing
 // `Testing.Tag` is in scope here too, so GitCore's is written `GitCore.Tag` (B1.3).
 @testable import GitCore
 
-/// The store's backend for a test: all 102 requirements of the twelve protocols forwarded to a
+/// The store's backend for a test: all 104 requirements of the twelve protocols forwarded to a
 /// real `CLIGitBackend` on the test's scratch repository, with any one call open to the test
 /// (E3 Task 3, spec Design §2). A test can, around a call:
 /// - `hook` it: run code before or after every such call, and throw to make the call throw;
@@ -36,13 +36,16 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
     GitStashBackend, GitConflictBackend, GitOperationBackend, GitHistoryBackend, GitTagBackend,
     GitRemoteAdminBackend, GitCompareBackend, GitWorktreeBackend, Sendable
 {
-    /// One case per protocol requirement (102); the raw value is the method's `#function`
+    /// One case per protocol requirement (104); the raw value is the method's `#function`
     /// spelling. The overloads' cases carry what tells them apart: `stageAllExpecting`,
-    /// `discardExpectationTracked` / `discardExpectationUntracked`, and `rebaseOnto`
+    /// `discardExpectationTracked` / `discardExpectationUntracked`, `commitByID` (`GitBackend`'s
+    /// one-commit read, beside `GitWorkingCopyBackend`'s `commit`), and `rebaseOnto`
     /// (`GitRemoteBackend`) / `rebaseWithPlan` (`GitHistoryBackend`).
     enum Call: String, CaseIterable, Sendable {
         // GitBackend
-        case snapshot = "snapshot(at:)"
+        case snapshot = "snapshot(at:historyDepth:)"
+        case historyRow = "historyRow(of:at:)"
+        case commitByID = "commit(_:at:)"
         case workingCopyDiff = "workingCopyDiff(at:path:staged:)"
         case commitFiles = "commitFiles(at:sha:)"
         case commitDiff = "commitDiff(at:sha:path:)"
@@ -301,8 +304,14 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
 
     // MARK: - GitBackend
 
-    func snapshot(at root: URL) async throws -> RepoSnapshot {
-        try await around(.snapshot) { try await real.snapshot(at: root) }
+    func snapshot(at root: URL, historyDepth: Int) async throws -> RepoSnapshot {
+        try await around(.snapshot) { try await real.snapshot(at: root, historyDepth: historyDepth) }
+    }
+    func historyRow(of sha: String, at root: URL) async throws -> Int? {
+        try await around(.historyRow) { try await real.historyRow(of: sha, at: root) }
+    }
+    func commit(_ sha: String, at root: URL) async throws -> Commit? {
+        try await around(.commitByID) { try await real.commit(sha, at: root) }
     }
     func workingCopyDiff(at root: URL, path: String, staged: Bool) async throws -> [FileDiff] {
         try await around(.workingCopyDiff) { try await real.workingCopyDiff(at: root, path: path, staged: staged) }

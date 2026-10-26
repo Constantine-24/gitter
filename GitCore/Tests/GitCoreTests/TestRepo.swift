@@ -86,6 +86,18 @@ struct TestRepo {
         return String(decoding: out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Feeds `stream` to `git fast-import` in one process: the way a fixture of hundreds of
+    /// commits is made (a `git commit` each would be hundreds of processes). The stream is
+    /// written under `.git`, so it never shows as a working-tree file.
+    func fastImport(_ stream: String) async throws {
+        precondition(TestGitEnvironment.isolated)
+        let file = root.appendingPathComponent(".git/fixture-\(UUID().uuidString).fi")
+        try stream.write(to: file, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: file) }
+        _ = try await runner.run(
+            "/bin/sh", ["-c", "exec /usr/bin/git fast-import --quiet < \"$1\"", "sh", file.path], cwd: root)
+    }
+
     func cleanUp() {
         try? FileManager.default.removeItem(at: root)
     }

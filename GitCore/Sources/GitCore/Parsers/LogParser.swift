@@ -45,9 +45,13 @@ public enum LogParser {
         return commits
     }
 
+    /// `%aI`'s strict ISO 8601 (`2026-10-26T10:00:00+02:00`, or `Z`), read by one shared style.
+    /// An `ISO8601DateFormatter` made per commit was most of a deep read's cost (H1, measured:
+    /// 11.9 s of LogParser for 100,001 commits, the dates 4.3 s even with one shared formatter;
+    /// this style, 27 ms). `LogParserDateTests` pins it to the old formatter's answers.
+    static let dateStyle = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
+
     private static func parseDate(_ string: String) -> Date {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: string) ?? Date(timeIntervalSince1970: 0)
+        (try? dateStyle.parse(string)) ?? Date(timeIntervalSince1970: 0)
     }
 }
