@@ -131,3 +131,7 @@ Gitter is a personal project in active development (version 0.1.0). Each milesto
 "Status / roadmap" in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#status--roadmap). Planned next:
 - a batch of small, visible fixes;
 - commit search.
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).
