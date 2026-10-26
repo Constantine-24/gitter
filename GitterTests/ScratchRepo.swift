@@ -34,7 +34,9 @@ struct ScratchRepo {
         var description: String { "git \(arguments.joined(separator: " ")) exited \(status): \(errors)" }
     }
 
-    private func run(_ arguments: [String], in directory: URL? = nil) throws -> (status: Int32, output: String, errors: String) {
+    private func run(
+        _ arguments: [String], in directory: URL? = nil, input: URL? = nil
+    ) throws -> (status: Int32, output: String, errors: String) {
         precondition(TestGitEnvironment.isolated)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
@@ -57,7 +59,9 @@ struct ScratchRepo {
         let errHandle = try FileHandle(forWritingTo: err)
         process.standardOutput = outHandle
         process.standardError = errHandle
-        process.standardInput = FileHandle.nullDevice
+        let inputHandle = try input.map { try FileHandle(forReadingFrom: $0) }
+        defer { try? inputHandle?.close() }
+        process.standardInput = inputHandle ?? FileHandle.nullDevice
         try process.run()
         process.waitUntilExit()
         try? outHandle.close()
@@ -101,6 +105,23 @@ struct ScratchRepo {
         try write(path, contents)
         try git("add", "--", path)
         try git("commit", "-m", message)
+    }
+
+    /// Feeds `stream` to `git fast-import` (H1): the way a fixture of hundreds of commits is
+    /// made, one process instead of a `git commit` each. The stream is written beside the
+    /// repository, in `directory`, never in its worktree; afterwards the worktree and the index are
+    /// set to `HEAD` (`reset --hard`), since fast-import writes neither, and a store would
+    /// otherwise show every file of `HEAD` as deleted.
+    func fastImport(_ stream: String) throws {
+        let file = directory.appending(path: ".fixture-\(UUID().uuidString).fi")
+        try stream.write(to: file, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let arguments = ["fast-import", "--quiet"]
+        let result = try run(arguments, input: file)
+        guard result.status == 0 else {
+            throw Failure(arguments: arguments, status: result.status, output: result.output, errors: result.errors)
+        }
+        try git("reset", "--hard", "-q")
     }
 
     /// A bare repository beside this one, inside the same temporary directory.

@@ -1,19 +1,6 @@
 import GitCore
 import SwiftUI
 
-/// One line of the commit table: either the synthetic working-copy row or a commit.
-enum CommitRow: Identifiable, Hashable {
-    case workingCopy(changeCount: Int)
-    case commit(Commit, GraphRow?, hasIncomingEdge: Bool)
-
-    var id: Selection {
-        switch self {
-        case .workingCopy: .workingCopy
-        case .commit(let commit, _, _): .commit(commit.sha)
-        }
-    }
-}
-
 struct CommitListView: View {
     @Environment(RepositoryStore.self) private var store
     /// Makes the table claim keyboard focus when it is clicked, so its selection draws in the
@@ -54,13 +41,14 @@ struct CommitListView: View {
 
     @ViewBuilder
     private var history: some View {
-        let rows = rows()
+        // Built once per snapshot by the store (H1, `HistoryRows`), not per body.
+        let historyRows = store.historyRows
         // Once per body, not per row: the pills of 500 rows look up one dictionary.
         let tags = TagWording.tagsByCommit(store.snapshot?.refs.tags ?? [])
         // The same for other worktrees' detached HEADs (B3): `log --all` lists their commits.
         let worktreeHeads = store.detachedWorktreeHeads
         ScrollViewReader { proxy in
-            table(rows, tags: tags, worktreeHeads: worktreeHeads)
+            table(historyRows, tags: tags, worktreeHeads: worktreeHeads)
                 .onChange(of: store.selection) { _, newValue in
                     // Cleared whichever branch is taken, so the flag can only ever suppress
                     // the one scroll it was set for. Left standing, a selection the table made
@@ -87,8 +75,12 @@ struct CommitListView: View {
     }
 
     @ViewBuilder
-    private func table(_ rows: [CommitRow], tags: [String: [Tag]], worktreeHeads: [String: [Worktree]]) -> some View {
-        Table(rows, selection: selectionBinding(rows)) {
+    private func table(
+        _ historyRows: HistoryRows, tags: [String: [Tag]], worktreeHeads: [String: [Worktree]]
+    ) -> some View {
+        let rows = historyRows.rows
+        let graphWidth = historyRows.graphWidth
+        Table(rows, selection: selectionBinding(historyRows.shas)) {
             TableColumn("") { row in
                 switch row {
                 case .workingCopy:
@@ -100,6 +92,8 @@ struct CommitListView: View {
                         hasIncomingEdge: hasIncomingEdge,
                         width: graphWidth
                     )
+                case .end:
+                    EmptyView()
                 }
             }
             .width(graphWidth + CommitGraphCell.cellHorizontalPadding)
@@ -136,6 +130,10 @@ struct CommitListView: View {
                         }
                         Text(commit.summary).lineLimit(1)
                     }
+                case .end(let complete):
+                    // Its own look, and the load-more it triggers, are H1 Task 3's.
+                    Text(complete ? HistoryWording.startOfHistory : HistoryWording.loadingOlder)
+                        .foregroundStyle(.secondary)
                 }
             }
             .width(min: 180, ideal: 420)
@@ -197,45 +195,18 @@ struct CommitListView: View {
         }
     }
 
-    private var graphWidth: CGFloat {
-        CommitGraphCell.contentWidth(for: store.snapshot?.graph ?? [])
-    }
-
     /// Commits as a set (⌘-click, ⇧-click), the working copy alone — `CommitSelection` decides,
     /// through the store. The table is handed the set the store keeps, so it can never draw a
     /// selection the detail pane is not about.
-    private func selectionBinding(_ rows: [CommitRow]) -> Binding<Set<Selection>> {
+    private func selectionBinding(_ shown: [Selection]) -> Binding<Set<Selection>> {
         Binding(
             get: { CommitSelection.table(selection: store.selection, commits: store.selectedCommits) },
             set: { newValue in
                 let before = store.selection
-                store.selectRows(newValue, shown: rows.map(\.id))
+                store.selectRows(newValue, shown: shown)
                 if store.selection != before { selectedInTable = store.selection }
             }
         )
-    }
-
-    private func rows() -> [CommitRow] {
-        guard let snapshot = store.snapshot else { return [] }
-        var result: [CommitRow] = []
-        let changed = snapshot.status.files.count
-        if changed > 0 {
-            result.append(.workingCopy(changeCount: changed))
-        }
-        var graphBySha: [String: GraphRow] = [:]
-        for row in snapshot.graph { graphBySha[row.sha] = row }
-        var previous: GraphRow?
-        for commit in snapshot.commits {
-            let graphRow = graphBySha[commit.sha]
-            let hasIncomingEdge = if let graphRow, let previous {
-                previous.edges.contains { !$0.fromAbove && $0.toLane == graphRow.lane }
-            } else {
-                false
-            }
-            result.append(.commit(commit, graphRow, hasIncomingEdge: hasIncomingEdge))
-            previous = graphRow
-        }
-        return result
     }
 }
 

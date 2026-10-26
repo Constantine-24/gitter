@@ -28,6 +28,10 @@ extension RepositoryStore {
         // The comparison the changes are read from (B3): its ids, never the names now.
         let capturedComparison = comparison
         let cachedComparisonFiles = comparisonFiles
+        // A selected commit the header can't describe from the loaded rows or the comparison (H1:
+        // a reveal's before its deep load lands, one past the cap) is read on its own.
+        let readsCommit: Bool =
+            if case .commit(let sha) = capturedSelection { commitForDetail(sha) == nil } else { false }
 
         detailTask = Task {
             var files: [FileStatus] = []
@@ -35,6 +39,7 @@ extension RepositoryStore {
             var stashGone = false
             var comparisonGone = false
             var readComparisonFiles: [FileStatus]?
+            var readCommit: Commit?
             var loadError: Error?
 
             switch capturedSelection {
@@ -46,6 +51,8 @@ extension RepositoryStore {
                 } catch {
                     loadError = error
                 }
+                // The header only: a failed read leaves the bare sha, as before H1.
+                if readsCommit, loadError == nil { readCommit = (try? await self.backend.commit(sha, at: root)) ?? nil }
             case .stash(let sha):
                 // By sha, from the snapshot just loaded: its position is whatever the list says now.
                 if let stash = self.stashes.first(where: { $0.sha == sha }) {
@@ -74,6 +81,9 @@ extension RepositoryStore {
                 } else {
                     comparisonGone = true
                 }
+            case .historyEnd:
+                // Never selected (`select` refuses it): nothing to show.
+                break
             }
 
             guard !Task.isCancelled,
@@ -89,6 +99,7 @@ extension RepositoryStore {
                 return
             }
             if let readComparisonFiles { self.setComparisonFiles(readComparisonFiles) }
+            if let readCommit { self.setDetailCommit(readCommit) }
 
             if stashGone {
                 // Popped or dropped — here or in a terminal. The pop's or drop's own notice says
@@ -123,9 +134,9 @@ extension RepositoryStore {
                     // row shows no count rather than a wrong one.
                     self.setError(CompareWording.failure(loadError) ?? Self.describe(loadError))
                     self.setDetailFiles([])
-                case .workingCopy:
-                    // Unreachable today (the working-copy branch above never throws); kept so
-                    // this switch stays exhaustive if that ever changes.
+                case .workingCopy, .historyEnd:
+                    // Unreachable today (the working-copy branch above never throws, and the end
+                    // row is never selected); kept so this switch stays exhaustive if that changes.
                     self.setError(Self.describe(loadError))
                     self.setDetailFiles([])
                 }
@@ -189,6 +200,9 @@ extension RepositoryStore {
                         result = try await self.backend.comparisonDiff(
                             capturedComparison, path: capturedPath, at: root)
                     }
+                case .historyEnd:
+                    // Never selected: no diff.
+                    break
                 }
             } catch {
                 loadError = error

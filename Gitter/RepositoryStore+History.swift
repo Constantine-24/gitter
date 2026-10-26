@@ -146,10 +146,15 @@ extension RepositoryStore {
 
     /// Why Cherry-Pick / Revert is off for `shas`, or nil: an operation in progress, or a merge
     /// commit among them (GitCore refuses both too; this says it before the click).
+    ///
+    /// Each commit's own parents say whether it is a merge (`commitForDetail`: the loaded rows, the
+    /// comparison's lists, or the selected commit's own read), not the loaded merges alone: since
+    /// H1 a selected commit can be one the rows haven't loaded — a reveal's, until its deep load
+    /// lands, or one past the cap. A commit found in none of them (its read not landed yet) counts
+    /// as no merge here; GitCore's plan still refuses it.
     func historyBlockedReason(for shas: [String]) -> String? {
         if let reason = branchSwitchingBlockedReason ?? changeRunningBlockedReason { return reason }
-        let merges = Set(snapshot?.commits.filter(\.isMerge).map(\.sha) ?? [])
-        if shas.contains(where: merges.contains) { return HistoryWording.mergesInSelection }
+        if shas.contains(where: { commitForDetail($0)?.isMerge == true }) { return HistoryWording.mergesInSelection }
         return nil
     }
 
@@ -193,7 +198,13 @@ enum CommitSelection {
     /// A working copy or stash among what was just **added** wins alone — the user clicked it.
     /// Otherwise the commits, in the order `shown`; one the list no longer shows (the log is
     /// capped) after those, so it is not lost.
+    ///
+    /// The end row (`Selection.historyEnd`, H1) is never selected: it is dropped from all three
+    /// first, so handed in alone it is an empty set.
     static func resolve(_ new: Set<Selection>, previous: Set<Selection>, shown: [Selection]) -> Resolved? {
+        let new = new.subtracting([.historyEnd])
+        let previous = previous.subtracting([.historyEnd])
+        let shown = shown.filter { $0 != .historyEnd }
         guard !new.isEmpty else { return nil }
         let added = new.subtracting(previous)
         if let single = first(nonCommitIn: added, shown: shown) {
@@ -213,7 +224,7 @@ enum CommitSelection {
     static func table(selection: Selection, commits: [String]) -> Set<Selection> {
         switch selection {
         case .workingCopy: [.workingCopy]
-        case .stash, .comparisonChanges: []
+        case .stash, .comparisonChanges, .historyEnd: []
         case .commit(let sha): commits.isEmpty ? [.commit(sha)] : Set(commits.map(Selection.commit))
         }
     }

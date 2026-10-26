@@ -12,6 +12,9 @@ enum Selection: Hashable {
     /// The changes the compared branch B brings (B3, `RepositoryStore+Compare`): the files and
     /// diff from the comparison's first merge base to B's id. Only while `comparison` is set.
     case comparisonChanges
+    /// The commit table's end row (H1, `CommitRow.end`): an id only, never a selection —
+    /// `CommitSelection.resolve` drops it and `select` refuses it.
+    case historyEnd
 }
 
 @Observable @MainActor
@@ -29,6 +32,9 @@ final class RepositoryStore {
         // follows: it is the selection's own commit and nothing else unless `selectRows` /
         // `selectCommits` made it a set whose first is this commit.
         didSet {
+            // A reveal waits for its own commit's row; a selection made elsewhere ends it, so a
+            // stale reveal never scrolls the table (H1).
+            if let pendingReveal, selection != .commit(pendingReveal) { self.pendingReveal = nil }
             guard case .commit(let sha) = selection else {
                 if !selectedCommits.isEmpty { selectedCommits = [] }
                 return
@@ -41,6 +47,23 @@ final class RepositoryStore {
     /// ⇧-click set. Empty while the working copy or a stash is selected. What Cherry-Pick and
     /// Revert act on.
     private(set) var selectedCommits: [String] = []
+
+    /// How many commits History reads (H1, `HistoryDepth`): one page when a repository opens,
+    /// raised a page by `loadOlderCommits` and to a commit's row by `reveal`, passed to every
+    /// snapshot load, and never lowered by a refresh — only `open()` puts it back.
+    private(set) var historyDepth = HistoryDepth.page
+    /// The commit table's rows for the snapshot on screen, built once per snapshot in
+    /// `setSnapshot` (H1). Its graph width only grows until `open()`.
+    private(set) var historyRows = HistoryRows.empty
+    /// True from a `loadOlderCommits` call until that load lands or fails (H1).
+    private(set) var isLoadingOlderCommits = false
+    /// The commit a reveal (a sidebar click, Done on a comparison) selected, until the table has
+    /// scrolled to its row (`revealHandled`) — or a selection made elsewhere ends it (H1).
+    private(set) var pendingReveal: String?
+    /// The selected commit's own read (`GitBackend.commit(_:at:)`), for a commit that is neither
+    /// loaded nor in the comparison: what its detail header shows (`commitForDetail`). Read by
+    /// `loadDetail`, forgotten by `open()`.
+    private(set) var detailCommit: Commit?
     var selectedPath: String?
     private(set) var detailFiles: [FileStatus] = []
     /// The selected stash entry's files and diffs, both parts; nil unless a stash is selected
@@ -304,6 +327,9 @@ final class RepositoryStore {
             snapshotLoadCount += 1
         }
 
+        /// How many times `historyRows` was built (`setSnapshot`): once per snapshot set (H1).
+        private(set) var historyRowsBuilds = 0
+
         /// How many worktree states have been written, for the harness's `reloadtiming` (B3
         /// final review, I2): the snapshot lands before the worktree state's own read.
         private(set) var worktreeStateWrites = 0
@@ -388,6 +414,10 @@ final class RepositoryStore {
     var conflictTask: Task<Void, Never>?
     // internal (not private), bookkeeping only, views must not touch this: used by +Compare.swift
     var compareTask: Task<Void, Never>?
+    /// The reveal's row read and the deep load after it (H1, `RepositoryStore+Depth`); a new
+    /// reveal and `open()` cancel it.
+    // internal (not private), bookkeeping only, views must not touch this: used by +Depth.swift
+    var revealTask: Task<Void, Never>?
     /// The worktree state's read (B3 final review, I2), started after a snapshot lands and
     /// cancelled by `open()`; `worktreeReadSchedule` says when one starts and whether it is written.
     // internal (not private), bookkeeping only, views must not touch this: used by +Worktrees.swift
@@ -481,6 +511,8 @@ final class RepositoryStore {
         diffTask?.cancel()
         conflictTask?.cancel()
         compareTask?.cancel()
+        revealTask?.cancel()
+        revealTask = nil
         // `lastRefresh` is deliberately left in place: a load still in flight for the old root
         // writes nothing (it re-checks `root` before it lands), and keeping the chain intact
         // keeps this repository's first load from overlapping it.
@@ -488,6 +520,13 @@ final class RepositoryStore {
         // Reset all repository-derived state so nothing from the previous repository lingers
         // on screen (or gets raced against) while the new repository's first snapshot loads.
         snapshot = nil
+        // History opens at one page, with a graph column sized afresh (H1). The load-more's own
+        // clearing is generation-guarded and will never run for this repository, as with
+        // `isMutating` below.
+        historyDepth = HistoryDepth.page
+        historyRows = .empty
+        isLoadingOlderCommits = false
+        detailCommit = nil
         detailFiles = []
         stashContents = nil
         setDiff([], staged: stagedView)
@@ -497,6 +536,7 @@ final class RepositoryStore {
         prefilledStopKey = nil
         haltedSequence = nil
         selection = .workingCopy
+        pendingReveal = nil
         selectedPath = nil
         lastError = nil
         errorIsSticky = false
@@ -604,6 +644,8 @@ final class RepositoryStore {
         diffTask?.cancel()
         conflictTask?.cancel()
         compareTask?.cancel()
+        revealTask?.cancel()
+        revealTask = nil
         worktreeReadTask?.cancel()
         worktreeReadTask = nil
         worktreeCheckTask?.cancel()
@@ -621,6 +663,8 @@ final class RepositoryStore {
     // MARK: - Selection
 
     func select(_ newSelection: Selection) {
+        // The end row is an id, never a selection (H1).
+        guard newSelection != .historyEnd else { return }
         // Another entry's files must not stand under this one's header while it loads.
         if newSelection != selection { stashContents = nil }
         selection = newSelection
@@ -690,6 +734,12 @@ final class RepositoryStore {
     /// internal (not private(set) write): used by +Refresh.swift
     func setSnapshot(_ newSnapshot: RepoSnapshot?) {
         snapshot = newSnapshot
+        // The rows once per snapshot (H1). The width before is this repository's: `open()` set
+        // `historyRows` back to `.empty`, so the graph column only grows while the root stays.
+        historyRows = HistoryRows.build(newSnapshot, previousWidth: historyRows.graphWidth)
+        #if DEBUG
+            historyRowsBuilds += 1
+        #endif
         endStagedRevertNoticeIfDone()
         // A deleted tag back exactly as it was — a fetch brought it back — needs no restore.
         if deletedTags.pruningTagsBack(newSnapshot?.refs.tags ?? []) { refreshDeletedTagsNotice() }
@@ -757,6 +807,27 @@ final class RepositoryStore {
     /// `comparison` while it is still the one on screen
     func setComparisonFiles(_ files: [FileStatus]?) {
         comparisonFiles = files
+    }
+
+    /// internal (not private(set) write): used by +Depth.swift's `loadOlderCommits` and `reveal`
+    func setHistoryDepth(_ depth: Int) {
+        historyDepth = depth
+    }
+
+    /// internal (not private(set) write): used by +Depth.swift's `loadOlderCommits`
+    func setLoadingOlderCommits(_ value: Bool) {
+        isLoadingOlderCommits = value
+    }
+
+    /// internal (not private(set) write): used by +Depth.swift's `reveal` and `revealHandled`.
+    /// Written after the selection, so `selection`'s `didSet` has run.
+    func setPendingReveal(_ sha: String?) {
+        pendingReveal = sha
+    }
+
+    /// internal (not private(set) write): used by +Detail.swift, with the selected commit's own read
+    func setDetailCommit(_ commit: Commit?) {
+        detailCommit = commit
     }
 
     /// internal (not private(set) write): used by +Refresh.swift

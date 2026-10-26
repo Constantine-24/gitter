@@ -32,12 +32,18 @@ extension RepositoryStore {
         currentBranchRef.map { "refs/heads/" + $0.name }
     }
 
-    /// The commit a detail header describes: from the log, or — for a commit only one side of
-    /// the comparison has, which the capped log may not show — from the comparison's lists.
+    /// The commit a detail header describes: from the log; for a commit only one side of the
+    /// comparison has, which the loaded rows may not show, from the comparison's lists; and for a
+    /// selected commit in neither — a reveal's before its deep load lands, one past the cap — from
+    /// its own read (`detailCommit`, H1).
     func commitForDetail(_ sha: String) -> Commit? {
         if let commit = snapshot?.commits.first(where: { $0.sha == sha }) { return commit }
-        guard let comparison else { return nil }
-        return (comparison.commitsOnlyB + comparison.commitsOnlyA).first { $0.sha == sha }
+        if let comparison,
+            let commit = (comparison.commitsOnlyB + comparison.commitsOnlyA).first(where: { $0.sha == sha })
+        {
+            return commit
+        }
+        return detailCommit?.sha == sha ? detailCommit : nil
     }
 
     // MARK: - Menu reasons
@@ -120,18 +126,34 @@ extension RepositoryStore {
     }
 
     /// Done, Esc: back to the history. The changes row's selection goes back to the working
-    /// copy; a commit clicked in the comparison stays selected, as any commit does.
+    /// copy; a commit clicked in the comparison stays selected, as any commit does — and when the
+    /// history hasn't loaded it, it is revealed (H1): loaded down to, and scrolled to.
     func endComparison() {
+        leaveComparison(revealingSelection: true)
+    }
+
+    /// A click on a sidebar row: it ends compare mode, then selects as before — a commit (a
+    /// branch's, a tag's, a deleted tag's receipt's) through `reveal`, so one that isn't loaded is
+    /// loaded down to (H1). The comparison's own selection is not revealed first: the click
+    /// replaces it.
+    func selectFromSidebar(_ newSelection: Selection) {
+        leaveComparison(revealingSelection: false)
+        if case .commit(let sha) = newSelection {
+            reveal(sha)
+        } else {
+            select(newSelection)
+        }
+    }
+
+    private func leaveComparison(revealingSelection: Bool) {
         compareTask?.cancel()
         compareTask = nil
         guard comparison != nil else { return }
         setComparison(nil)
-        if selection == .comparisonChanges { select(.workingCopy) }
-    }
-
-    /// A click on a sidebar row: it ends compare mode, then selects as before.
-    func selectFromSidebar(_ newSelection: Selection) {
-        endComparison()
-        select(newSelection)
+        if selection == .comparisonChanges {
+            select(.workingCopy)
+        } else if revealingSelection, case .commit(let sha) = selection, !historyRows.shas.contains(.commit(sha)) {
+            reveal(sha)
+        }
     }
 }

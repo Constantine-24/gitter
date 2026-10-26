@@ -525,4 +525,14 @@ import Testing
         #expect(!pick.canStrandCommits(leavingHeadAt: Self.head))
         #expect(!rebase.canStrandCommits(leavingHeadAt: Self.head))
     }
+    // MARK: - History's depth (H1)
+
+    @Test func theEndRowAndTheRevealNoticesReadAsPlanned() {
+        #expect(HistoryWording.loadingOlder == "Loading older commits…")
+        #expect(HistoryWording.startOfHistory == "Start of history")
+        #expect(HistoryWording.notInHistory(shortSha: "1a2b3c4")
+            == "1a2b3c4 isn't in the history list: no branch, tag or HEAD reaches it.")
+        #expect(HistoryWording.beyondCap(shortSha: "1a2b3c4")
+            == "1a2b3c4 is more than 50,000 commits back, past what the history list loads.")
+    }
 }

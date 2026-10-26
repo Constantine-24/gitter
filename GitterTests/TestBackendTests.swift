@@ -1,6 +1,7 @@
 import Foundation
 import GitCore
 import GitCoreTestSupport
+import Synchronization
 import Testing
 
 @testable import Gitter
@@ -57,6 +58,41 @@ import Testing
             issue.comments.contains { $0.rawValue.contains("is keyed as commit(message:amend:allTracked:at:)") }
         }
         #expect(backend.calls == [.commit])
+    }
+
+    // MARK: - The row read's answer (H1 Task 2)
+
+    /// `replaceHistoryRow`: the call is still logged, and answers what the replacement says.
+    @Test(.timeLimit(.minutes(10))) func aReplacedRowReadAnswersTheReplacement() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try repo.commit("a.txt", "one\n", "first")
+        let sha = try repo.git("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines)
+        let backend = TestBackend()
+        let seen = Mutex<(sha: String, realRow: Int?)?>(nil)
+        backend.replaceHistoryRow { asked, root, real in
+            let realRow = try await real.historyRow(of: asked, at: root)
+            seen.withLock { $0 = (asked, realRow) }
+            return 60_000
+        }
+        #expect(try await backend.historyRow(of: sha, at: repo.url) == 60_000)
+        #expect(backend.calls == [.historyRow])
+        #expect(seen.withLock { $0?.sha } == sha)
+        #expect(seen.withLock { $0?.realRow } == 0)
+    }
+
+    /// Control: with no replacement, git answers — the commit's real row.
+    @Test(.timeLimit(.minutes(10))) func anUnreplacedRowReadIsGits() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try repo.commit("a.txt", "one\n", "first")
+        let sha = try repo.git("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines)
+        let backend = TestBackend()
+        let row = try await backend.historyRow(of: sha, at: repo.url)
+        withKnownIssue("nothing replaced the read, so it is git's row 0") {
+            #expect(row == 60_000)
+        }
+        #expect(row == 0)
     }
 
     // MARK: - Forwarding and the call log

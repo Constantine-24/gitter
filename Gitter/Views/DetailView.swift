@@ -76,6 +76,9 @@ struct DetailView: View {
             // Taller than a commit's: the header has up to four lines, and the files must still
             // show a few rows under it.
             .frame(minHeight: 260)
+        case .historyEnd:
+            // The history's end row is never selected (`RepositoryStore.select` refuses it).
+            EmptyView()
         }
     }
 

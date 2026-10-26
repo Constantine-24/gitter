@@ -380,4 +380,87 @@ import Testing
         } matching: { $0.isNeverCameBack }
         #expect(test.registry.stores.contains { $0 === store })
     }
+    // MARK: - History's depth (H1 Task 2)
+
+    /// `fastImport`: the stream's commits are in, and the worktree and index match `HEAD`.
+    @Test func fastImportWritesTheCommitsAndACleanWorktree() throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try repo.fastImport(DeepHistory.linear(3))
+        #expect(try repo.git("rev-list", "--count", "--all") == "3\n")
+        #expect(try repo.git("status", "--porcelain") == "")
+        #expect(try repo.git("log", "-1", "--format=%s") == "m3\n")
+        let left = try FileManager.default.contentsOfDirectory(atPath: repo.directory.path)
+        #expect(left == ["repo"], "the stream file is gone")
+    }
+
+    /// Control: a stream git cannot read fails the helper.
+    @Test func aBrokenFastImportStreamThrows() throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        withKnownIssue("not a fast-import stream") {
+            try repo.fastImport("commit refs/heads/main\nnonsense\n")
+        }
+    }
+
+    /// `waitUntilIdle` waits for a load-more until it lands.
+    @Test(.timeLimit(.minutes(10))) func waitUntilIdleWaitsForALoadMore() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try repo.fastImport(DeepHistory.linear(600))
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        store.loadOlderCommits()
+        await waitUntilIdle(store)
+        #expect(store.snapshot?.commits.count == 600)
+    }
+
+    /// Control: a load-more whose snapshot is held keeps the store from going idle.
+    @Test(.timeLimit(.minutes(10))) func aHeldLoadMoreIsNotIdle() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try repo.fastImport(DeepHistory.linear(600))
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        defer { backend.releaseAll() }
+        let gate = backend.hold(.snapshot)
+        store.loadOlderCommits()
+        #expect(await waitUntil("the load parked") { gate.waiting })
+
+        await withKnownIssue("the load-more is held, so the store never goes idle") {
+            let waiter = Task { @MainActor in await waitUntilIdle(store) }
+            try? await Task.sleep(for: .milliseconds(150))
+            waiter.cancel()
+            await waiter.value
+        } matching: { $0.isNeverCameBack }
+        gate.release()
+        await waitUntilIdle(store)
+        #expect(store.snapshot?.commits.count == 600)
+    }
+
+    /// Control: a reveal whose row read is held keeps the store from going idle.
+    @Test(.timeLimit(.minutes(10))) func aHeldRevealIsNotIdle() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try repo.fastImport(DeepHistory.linear(600))
+        let root = try repo.git("rev-list", "--max-parents=0", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines)
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        defer { backend.releaseAll() }
+        let gate = backend.hold(.historyRow)
+        store.reveal(root)
+        #expect(await waitUntil("the row read parked") { gate.waiting })
+
+        await withKnownIssue("the reveal's row read is held, so the store never goes idle") {
+            let waiter = Task { @MainActor in await waitUntilIdle(store) }
+            try? await Task.sleep(for: .milliseconds(150))
+            waiter.cancel()
+            await waiter.value
+        } matching: { $0.isNeverCameBack }
+        gate.release()
+        await waitUntilIdle(store)
+        #expect(store.historyRows.shas.contains(.commit(root)))
+    }
 }

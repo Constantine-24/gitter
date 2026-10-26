@@ -115,6 +115,24 @@ enum HistoryWording {
         count > 1 ? "\(count) commits selected. Showing the first." : nil
     }
 
+    // MARK: - History's depth (H1)
+
+    /// The end row while older commits may exist.
+    static let loadingOlder = "Loading older commits…"
+    /// The end row once the history is complete.
+    static let startOfHistory = "Start of history"
+
+    /// A reveal of a commit no branch, tag or HEAD reaches (a stash's): it stays selected.
+    static func notInHistory(shortSha: String) -> String {
+        "\(shortSha) isn't in the history list: no branch, tag or HEAD reaches it."
+    }
+
+    /// A reveal of a commit `HistoryDepth.cap` rows back or more: it stays selected. The number is
+    /// written out, not formatted, so it reads the same in every locale.
+    static func beyondCap(shortSha: String) -> String {
+        "\(shortSha) is more than 50,000 commits back, past what the history list loads."
+    }
+
     // MARK: - The Cherry-Pick / Revert sheet
 
     static func sheetTitle(_ plan: HistoryPlan) -> String {

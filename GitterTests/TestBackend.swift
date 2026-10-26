@@ -13,7 +13,8 @@ import Testing
 /// - `hook` it: run code before or after every such call, and throw to make the call throw;
 /// - `fail` it: the next such call throws the given error without running git;
 /// - `hold` it: the next such call parks before it reaches git until the test releases it;
-/// - replace it, through a typed replacement added when a test needs one (`replacePop`);
+/// - replace it, through a typed replacement added when a test needs one (`replacePop`,
+///   `replaceHistoryRow`);
 /// - read `calls`, every call made so far, in order.
 ///
 /// A call is keyed by `Call`, one case per requirement whose raw value is the method's
@@ -31,7 +32,8 @@ import Testing
 ///
 /// The keys and the forwarders were generated from the protocols (the milestone's
 /// `probe-kit/gentb.py`, `genfwd.py`'s parse of B1.3 emitting both) and are one shape each:
-/// `try await around(.key) { try await real.method(…) }`; `pop` alone was edited, for `replacePop`.
+/// `try await around(.key) { try await real.method(…) }`; `pop` and `historyRow` alone were edited,
+/// for `replacePop` and `replaceHistoryRow`.
 final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, GitRemoteBackend,
     GitStashBackend, GitConflictBackend, GitOperationBackend, GitHistoryBackend, GitTagBackend,
     GitRemoteAdminBackend, GitCompareBackend, GitWorktreeBackend, Sendable
@@ -191,6 +193,7 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
         var parked: [Int: StuckCall] = [:]
         var lastParked = 0
         var pop: (@Sendable (Stash, URL, CLIGitBackend) async throws -> StashApplyOutcome)?
+        var historyRow: (@Sendable (String, URL, CLIGitBackend) async throws -> Int?)?
     }
 
     private let state = Mutex(State())
@@ -230,6 +233,13 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
     /// still logged, hooked, failed and held as any other.
     func replacePop(_ body: @escaping @Sendable (Stash, URL, CLIGitBackend) async throws -> StashApplyOutcome) {
         state.withLock { $0.pop = body }
+    }
+
+    /// Replaces `historyRow(of:at:)`'s answer (H1 Task 2): `body` gets the sha, the root and the
+    /// real backend — a row past `HistoryDepth.cap` needs no 50,000-commit fixture. The call is
+    /// still logged, hooked, failed and held as any other.
+    func replaceHistoryRow(_ body: @escaping @Sendable (String, URL, CLIGitBackend) async throws -> Int?) {
+        state.withLock { $0.historyRow = body }
     }
 
     /// The calls made so far, in order.
@@ -308,7 +318,10 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
         try await around(.snapshot) { try await real.snapshot(at: root, historyDepth: historyDepth) }
     }
     func historyRow(of sha: String, at root: URL) async throws -> Int? {
-        try await around(.historyRow) { try await real.historyRow(of: sha, at: root) }
+        try await around(.historyRow) {
+            if let replacement = state.withLock({ $0.historyRow }) { return try await replacement(sha, root, real) }
+            return try await real.historyRow(of: sha, at: root)
+        }
     }
     func commit(_ sha: String, at root: URL) async throws -> Commit? {
         try await around(.commitByID) { try await real.commit(sha, at: root) }

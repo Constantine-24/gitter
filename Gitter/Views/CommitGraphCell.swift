@@ -13,7 +13,7 @@ struct CommitGraphCell: View {
     /// Width of the drawing area, shared by every row so lanes line up (see `contentWidth`).
     let width: CGFloat
 
-    static let laneWidth: CGFloat = 14
+    nonisolated static let laneWidth: CGFloat = 14
     static let rowHeight: CGFloat = 24
     /// The vertical padding `Table` puts around a cell's content, cancelled out so the
     /// graph canvas spans the whole row and edges join up between rows.
@@ -29,8 +29,9 @@ struct CommitGraphCell: View {
         palette[((lane % palette.count) + palette.count) % palette.count]
     }
 
-    /// Drawing width for a set of graph rows: enough for the widest row's lane count.
-    static func contentWidth(for rows: [GraphRow]) -> CGFloat {
+    /// Drawing width for a set of graph rows: enough for the widest row's lane count. Pure, and
+    /// nonisolated: `HistoryRows.build` computes it once per snapshot (H1).
+    nonisolated static func contentWidth(for rows: [GraphRow]) -> CGFloat {
         let lanes = rows.map(\.laneCount).max() ?? 1
         return max(24, CGFloat(lanes) * laneWidth + 8)
     }

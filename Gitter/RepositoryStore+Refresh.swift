@@ -113,7 +113,11 @@ extension RepositoryStore {
         await chainedRefresh().value
     }
 
-    private func chainedRefresh() -> Task<Void, Never> {
+    /// The load `refresh()` waits for, queued at once: chained behind the last, or the one already
+    /// queued. `refresh()`'s guards are the caller's.
+    // internal (not private): used by +Depth.swift's `loadOlderCommits`, which must queue its load
+    // in the call itself
+    func chainedRefresh() -> Task<Void, Never> {
         if refreshIsQueued, let queued = lastRefresh { return queued }
         let previous = lastRefresh
         refreshIsQueued = true
@@ -139,7 +143,8 @@ extension RepositoryStore {
         defer { setLoading(false) }
 
         do {
-            let newSnapshot = try await backend.snapshot(at: root)
+            // At the depth History has reached (H1): a refresh never lowers it.
+            let newSnapshot = try await backend.snapshot(at: root, historyDepth: historyDepth)
             // The stop of the operation it shows, if any, read before either is written: the bar
             // and the file list must describe the same moment.
             let stop = await Self.readOperationStop(newSnapshot.status, backend: backend, root: root)
@@ -162,10 +167,13 @@ extension RepositoryStore {
             // hook's output a fraction of a second after the user saw it.
             clearErrorUnlessSticky()
 
-            // Keep a commit selection even when the commit isn't in the loaded window (the
-            // log is capped): the row simply isn't highlighted. Only an empty repository has
-            // no commit the selection could ever refer to. A changed root is handled by
-            // `open()`, which resets the selection itself.
+            // Keep a commit selection even when the commit isn't in the loaded rows: the row
+            // simply isn't highlighted. The depth is never lowered by a refresh (H1), so a
+            // selection that was loaded stays loaded unless its commit left the history (a branch
+            // deleted or rewritten); one never loaded — a reveal's commit before its deep load
+            // lands, or one past the cap — keeps its header from the commit's own read
+            // (`commitForDetail`). Only an empty repository has no commit the selection could ever
+            // refer to. A changed root is handled by `open()`, which resets the selection itself.
             if newSnapshot.commits.isEmpty {
                 selection = .workingCopy
             }
