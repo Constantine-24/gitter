@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gitter — a simple, native Git client for macOS</title>
+<meta name="description" content="Gitter is a simple, native Git client for macOS: history with a lane graph, line-level staging, branches, remotes, conflict resolution, stash, tags and worktrees, built on your own git.">
+<meta property="og:title" content="Gitter — a simple, native Git client for macOS">
+<meta property="og:description" content="History, staging, branches, remotes and conflicts, without the feature bloat. Built on your own git.">
+<meta property="og:image" content="screenshots/branches.png">
+<style>
+  :root {
+    --bg: #fbfbfd;
+    --bg-alt: #f2f2f6;
+    --card: #ffffff;
+    --text: #1d1d1f;
+    --muted: #5f5f66;
+    --line: #e2e2e8;
+    --accent: #e8590c;
+    --accent-soft: #fff1e8;
+    --code-bg: #f0f0f4;
+    --shadow: 0 20px 50px -20px rgba(20, 20, 40, .25);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #111114;
+      --bg-alt: #18181c;
+      --card: #1e1e23;
+      --text: #f2f2f5;
+      --muted: #a2a2ab;
+      --line: #2e2e35;
+      --accent: #ff8a4c;
+      --accent-soft: #2c1d14;
+      --code-bg: #26262c;
+      --shadow: 0 20px 50px -20px rgba(0, 0, 0, .7);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 17px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  img { max-width: 100%; display: block; }
+  code, kbd {
+    font: 0.86em ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    background: var(--code-bg);
+    border-radius: 5px;
+    padding: .1em .4em;
+  }
+  p code, li code { white-space: nowrap; }
+  kbd { border: 1px solid var(--line); border-bottom-width: 2px; white-space: nowrap; }
+  pre {
+    background: var(--code-bg);
+    border-radius: 10px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+  /* Nav */
+  nav.top {
+    position: sticky; top: 0; z-index: 10;
+    background: color-mix(in srgb, var(--bg) 85%, transparent);
+    backdrop-filter: saturate(180%) blur(14px);
+    -webkit-backdrop-filter: saturate(180%) blur(14px);
+    border-bottom: 1px solid var(--line);
+  }
+  nav.top .wrap { display: flex; align-items: center; gap: 24px; height: 56px; }
+  nav.top .brand { font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 10px; }
+  nav.top .brand img { width: 26px; height: 26px; }
+  nav.top .links { display: flex; gap: 20px; margin-left: auto; font-size: 15px; }
+  nav.top .links a { color: var(--muted); }
+  nav.top .links a:hover { color: var(--text); text-decoration: none; }
+
+  /* Hero */
+  header.hero { padding: 72px 0 40px; text-align: center; }
+  header.hero .icon { width: 96px; height: 96px; margin: 0 auto 20px; }
+  header.hero h1 { font-size: clamp(40px, 6vw, 64px); line-height: 1.05; margin: 0 0 16px; letter-spacing: -0.02em; }
+  header.hero p.lead { font-size: clamp(18px, 2.2vw, 22px); color: var(--muted); max-width: 680px; margin: 0 auto 28px; }
+  .buttons { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 11px 22px; border-radius: 999px; font-weight: 600; font-size: 16px;
+    border: 1px solid var(--line); color: var(--text); background: var(--card);
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn:hover { text-decoration: none; filter: brightness(1.05); }
+  .shot {
+    margin: 48px auto 0; max-width: 1040px; border-radius: 12px; overflow: hidden;
+    box-shadow: var(--shadow); border: 1px solid var(--line);
+  }
+  .meta { color: var(--muted); font-size: 14px; margin-top: 14px; }
+
+  /* Sections */
+  section { padding: 72px 0; }
+  section.alt { background: var(--bg-alt); }
+  h2 { font-size: clamp(28px, 4vw, 40px); letter-spacing: -0.015em; margin: 0 0 12px; line-height: 1.15; }
+  h3 { font-size: 21px; margin: 0 0 8px; }
+  .sub { color: var(--muted); font-size: 19px; max-width: 720px; margin: 0 0 40px; }
+
+  /* Feature grid */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 18px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 22px 22px 18px; }
+  .card .glyph {
+    width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center;
+    background: var(--accent-soft); color: var(--accent); font-size: 20px; margin-bottom: 12px;
+  }
+  .card p { margin: 0; color: var(--muted); font-size: 15.5px; }
+
+  /* Safety */
+  blockquote.promise {
+    margin: 0 0 36px; padding: 22px 26px; border-left: 4px solid var(--accent);
+    background: var(--card); border-radius: 0 12px 12px 0; font-size: 20px;
+  }
+  .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px 36px; }
+  .two div p { margin: 4px 0 0; color: var(--muted); font-size: 15.5px; }
+
+  /* Gallery */
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 22px; }
+  figure { margin: 0; }
+  figure img { border-radius: 10px; border: 1px solid var(--line); box-shadow: 0 8px 24px -14px rgba(0,0,0,.35); }
+  figcaption { color: var(--muted); font-size: 14.5px; margin-top: 8px; }
+  .note { color: var(--muted); font-size: 14px; margin-top: 28px; }
+
+  /* Guide */
+  .guide { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 48px; align-items: start; }
+  .toc { position: sticky; top: 80px; font-size: 15px; }
+  .toc ol { list-style: none; padding: 0; margin: 0; border-left: 2px solid var(--line); }
+  .toc li a { display: block; padding: 5px 0 5px 14px; color: var(--muted); margin-left: -2px; border-left: 2px solid transparent; }
+  .toc li a:hover { color: var(--text); border-left-color: var(--accent); text-decoration: none; }
+  .steps article { padding-bottom: 36px; margin-bottom: 36px; border-bottom: 1px solid var(--line); scroll-margin-top: 80px; }
+  .steps article:last-child { border-bottom: 0; }
+  .steps h3 { font-size: 24px; display: flex; gap: 12px; align-items: baseline; }
+  .steps h3 .n { color: var(--accent); font-variant-numeric: tabular-nums; font-size: 18px; }
+  .steps ul { padding-left: 22px; }
+  .steps li { margin: 6px 0; }
+  .tip { background: var(--accent-soft); border-radius: 10px; padding: 12px 16px; font-size: 15.5px; margin-top: 14px; }
+
+  /* Shortcuts */
+  table { width: 100%; border-collapse: collapse; font-size: 16px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+  td:first-child { width: 140px; }
+
+  footer { padding: 40px 0 56px; color: var(--muted); font-size: 14.5px; border-top: 1px solid var(--line); }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 12px 28px; justify-content: space-between; }
+
+  @media (max-width: 860px) {
+    .guide { grid-template-columns: minmax(0, 1fr); }
+    .toc { position: static; }
+    nav.top .links a.hide-sm { display: none; }
+  }
+  @media (max-width: 520px) {
+    .wrap { padding: 0 16px; }
+    nav.top .links { gap: 14px; }
+    section { padding: 56px 0; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="top">
+  <div class="wrap">
+    <a class="brand" href="#"><img src="icon.png" alt="">Gitter</a>
+    <div class="links">
+      <a href="#features">Features</a>
+      <a href="#safety" class="hide-sm">Safety</a>
+      <a href="#guide">Guide</a>
+      <a href="#shortcuts" class="hide-sm">Shortcuts</a>
+      <a href="https://github.com/Constantine-24/gitter">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <img class="icon" src="icon.png" alt="The Gitter app icon">
+    <h1>Git, without the bloat.</h1>
+    <p class="lead">Gitter is a simple, native Git client for macOS. It shows your branches, your commit graph
+      and your diffs, and every action runs through your own <code>git</code>: your SSH agent,
+      credential helpers, hooks and commit signing just work.</p>
+    <div class="buttons">
+      <a class="btn primary" href="#install">Get Gitter</a>
+      <a class="btn" href="#guide">Read the guide</a>
+      <a class="btn" href="https://github.com/Constantine-24/gitter">View on GitHub</a>
+    </div>
+    <p class="meta">macOS 26 or later · Apple Silicon · Free and open source (MIT)</p>
+    <div class="shot">
+      <img src="screenshots/branches.png" alt="Gitter's main window: the branch button, the sidebar with branches and tags, the commit list with its lane graph, and a diff">
+    </div>
+  </div>
+</header>
+
+<section id="features" class="alt">
+  <div class="wrap">
+    <h2>Everything you do every day</h2>
+    <p class="sub">Gitter covers everyday Git work, from staging single lines to tidying remotes. Nothing
+      is there just to fill a menu.</p>
+    <div class="grid">
+      <div class="card"><div class="glyph">⎇</div><h3>History with a lane graph</h3>
+        <p>A gitk-style graph that goes back to the very first commit. Older commits load as you scroll, and
+          clicking an old branch or tag jumps straight to it.</p></div>
+      <div class="card"><div class="glyph">±</div><h3>Stage files, hunks or lines</h3>
+        <p>Stage a whole file, a single hunk, or just the lines you pick. Commit, amend the last commit, or
+          commit every tracked change in one step.</p></div>
+      <div class="card"><div class="glyph">⑂</div><h3>Branches and merges</h3>
+        <p>Create, switch, rename, delete and merge, choosing fast-forward, a merge commit or a squash. Check
+          out remote branches, tags and single commits.</p></div>
+      <div class="card"><div class="glyph">⇅</div><h3>Fetch, pull, push</h3>
+        <p>Run them from the toolbar, with git's own progress line and a Stop button. Ahead/behind counts show
+          on every branch, and a quiet background fetch keeps them current.</p></div>
+      <div class="card"><div class="glyph">⚑</div><h3>Resolve conflicts in the app</h3>
+        <p>Each conflict appears as blocks, with ours beside theirs and the result shown before anything is
+          written. Then continue, skip or abort the merge, rebase, cherry-pick or revert.</p></div>
+      <div class="card"><div class="glyph">↺</div><h3>Cherry-pick, revert, rebase</h3>
+        <p>Select several commits and cherry-pick or revert them as one sequence, or rebase onto a commit or
+          a branch. Each action shows a sheet that lists exactly what will run.</p></div>
+      <div class="card"><div class="glyph">⧉</div><h3>Stash and discard, with undo</h3>
+        <p>Stash everything or only the files you select. Discard a file, a hunk or a single line, and get
+          <b>Undo Discard</b> every time.</p></div>
+      <div class="card"><div class="glyph">⌗</div><h3>Tags, remotes, worktrees</h3>
+        <p>Create, push and delete tags, with <b>Restore Tag</b> afterwards. Prune remotes, clean up branches
+          whose upstream is gone, and add or remove worktrees.</p></div>
+      <div class="card"><div class="glyph">⌕</div><h3>Find your way around</h3>
+        <p>Filter the sidebar as you type. Compare two branches to see the commits only on each side and the
+          changes one would bring.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="safety">
+  <div class="wrap">
+    <h2>Your work is safe</h2>
+    <p class="sub">One promise runs through the whole app:</p>
+    <blockquote class="promise">Gitter never discards uncommitted work or commits without a confirmation that
+      names what will be lost, and a discard also leaves a copy that can be brought back.</blockquote>
+    <div class="two">
+      <div><h3>Every discard can be undone</h3>
+        <p>A copy of the discarded changes is saved as a stash entry first, and untracked files go to the
+          Trash. <b>Undo Discard</b> brings them back.</p></div>
+      <div><h3>Deletes ask git first</h3>
+        <p>A branch is deleted with <code>git branch -d</code>. <code>-D</code> is used only after a warning
+          that names the commits it would lose.</p></div>
+      <div><h3>Force pushes are leased</h3>
+        <p>A force push only replaces the exact commit you were shown. If the server has moved on since then,
+          the push is refused.</p></div>
+      <div><h3>The plan is checked again</h3>
+        <p>Before a rebase, a prune or a worktree removal, the plan is shown on a sheet. It is checked again
+          just before git runs, and the action is refused if anything changed.</p></div>
+      <div><h3>No surprise stashes</h3>
+        <p>When local changes block a switch, a merge or a pull, Gitter offers <b>Stash and Continue</b>. It
+          never stashes by itself, and it hands the stash back with <b>Pop Stash</b>.</p></div>
+      <div><h3>A log you can read</h3>
+        <p>Every git call is written to <code>~/Library/Logs/Gitter/gitter.log</code>, with credentials
+          removed. Nothing leaves your Mac.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="gallery" class="alt">
+  <div class="wrap">
+    <h2>A closer look</h2>
+    <p class="sub">A few of the screens you'll use most.</p>
+    <div class="gallery">
+      <figure><img loading="lazy" src="screenshots/main.png" alt="Line-level staging in dark mode"><figcaption>Staging single lines, in dark mode.</figcaption></figure>
+      <figure><img loading="lazy" src="screenshots/remotes.png" alt="The toolbar with Fetch, Pull and Push and their counts"><figcaption>Fetch, Pull and Push, with ahead/behind counts.</figcaption></figure>
+      <figure><img loading="lazy" src="screenshots/conflict.png" alt="A conflict shown as ours beside theirs"><figcaption>A conflict, block by block, with the result shown below.</figcaption></figure>
+      <figure><img loading="lazy" src="screenshots/operation-bar.png" alt="The operation bar during a stopped rebase"><figcaption>Continue, skip or abort a stopped rebase.</figcaption></figure>
+      <figure><img loading="lazy" src="screenshots/cherry-pick.png" alt="The cherry-pick sheet listing three commits"><figcaption>Cherry-picking three commits, oldest first.</figcaption></figure>
+      <figure><img loading="lazy" src="screenshots/discard.png" alt="The discard sheet naming two lines"><figcaption>Discarding two lines. The sheet says where their copy goes.</figcaption></figure>
+      <figure><img loading="lazy" src="screenshots/stash.png" alt="A stash selected in the sidebar"><figcaption>A stash's files and diff, with Pop Stash.</figcaption></figure>
+      <figure><img loading="lazy" src="screenshots/compare.png" alt="Comparing two branches"><figcaption>Comparing two branches.</figcaption></figure>
+      <figure><img loading="lazy" src="screenshots/worktrees.png" alt="The Worktrees section of the sidebar"><figcaption>Worktrees, listed in the sidebar.</figcaption></figure>
+    </div>
+    <p class="note">Most of these pictures were taken before the window got its current two-column layout.
+      What each one shows still works the same way.</p>
+  </div>
+</section>
+
+<section id="guide">
+  <div class="wrap">
+    <h2>User guide</h2>
+    <p class="sub">Everything you need to get going. The <a href="https://github.com/Constantine-24/gitter/blob/main/docs/GUIDE.md">full
+      guide</a> goes into every detail.</p>
+    <div class="guide">
+      <aside class="toc">
+        <ol>
+          <li><a href="#install">Install</a></li>
+          <li><a href="#open">Open a repository</a></li>
+          <li><a href="#history">Browse history</a></li>
+          <li><a href="#commit">Stage and commit</a></li>
+          <li><a href="#branches">Branches</a></li>
+          <li><a href="#sync">Fetch, pull and push</a></li>
+          <li><a href="#conflicts">Conflicts</a></li>
+          <li><a href="#rewrite">Cherry-pick, revert, rebase</a></li>
+          <li><a href="#stash">Stash and discard</a></li>
+          <li><a href="#more">Tags, remotes, worktrees</a></li>
+          <li><a href="#windows">Windows and quitting</a></li>
+        </ol>
+      </aside>
+      <div class="steps">
+
+        <article id="install">
+          <h3><span class="n">01</span> Install</h3>
+          <p>There are no signed release downloads yet, so you build Gitter yourself. You need Xcode 27,
+            <a href="https://github.com/yonaskolb/XcodeGen">XcodeGen</a> and the Command Line Tools, which provide
+            <code>/usr/bin/git</code>.</p>
+<pre><code>git clone https://github.com/Constantine-24/gitter.git
+cd gitter
+brew install xcodegen
+xcodegen generate
+open Gitter.xcodeproj      # then press Run</code></pre>
+          <p>To install Gitter in <code>/Applications</code> instead, build a DMG with
+            <code>bash scripts/package.sh</code>. Add <code>--sign "&lt;your certificate&gt;"</code> to sign it with
+            a self-signed certificate, so macOS keeps its folder permissions across updates. The first time you
+            open it, use <b>Open Anyway</b> in System Settings › Privacy &amp; Security.
+            <a href="https://github.com/Constantine-24/gitter/blob/main/docs/INSTALL.md">INSTALL.md</a> covers the
+            certificate, packaging, the first open and updating.</p>
+        </article>
+
+        <article id="open">
+          <h3><span class="n">02</span> Open a repository</h3>
+          <p>Choose <b>File › Open Repository…</b> (<kbd>⌘O</kbd>) and pick a folder that contains a Git
+            repository. The window has three parts:</p>
+          <ul>
+            <li><b>The toolbar</b> holds the branch button (the current branch, with its ahead/behind counts) and Fetch, Pull and Push.</li>
+            <li><b>The sidebar</b> lists your branches, remote branches, tags, stashes and worktrees.</li>
+            <li><b>The main area</b> shows the commit list with its graph, and the diff of whatever you select.</li>
+          </ul>
+          <p>Everything refreshes by itself when files change on disk, whether you edit in your editor or run git
+            in the terminal.</p>
+        </article>
+
+        <article id="history">
+          <h3><span class="n">03</span> Browse history</h3>
+          <ul>
+            <li>Click a commit to see its changes. The row at the top of the list is your working copy: the
+              changes you haven't committed yet.</li>
+            <li>Keep scrolling and older commits load 500 at a time. <kbd>⌥↓</kbd> jumps to the end of what has
+              loaded. The last row says <i>Start of history</i> when you reach the first commit.</li>
+            <li>Click a branch or a tag in the sidebar to select its commit. If that commit is older than what has
+              loaded, Gitter loads down to it and scrolls there.</li>
+            <li>Tags appear as pills on their commit rows. Hover over one to see the tagger, the date and the message.</li>
+          </ul>
+        </article>
+
+        <article id="commit">
+          <h3><span class="n">04</span> Stage and commit</h3>
+          <ul>
+            <li>Select the working-copy row to see your changes, unstaged and staged, file by file.</li>
+            <li>Stage a whole file, a single hunk, or select lines in the diff and stage just those. Unstaging
+              works the same way.</li>
+            <li>Write a message in the composer and commit. Turn on <b>Amend</b> to rewrite the last commit. With
+              nothing staged, the button becomes <b>Commit All Tracked</b>.</li>
+            <li>Your hooks and commit signing run as configured, because the commit is made by your own git.</li>
+          </ul>
+        </article>
+
+        <article id="branches">
+          <h3><span class="n">05</span> Branches</h3>
+          <ul>
+            <li>Use the branch button or a branch's right-click menu in the sidebar to create, switch, rename,
+              delete or merge.</li>
+            <li>A merge asks each time: fast-forward if possible, always a merge commit, or squash. It remembers
+              your last answer.</li>
+            <li>Check out a remote branch, and Gitter makes a local branch that tracks it. Check out a tag or a
+              commit to look around on a detached HEAD.</li>
+            <li>If your local changes block a switch, choose <b>Stash and Continue</b> and the switch runs
+              again.</li>
+            <li>Choose <b>Compare with</b> on any branch to compare it with the current one and see what each side has that the other
+              doesn't.</li>
+          </ul>
+        </article>
+
+        <article id="sync">
+          <h3><span class="n">06</span> Fetch, pull and push</h3>
+          <ul>
+            <li><b>Fetch</b> <kbd>⇧⌘F</kbd>, <b>Pull</b> <kbd>⇧⌘L</kbd> and <b>Push</b> <kbd>⇧⌘P</kbd> work on the
+              current branch. The one that's running shows git's progress and a Stop button, and <kbd>⌘.</kbd>
+              stops it. You can keep browsing, staging and committing while it runs.</li>
+            <li>A pull fast-forwards when it can. When both sides have new commits, it asks whether to merge or
+              rebase.</li>
+            <li>A branch with no upstream gets <b>Publish</b>. If the server refuses a push because it has
+              commits you don't, you can <b>Pull</b> first, or <b>Force Push…</b> with a lease on the exact
+              commit you were shown.</li>
+            <li>After a push, the hosting service's pull-request link stays on screen with <b>Open</b> and
+              <b>Copy Link</b>.</li>
+            <li>Gitter fetches quietly when a repository opens and every 10 minutes after that. You can turn this
+              off with <b>Repository › Fetch Automatically</b>.</li>
+          </ul>
+        </article>
+
+        <article id="conflicts">
+          <h3><span class="n">07</span> Resolve conflicts</h3>
+          <ul>
+            <li>When a merge, rebase, cherry-pick or revert stops on a conflict, the operation bar says where it
+              stopped, for example "stopped at commit 1 of 3".</li>
+            <li>Select a conflicted file to see each conflict as a block, ours beside theirs. For each block choose
+              <b>Ours</b>, <b>Theirs</b> or <b>Both</b>, and check the result before writing the file.</li>
+            <li>A binary file, a symlink or a deleted file gets a whole-file choice instead. You can also resolve
+              in your own editor and then choose <b>Mark Resolved</b>.</li>
+            <li>Then choose <b>Continue</b> with the stopped commit's message in the composer,
+              <b>Skip This Commit…</b>, or <b>Abort</b>.</li>
+          </ul>
+        </article>
+
+        <article id="rewrite">
+          <h3><span class="n">08</span> Cherry-pick, revert, rebase</h3>
+          <ul>
+            <li>Select one or several commits (<kbd>⌘</kbd>-click, <kbd>⇧</kbd>-click), then right-click and
+              choose <b>Cherry-pick</b> or <b>Revert</b>. They run as one git sequence, in the order git
+              needs.</li>
+            <li>Rebase the current branch onto a commit or a branch. The sheet lists the commits it replays and the
+              merges it flattens, and warns you when some of them are already pushed.</li>
+            <li>Before anything runs, Gitter checks the plan again and refuses if it changed after you saw the
+              sheet.</li>
+          </ul>
+        </article>
+
+        <article id="stash">
+          <h3><span class="n">09</span> Stash and discard</h3>
+          <ul>
+            <li><b>Repository › Stash Changes…</b> (<kbd>⌥⌘S</kbd>) stashes everything, or only the files you
+              selected, with an optional message and untracked files.</li>
+            <li>The sidebar's <b>Stashes</b> section lists your stashes. Select one to see its files, or
+              right-click it to Apply, Pop or Drop it.</li>
+            <li>Discard a file, a hunk or a single line. The sheet says what goes and where its copy is kept, and
+              <b>Undo Discard</b> brings it back.</li>
+          </ul>
+          <p class="tip">A discarded untracked file goes to the Trash, so you can also put it back from Finder.</p>
+        </article>
+
+        <article id="more">
+          <h3><span class="n">10</span> Tags, remotes and worktrees</h3>
+          <ul>
+            <li><b>Tags:</b> create an annotated or a lightweight tag on any commit, then push it or delete it.
+              After a delete, <b>Restore Tag</b> puts it back.</li>
+            <li><b>Remotes:</b> add, rename, re-point or remove a remote. <b>Prune</b> lists every remote branch
+              the server no longer has, and offers to keep a local branch for any commits only they hold.
+              <b>Clean Up Gone Branches…</b> deletes local branches whose upstream is gone.</li>
+            <li><b>Branches you haven't checked out:</b> push them, fast-forward them, or set and unset their
+              upstream, all from the sidebar.</li>
+            <li><b>Worktrees:</b> open, add and remove them from the sidebar. Before a removal, Gitter shows what
+              git would delete.</li>
+            <li><b>Filter:</b> press <kbd>⌘F</kbd> to narrow the sidebar's branches and tags as you type.</li>
+          </ul>
+        </article>
+
+        <article id="windows">
+          <h3><span class="n">11</span> Windows and quitting</h3>
+          <ul>
+            <li><b>File › New Window</b> (<kbd>⌘N</kbd>) opens another repository in its own window, with its
+              own sheets and background fetch. A repository is never open in two windows at once.</li>
+            <li>The windows you had open come back at the next launch.</li>
+            <li>Quitting is safe while the network is busy. A fetch or a pull is stopped. A push asks first:
+              <b>Wait</b>, <b>Stop and Quit</b>, or <b>Don't Quit</b>.</li>
+            <li><b>Help › Show Logs</b> opens the folder that holds the log of every git call Gitter made.</li>
+          </ul>
+        </article>
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="shortcuts" class="alt">
+  <div class="wrap">
+    <h2>Keyboard shortcuts</h2>
+    <p class="sub">The ones you'll reach for most.</p>
+    <table>
+      <thead><tr><th>Keys</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>⌘O</kbd></td><td>Open a repository</td></tr>
+        <tr><td><kbd>⌘N</kbd></td><td>New window</td></tr>
+        <tr><td><kbd>⌘F</kbd></td><td>Filter the sidebar</td></tr>
+        <tr><td><kbd>⇧⌘F</kbd></td><td>Fetch</td></tr>
+        <tr><td><kbd>⇧⌘L</kbd></td><td>Pull</td></tr>
+        <tr><td><kbd>⇧⌘P</kbd></td><td>Push</td></tr>
+        <tr><td><kbd>⌘.</kbd></td><td>Stop the running fetch, pull or push</td></tr>
+        <tr><td><kbd>⌥⌘S</kbd></td><td>Stash changes</td></tr>
+        <tr><td><kbd>⌥↓</kbd></td><td>Jump to the end of the loaded history</td></tr>
+        <tr><td><kbd>⌘W</kbd></td><td>Close the window</td></tr>
+        <tr><td><kbd>⌘Q</kbd></td><td>Quit, safely</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>Gitter · © 2026 Konstantin Penzin · <a href="https://github.com/Constantine-24/gitter/blob/main/LICENSE">MIT License</a></span>
+    <span>
+      <a href="https://github.com/Constantine-24/gitter">Source</a> ·
+      <a href="https://github.com/Constantine-24/gitter/blob/main/docs/GUIDE.md">Full guide</a> ·
+      <a href="https://github.com/Constantine-24/gitter/blob/main/docs/BACKLOG.md">Backlog</a> ·
+      <a href="https://github.com/Constantine-24/gitter/issues">Issues</a>
+    </span>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -36,7 +36,7 @@ hooks and commit signing all work exactly as they do in the terminal.
 - **Several windows.** Open one repository per window. The windows come back at the next launch.
   A quit never cuts off a push that is still running.
 
-The [user guide](docs/GUIDE.md) describes every feature in detail.
+The [user guide](docs/GUIDE.md) describes every feature in detail, and the [website](https://constantine-24.github.io/gitter/) has a shorter tour.
 
 ## Your work is safe
 
