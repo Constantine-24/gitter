@@ -69,9 +69,9 @@ extension RepositoryStore {
     /// `answer` is nil for the fast-forward (no question was asked) and `.merge` for the sheet's
     /// Merge; the sheet's Rebase is `rebase(_:onto:)`, never this.
     // internal (not private): used by +Remotes.swift and +RemoteSheets.swift
-    func integratePull(upstream: String, answer: PullMode?) {
+    func integratePull(into branch: String, upstream: String, answer: PullMode?) {
         assert(answer != .rebase, "a pull's Rebase runs on rebase(_:onto:)")
-        perform(.pull(upstream: upstream, answer: answer))
+        perform(.pull(branch: branch, upstream: upstream, answer: answer))
     }
 
     /// Stash and Continue's second half: `action` again, from scratch, with every gate it had
@@ -83,8 +83,8 @@ extension RepositoryStore {
     // internal (not private): used by +StashAndContinue.swift, and by `askAgain()`
     func retry(_ action: PendingBranchAction) {
         switch action {
-        case .pull(let upstream, let answer):
-            retryPull(upstream: upstream, answer: answer)
+        case .pull(let branch, let upstream, let answer):
+            retryPull(branch: branch, upstream: upstream, answer: answer)
         // Planned again and put back on screen: a stash never runs a history action without
         // its confirmation (the plan may differ now — the stash itself changed nothing it
         // reads, but a terminal may have).
@@ -287,12 +287,24 @@ extension RepositoryStore {
             // was a real one — silently declining to remember it would be its own small lie).
             rememberMergeMode(mode, in: defaults)
             return notice(for: outcome, branch: branch)
-        case .pull(let upstream, .rebase):
+        case .pull(_, let upstream, .rebase):
             // Never performed here: the sheet's Rebase, first time or retried, is
             // `rebase(_:onto:)` (`+RemoteSheets`).
             assertionFailure("a pull's rebase onto \(upstream) reached perform")
             return nil
-        case .pull(let upstream, let answer):
+        case .pull(_, let upstream, let answer):
+            if answer == nil {
+                // A fast-forward was decided on a snapshot, and the upstream may have moved
+                // since — an automatic or manual fetch on the lane, which a retried pull does
+                // not hold. `--ff` on a branch that has diverged would make a merge commit
+                // nobody asked for, so it is asked again here, immediately before git runs: no
+                // commit of HEAD may be missing from the upstream. What remains is one process
+                // spawn's worth of window, the residual `perform`'s detached-HEAD check has.
+                let ahead = try await backend.commitCount(in: "HEAD", notIn: upstream, at: root)
+                guard ahead == 0 else {
+                    throw BranchActionBlocked(reason: RemoteWording.pullNoLongerFastForward(upstream))
+                }
+            }
             let mode: MergeMode = answer == .merge ? .alwaysMergeCommit : .fastForwardIfPossible
             let outcome = try await reporting(.merge, upstream) {
                 try await backend.merge(upstream, mode: mode, at: root)

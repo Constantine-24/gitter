@@ -471,6 +471,14 @@ enum RemoteWording {
         "The branch changed while fetching, so nothing was merged. Pull again."
     /// The pull's fetch finished and it would fast-forward, but a commit or a branch action
     /// held the mutation slot when the lane freed. Nothing was merged; the fetch stands.
+    /// A pull decided as a fast-forward, but by the time it ran the upstream had commits this
+    /// branch lacks and this branch had its own (a fetch moved the upstream meanwhile). Nothing
+    /// was merged: a merge commit is the sheet's question, not this one's.
+    static func pullNoLongerFastForward(_ upstream: String) -> String {
+        "\"\(upstream)\" and this branch both have new commits now, so nothing was merged. "
+            + "Pull again to choose Merge or Rebase."
+    }
+
     static let pullSlotBusy =
         "The pull fetched, but couldn't integrate while another change was running. Pull again."
 

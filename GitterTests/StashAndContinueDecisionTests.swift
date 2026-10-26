@@ -50,7 +50,7 @@ import Testing
     /// A pull's rebase refuses any tracked change, and never an untracked file (that one arrives
     /// as `.wouldOverwrite(untracked:)` instead, M 12).
     @Test func aDirtyTreeRefusingAPullOffersAStash() {
-        let action = PendingBranchAction.pull(upstream: "origin/main", answer: .rebase)
+        let action = PendingBranchAction.pull(branch: "main", upstream: "origin/main", answer: .rebase)
         let offer = StashAndContinue.offer(for: .treeNotClean, action: action)
         #expect(
             offer
@@ -60,7 +60,7 @@ import Testing
     }
 
     @Test func aPullsMergeStepRefusedOverAFileOffersAStash() {
-        let action = PendingBranchAction.pull(upstream: "origin/main", answer: nil)
+        let action = PendingBranchAction.pull(branch: "main", upstream: "origin/main", answer: nil)
         let offer = StashAndContinue.offer(
             for: .wouldOverwrite(tracked: ["f"], untracked: []), action: action)
         #expect(offer?.action == action)
@@ -76,9 +76,9 @@ import Testing
             (.merge("b", .fastForwardIfPossible), "Gitter: before merging b"),
             (.merge("b", .squash), "Gitter: before merging b"),
             (.createAndSwitch(name: "n", startPoint: "origin/b"), "Gitter: before switching to n"),
-            (.pull(upstream: "origin/main", answer: .merge), "Gitter: before pulling"),
-            (.pull(upstream: "origin/main", answer: .rebase), "Gitter: before pulling"),
-            (.pull(upstream: "origin/main", answer: nil), "Gitter: before pulling"),
+            (.pull(branch: "main", upstream: "origin/main", answer: .merge), "Gitter: before pulling"),
+            (.pull(branch: "main", upstream: "origin/main", answer: .rebase), "Gitter: before pulling"),
+            (.pull(branch: "main", upstream: "origin/main", answer: nil), "Gitter: before pulling"),
         ]
         for (action, message) in messages {
             #expect(StashAndContinue.offer(for: refusal, action: action)?.message == message)
@@ -89,7 +89,7 @@ import Testing
     /// touches: a stash resets the index to HEAD, so the retry passes merge-ort's index check
     /// and the squash's own. The refusal names no file, so no `-u`.
     @Test func aStagedChangeRefusingAMergeOffersAStashWithoutUntrackedFiles() {
-        let action = PendingBranchAction.pull(upstream: "origin/main", answer: .merge)
+        let action = PendingBranchAction.pull(branch: "main", upstream: "origin/main", answer: .merge)
         #expect(
             StashAndContinue.offer(for: .indexNotClean, action: action)
                 == StashAndContinueOffer(
@@ -106,16 +106,16 @@ import Testing
     /// was, the entry is filed before pulling.
     @Test func aPullsAnswerIsKeptAndTheMessageIsTheSame() {
         for answer: PullMode? in [nil, .merge, .rebase] {
-            let action = PendingBranchAction.pull(upstream: "origin/main", answer: answer)
+            let action = PendingBranchAction.pull(branch: "main", upstream: "origin/main", answer: answer)
             #expect(StashWording.continueMessage(for: action) == "Gitter: before pulling")
             #expect(StashAndContinue.offer(for: .treeNotClean, action: action)?.action == action)
         }
         #expect(
-            PendingBranchAction.pull(upstream: "origin/main", answer: .rebase)
-                != .pull(upstream: "origin/main", answer: .merge))
+            PendingBranchAction.pull(branch: "main", upstream: "origin/main", answer: .rebase)
+                != .pull(branch: "main", upstream: "origin/main", answer: .merge))
         #expect(
-            PendingBranchAction.pull(upstream: "origin/main", answer: .merge)
-                != .pull(upstream: "origin/main", answer: nil))
+            PendingBranchAction.pull(branch: "main", upstream: "origin/main", answer: .merge)
+                != .pull(branch: "main", upstream: "origin/main", answer: nil))
     }
 
     // MARK: - Not offered
@@ -139,7 +139,7 @@ import Testing
             #expect(StashAndContinue.offer(for: refusal, action: .switchTo("b")) == nil)
             #expect(
                 StashAndContinue.offer(
-                    for: refusal, action: .pull(upstream: "origin/main", answer: .merge))
+                    for: refusal, action: .pull(branch: "main", upstream: "origin/main", answer: .merge))
                     == nil)
         }
     }
@@ -216,7 +216,7 @@ import Testing
     @Test func nothingStashedForAPullsRebaseMentionsSubmodules() {
         let offer = StashAndContinue.offer(
             for: .treeNotClean,
-            action: .pull(upstream: "origin/main", answer: .rebase))
+            action: .pull(branch: "main", upstream: "origin/main", answer: .rebase))
         #expect(
             offer.map(StashWording.continueNothingStashed)
                 == "Nothing was stashed: there are no changes a stash can hold, so Gitter did "
@@ -229,7 +229,7 @@ import Testing
         #expect(
             StashWording.continueSavedWithError(
                 stash, gitsWords: "error: could not write index\n", trashed: [:],
-                action: .pull(upstream: "origin/main", answer: .merge))
+                action: .pull(branch: "main", upstream: "origin/main", answer: .merge))
                 == "Your changes are in stash \"Gitter: before pulling\"; git also said: error: "
                 + "could not write index; some may still be in your files. Gitter did not try "
                 + "to pull from \"origin/main\" again.")

@@ -37,7 +37,7 @@ extension RepositoryStore {
         }
         switch mode {
         case .merge:
-            integratePull(upstream: upstream, answer: .merge)
+            integratePull(into: branch.name, upstream: upstream, answer: .merge)
         case .rebase:
             rebase(branch, onto: upstream)
         }
@@ -65,7 +65,7 @@ extension RepositoryStore {
                 // (`retryPull`), so a branch still diverged from this upstream is rebased
                 // without the sheet asking again.
                 throw StashAndContinue.offering(
-                    error, for: .pull(upstream: upstream, answer: .rebase))
+                    error, for: .pull(branch: name, upstream: upstream, answer: .rebase))
             }
         }, onSuccess: { [self] outcome in
             Self.rememberPullMode(.rebase, in: defaults)

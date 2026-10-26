@@ -192,16 +192,18 @@ enum PendingBranchAction: Hashable {
     case detach(String)
     case merge(String, MergeMode)
     case createAndSwitch(name: String, startPoint: String?)
-    /// A pull's integrate step, with the Merge-or-Rebase sheet's `answer`: nil when no question
-    /// was asked (a fast-forward), `.merge` or `.rebase`. Stash and Continue keeps it, so a
-    /// retried pull that is still diverged from the same upstream runs that answer without
-    /// asking again (`retryPull`). Through `perform` only without an answer (a fast-forward
+    /// A pull's integrate step into `branch`, with the Merge-or-Rebase sheet's `answer`: nil
+    /// when no question was asked (a fast-forward), `.merge` or `.rebase`. Stash and Continue
+    /// keeps it, so a retried pull still on the same branch and still diverged from the same
+    /// upstream runs that answer without asking again (`retryPull`); the branch is recorded
+    /// because the offer outlives reloads, and a terminal may switch to another branch that
+    /// tracks the same upstream. Through `perform` only without an answer (a fast-forward
     /// `merge`) or with `.merge` (`merge --no-ff`), which records the **pull** mode rather than
     /// the merge sheet's — a fast-forward pull was no choice at all, and must not change what the
     /// merge sheet comes up on; `.rebase` runs on `rebase(_:onto:)`. Never parked behind the
     /// detached-HEAD confirmation: a pull needs a branch, and whether it merges or rebases, the
     /// branch keeps every commit it held.
-    case pull(upstream: String, answer: PullMode?)
+    case pull(branch: String, upstream: String, answer: PullMode?)
     /// Cherry-pick or revert of these commits (full object ids, as selected): never parked
     /// behind the detached-HEAD confirmation — both only add commits on top of HEAD. Here for
     /// Stash and Continue, whose `retry` plans it again and puts its sheet back up.
@@ -246,7 +248,7 @@ enum PendingBranchAction: Hashable {
         case .detach(let revision): "check out \(revision)"
         case .merge(let branch, _): "merge \"\(branch)\""
         case .createAndSwitch(let name, _): "create \"\(name)\" and switch to it"
-        case .pull(let upstream, _): "pull from \"\(upstream)\""
+        case .pull(_, let upstream, _): "pull from \"\(upstream)\""
         case .history(let action, let shas): HistoryWording.attempt(action, count: shas.count)
         case .rebaseOnto(let target): HistoryWording.rebaseAttempt(target)
         }

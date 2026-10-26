@@ -179,7 +179,7 @@ import Testing
 
         await Self.pullUpToTheSheet(store, fetches: fetches)
         try await Self.refusedThenStashedAndContinued(
-            store, expected: .pull(upstream: "origin/main", answer: .rebase), stashesBefore: 0
+            store, expected: .pull(branch: "main", upstream: "origin/main", answer: .rebase), stashesBefore: 0
         ) { store.confirmPull(.rebase) }
 
         #expect(store.activeSheet == nil, "the answer was kept, not asked for again")
@@ -201,7 +201,7 @@ import Testing
 
         await Self.pullUpToTheSheet(store, fetches: fetches)
         try await Self.refusedThenStashedAndContinued(
-            store, expected: .pull(upstream: "origin/main", answer: .merge), stashesBefore: 0
+            store, expected: .pull(branch: "main", upstream: "origin/main", answer: .merge), stashesBefore: 0
         ) { store.confirmPull(.merge) }
 
         #expect(store.activeSheet == nil, "the answer was kept, not asked for again")
@@ -221,7 +221,7 @@ import Testing
         defer { cleanup() }
 
         try await Self.refusedThenStashedAndContinued(
-            store, expected: .pull(upstream: "origin/main", answer: nil), stashesBefore: 0
+            store, expected: .pull(branch: "main", upstream: "origin/main", answer: nil), stashesBefore: 0
         ) { store.pull() }
 
         #expect(store.activeSheet == nil)
@@ -242,20 +242,113 @@ import Testing
         await Self.pullUpToTheSheet(store, fetches: fetches)
         store.confirmPull(.rebase)
         await waitUntilIdle(store)
-        #expect(store.offeredStashAndContinue?.action == .pull(upstream: "origin/main", answer: .rebase))
+        #expect(store.offeredStashAndContinue?.action == .pull(branch: "main", upstream: "origin/main", answer: .rebase))
 
         try repo.git("branch", "other", remoteSha)
         try repo.git("branch", "--set-upstream-to=other", "main")
         await store.refresh()
         await waitUntilIdle(store)
+        let head = try #require(store.headSha)
         store.stashAndContinue()
         await waitUntilIdle(store)
 
         #expect(store.stashes.count == 1)
         #expect(store.activeSheet == .pullDiverged(ahead: 1, behind: 1, upstream: "other"))
-        #expect(try Self.parents(of: "HEAD", in: repo) == 1)
-        #expect(try repo.git("log", "-1", "--format=%s").hasPrefix("local change"), "nothing ran")
+        // Rebasing onto `other` would also leave one parent and the same subject: the sha is
+        // what proves nothing ran (Ruling 11).
+        #expect(store.headSha == head, "nothing ran")
+        #expect(try repo.git("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines) == head)
+        #expect(throws: (any Error).self) { try repo.git("merge-base", "--is-ancestor", remoteSha, "HEAD") }
         #expect(fetches.value == 1)
+    }
+
+    /// Ruling 9: the answer was about `main`. A terminal switching to another branch that tracks
+    /// the same upstream, and is diverged from it too, gets the question, not `main`'s answer.
+    @Test(.timeLimit(.minutes(10))) func aRetriedPullAsksAgainOnAnotherBranch() async throws {
+        let (repo, remoteSha) = try Self.repoBehindOrigin(diverged: true)
+        defer { repo.remove() }
+        let (store, _, fetches, cleanup) = await Self.countingStore(repo)
+        defer { cleanup() }
+
+        await Self.pullUpToTheSheet(store, fetches: fetches)
+        store.confirmPull(.rebase)
+        await waitUntilIdle(store)
+        #expect(store.offeredStashAndContinue?.action == .pull(branch: "main", upstream: "origin/main", answer: .rebase))
+
+        // The edit of `a.txt` comes along; only `c.txt` is committed.
+        try repo.git("switch", "-c", "feature")
+        try repo.commit("c.txt", "feature\n", "feature change")
+        try repo.git("branch", "--set-upstream-to=origin/main", "feature")
+        await store.refresh()
+        await waitUntilIdle(store)
+        #expect(store.offeredStashAndContinue != nil, "the offer outlives the reload")
+        let head = try #require(store.headSha)
+        store.stashAndContinue()
+        await waitUntilIdle(store)
+
+        #expect(store.stashes.count == 1)
+        #expect(store.currentBranch == "feature")
+        #expect(store.activeSheet == .pullDiverged(ahead: 2, behind: 1, upstream: "origin/main"))
+        #expect(store.headSha == head, "feature was not rebased")
+        #expect(throws: (any Error).self) { try repo.git("merge-base", "--is-ancestor", remoteSha, "HEAD") }
+        #expect(fetches.value == 1)
+    }
+
+    /// Ruling 10: a retried fast-forward is decided on the stash's reload, and the lane is free
+    /// meanwhile, so a fetch can force-move the upstream before the merge runs. The merge must
+    /// not become a merge commit nobody asked for: nothing is merged and the banner says why.
+    ///
+    /// `main` has a commit of its own (`b.txt`) that `origin/main` contains, plus one more on
+    /// `a.txt`: a fast-forward, refused over the edit of `a.txt`. As the retry's mutation makes
+    /// its first git call, `origin/main` is moved to a commit on `base` that lacks `main`'s.
+    @Test(.timeLimit(.minutes(10))) func aRetriedFastForwardThatDivergedMeanwhileMakesNoMergeCommit() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try repo.commit("a.txt", "base\n", "base")
+        let base = try repo.git("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines)
+        let bare = try repo.makeBareRemote()
+        try repo.git("remote", "add", "origin", bare.path)
+        try repo.git("push", "-u", "origin", "main")
+        try repo.commit("b.txt", "local\n", "local change")
+        try repo.git("push", "origin", "main")
+        try repo.commit("a.txt", "remote\n", "remote change")
+        try repo.git("push", "origin", "main")
+        try repo.git("reset", "--hard", "HEAD~1")
+        try repo.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        try repo.write("a.txt", "local edit\n")
+        let forced = try repo.git("commit-tree", "\(base)^{tree}", "-p", base, "-m", "forced")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let (store, backend, _, cleanup) = await Self.countingStore(repo)
+        defer { cleanup() }
+        store.pull()
+        await waitUntilIdle(store)
+        #expect(store.offeredStashAndContinue?.action == .pull(branch: "main", upstream: "origin/main", answer: nil))
+        let head = try #require(store.headSha)
+
+        // A concurrent fetch landing as late as it can: at the retry's first git call after the
+        // stash, whichever that is (the re-check, or the merge itself without one).
+        let moved = Recorded(false)
+        let forceMove: @Sendable () async throws -> Void = {
+            guard !moved.exchange(true) else { return }
+            try repo.git("update-ref", "refs/remotes/origin/main", forced)
+        }
+        backend.hook(.commitCount, .before, forceMove)
+        backend.hook(.merge, .before, forceMove)
+        store.stashAndContinue()
+        await waitUntilIdle(store)
+
+        #expect(store.stashes.count == 1)
+        #expect(moved.value, "the upstream was moved during the retry")
+        #expect(try Self.parents(of: "HEAD", in: repo) == 1, "no merge commit")
+        #expect(store.headSha == head, "nothing was merged")
+        #expect(store.lastError == RemoteWording.pullNoLongerFastForward("origin/main"))
+        #expect(
+            RemoteWording.pullNoLongerFastForward("origin/main")
+                == "\"origin/main\" and this branch both have new commits now, so nothing was "
+                + "merged. Pull again to choose Merge or Rebase.")
+        #expect(store.activeSheet == nil)
+        #expect(store.stickyNotice?.actions.count == 1, "Pop Stash")
     }
 
     /// Whether the retried pull's rebase has landed on `remoteSha`, or the store said why not.
@@ -280,7 +373,7 @@ import Testing
         await Self.pullUpToTheSheet(store, fetches: fetches)
         store.confirmPull(.rebase)
         await waitUntilIdle(store)
-        #expect(store.offeredStashAndContinue?.action == .pull(upstream: "origin/main", answer: .rebase))
+        #expect(store.offeredStashAndContinue?.action == .pull(branch: "main", upstream: "origin/main", answer: .rebase))
 
         let stash = backend.hold(.stashAll)
         store.stashAndContinue()
@@ -319,7 +412,7 @@ import Testing
         #expect(await waitUntil("the fetch parked") { fetch.waiting })
         store.confirmPull(.rebase)
         #expect(await waitUntil("the refusal") { !store.isMutating && store.offeredStashAndContinue != nil })
-        #expect(store.offeredStashAndContinue?.action == .pull(upstream: "origin/main", answer: .rebase))
+        #expect(store.offeredStashAndContinue?.action == .pull(branch: "main", upstream: "origin/main", answer: .rebase))
 
         #expect(store.pullBlockedReason != nil, "the lane is busy")
         #expect(store.stashAndContinueBlockedReason == nil)
