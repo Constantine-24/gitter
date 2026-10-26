@@ -115,10 +115,14 @@ import Testing
         store.select("a.txt", staged: false)
         #expect(await waitUntil("the read started") { started.value })
         let sha = try #require(store.snapshot?.commits.first?.sha)
-        store.select(.commit(sha))
+        // `select(_:)` moves `selection` first and cancels the read only when its detail load
+        // calls `loadDiff()`, a task later: the read can land in between, not cancelled. Written
+        // directly, so that window is the whole test and `selection == .workingCopy` is the only
+        // thing between the failing read and the failed state.
+        store.selection = .commit(sha)
+        let read = try #require(store.conflictTask)
         landed.set(true)
-        await waitUntilIdle(store)
-        try await Task.sleep(for: .milliseconds(200))
+        await read.value
 
         #expect(store.selection == .commit(sha))
         #expect(store.conflictLoadFailure == nil)
