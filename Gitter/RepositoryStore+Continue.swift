@@ -556,7 +556,7 @@ extension RepositoryStore {
         case .finishedWithConflicts(let paths):
             restartDraft()
             select(.workingCopy)
-            showStickyNotice(Notice(text: ContinueWording.finishedWithConflicts(operation, paths.count)))
+            show(Notice(text: ContinueWording.finishedWithConflicts(operation, paths.count), keep: true))
         case .failed(let words):
             // Nothing was committed: the draft stays as typed.
             showStickyError(ContinueWording.failed(operation, words))
@@ -668,13 +668,14 @@ extension RepositoryStore {
         }
     }
 
-    /// A transient notice, or — when an entry was filed — a sticky one that offers it.
+    /// A transient notice, or — when an entry was filed — a sticky one that offers it. `sticky`
+    /// without an entry is a kept notice (`show`), which does not push out a button.
     private func announceSkip(_ text: String, _ recorded: Stash?, canPop: Bool, sticky: Bool = false) {
         if let recorded {
             showStickyNotice(
                 Notice(text: text, actions: canPop ? [.popStash(recorded), .showStash(recorded)] : [.showStash(recorded)]))
         } else if sticky {
-            showStickyNotice(Notice(text: text))
+            show(Notice(text: text, keep: true))
         } else {
             showNotice(text)
         }

@@ -56,9 +56,9 @@ Everything Gitter does, and how it keeps your work safe. The short version is in
   after a cherry-pick, revert or rebase, the `git branch <name> <tip>` after a force delete or
   after leaving commits behind on a detached HEAD. A success with a warning in it, such as
   "Pushed, but the upstream could not be set", stays too and is drawn with an orange warning
-  sign instead of the checkmark, as is a revert left staged. Such a notice never pushes a
-  notice with a button (Pop Stash, Undo Discard, Restore Tag) off the screen: with one of those
-  up it shows in the fading place instead (the log keeps every notice). Every other notice
+  sign instead of the checkmark, as is a revert left staged. Such a notice never pushes any
+  notice with a button or link (Pop Stash, Undo Discard, Restore Tag, a pull-request link's Open
+  and Copy Link) off the screen: with one of those up it shows in the fading place instead (the log keeps every notice). Every other notice
   fades after four seconds
 - When the server refuses a push because it has commits you don't, the banner offers
   **Pull** and **Force Push…**; the force push is leased on the exact sha it showed you

@@ -253,6 +253,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// window already up opens nothing (C2b, and the B4 probe), so a late SwiftUI window never gets a
     /// second one.
     @MainActor private static func askForAWindowIfNoneCame() {
+        // The test host shows no repository window by design: it must not log or send a reopen.
+        guard !TestHost.isRunningTests else { return }
         let launchHandled = AppModel.windows.launchHandled
         let visible = visibleMainWindows()
         // Once, so a launch left with no window and no ask below says why (the user's checklist).

@@ -189,9 +189,11 @@ enum ConflictWording {
     // MARK: - A conflict that cannot be read
 
     /// The resolver's failed state (B4 item 4): `message` is git's own words, and the two
-    /// buttons under it are the ones that need no read.
+    /// buttons under it are the ones that need no read. git's words often end in a period of
+    /// their own: one is dropped before the sentence's, so the banner never reads "..".
     static func loadFailed(_ message: String) -> String {
-        "Gitter couldn't read this conflict: \(message). You can still open the file in its editor, "
+        let message = message.hasSuffix(".") ? String(message.dropLast()) : message
+        return "Gitter couldn't read this conflict: \(message). You can still open the file in its editor, "
             + "or mark it resolved as it is."
     }
 

@@ -239,6 +239,47 @@ import Testing
         #expect(StashWording.continueButton == "Stash and Continue")
     }
 
+    // MARK: - A retried pull's gates (final review I2)
+
+    private static func pullGate(
+        activity: RemoteActivity? = nil, isDetached: Bool = false,
+        tracking: Tracking = .counts(ahead: 0, behind: 1), remotes: [Remote]? = nil
+    ) -> RemoteWording.Gate {
+        let branch = Branch(
+            name: "main", sha: String(repeating: "1", count: 40), isHead: true, upstream: "origin/main",
+            tracking: tracking, upstreamRemote: "origin", upstreamRef: "refs/heads/main", pushRemote: nil)
+        return RemoteWording.Gate(
+            hasRepository: true, activity: activity, isMutating: false, operation: nil,
+            isDetached: isDetached, branch: isDetached ? nil : branch,
+            remotes: remotes ?? [Remote(name: "origin", fetchURL: "/srv/o.git", pushURL: "/srv/o.git")])
+    }
+
+    /// A retried pull runs no fetch: neither a busy lane nor a remote with no fetch URL stops
+    /// it, though both stop Pull.
+    @Test func aRetriedPullIgnoresWhatOnlyTheFetchNeeds() {
+        let lane = Self.pullGate(activity: RemoteActivity(kind: .fetch, remote: "origin", progress: nil))
+        #expect(RemoteWording.pullBlocked(lane) != nil)
+        #expect(RemoteWording.pullRetryBlocked(lane) == nil)
+        let noURL = Self.pullGate(remotes: [Remote(name: "origin", fetchURL: nil, pushURL: nil)])
+        #expect(RemoteWording.pullBlocked(noURL) == RemoteWording.remoteHasNoURL("origin"))
+        #expect(RemoteWording.pullRetryBlocked(noURL) == nil)
+    }
+
+    /// Everything else Pull is refused for stops the retry too, before a stash is filed.
+    @Test func aRetriedPullKeepsThePullsOtherGates() throws {
+        #expect(RemoteWording.pullRetryBlocked(Self.pullGate(isDetached: true)) == RemoteWording.detachedPull)
+        let gone = Self.pullGate(tracking: .gone)
+        #expect(RemoteWording.pullRetryBlocked(gone) == RemoteWording.upstreamGone(try #require(gone.branch)))
+        #expect(RemoteWording.pullRetryBlocked(Self.pullGate(tracking: .none)) == RemoteWording.noUpstream("main"))
+        var unborn = Self.pullGate()
+        unborn.branch = nil
+        #expect(RemoteWording.pullRetryBlocked(unborn) == RemoteWording.noCommitsYet)
+        var rebasing = Self.pullGate()
+        rebasing.operation = .rebase
+        #expect(RemoteWording.pullRetryBlocked(rebasing) == RepositoryOperation.rebase.movingHeadBlocked)
+        #expect(RemoteWording.pullRetryBlocked(Self.pullGate()) == nil)
+    }
+
     // MARK: - A store with no repository
 
     /// Nothing was refused, so nothing is offered, and the action does nothing and says nothing.

@@ -247,7 +247,7 @@ extension RepositoryStore {
             if report.hasProblems {
                 showStickyError(text)
             } else {
-                showStickyNotice(Notice(text: text))
+                show(Notice(text: text, keep: true))
             }
         })
     }

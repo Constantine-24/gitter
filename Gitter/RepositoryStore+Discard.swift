@@ -501,13 +501,15 @@ extension RepositoryStore {
             let discarded = run.receipts + (run.partlyTrashed.map { [$0] } ?? [])
             // Undo only for what it can put back (minor 1): a line discard whose after-state
             // could not be read would be refused as "moved since the discard". The notice names
-            // that one's copy in the Stashes list instead.
+            // that one's copy in the Stashes list instead. Kept: with Undo Discard it is sticky by
+            // its button; without one it is the only record of where things went, and fades
+            // behind a notice with a button rather than push it out.
             let undoable = discarded.filter(DiscardWording.isUndoable)
             if !discarded.isEmpty {
-                showStickyNotice(
+                show(
                     Notice(
                         text: DiscardWording.done(discarded, during: operationInProgress),
-                        actions: undoable.isEmpty ? [] : [.undoDiscard(undoable)]))
+                        actions: undoable.isEmpty ? [] : [.undoDiscard(undoable)], keep: true))
             }
             if let failure = run.failure { showStickyError(failure) }
         })

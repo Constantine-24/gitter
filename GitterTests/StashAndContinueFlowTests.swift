@@ -190,6 +190,7 @@ import Testing
         #expect(store.notice?.text == RemoteWording.rebaseNotice(.rebased, branch: "main", upstream: "origin/main"))
         #expect(fetches.value == 1, "the retry ran no fetch")
         #expect(store.defaults.string(forKey: RepositoryStore.pullModeKey) == PullMode.rebase.rawValue)
+        #expect(store.stickyNotice?.actions.count == 1, "Pop Stash")
     }
 
     /// Merge answered: the same, ending with a merge commit.
@@ -425,5 +426,81 @@ import Testing
         fetch.release()
         await waitUntilIdle(store)
         #expect(store.stickyNotice?.actions.count == 1, "Pop Stash")
+    }
+
+    // MARK: - A pull offer keeps the pull's other gates (final review I2)
+
+    /// A fast-forward refused over the edit, offering Stash and Continue, then `move` from a
+    /// terminal and a reload: the offer is still up, and returns the store.
+    private static func pullOfferThen(
+        _ repo: ScratchRepo, _ move: () throws -> Void
+    ) async throws -> (RepositoryStore, cleanup: () -> Void) {
+        let (store, _, _, cleanup) = await Self.countingStore(repo)
+        store.pull()
+        await waitUntilIdle(store)
+        #expect(store.offeredStashAndContinue?.action == .pull(branch: "main", upstream: "origin/main", answer: nil))
+        try move()
+        await store.refresh()
+        await waitUntilIdle(store)
+        #expect(store.offeredStashAndContinue != nil, "the offer outlives the reload")
+        return (store, cleanup)
+    }
+
+    /// Stash and Continue for a pull that can no longer start is off with the pull's own reason,
+    /// and a stale call files nothing.
+    private static func expectBlockedBeforeStashing(
+        _ store: RepositoryStore, _ reason: String, sourceLocation: SourceLocation = #_sourceLocation
+    ) async {
+        #expect(store.stashAndContinueBlockedReason == reason, sourceLocation: sourceLocation)
+        store.stashAndContinue()
+        await waitUntilIdle(store)
+        #expect(store.stashes.isEmpty, "no stash filed", sourceLocation: sourceLocation)
+        #expect(store.lastError == reason, sourceLocation: sourceLocation)
+    }
+
+    /// The helpers' control: with nothing moved the offer is ready, so `expectBlockedBeforeStashing`
+    /// records its issues (and the stash it could not prevent is filed).
+    @Test(.timeLimit(.minutes(10))) func theBlockedCheckFailsForAPullThatCanStillStart() async throws {
+        let (repo, _) = try Self.repoBehindOrigin(diverged: false)
+        defer { repo.remove() }
+        let (store, cleanup) = try await Self.pullOfferThen(repo) {}
+        defer { cleanup() }
+        #expect(store.stashAndContinueBlockedReason == nil)
+
+        await withKnownIssue("nothing blocks this pull's retry") {
+            await Self.expectBlockedBeforeStashing(store, RemoteWording.detachedPull)
+        }
+    }
+
+    @Test(.timeLimit(.minutes(10))) func aPullOfferOnADetachedHeadIsBlockedBeforeStashing() async throws {
+        let (repo, _) = try Self.repoBehindOrigin(diverged: false)
+        defer { repo.remove() }
+        let (store, cleanup) = try await Self.pullOfferThen(repo) { try repo.git("checkout", "--detach") }
+        defer { cleanup() }
+        #expect(store.isDetached)
+
+        await Self.expectBlockedBeforeStashing(store, RemoteWording.detachedPull)
+    }
+
+    @Test(.timeLimit(.minutes(10))) func aPullOfferWhoseUpstreamIsGoneIsBlockedBeforeStashing() async throws {
+        let (repo, _) = try Self.repoBehindOrigin(diverged: false)
+        defer { repo.remove() }
+        let (store, cleanup) = try await Self.pullOfferThen(repo) {
+            try repo.git("update-ref", "-d", "refs/remotes/origin/main")
+        }
+        defer { cleanup() }
+        let branch = try #require(store.currentBranchRef)
+        #expect(branch.tracking == .gone)
+
+        await Self.expectBlockedBeforeStashing(store, RemoteWording.upstreamGone(branch))
+    }
+
+    @Test(.timeLimit(.minutes(10))) func aPullOfferWithNoUpstreamIsBlockedBeforeStashing() async throws {
+        let (repo, _) = try Self.repoBehindOrigin(diverged: false)
+        defer { repo.remove() }
+        let (store, cleanup) = try await Self.pullOfferThen(repo) { try repo.git("branch", "--unset-upstream") }
+        defer { cleanup() }
+
+        await Self.expectBlockedBeforeStashing(store, RemoteWording.noUpstream("main"))
     }
 }

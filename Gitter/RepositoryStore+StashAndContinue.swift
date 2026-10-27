@@ -107,13 +107,15 @@ extension RepositoryStore {
     /// Why Stash and Continue is off right now, or nil (also nil when nothing is offered): a
     /// sheet is up, another change is running, or the action it would run again is itself
     /// blocked — checked **before** stashing, so a stash is never filed for a retry that could
-    /// not start. A pull offer is checked like the others, on the mutation slot and an
-    /// operation in progress, and **not** on the lane: its retry runs no fetch (`retryPull`),
-    /// so a Fetch on the lane does not turn the button off.
+    /// not start. A pull offer is checked on everything `pullBlocked` asks except the lane and
+    /// the fetch URL (`RemoteWording.pullRetryBlocked`): its retry runs no fetch (`retryPull`),
+    /// so a Fetch on the lane does not turn the button off, but a detached HEAD or an upstream
+    /// gone since the refusal does.
     var stashAndContinueBlockedReason: String? {
-        guard offeredStashAndContinue != nil else { return nil }
+        guard let offer = offeredStashAndContinue else { return nil }
         if activeSheet != nil { return StashWording.blockedBySheet }
         if isMutating { return StashWording.busy }
+        if case .pull = offer.action { return RemoteWording.pullRetryBlocked(remoteGate) }
         return branchSwitchingBlockedReason
     }
 

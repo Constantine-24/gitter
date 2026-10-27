@@ -597,7 +597,7 @@ extension RepositoryStore {
             if kept.isEmpty {
                 showNotice(text)
             } else {
-                showStickyNotice(Notice(text: text))
+                show(Notice(text: text, keep: true))
             }
         })
     }
@@ -637,7 +637,7 @@ extension RepositoryStore {
             if WorktreeWording.missingReportHasProblems(report) {
                 showStickyError(text)
             } else {
-                showStickyNotice(Notice(text: text))
+                show(Notice(text: text, keep: true))
             }
         })
     }

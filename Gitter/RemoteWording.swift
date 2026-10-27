@@ -58,11 +58,27 @@ enum RemoteWording {
         guard gate.hasRepository else { return noRepository }
         if let activity = gate.activity { return laneBusy(activity) }
         if gate.isMutating { return mutationBusy }
+        return pullIntoBranchBlocked(gate, fetching: true)
+    }
+
+    /// Why a pull run again without its fetch could not start, or nil: Stash and Continue's
+    /// retried pull (`retryPull`), checked before the stash is filed. `pullBlocked` without the
+    /// lane and without the upstream remote's fetch URL, the two things only the fetch needs:
+    /// an operation in progress, a detached HEAD, no commits, no upstream, the upstream gone.
+    /// The mutation slot is the caller's (`stashAndContinueBlockedReason` says it its own way).
+    static func pullRetryBlocked(_ gate: Gate) -> String? {
+        guard gate.hasRepository else { return noRepository }
+        return pullIntoBranchBlocked(gate, fetching: false)
+    }
+
+    /// `pullBlocked` after the lane and the mutation slot, in its order; the upstream remote's
+    /// fetch URL only when the pull fetches.
+    private static func pullIntoBranchBlocked(_ gate: Gate, fetching: Bool) -> String? {
         if let operation = gate.operation { return operation.movingHeadBlocked }
         if gate.isDetached { return detachedPull }
         guard let branch = gate.branch else { return noCommitsYet }
         // Pull fetches the upstream's remote first (fix round 1, I1).
-        if let remote = branch.upstreamRemote,
+        if fetching, let remote = branch.upstreamRemote,
             let reason = fetchURLBlocked(gate.remotes.first { $0.name == remote })
         {
             return reason
@@ -469,8 +485,6 @@ enum RemoteWording {
 
     static let pullBranchChanged =
         "The branch changed while fetching, so nothing was merged. Pull again."
-    /// The pull's fetch finished and it would fast-forward, but a commit or a branch action
-    /// held the mutation slot when the lane freed. Nothing was merged; the fetch stands.
     /// A pull decided as a fast-forward, but by the time it ran the upstream had commits this
     /// branch lacks and this branch had its own (a fetch moved the upstream meanwhile). Nothing
     /// was merged: a merge commit is the sheet's question, not this one's.
@@ -479,6 +493,8 @@ enum RemoteWording {
             + "Pull again to choose Merge or Rebase."
     }
 
+    /// The pull's fetch finished and it would fast-forward, but a commit or a branch action
+    /// held the mutation slot when the lane freed. Nothing was merged; the fetch stands.
     static let pullSlotBusy =
         "The pull fetched, but couldn't integrate while another change was running. Pull again."
 

@@ -39,6 +39,15 @@ import Testing
         #expect(ConflictWording.tryAgain == "Try Again")
     }
 
+    /// git's words, trimmed, often end in their own period: one is dropped before the sentence's,
+    /// so the banner never reads "..". Only one: an ellipsis keeps two of its dots.
+    @Test func gitsOwnFinalPeriodIsNotDoubled() {
+        #expect(ConflictWording.loadFailed("fatal: bad object.")
+            == "Gitter couldn't read this conflict: fatal: bad object. You can still open the file in its "
+            + "editor, or mark it resolved as it is.")
+        #expect(ConflictWording.loadFailed("timed out...").hasPrefix("Gitter couldn't read this conflict: timed out... "))
+    }
+
     // MARK: - Side labels
 
     @Test func withNoOperationTheSidesAreHeadAndIncoming() {

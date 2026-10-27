@@ -212,8 +212,9 @@ extension RepositoryStore {
             }
         }, onSuccess: { [self] in
             dismissStickyNotice(offeringToPop: stash)
-            // Sticky: it holds the only copy of the sha once the entry is gone.
-            showStickyNotice(Notice(text: StashWording.dropped(stash)))
+            // Kept: it holds the only copy of the sha once the entry is gone. Behind a Pop Stash
+            // for another entry, which survives the line above, it fades instead.
+            show(Notice(text: StashWording.dropped(stash), keep: true))
         })
     }
 
