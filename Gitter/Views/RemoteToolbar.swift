@@ -256,9 +256,9 @@ struct RemoteActivityItem: View {
     /// branch menu takes from the same toolbar, so this is a measured default, not a guarantee.
     /// The item changes size only when the window is resized across this width, never when a
     /// lane starts or ends (`ActivityReveal`).
-    static let progressLineMinimumWindowWidth: CGFloat = 1280
+    nonisolated static let progressLineMinimumWindowWidth: CGFloat = 1280
 
-    static func showsProgressLine(windowWidth: CGFloat) -> Bool {
+    nonisolated static func showsProgressLine(windowWidth: CGFloat) -> Bool {
         windowWidth >= progressLineMinimumWindowWidth
     }
 
@@ -272,7 +272,7 @@ struct RemoteActivityItem: View {
             .buttonStyle(.borderless)
             .help("Stop \(RemoteWording.describe(activity))")
             .accessibilityLabel("Stop \(RemoteWording.describe(activity))")
-            if Self.showsProgressLine(windowWidth: store.windowWidth) {
+            if store.showsProgressLine {
                 ProgressView()
                     .controlSize(.small)
                 Text(line)

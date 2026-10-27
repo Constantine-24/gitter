@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Testing
 
 @testable import Gitter
@@ -109,5 +110,28 @@ import Testing
         #expect(RemoteActivityItem.showsProgressLine(windowWidth: 1280))
         #expect(RemoteActivityItem.showsProgressLine(windowWidth: 1400))
         #expect(RemoteActivityItem.progressLineMinimumWindowWidth == 1280)
+    }
+
+    /// The store keeps only whether the line fits, written when the window crosses the limit, so
+    /// the running item redraws at a crossing and not on every point of a resize (B4 Ruling 15).
+    @MainActor @Test func theStoreFlipsTheLineOnlyAtTheCrossings() {
+        let scratch = ScratchDefaults()
+        defer { scratch.remove() }
+        let store = RepositoryStore(defaults: scratch.defaults)
+        #expect(!store.showsProgressLine)  // before the first layout
+
+        var seen: [Bool] = []
+        var notified: [Bool] = []
+        for width: CGFloat in [1300, 1290, 1270, 1260, 1300] {
+            // A fresh registration per width: did this width's write notify observers?
+            let changed = Recorded(false)
+            withObservationTracking { _ = store.showsProgressLine } onChange: { changed.set(true) }
+            store.setWindowWidth(width)
+            seen.append(store.showsProgressLine)
+            notified.append(changed.value)
+        }
+        #expect(seen == [true, true, false, false, true])
+        // Only the crossings notify: 1290 and 1260 are on the same side as the width before.
+        #expect(notified == [true, false, true, false, true])
     }
 }

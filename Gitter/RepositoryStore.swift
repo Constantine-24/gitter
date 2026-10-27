@@ -308,16 +308,19 @@ final class RepositoryStore {
     /// never persisted.
     var sidebarFilter = ""
 
-    /// The width of this store's window content, in points: what the toolbar's running item reads
-    /// to decide whether its progress line fits (`RemoteActivityItem.showsProgressLine`, B4 fix
-    /// 7). Layout, hosted here because the toolbar items already read the store and a toolbar
-    /// item's own geometry is not the window's. Written by `MainWindow` from `onGeometryChange`
-    /// (`setWindowWidth`); 0 until its first layout.
-    private(set) var windowWidth: CGFloat = 0
+    /// Whether this store's window is wide enough for the toolbar's running item to draw its
+    /// progress line (`RemoteActivityItem.showsProgressLine(windowWidth:)`, B4 fix 7). Layout,
+    /// hosted here because the toolbar items already read the store and a toolbar item's own
+    /// geometry is not the window's. Derived from the window content's width, which `MainWindow`
+    /// reports from `onGeometryChange` (`setWindowWidth`), and written only when it flips, so the
+    /// item redraws when the window crosses the limit and not on every point of a resize. False
+    /// until the first layout.
+    private(set) var showsProgressLine = false
 
     // internal (not private(set) write): used by MainWindow.swift's `onGeometryChange` only
     func setWindowWidth(_ width: CGFloat) {
-        if width != windowWidth { windowWidth = width }
+        let shows = RemoteActivityItem.showsProgressLine(windowWidth: width)
+        if shows != showsProgressLine { showsProgressLine = shows }
     }
 
     /// The worktrees, their changes and this window's among them (B3, `RepositoryStore
