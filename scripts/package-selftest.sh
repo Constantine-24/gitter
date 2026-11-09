@@ -106,6 +106,14 @@ check "control: strings scan finds a present name" binary_has strings /bin/ls CL
 check "control: nm scan finds a present symbol" binary_has symbols /bin/ls __mh_execute_header
 check "control: scans do not find an absent name" bash -c '. "$0"; ! binary_has strings /bin/ls GITTER_LOG_DIR && ! binary_has symbols /bin/ls GitCoreTestSupport' "$HERE/package-lib.sh"
 
+# The home-path check, on captured strings text: it must fail on a binary that holds this Mac's
+# home, pass on one that does not, and never match everything when HOME is empty or "/".
+LEAK=$'/Users/someone/Developer/gitter/App.swift\nNSApplication'
+check "home path: text holding the home is found" holds_home "$LEAK" /Users/someone
+check "home path: text without the home passes" bash -c '. "$0"; ! holds_home "$1" /Users/other' "$HERE/package-lib.sh" "$LEAK"
+check "home path: an empty HOME matches nothing" bash -c '. "$0"; ! holds_home "$1" ""' "$HERE/package-lib.sh" "$LEAK"
+check "home path: a HOME of / matches nothing" bash -c '. "$0"; ! holds_home "$1" /' "$HERE/package-lib.sh" "$LEAK"
+
 # The Authority matching, on captured codesign -dvv text (no codesign, no identity involved).
 ADHOC=$'Signature=adhoc\nTeamIdentifier=not set'
 SIGNED=$'Authority=My Cert\nTeamIdentifier=not set'

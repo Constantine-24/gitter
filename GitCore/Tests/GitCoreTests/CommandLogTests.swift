@@ -111,7 +111,7 @@ final class RecordingLog: CommandLog {
         let log = RecordingLog()
         let git = try Self.fakeGit("kill -KILL $$", in: directory)
         _ = await thrownError { _ = try await backend(log, git: git).run(["status"], cwd: directory) }
-        #expect(log.all.map(\.outcome) == [.exitCode(9)], "if this is .killed, ProcessRunner.run was fixed: close the BACKLOG entry")
+        #expect(log.all.map(\.outcome) == [.exitCode(9)], "if this is .killed, ProcessRunner.run was fixed: close the known gap")
     }
 
     @Test func aCredentialInAnOutcomesPayloadIsRedacted() {
@@ -374,7 +374,7 @@ final class RecordingLog: CommandLog {
     /// ("The structural strip's scp rule over-strips"). A path in a folder is kept.
     @Test func aRevisionWithARootFileHoldingAnAtIsOverStrippedForNow() {
         #expect(entry(arguments: ["cat-file", "blob", "0123abc:icon@2x.png"]).arguments == ["cat-file", "blob", "2x.png"],
-                "if this keeps 0123abc:icon@2x.png, the scp rule was fixed: close the BACKLOG entry")
+                "if this keeps 0123abc:icon@2x.png, the scp rule was fixed: close the known gap")
         #expect(entry(arguments: ["cat-file", "blob", "0123abc:dir/icon@2x.png"]).arguments
                 == ["cat-file", "blob", "0123abc:dir/icon@2x.png"])
     }

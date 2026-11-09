@@ -744,8 +744,7 @@ comes first: "A closed window's change didn't finish", then `<folder>: <what it 
 not bring Gitter forward when it is in the background, and can sit behind the front app's windows;
 Gitter then asks the Dock for your attention, and Show becomes the default (Return) once Gitter is
 in front — while it is in the background AppKit gives the alert no default button. A Dock reopen
-with only hidden windows opens one empty window (measured with the reopen event a Dock click sends;
-a real click is on the checklist), since to you the hidden one is closed.
+with only hidden windows opens one empty window, since to you the hidden one is closed.
 
 **Quit with a sheet up.** ⌘Q, the Dock's Quit and a logout's quit all go through one path: every
 window's sheet is closed (what was typed in it is lost), Gitter waits until AppKit shows none —

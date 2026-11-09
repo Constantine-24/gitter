@@ -84,3 +84,29 @@ developer_id_problem() {
 # notary_field <json> <key>: one top-level field of notarytool's --output-format json. Prints
 # nothing and returns non-zero when the text is not JSON or lacks the key.
 notary_field() { printf '%s' "$1" | /usr/bin/plutil -extract "$2" raw -o - - 2>/dev/null; }
+
+# holds_home <text> <home>: succeeds if the text holds this Mac's home path. An empty home or "/"
+# would match everything, so those never match.
+holds_home() {
+    case "$2" in "" | "/") return 1 ;; esac
+    text_has "$1" "$2"
+}
+
+# staple_with_retry <path>: `xcrun stapler staple`, up to 3 tries 30 seconds apart, because a new
+# ticket can take a moment to appear after Accepted. After the third failure it prints stapler's
+# own words and returns 1.
+staple_with_retry() {
+    local path="$1" try out=""
+    for try in 1 2 3; do
+        if out="$(xcrun stapler staple "$path" 2>&1 </dev/null)"; then
+            echo "$out"
+            return 0
+        fi
+        if [ "$try" -lt 3 ]; then
+            echo "stapler staple failed (try $try of 3); trying again in 30 seconds" >&2
+            sleep 30
+        fi
+    done
+    echo "$out" >&2
+    return 1
+}

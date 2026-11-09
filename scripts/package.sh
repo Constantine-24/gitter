@@ -35,12 +35,12 @@ check_failed() { echo "package.sh: check failed: $1" >&2; exit 3; }
 notarize_file() {
     local path="$1" what="$2" out="" status id
     out="$(xcrun notarytool submit "$path" --keychain-profile "$NOTARY_PROFILE" \
-        --wait --timeout 1h --output-format json </dev/null)" || true
+        --wait --timeout 12h --output-format json </dev/null)" || true
     status="$(notary_field "$out" status || true)"
     id="$(notary_field "$out" id || true)"
     if [ "$status" != "Accepted" ]; then
         [ -z "$id" ] || xcrun notarytool log "$id" --keychain-profile "$NOTARY_PROFILE" </dev/null || true
-        check_failed "notarization of $what: ${status:-notarytool gave no readable answer${out:+ (it printed: $out)}}"
+        check_failed "notarization of $what: ${status:-notarytool gave no readable answer${out:+ (it printed: $out)}}; the submission may still be in progress: check it with xcrun notarytool history --keychain-profile \"$NOTARY_PROFILE\"${id:+ (submission id $id)}"
     fi
     echo "notarized $what: Accepted ($id)"
 }
@@ -125,7 +125,8 @@ command -v xcodegen >/dev/null 2>&1 || refuse "xcodegen is not installed (brew i
 xcodegen generate
 xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Release \
     -derivedDataPath "$DERIVED" ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
-    CURRENT_PROJECT_VERSION="$BUILD" GITTER_COMMIT="$COMMIT" CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO clean build
+    CURRENT_PROJECT_VERSION="$BUILD" GITTER_COMMIT="$COMMIT" CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
+    DEPLOYMENT_POSTPROCESSING=YES STRIP_INSTALLED_PRODUCT=YES STRIP_STYLE=debugging clean build
 [ -d "$APP" ] || { echo "package.sh: the build left no $APP" >&2; exit 1; }
 
 # 4. Re-sign with the given identity, keeping the built entitlements.
@@ -196,6 +197,8 @@ while IFS= read -r -d '' f; do
     for name in GITTER_LOG_DIR quitevent closewindow; do
         ! text_has "$STRS" "$name" || check_failed "$(basename "$f") holds the string $name (strings)"
     done
+    # The build folder and this Mac's home must not ship in the binary (debug info is stripped).
+    ! holds_home "$STRS" "$HOME" || check_failed "$(basename "$f") holds the string $HOME (strings)"
     echo "scan control ok: $(basename "$f") has __mh_execute_header (nm) and NSApplication (strings); none of the Release gate's names"
 done < <(find "$APP/Contents/MacOS" -type f -print0)
 [ "$SCANNED" -ge 1 ] || check_failed "no Mach-O file found to scan under Contents/MacOS"
@@ -204,7 +207,7 @@ done < <(find "$APP/Contents/MacOS" -type f -print0)
 if [ -n "$NOTARY_PROFILE" ]; then
     ditto -c -k --keepParent "$APP" "$SCRATCH/Gitter.zip"
     notarize_file "$SCRATCH/Gitter.zip" "Gitter.app"
-    xcrun stapler staple "$APP"
+    staple_with_retry "$APP" || check_failed "stapler staple of Gitter.app failed 3 times"
     xcrun stapler validate "$APP"
     codesign --verify --strict --deep "$APP" 2>&1 \
         || check_failed "codesign --verify --strict --deep after stapling"
@@ -235,9 +238,9 @@ MOUNTED=1
 hdiutil detach "$MNT" >/dev/null || check_failed "hdiutil detach"
 MOUNTED=0
 if [ -n "$NOTARY_PROFILE" ]; then
-    codesign --force --timestamp --sign "$IDENTITY" "$PARTIAL"
+    codesign --force --timestamp --identifier "Gitter-$VERSION-$BUILD" --sign "$IDENTITY" "$PARTIAL"
     notarize_file "$PARTIAL" "$DMG_NAME"
-    xcrun stapler staple "$PARTIAL"
+    staple_with_retry "$PARTIAL" || check_failed "stapler staple of $DMG_NAME failed 3 times"
     xcrun stapler validate "$PARTIAL"
     SPCTL_DMG="$(spctl --assess --type open --context context:primary-signature -vv "$PARTIAL" 2>&1 || true)"
     echo "$SPCTL_DMG" | sed 's/^/  /'

@@ -48,7 +48,7 @@ Recent and its log folder. A second copy — a build left in Xcode's DerivedData
 `dist/DerivedData` — is still an app Finder and `open` can start instead of the one in
 `/Applications`. Two Gitters running at once write the same log: their lines interleave rather than
 overwrite each other, but their rotations can trip over each other, and one of them can then stop
-logging for the rest of its launch (a known gap).
+logging for the rest of its launch.
 
 ## 5. The logs
 
@@ -81,7 +81,7 @@ millisecond and its offset from UTC:
   or a quote in it is single-quoted, a `'` in it written `'\''`) and how it ended: `ok`,
   `exit <code>`, `killed`, `cancelled`, `launch failed: …` or `refused before launch: …`. A call that failed is followed by git's own
   words, each line indented. A git killed while it ran through Gitter's plain runner reads as
-  `exit <signal>`, not `killed` (a known gap).
+  `exit <signal>`, not `killed`.
 - **`banner`, `notice`, `sticky`** — every error banner and notice as it was shown, with the
   repository's path.
 - **`quit question:`** — which button answered "quit while a push runs?": Wait, Stop and Quit, or
@@ -219,9 +219,10 @@ What it does, in order:
 - **With `GITTER_DIST_DIR` set**, it copies the DMG there too, under a temporary name first and then
   moved into place, so a sync service never sees half a file. It says `replaced …` there as well.
 - **At the end** it prints the DMG's path, the copy's path, the SHA-256, the version, build, commit and
-  signing identity, and what `spctl --assess` says. For a build that is not notarized, `spctl`
-  rejects the app, which is expected and is not a failure: the script's exit status is. With
-  `--notarize` the run ends with `notarized: yes`.
+  signing identity, and then one of two endings. For a build that is not notarized it prints what
+  `spctl --assess` says; `spctl` rejects the app, which is expected and is not a failure: the
+  script's exit status is. With `--notarize` it prints `notarized: yes` instead, because the two
+  Gatekeeper checks (the app's and the DMG's) already ran earlier and a rejection stopped the run.
 - **Any other failure** — the build, git, `codesign`, `hdiutil` — ends the script with exit 1, after
   the tool's own words.
 
