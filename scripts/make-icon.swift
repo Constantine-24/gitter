@@ -1,12 +1,16 @@
 // Draws Gitter's app icon and writes it into an asset catalog's AppIcon set.
 //
-// A blue rounded square on Apple's macOS icon grid (an 824 px body centred in 1024, corner radius 185,
-// a soft shadow), lighter at the top like the commit graph's blue. On it a white git-branch mark: a
-// main line with two white commits, and a branch that leaves it and ends in an orange commit (Gitter's
-// accent) on a white rim.
+// A flat indigo (#5B4DFF) rounded square on Apple's macOS icon grid (an 824 px body centred in 1024,
+// corner radius 185, continuous corners), no gradient, highlight or shadow. On it a white G drawn as
+// one round-capped stroke: an arc that runs from the upper right the long way round through the top,
+// left and bottom, then a bar back in toward the centre. The G doubles as a commit graph: a white
+// commit sits where the arc starts and a yellow (#FFC83D) commit where the bar ends.
+//
+// The coordinates are the Figma master's, on a 1024 canvas with the y axis pointing down; the context
+// is flipped once. It draws into an sRGB bitmap so the colours in the PNG are the ones written here.
 //
 // The icon is drawn once per pixel size, not scaled down from one big PNG, so the small sizes stay
-// crisp. For 64 px and below the mark's strokes, commits and rim are thickened a little so it still
+// crisp. For 64 px and below the stroke and both commits are thickened a little so the G still
 // reads in the Dock's and the Finder's smallest sizes. It writes the ten macOS files
 // (16, 32, 128, 256, 512 pt at 1x and 2x) and rewrites the folder's Contents.json to list them.
 //
@@ -14,6 +18,7 @@
 //
 //     swift scripts/make-icon.swift Gitter/Assets.xcassets/AppIcon.appiconset
 import AppKit
+import SwiftUI
 
 guard CommandLine.arguments.count == 2 else {
     FileHandle.standardError.write(Data("usage: swift scripts/make-icon.swift <appiconset-folder>\n".utf8))
@@ -23,79 +28,52 @@ let folder = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
 
 /// Draws the icon at `px` x `px` pixels and returns it as PNG data.
 func render(px: Int) -> Data {
-    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px,
-        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-        colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-    rep.size = NSSize(width: px, height: px)
-    NSGraphicsContext.saveGraphicsState()
-    defer { NSGraphicsContext.restoreGraphicsState() }
-    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-    let ctx = NSGraphicsContext.current!.cgContext
-    // Everything below is drawn on the 1024 canvas.
-    ctx.scaleBy(x: CGFloat(px) / 1024, y: CGFloat(px) / 1024)
+    let srgb = CGColorSpace(name: CGColorSpace.sRGB)!
+    let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8, bytesPerRow: 0, space: srgb,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    // Flip once and scale: everything below is on the 1024 canvas, y down, as in Figma.
+    ctx.translateBy(x: 0, y: CGFloat(px))
+    ctx.scaleBy(x: CGFloat(px) / 1024, y: -CGFloat(px) / 1024)
+    func color(_ hex: UInt32) -> CGColor {
+        CGColor(colorSpace: srgb, components: [CGFloat(hex >> 16 & 255) / 255, CGFloat(hex >> 8 & 255) / 255,
+                                               CGFloat(hex & 255) / 255, 1])!
+    }
 
-    // Apple's macOS grid: an 824 body centred in 1024, corner radius about 185.
+    // Apple's macOS grid: an 824 body centred in 1024, corner radius 185, solid indigo.
     let body = CGRect(x: 100, y: 100, width: 824, height: 824)
-    let shape = NSBezierPath(roundedRect: body, xRadius: 185, yRadius: 185)
+    ctx.setFillColor(color(0x5B4DFF))
+    ctx.addPath(RoundedRectangle(cornerRadius: 185, style: .continuous).path(in: body).cgPath)
+    ctx.fillPath()
 
-    // Shadow under the body.
-    ctx.saveGState()
-    ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 28, color: NSColor.black.withAlphaComponent(0.30).cgColor)
-    NSColor(srgbRed: 0.12, green: 0.20, blue: 0.55, alpha: 1).setFill()
-    shape.fill()
-    ctx.restoreGState()
-
-    // Blue body, lighter at the top: the commit graph's blue.
-    ctx.saveGState()
-    shape.addClip()
-    NSGradient(colors: [
-        NSColor(srgbRed: 0.27, green: 0.56, blue: 1.00, alpha: 1),
-        NSColor(srgbRed: 0.10, green: 0.28, blue: 0.78, alpha: 1),
-    ])!.draw(in: body, angle: -90)
-    // A soft glass highlight over the top half.
-    NSGradient(colors: [NSColor.white.withAlphaComponent(0.22), NSColor.white.withAlphaComponent(0.0)])!
-        .draw(in: CGRect(x: body.minX, y: body.midY, width: body.width, height: body.height / 2), angle: -90)
-    ctx.restoreGState()
-
-    // The small sizes thicken the strokes, commits and rim so the mark still reads.
+    // The small sizes thicken the stroke and the commits so the G still reads.
     let boost: CGFloat = px >= 128 ? 1 : px >= 64 ? 1.12 : px >= 32 ? 1.25 : 1.4
 
-    // The glyph, centred: its extent runs 314 to 710 across and 220 to 804 up the canvas, so the
-    // centre is on 512 both ways.
-    let white = NSColor.white
-    let orange = NSColor(srgbRed: 1.00, green: 0.62, blue: 0.04, alpha: 1)
-    let line = 58 * boost
-    let commit = 70 * boost
-    let rim = 86 * boost            // the orange commit's white rim, outer radius
-    let tipFill = 70 * boost        // the orange commit itself
-    let mainX: CGFloat = 384
-    let bottom = CGPoint(x: mainX, y: 290), top = CGPoint(x: mainX, y: 734)
-    let tip = CGPoint(x: 624, y: 640)
+    let centre = CGPoint(x: 512, y: 512)
+    let start = CGPoint(x: 689.7, y: 362.9)
+    let barEnd = CGPoint(x: 540, y: 512)
+    let startAngle = atan2(start.y - centre.y, start.x - centre.x)   // about -40 degrees, upper right
 
-    white.setStroke()
-    let main = NSBezierPath(); main.move(to: bottom); main.line(to: top)
-    main.lineWidth = line; main.lineCapStyle = .round; main.stroke()
+    // The G: from the start the long way round through the top, left and bottom (angles falling from
+    // -40 to -360 degrees), then a straight bar in toward the centre.
+    let g = CGMutablePath()
+    g.move(to: start)
+    g.addArc(center: centre, radius: 232, startAngle: startAngle, endAngle: -2 * .pi, clockwise: true)
+    g.addLine(to: barEnd)
+    ctx.setStrokeColor(color(0xFFFFFF))
+    ctx.setLineWidth(76 * boost)
+    ctx.setLineCap(.round)
+    ctx.setLineJoin(.round)
+    ctx.addPath(g)
+    ctx.strokePath()
 
-    // The branch runs on into the orange commit's centre; the rim is drawn over its end, so the
-    // stroke goes under the rim with no seam.
-    let branch = NSBezierPath()
-    branch.move(to: CGPoint(x: mainX, y: 400))
-    branch.curve(to: CGPoint(x: tip.x, y: tip.y - 80),
-                 controlPoint1: CGPoint(x: mainX, y: 520),
-                 controlPoint2: CGPoint(x: tip.x, y: 470))
-    branch.line(to: tip)
-    branch.lineWidth = line; branch.lineCapStyle = .round; branch.stroke()
-
-    func disc(_ c: CGPoint, _ r: CGFloat, _ fill: NSColor) {
-        fill.setFill()
-        NSBezierPath(ovalIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)).fill()
+    func disc(_ c: CGPoint, _ r: CGFloat, _ fill: CGColor) {
+        ctx.setFillColor(fill)
+        ctx.fillEllipse(in: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r))
     }
-    disc(bottom, commit, white)
-    disc(top, commit, white)
-    disc(tip, rim, white)
-    disc(tip, tipFill, orange)
+    disc(start, 66 * boost, color(0xFFFFFF))
+    disc(CGPoint(x: 532, y: 512), 78 * boost, color(0xFFC83D))
 
-    return rep.representation(using: .png, properties: [:])!
+    return NSBitmapImageRep(cgImage: ctx.makeImage()!).representation(using: .png, properties: [:])!
 }
 
 // (points, scale) for each file the macOS AppIcon set lists.
