@@ -187,7 +187,7 @@
       and your diffs, and every action runs through your own <code>git</code>: your SSH agent,
       credential helpers, hooks and commit signing just work.</p>
     <div class="buttons">
-      <a class="btn primary" href="#install">Get Gitter</a>
+      <a class="btn primary" href="https://github.com/Constantine-24/gitter/releases/latest">Download</a>
       <a class="btn" href="#guide">Read the guide</a>
       <a class="btn" href="https://github.com/Constantine-24/gitter">View on GitHub</a>
     </div>
@@ -309,20 +309,18 @@
 
         <article id="install">
           <h3><span class="n">01</span> Install</h3>
-          <p>There are no signed release downloads yet, so you build Gitter yourself. You need Xcode 27,
-            <a href="https://github.com/yonaskolb/XcodeGen">XcodeGen</a> and the Command Line Tools, which provide
-            <code>/usr/bin/git</code>.</p>
+          <p><a href="https://github.com/Constantine-24/gitter/releases/latest">Download the latest DMG</a>.
+            Open it, drag <b>Gitter</b> onto <b>Applications</b>, and open Gitter. The app is signed and notarized
+            by Apple. You need the Command Line Tools, which provide <code>/usr/bin/git</code>.</p>
+          <p>To build it yourself you need Xcode 27 and
+            <a href="https://github.com/yonaskolb/XcodeGen">XcodeGen</a>:</p>
 <pre><code>git clone https://github.com/Constantine-24/gitter.git
 cd gitter
 brew install xcodegen
 xcodegen generate
 open Gitter.xcodeproj      # then press Run</code></pre>
-          <p>To install Gitter in <code>/Applications</code> instead, build a DMG with
-            <code>bash scripts/package.sh</code>. Add <code>--sign "&lt;your certificate&gt;"</code> to sign it with
-            a self-signed certificate, so macOS keeps its folder permissions across updates. The first time you
-            open it, use <b>Open Anyway</b> in System Settings › Privacy &amp; Security.
-            <a href="https://github.com/Constantine-24/gitter/blob/main/docs/INSTALL.md">INSTALL.md</a> covers the
-            certificate, packaging, the first open and updating.</p>
+          <p><a href="https://github.com/Constantine-24/gitter/blob/main/docs/INSTALL.md">INSTALL.md</a> covers git,
+            updating, the logs and building your own DMG.</p>
         </article>
 
         <article id="open">
@@ -499,7 +497,6 @@ open Gitter.xcodeproj      # then press Run</code></pre>
     <span>
       <a href="https://github.com/Constantine-24/gitter">Source</a> ·
       <a href="https://github.com/Constantine-24/gitter/blob/main/docs/GUIDE.md">Full guide</a> ·
-      <a href="https://github.com/Constantine-24/gitter/blob/main/docs/BACKLOG.md">Backlog</a> ·
       <a href="https://github.com/Constantine-24/gitter/issues">Issues</a>
     </span>
   </div>

@@ -92,7 +92,7 @@ final class RecordingLog: CommandLog {
         let log = RecordingLog()
         let git = try Self.fakeGit("kill -KILL $$", in: directory)
         // Through the two streaming seams: `ProcessRunner.run` does not tell a signal from an exit
-        // code (it throws `commandFailed(9, …)`), so `run` cannot report `.killed` (docs/BACKLOG.md).
+        // code (it throws `commandFailed(9, …)`), so `run` cannot report `.killed`.
         let backend = self.backend(log, git: git)
         _ = await thrownError { _ = try await backend.runStreaming(["status"], cwd: directory, progress: { _ in }) }
         _ = await thrownError { _ = try await backend.runWithEnvironment(["status"], cwd: directory, extra: [:]) }
@@ -100,7 +100,7 @@ final class RecordingLog: CommandLog {
         #expect(log.all.map(\.outcome) == [.killed, .killed])
     }
 
-    /// The pin for the BACKLOG entry "The diagnostics log cannot tell a git killed by a signal ...":
+    /// The pin for the known gap "The diagnostics log cannot tell a git killed by a signal ...":
     /// `ProcessRunner.run` throws `commandFailed(9)` for a killed git, so through `run` the entry is
     /// an exit code, not `.killed`. When the runner is fixed this fails; change it to `.killed`
     /// (as the streaming seams' test above) and close the entry. A plain expectation rather than
@@ -325,7 +325,7 @@ final class RecordingLog: CommandLog {
     /// The scp rule is not applied to git's words: it would cut `'a:b@c.txt'` to `c.txt'`, and a file
     /// name with a colon and an `@` is ordinary there. The structural pass leaves it alone; the prose
     /// redactor after it already reads `a:b@` as userinfo and logs `'c.txt'`, as it did before this
-    /// fix (docs/BACKLOG.md, "The prose redactor still rewrites some logged arguments").
+    /// fix ("The prose redactor still rewrites some logged arguments").
     @Test func theStructuralPassOverGitsWordsLeavesAnScpShapeAlone() {
         let words = "error: pathspec 'a:b@c.txt' did not match any file(s) known to git"
         #expect(CommandLogEntry.strippingURLUserinfo(inWords: words) == words)
@@ -346,7 +346,7 @@ final class RecordingLog: CommandLog {
 
     /// An scp-form address in git's or ssh's words (`user:password@host: Permission denied`, ssh
     /// echoing an `ssh://` URL's userinfo) gets the prose redactor only, so a password holding `'`,
-    /// `(`, `)` or a blank stays (docs/BACKLOG.md, "GitCore's prose redactor misses a sub-delim
+    /// `(`, `)` or a blank stays ("GitCore's prose redactor misses a sub-delim
     /// credential"). The fix is not the scp rule, which over-strips file names here.
     @Test func anScpFormPasswordWithAParenthesisInGitsWordsStaysForNow() throws {
         let kept = try #require(entry(stderr: "me:p(ss)@example.invalid: Permission denied (publickey).").stderr)
@@ -356,7 +356,7 @@ final class RecordingLog: CommandLog {
     }
 
     /// A URL password holding an unencoded `/`, `?` or `#` (not a valid URL: its authority ends
-    /// early) stays in clear (spec §3, docs/BACKLOG.md); pinned so a fix of the strip shows here.
+    /// early) stays in clear (a known gap); pinned so a fix of the strip shows here.
     @Test(arguments: [
         ("https://me:p/ss@example.invalid/x", "p/ss"),
         ("https://me:p@ss/x@example.invalid/r.git", "ss/x"),
@@ -371,7 +371,7 @@ final class RecordingLog: CommandLog {
     /// The scp rule over-strips a `<sha>:<path>` whose root-level path holds an `@` — the shape of
     /// Discard's `cat-file blob|--filters "<sha>:<path>"` (CLIGitBackend+Discard.swift) for an
     /// `icon@2x.png`: today it logs as `2x.png`. Nothing leaks; the line reads wrong
-    /// (docs/BACKLOG.md, "The structural strip's scp rule over-strips"). A path in a folder is kept.
+    /// ("The structural strip's scp rule over-strips"). A path in a folder is kept.
     @Test func aRevisionWithARootFileHoldingAnAtIsOverStrippedForNow() {
         #expect(entry(arguments: ["cat-file", "blob", "0123abc:icon@2x.png"]).arguments == ["cat-file", "blob", "2x.png"],
                 "if this keeps 0123abc:icon@2x.png, the scp rule was fixed: close the BACKLOG entry")

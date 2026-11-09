@@ -63,18 +63,11 @@ fetch and push, stash and discard, conflicts, history actions and remotes.
 
 ## Install
 
-Gitter is not distributed as a signed release yet. Build a DMG from a clean checkout:
+1. Download the notarized DMG from [the latest release](https://github.com/Constantine-24/gitter/releases/latest).
+2. Open it and drag **Gitter** onto **Applications**.
+3. Open Gitter from Applications.
 
-```sh
-bash scripts/package.sh --sign "Gitter Local Signing"
-```
-
-This writes `dist/Gitter-<version>-<build>.dmg`. [`docs/INSTALL.md`](docs/INSTALL.md) covers the
-whole path:
-- making the self-signed certificate once;
-- the first open past Gatekeeper;
-- updating;
-- finding the log.
+[`docs/INSTALL.md`](docs/INSTALL.md) also covers git, updating, the log, and building your own DMG.
 
 ## Build and run
 
@@ -120,17 +113,13 @@ used to drive the real app.
 | Document | What's in it |
 |---|---|
 | [User guide](docs/GUIDE.md) | Every feature, and the safety rules behind each one |
-| [Installing](docs/INSTALL.md) | Certificate, DMG, Gatekeeper, updates and the log |
+| [Installing](docs/INSTALL.md) | Download, git, updating, the log, and building your own DMG |
 | [Developing](docs/DEVELOPMENT.md) | Design decisions, build, tests, layout, the debug harness, and the roadmap so far |
-| [Backlog](docs/BACKLOG.md) | Everything wanted or deferred, with what is already known about each item |
-| [Specs and plans](docs/superpowers) | The design and the implementation plan for each milestone |
 
 ## Status
 
-Gitter is a personal project in active development (version 0.1.0). Each milestone is listed under
-"Status / roadmap" in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#status--roadmap). Planned next:
-- a batch of small, visible fixes;
-- commit search.
+Gitter is a personal project in active development (version 0.2.0). Each milestone is listed under
+"Status / roadmap" in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#status--roadmap). Planned next: commit search.
 
 ## License
 

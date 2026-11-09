@@ -685,7 +685,7 @@ struct LaneEnding {
     /// `notice` as `runOnLane` hands it to `show(_:)`, which picks the slot: a link stays; so
     /// does the only record of what was deleted (`stickyNotice`, kept) and a success with a
     /// warning in it (`mustBeRead`, a warning) — "Pushed, but the upstream could not be set"
-    /// fading after four seconds was BACKLOG:81. Nil when there is nothing to show: no notice,
+    /// fading after four seconds was a bug. Nil when there is nothing to show: no notice,
     /// or a plain one with no text.
     var shownNotice: Notice? {
         guard var notice else { return nil }

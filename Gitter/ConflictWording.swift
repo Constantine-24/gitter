@@ -147,7 +147,7 @@ enum ConflictWording {
         }
     }
 
-    /// Submodule conflicts are shown and explained, never resolved here (backlog).
+    /// Submodule conflicts are shown and explained, never resolved here.
     static let submodule =
         "This is a submodule conflict, which Gitter can't resolve yet. In a terminal, check out the "
         + "commit you want inside the submodule, then stage the submodule here."

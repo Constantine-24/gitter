@@ -20,7 +20,7 @@ targets:
       base:
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "0.1.0"
+        MARKETING_VERSION: "0.2.0"
         CURRENT_PROJECT_VERSION: "1"
         # The commit a packaged build was made from (scripts/package.sh passes it); empty in a
         # plain Xcode build, whose About panel then shows the version and build only.

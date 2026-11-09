@@ -40,7 +40,7 @@ import AppKit
 ///
 /// **Not covered:** a SIGTERM (`kill`, a logout that force-quits) never reaches
 /// `applicationShouldTerminate`, and git is left running as before; and a mutation that is not
-/// on the lane (a merge, a commit) is not waited for. Both are in `docs/BACKLOG.md`.
+/// on the lane (a merge, a commit) is not waited for. Both are known gaps.
 @MainActor
 enum QuitGuard {
     /// How long a stopped fetch may take to go before the app quits anyway. The runner ends a

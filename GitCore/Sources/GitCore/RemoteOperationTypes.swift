@@ -300,7 +300,7 @@ public enum PushTargetRefusal: Equatable, Sendable {
 /// name respectively. Gitter cannot see which is configured, so it refuses all three and says
 /// to push once from a terminal with an explicit destination. A user who has set
 /// `push.default=upstream` or `current` is therefore refused where their own git would not be.
-/// Deferred in `docs/BACKLOG.md`; reading `push.default` is a separate config read and a
+/// Deferred; reading `push.default` is a separate config read and a
 /// separate decision.
 public enum PushTarget: Equatable, Sendable {
     case push(remote: String, ref: String)

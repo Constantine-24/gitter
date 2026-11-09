@@ -66,8 +66,7 @@ import Foundation
 ///
 /// The `check` row is the cost, and it is written down rather than hidden: a user who set it
 /// to be stopped from publishing a gitlink nobody can fetch is not stopped by Gitter. It moves
-/// nothing on any server it was not asked to, which is the line this file holds; it is in
-/// `docs/BACKLOG.md`. The delete vector sends no commits and did not recurse with or without
+/// nothing on any server it was not asked to, which is the line this file holds. The delete vector sends no commits and did not recurse with or without
 /// the flag (measured); it carries it so that all four vectors read the same.
 /// `PushSubmoduleTests` holds the first three rows.
 extension CLIGitBackend {

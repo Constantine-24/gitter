@@ -567,7 +567,7 @@ import Testing
         #expect(RepositoryOperation.rebase.unstagingBlockedHelp.contains("Continue the rebase"))
     }
 
-    // MARK: - Stash while a conflict is unresolved (backlog: no operation needed)
+    // MARK: - Stash while a conflict is unresolved (no operation needed)
 
     @Test func stashActionsAreBlockedByAnyUnresolvedConflict() {
         #expect(StashWording.blockedByConflicts([], actions: false) == nil)

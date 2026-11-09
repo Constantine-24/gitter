@@ -383,7 +383,7 @@ import Testing
         #expect(store.commitForDetail(fixture.oldTip)?.summary == "o1")
     }
 
-    /// BACKLOG 1074: Done on a comparison whose selected commit isn't in the history loads down to
+    /// Done on a comparison whose selected commit isn't in the history loads down to
     /// it.
     @Test(.timeLimit(.minutes(10))) func doneRevealsACompareSelection() async throws {
         let fixture = try DeepHistory.make()

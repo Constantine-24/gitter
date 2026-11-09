@@ -230,7 +230,7 @@ public enum RemoteFailureParser {
     /// - a **header value** — `http.extraHeader=Authorization: Bearer …` is how a CI token is
     ///   usually passed, and git quotes the configuration back in some diagnostics.
     ///
-    /// Both are in `docs/BACKLOG.md`. Neither is reachable from anything Gitter itself writes:
+    /// Both are known gaps. Neither is reachable from anything Gitter itself writes:
     /// it never builds a URL and never sets a header, so a secret can only arrive there through
     /// the user's own configuration.
     ///
@@ -248,7 +248,7 @@ public enum RemoteFailureParser {
     ///
     /// Callers that cut a long stream into pieces before redacting — the progress relay forces
     /// a split every 64 KiB of a line with no end — redact each piece on its own, so a
-    /// credential straddling such a cut is redacted piece by piece; see `docs/BACKLOG.md`.
+    /// credential straddling such a cut is redacted piece by piece.
     public static func redactingCredentials(_ text: String) -> String {
         var result = String.UnicodeScalarView()
         var run: [Unicode.Scalar] = []

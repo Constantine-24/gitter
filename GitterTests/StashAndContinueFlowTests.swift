@@ -361,7 +361,7 @@ import Testing
             && (try? Self.parents(of: "HEAD", in: repo)) == 1
     }
 
-    /// M4 (BACKLOG "A manual Fetch can pre-empt Stash and Continue's retried pull"): a Fetch
+    /// M4 ("A manual Fetch can pre-empt Stash and Continue's retried pull"): a Fetch
     /// clicked while the stash runs takes the lane, and the retry, which needs only the mutation
     /// slot, still runs while the fetch is held.
     @Test(.timeLimit(.minutes(10))) func aFetchStartedDuringTheStashDoesNotPreemptTheRetry() async throws {

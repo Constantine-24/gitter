@@ -646,7 +646,7 @@ private final class StreamingProcessState: @unchecked Sendable {
     /// It goes through `signalReapedLeadersGroup`, so `onReapedGroupSignal` hears of it first,
     /// as of every signal by that number.
     ///
-    /// **What is left (for E1's S25 backlog item):** if Foundation's termination handler runs
+    /// **What is left (a known gap):** if Foundation's termination handler runs
     /// only after the call has resumed by the abandonment — about two graces after the cancel —
     /// the pending kill is dropped (`takePendingKillLocked`'s `!resumed`), and a member of the
     /// group that ignores SIGTERM survives. The call itself has returned by then, as the

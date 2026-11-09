@@ -117,7 +117,7 @@ Everything Gitter does, and how it keeps your work safe. The short version is in
 The pictures below, and the compare and worktree ones further down, were taken before the window
 became two columns (2026-10-11): what each shows is current, but around it the window is the old
 one, three columns with the commit list's divider running up through the toolbar. The picture at
-the top is the window as it is now; the rest are on the backlog to retake.
+the top is the window as it is now; the rest still show the older layout.
 
 ![The remote toolbar: Fetch, "Pull ↓2" and "Push ↑2", with "main ↑2 ↓2" on the branch button](screenshots/remotes.png)
 
@@ -271,7 +271,7 @@ until Stop. Now it fails like any other refused key: load the key into your agen
 or let macOS keep its passphrase (`UseKeychain`), and Gitter uses it from then on. Your own
 `SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE`, `GIT_SSH_COMMAND` and `core.sshCommand` are never
 touched; if you set `SSH_ASKPASS` without `SSH_ASKPASS_REQUIRE` and start Gitter from a
-terminal, ssh's own rules apply and it can still be stopped there (see the backlog).
+terminal, ssh's own rules apply and it can still be stopped there.
 
 ### What fetch and push deliberately do not do
 
@@ -608,7 +608,7 @@ working tree was fetched from, and had a branch deleted by a push).
 
 **What stays a terminal job.** Merging or rebasing a branch that is not checked out; force-pushing
 one; editing a remote with several URLs; editing fetch refspecs; pruning on every fetch.
-Prune, clean-up, rename and remove are not yet waited for by quitting (see the backlog).
+Prune, clean-up, rename and remove are not yet waited for by quitting.
 
 ### Navigation
 

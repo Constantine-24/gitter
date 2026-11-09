@@ -40,27 +40,36 @@ xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -config
 
 ## Packaging and installing
 
-Gitter is carried to your other Apple Silicon Macs as a DMG, made by one script from a clean tree:
+Gitter is shipped as a DMG for Apple Silicon, made by one script from a clean tree. A release is signed
+with a Developer ID and notarized:
+
+```sh
+bash scripts/package.sh --sign "Developer ID Application: <name> (<team>)" --notarize "<profile>"
+```
+
+For your own Macs, a self-signed build is enough:
 
 ```sh
 bash scripts/package.sh --sign "Gitter Local Signing"
 ```
 
 It builds an arm64 Release whose build number is the commit count and whose `Info.plist` holds the
-commit, re-signs it with the self-signed certificate you made once (without `--sign` it stays ad-hoc),
+commit, re-signs it with the identity you name (without `--sign` it stays ad-hoc),
 checks the signature, the hardened runtime, the architecture, the stamped version and the absence of
 the Debug harness, and writes `dist/Gitter-<version>-<build>.dmg`; `GITTER_DIST_DIR` also gets a copy,
-moved into place whole, for a synced folder. `--notarize` is reserved and refuses: there is no
-Developer ID yet. `bash scripts/package-selftest.sh` pins the refusals on a scratch clone, and that a
+moved into place whole, for a synced folder. `--notarize <profile>` needs a Developer ID Application
+identity: it signs with a secure timestamp, submits the app to Apple's notary service with the
+`notarytool` keychain profile you stored, staples it, builds and signs the DMG, notarizes and staples
+that too, and checks both with `spctl` before the DMG takes its final name. Every build also refuses
+an app that carries `get-task-allow`. `bash scripts/package-selftest.sh` pins the refusals on a scratch clone, and that a
 clean tree and a `--sign` with a value get past them to the build.
-[`docs/INSTALL.md`](INSTALL.md) is the whole path — the certificate, packaging, the first open
-past Gatekeeper (Open Anyway, or one `xattr` line), the Command Line Tools, updating, keeping one copy
-in `/Applications`, and the log.
+[`docs/INSTALL.md`](INSTALL.md) is the whole path: download, the Command Line Tools, updating, keeping one copy
+in `/Applications`, the log, and building your own DMG.
 
 The app icon is drawn by `scripts/make-icon.swift`, once per pixel size, and the PNGs and `Contents.json` it writes are committed; after changing the drawing, re-run `swift scripts/make-icon.swift Gitter/Assets.xcassets/AppIcon.appiconset`.
 
 **Which build is this.** Gitter › About Gitter shows the version, the build number and, for a
-packaged build, the commit: "Version 0.1.0 (440, 99be6f3)". A build from Xcode shows "Version 0.1.0
+packaged build, the commit: "Version 0.2.0 (440, 99be6f3)". A build from Xcode shows "Version 0.2.0
 (1)".
 
 **The log.** Every git call Gitter makes (its folder, arguments, duration and outcome, and git's own
@@ -68,7 +77,7 @@ words when it failed) and every banner, notice and alert it showed go to
 `~/Library/Logs/Gitter/gitter.log`, one timestamped line each, beside a launch header and each
 window's open and close. A URL's username and password are removed from every argument, and from
 every `scheme://` URL in git's words, by structure; what is left is in
-[`docs/INSTALL.md`](INSTALL.md) §7 — a password with an unencoded `/`, `?` or `#`, and in git's
+[`docs/INSTALL.md`](INSTALL.md) §5 — a password with an unencoded `/`, `?` or `#`, and in git's
 words a password with a blank, an address without `://` or a second URL in the same word, which
 get a pattern redactor only. The file rotates at 2 MB and keeps five; nothing leaves the Mac, and a
 quit waits at most two seconds for its last lines. **Help › Show Logs** opens the folder in Finder. The tests never install the file
@@ -252,7 +261,7 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   nothing gives none.
 - Three come from the runner's escalation in `StreamingRunnerTests`: a reap recorded only
   after the call came back leaves a helper that ignores SIGTERM running (the residual the
-  backlog's "Own the reap" item names), and an escalation one grace early and one past the
+  "Own the reap" gap names), and an escalation one grace early and one past the
   margin each fail the latency check, which is taken on the runner's own clock.
 - Four come from the scoped process checks (`OwnProcessTests`, `StreamingRunnerTests`): a leak
   check fails on a process of the test's still running, a cleanup whose query fails is
@@ -315,7 +324,7 @@ Nineteen come from milestone E3:
   was not asked (two); a hidden store whose alert closed it, judged by its window alone, would be told
   twice under a held quit; the hidden ending's alert gives Return to Show alone, not to Close nor to a
   button given Escape (two); and one is a known defect, not a control — a store closed through E2's
-  path in the middle of a commit stays mutating (B3.1, in the backlog), now reachable only when a
+  path in the middle of a commit stays mutating (a known defect), now reachable only when a
   window was never attached.
 - One comes from `StagedSideTests`: setting the side and then the path, the old two steps, loads the
   same diff twice.
@@ -819,8 +828,8 @@ Its tests are green on their first run (milestone E1): the GitCore gate is cappe
 pass uncapped too, no test has a wall-clock upper bound that load can exceed, a test signals only
 processes it started, and the app's tests never touch your real defaults. A Stop ends a helper
 of git's that ignores SIGTERM even when git itself has already exited, and a git killed by a
-signal is reported as killed, never as an exit code (the corners left are the backlog's "Own the
-reap").
+signal is reported as killed, never as an exit code (the corners left are the "Own the
+reap" gap).
 
 Works in several windows and quits with a sheet up (milestone E2): File › New Window opens a
 second, independent repository window, each with its own sheets, lane and automatic fetch;
@@ -839,20 +848,10 @@ one runs, A2's largest files are split, and GitCore reads a spaced `GIT_CONFIG_C
 does, sees an operation in a worktree whose main checkout's path holds a newline, and no longer
 lets a symbolic ref hide the commits a delete would strand.
 
-Can be carried to your other Macs, and keeps a log you can carry back (milestone P1): one script,
-`scripts/package.sh`, turns a clean tree into an arm64 DMG signed with your own self-signed
-certificate (so macOS's folder grants survive an update), stamped with the build number and the
+Can be installed on other Macs, and keeps a log you can carry back: one script,
+`scripts/package.sh`, turns a clean tree into an arm64 DMG signed with a Developer ID and notarized, or
+with your own self-signed certificate (so macOS's folder grants survive an update), stamped with the build number and the
 commit that About Gitter shows, and checked before it is wrapped; and every git call and every
 message Gitter showed goes to a rotating `~/Library/Logs/Gitter/gitter.log`, with a URL's credentials
-removed (the few exceptions are in `docs/INSTALL.md` §7), which Help › Show Logs opens.
-[`docs/INSTALL.md`](INSTALL.md) covers the certificate, the first open past Gatekeeper, updating
-and the log.
-
-Everything wanted and deliberately deferred is kept in [`docs/BACKLOG.md`](BACKLOG.md), with
-what is already known about each item — including what only a person at the keyboard can still
-check (real HTTPS and ssh credentials, the menus, tooltips, VoiceOver, the Trash's Put Back in
-Finder, the resolver in both appearances, a real rebase of a branch of yours, a tag pushed to and
-deleted from your own remote, a prune, an Edit URL with your own `insteadOf` rules, a rename
-and a removal on a real repository, and real worktrees — with LFS, and with a large ignored
-`node_modules/` — and a comparison on a large real history, and a DMG signed with your own
-certificate installed on a second Mac).
+removed (the few exceptions are in `docs/INSTALL.md` §5), which Help › Show Logs opens.
+[`docs/INSTALL.md`](INSTALL.md) covers installing, updating, the log and building your own DMG.

@@ -152,7 +152,7 @@ struct LogTestFolder {
 
     /// M1: the file is opened to append, so a second writer on the same file — a Debug build beside
     /// the installed one — adds its lines after the first one's instead of over them. (Two writers
-    /// rotating the same folder can still race: docs/BACKLOG.md.)
+    /// rotating the same folder can still race.)
     @Test func twoWritersOnOneFileOverwriteNothing() async throws {
         let folder = LogTestFolder()
         defer { folder.remove() }

@@ -88,8 +88,8 @@ import Foundation
 /// that is not on those lists is **unchecked**: `git update-ref -d` deletes a ref with no
 /// reflog entry and no confirmation; `git reflog expire --expire=now --all` destroys the very
 /// history that makes an accidental reset recoverable; `git gc --prune=now` then collects the
-/// objects. None of the three is a finding today, and each would pass this suite. They are in
-/// `docs/BACKLOG.md` under the scanner entry. The rule for adding one is the rule every entry
+/// objects. None of the three is a finding today, and each would pass this suite. They are
+/// known gaps. The rule for adding one is the rule every entry
 /// below followed: `git grep` the sources for false positives first, then a failing probe,
 /// then the table. Treat this as "the ways we have thought of", not "the ways there are".
 ///

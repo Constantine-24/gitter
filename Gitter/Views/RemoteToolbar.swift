@@ -334,7 +334,7 @@ struct RemoteActivityItem: View {
 /// with a frame probe). So no item grows and shrinks again inside one animation, which is the
 /// pattern that made AppKit's layout loop until it threw ("more Update Constraints in Window passes
 /// than there are views in the window", A1 inserted fix 6). It is not a guarantee about two
-/// *different* items changing within one animation; that is the BACKLOG's residual. It is shorter
+/// *different* items changing within one animation; that is a known residual. It is shorter
 /// than the default double-click interval (0.5 s), during which Stop ignores a click anyway
 /// (`StopClick.isDeliberate`); ⌘. and the menu's Stop work from the lane's first moment.
 enum ActivityReveal {

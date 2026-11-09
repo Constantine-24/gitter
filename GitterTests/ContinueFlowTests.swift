@@ -35,7 +35,7 @@ import Testing
         return (operation, current, paths)
     }
 
-    /// Ruling 16 (`.superpowers/sdd/2026-09-30-conflicts-a2/progress.md`): "an unrelated staged
+    /// "an unrelated staged
     /// change must not ride silently into a continued commit". Continue asks first and names the
     /// path; a path staged while the sheet is up is asked about again; the last confirm commits.
     @Test(.timeLimit(.minutes(10))) func anotherStagedFileIsAskedAboutAndAskedAgainWhenAnotherJoinsIt() async throws {

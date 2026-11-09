@@ -99,7 +99,7 @@ final class LogFileWriter: Sendable {
     /// Makes the folder and the file when they are not there, and opens the file to append
     /// (`O_APPEND`): every write lands at the file's end as it is then, so a second process writing
     /// the same file (a Debug build beside the installed one) adds its lines after these rather than
-    /// over them. Two processes *rotating* the same folder can still race (docs/BACKLOG.md).
+    /// over them. Two processes *rotating* the same folder can still race.
     private func open(_ state: inout State) throws {
         try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
         let descriptor = fileURL.path.withCString { Darwin.open($0, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0o644) }

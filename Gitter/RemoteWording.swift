@@ -6,7 +6,7 @@ import GitCore
 ///
 /// Pure so that they can be read and tested without a store. `GitterTests` pins `plain` and
 /// `pullRequestLines`; the rest is exercised through the DEBUG harness, which logs the three
-/// blocked reasons after every step (see `docs/BACKLOG.md`).
+/// blocked reasons after every step.
 ///
 /// **Two rules hold for everything here.**
 /// - **Text that came from the network is never shown raw.** A remote's URL can carry a token
