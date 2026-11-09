@@ -40,7 +40,7 @@ notarize_file() {
     id="$(notary_field "$out" id || true)"
     if [ "$status" != "Accepted" ]; then
         [ -z "$id" ] || xcrun notarytool log "$id" --keychain-profile "$NOTARY_PROFILE" </dev/null || true
-        check_failed "notarization of $what: ${status:-no status in: $out}"
+        check_failed "notarization of $what: ${status:-notarytool gave no readable answer${out:+ (it printed: $out)}}"
     fi
     echo "notarized $what: Accepted ($id)"
 }
@@ -171,6 +171,7 @@ plist_read() { /usr/libexec/PlistBuddy -c "Print :$1" "$PLIST" 2>/dev/null || ec
 # xcodebuild injects get-task-allow into a build unless told not to; the re-sign keeps whatever
 # the build holds, so check what the app really carries.
 APP_ENTITLEMENTS="$(codesign -d --entitlements - --xml "$APP" 2>/dev/null || true)"
+[ -n "$APP_ENTITLEMENTS" ] || check_failed "codesign could not read the built app's entitlements"
 PROBLEM="$(entitlements_problem "$APP_ENTITLEMENTS")" || check_failed "$PROBLEM"
 if [ -n "$NOTARY_PROFILE" ]; then
     PROBLEM="$(developer_id_problem "$SIGINFO")" || check_failed "$PROBLEM"
@@ -207,6 +208,10 @@ if [ -n "$NOTARY_PROFILE" ]; then
     xcrun stapler validate "$APP"
     codesign --verify --strict --deep "$APP" 2>&1 \
         || check_failed "codesign --verify --strict --deep after stapling"
+    SPCTL_APP="$(spctl --assess --type execute -vv "$APP" 2>&1 || true)"
+    echo "$SPCTL_APP" | sed 's/^/  /'
+    text_has "$SPCTL_APP" "accepted" && text_has "$SPCTL_APP" "source=Notarized Developer ID" \
+        || check_failed "spctl does not accept the app as Notarized Developer ID"
 fi
 
 # 6. The DMG.
@@ -234,6 +239,9 @@ if [ -n "$NOTARY_PROFILE" ]; then
     notarize_file "$PARTIAL" "$DMG_NAME"
     xcrun stapler staple "$PARTIAL"
     xcrun stapler validate "$PARTIAL"
+    SPCTL_DMG="$(spctl --assess --type open --context context:primary-signature -vv "$PARTIAL" 2>&1 || true)"
+    echo "$SPCTL_DMG" | sed 's/^/  /'
+    text_has "$SPCTL_DMG" "accepted" || check_failed "spctl does not accept the DMG"
 fi
 [ "$REPLACED" = 0 ] || echo "replaced dist/$DMG_NAME"
 mv -f "$PARTIAL" "$DMG"
@@ -261,13 +269,6 @@ echo "build:    $BUILD"
 echo "commit:   $COMMIT"
 echo "identity: $SHOWN_IDENTITY"
 if [ -n "$NOTARY_PROFILE" ]; then
-    SPCTL_APP="$(spctl --assess --type execute -vv "$APP" 2>&1 || true)"
-    echo "$SPCTL_APP" | sed 's/^/  /'
-    text_has "$SPCTL_APP" "accepted" && text_has "$SPCTL_APP" "source=Notarized Developer ID" \
-        || check_failed "spctl does not accept the app as Notarized Developer ID"
-    SPCTL_DMG="$(spctl --assess --type open --context context:primary-signature -vv "$DMG" 2>&1 || true)"
-    echo "$SPCTL_DMG" | sed 's/^/  /'
-    text_has "$SPCTL_DMG" "accepted" || check_failed "spctl does not accept the DMG"
     echo "notarized: yes"
 else
     SPCTL="$(spctl --assess --type execute -vv "$APP" 2>&1 || true)"
