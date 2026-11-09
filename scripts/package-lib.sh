@@ -48,3 +48,39 @@ authority_problem() {
     fi
     return 0
 }
+
+# entitlements_problem <codesign -d --entitlements - --xml text>: prints why and returns 1 when the
+# app carries get-task-allow, the entitlement that lets a debugger attach and that notarization
+# rejects; returns 0 otherwise.
+entitlements_problem() {
+    if grep -qF 'com.apple.security.get-task-allow' <<<"$1"; then
+        echo "the built app carries com.apple.security.get-task-allow, which notarization rejects"
+        return 1
+    fi
+    return 0
+}
+
+# developer_id_problem <codesign -dvv text>: prints what is missing and returns 1 unless the
+# signature has a Developer ID Application authority, a secure timestamp and a real team.
+developer_id_problem() {
+    local info="$1"
+    if ! grep -q '^Authority=Developer ID Application: ' <<<"$info"; then
+        echo "expected an Authority=Developer ID Application: line, found: $(grep '^Authority=' <<<"$info" | head -n 1 || true)"
+        return 1
+    fi
+    if ! grep -q '^Timestamp=' <<<"$info"; then
+        echo "expected a secure timestamp (a Timestamp= line), found none"
+        return 1
+    fi
+    local team
+    team="$(sed -n 's/^TeamIdentifier=//p' <<<"$info" | head -n 1)"
+    if [ -z "$team" ] || [ "$team" = "not set" ]; then
+        echo "expected a TeamIdentifier=, found: ${team:-none}"
+        return 1
+    fi
+    return 0
+}
+
+# notary_field <json> <key>: one top-level field of notarytool's --output-format json. Prints
+# nothing and returns non-zero when the text is not JSON or lacks the key.
+notary_field() { printf '%s' "$1" | /usr/bin/plutil -extract "$2" raw -o - - 2>/dev/null; }

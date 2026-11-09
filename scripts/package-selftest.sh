@@ -47,10 +47,17 @@ expect() {
     echo "ok   $name"
 }
 
-USAGE='package.sh: usage: bash scripts/package.sh [--sign "<identity>"]'
+USAGE='package.sh: usage: bash scripts/package.sh [--sign "<identity>"] [--notarize "<keychain-profile>"]'
 BUILD_REACHED="package.sh: reached the build with GITTER_PACKAGE_NO_BUILD set"
 
-expect "--notarize" 2 "package.sh: --notarize is not set up yet: it needs a Developer ID" -- --notarize
+NEEDS_PROFILE="package.sh: --notarize needs a keychain profile"
+DEVID="Developer ID Application: A B (TEAM123456)"
+expect "--notarize with no value" 2 "$NEEDS_PROFILE" -- --notarize
+expect "--notarize with an empty value" 2 "$NEEDS_PROFILE" -- --notarize ""
+expect "--notarize without --sign" 2 "package.sh: --notarize needs --sign with a Developer ID Application identity" -- --notarize prof
+expect "--notarize with a local identity" 2 \
+    "package.sh: --notarize needs a Developer ID Application identity, not Gitter Local Signing" \
+    -- --sign "Gitter Local Signing" --notarize prof
 expect "--bogus" 2 "$USAGE" -- --bogus
 expect "--sign with no value" 2 "" -- --sign
 expect "--sign with an empty value" 2 "" -- --sign ""
@@ -59,6 +66,9 @@ expect "--sign with an empty value" 2 "" -- --sign ""
 # refuses and the run reaches the build. A refusal that fired every time would fail these.
 expect "clean tree reaches the build" 99 "$BUILD_REACHED" --
 expect "clean tree with --sign <value> reaches the build" 99 "$BUILD_REACHED" -- --sign "Some Name"
+expect "--sign Developer ID with --notarize reaches the build" 99 "$BUILD_REACHED" -- --sign "$DEVID" --notarize prof
+expect "--sign 40 hex with --notarize reaches the build" 99 "$BUILD_REACHED" -- --sign 0123456789abcdef0123456789abcdef01234567 --notarize prof
+expect "--notarize before --sign reaches the build" 99 "$BUILD_REACHED" -- --notarize prof --sign "$DEVID"
 GITTER_DIST_DIR="$SCRATCH/dist-copy" expect "an absolute GITTER_DIST_DIR reaches the build" 99 "$BUILD_REACHED" --
 
 # A relative GITTER_DIST_DIR is refused: package.sh works from the repository, not the caller's
@@ -112,6 +122,37 @@ check "authority: hash with no authority line refused" bash -c '. "$0"; ! author
 # when the identity had signed it. Calculator is signed by Apple, through to Apple Root CA.
 check "control: signing_info shows a signed app's Authority= lines" \
     authority_problem "$(signing_info /System/Applications/Calculator.app)" "Apple Root CA"
+
+# entitlements_problem, on captured `codesign -d --entitlements - --xml` text.
+PLIST_HEAD='<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>'
+ENT_DEBUG="$PLIST_HEAD<key>com.apple.security.get-task-allow</key><true/></dict></plist>"
+ENT_BOTH="$PLIST_HEAD<key>com.apple.security.app-sandbox</key><false/><key>com.apple.security.get-task-allow</key><true/></dict></plist>"
+ENT_CLEAN="$PLIST_HEAD<key>com.apple.security.app-sandbox</key><false/></dict></plist>"
+check "entitlements: get-task-allow refused" bash -c '. "$0"; m="$(entitlements_problem "$1")" && exit 1; [ -n "$m" ]' "$HERE/package-lib.sh" "$ENT_DEBUG"
+check "entitlements: get-task-allow beside others refused" bash -c '. "$0"; ! entitlements_problem "$1" >/dev/null' "$HERE/package-lib.sh" "$ENT_BOTH"
+check "entitlements: app-sandbox only passes" entitlements_problem "$ENT_CLEAN"
+
+# developer_id_problem, on captured codesign -dvv text.
+DEVID_OK=$'Signature size=9000\nAuthority=Developer ID Application: A B (TEAM123456)\nAuthority=Apple Root CA\nTimestamp=Nov 9, 2026 at 10:00:00\nTeamIdentifier=TEAM123456'
+check "developer id: complete text passes" developer_id_problem "$DEVID_OK"
+no_row() { # no_row <name> <text>: developer_id_problem must refuse the text and say why
+    check "developer id: $1" bash -c '. "$0"; m="$(developer_id_problem "$1")" && exit 1; [ -n "$m" ]' "$HERE/package-lib.sh" "$2"
+}
+no_row "no Developer ID authority" $'Authority=My Cert\nTimestamp=Nov 9, 2026 at 10:00:00\nTeamIdentifier=TEAM123456'
+no_row "no timestamp" $'Authority=Developer ID Application: A B (TEAM123456)\nTeamIdentifier=TEAM123456'
+no_row "no team identifier" $'Authority=Developer ID Application: A B (TEAM123456)\nTimestamp=Nov 9, 2026 at 10:00:00'
+no_row "team identifier not set" $'Authority=Developer ID Application: A B (TEAM123456)\nTimestamp=Nov 9, 2026 at 10:00:00\nTeamIdentifier=not set'
+no_row "self-signed text" $'Authority=Gitter Local Signing\nTeamIdentifier=not set'
+no_row "ad-hoc text" $'Signature=adhoc\nTeamIdentifier=not set'
+
+# notary_field, on captured notarytool JSON.
+NOTARY_OK='{"id":"abc-1","status":"Accepted","message":"Processing complete"}'
+NOTARY_BAD='{"id":"abc-2","status":"Invalid","message":"Processing complete"}'
+field_is() { [ "$(notary_field "$1" "$2")" = "$3" ]; }
+check "notary: status Accepted" field_is "$NOTARY_OK" status Accepted
+check "notary: id abc-1" field_is "$NOTARY_OK" id abc-1
+check "notary: status Invalid" field_is "$NOTARY_BAD" status Invalid
+check "notary: text that is not JSON prints nothing and fails" bash -c '. "$0"; out="$(notary_field "Error: no profile" status)" && exit 1; [ -z "$out" ]' "$HERE/package-lib.sh"
 
 if [ "$FAILS" -ne 0 ]; then
     echo "selftest: $FAILS failed"
