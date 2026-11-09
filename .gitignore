@@ -11,3 +11,7 @@ Package.resolved
 # macOS
 .DS_Store
 dist/
+# Private working notes, never published
+docs/superpowers/
+docs/BACKLOG.md
+.superpowers/
