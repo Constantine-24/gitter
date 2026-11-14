@@ -155,18 +155,24 @@ struct ResolverDocument: Hashable, Sendable {
     /// side whose stage has none — GitCore's `ConflictBlock.addedFinalTerminator`, the rule
     /// `resolve(choices:)` follows (Ruling 9) — so the Result shows the file's end exactly as it
     /// is written, and an edit anywhere in the chunk keeps it.
-    mutating func take(_ choice: BlockChoice, chunk id: Int) {
+    @discardableResult
+    mutating func take(_ choice: BlockChoice, chunk id: Int) -> Bool {
         guard let index = chunks.firstIndex(where: { $0.id == id }), !chunks[index].isMerged,
             let block = chunks[index].blocks.first
-        else { return }
+        else { return false }
         var composed = block.composed(choice)
         if index == chunks.count - 1, let side = block.lastSideWritten(choice),
             let stage = side == .ours ? oursStage : theirsStage
         {
             composed.removeLast(block.addedFinalTerminator(choice, stage: stage))
         }
-        chunks[index].text = String(validating: composed, as: UTF8.self) ?? String(decoding: composed, as: UTF8.self)
+        let text = String(validating: composed, as: UTF8.self) ?? String(decoding: composed, as: UTF8.self)
+        guard chunks[index].state != .taken(choice) || !chunks[index].text.utf8.elementsEqual(text.utf8) else {
+            return false
+        }
+        chunks[index].text = text
         chunks[index].state = .taken(choice)
+        return true
     }
 
     /// Takes `side` for every waiting conflict; taken and edited ones stay as they are.
@@ -193,8 +199,20 @@ struct ResolverDocument: Hashable, Sendable {
     /// One chunk touched: common text stays `.common` (its edited lines are told against
     /// `commonOriginal`); a conflict becomes `.edited`. Several: they merge into one `.edited`
     /// chunk with the lowest id, the union of their blocks and the common text they held.
-    mutating func replace(_ range: NSRange, with typed: String) {
-        guard notEditable == nil, range.location != NSNotFound, range.location >= 0, range.length >= 0 else { return }
+    ///
+    /// Chunk edges stay line edges (Ruling 11): every chunk but the last ends where a line
+    /// starts, so the Result's rows map one-to-one onto its lines. An edit that leaves the chunk
+    /// it changed ending inside a line — a backspace at the start of the line after a taken
+    /// conflict — merges that chunk with the next, by the same rule, until it ends at a line
+    /// edge or is the last; an empty chunk in between (a waiting slot) is merged in too. Undo
+    /// splits it back, like any edit. So that typing into a waiting slot never does that, text
+    /// typed into the slot of a chunk that is not the last gets `lineEnding` after it when it
+    /// does not end in a line break (Ruling 12).
+    ///
+    /// Returns the id of the chunk the edit ended in, or nil when nothing was changed.
+    @discardableResult
+    mutating func replace(_ range: NSRange, with typed: String) -> Int? {
+        guard notEditable == nil, range.location != NSNotFound, range.location >= 0, range.length >= 0 else { return nil }
         var starts: [Int] = []
         var total = 0
         for chunk in chunks {
@@ -202,9 +220,9 @@ struct ResolverDocument: Hashable, Sendable {
             total += chunk.text.utf16.count
         }
         let end = range.location + range.length
-        guard end <= total, !chunks.isEmpty else { return }
-        let typed = Self.normalized(typed, to: lineEnding)
-        guard range.length > 0 || !typed.isEmpty else { return }
+        guard end <= total, !chunks.isEmpty else { return nil }
+        var typed = Self.normalized(typed, to: lineEnding)
+        guard range.length > 0 || !typed.isEmpty else { return nil }
 
         let lengths = chunks.map { $0.text.utf16.count }
         // An end between the halves of a surrogate pair is refused, not widened: replacing there
@@ -216,7 +234,7 @@ struct ResolverDocument: Hashable, Sendable {
             let units = chunks[index].text.utf16
             return UTF16.isTrailSurrogate(units[units.index(units.startIndex, offsetBy: offset - starts[index])])
         }
-        guard !splitsAPair(range.location), !splitsAPair(end) else { return }
+        guard !splitsAPair(range.location), !splitsAPair(end) else { return nil }
         let touched: [Int]
         if range.length == 0 {
             let at = range.location
@@ -224,8 +242,11 @@ struct ResolverDocument: Hashable, Sendable {
             let inside = chunks.indices.first { starts[$0] <= at && at < starts[$0] + lengths[$0] }
             guard let index = empty.first(where: { !chunks[$0].blocks.isEmpty }) ?? inside ?? empty.first
                 ?? chunks.indices.last(where: { starts[$0] + lengths[$0] == at })
-            else { return }
+            else { return nil }
             touched = [index]
+            if chunks[index].state == .waiting, index < chunks.count - 1, typed.utf8.last != UInt8(ascii: "\n") {
+                typed += lineEnding
+            }
         } else {
             touched = chunks.indices.filter { index in
                 let start = starts[index], length = lengths[index]
@@ -234,7 +255,7 @@ struct ResolverDocument: Hashable, Sendable {
                     : range.location < start && start < end
             }
         }
-        guard let first = touched.first, let last = touched.last else { return }
+        guard let first = touched.first, let last = touched.last else { return nil }
 
         let span = chunks[first...last]
         let local = NSRange(location: range.location - starts[first], length: range.length)
@@ -242,14 +263,34 @@ struct ResolverDocument: Hashable, Sendable {
         if first == last {
             chunks[first].text = text
             if !chunks[first].blocks.isEmpty { chunks[first].state = .edited }
-            return
+        } else {
+            chunks.replaceSubrange(first...last, with: [Self.merged(span, text: text)])
         }
+        var index = first
+        while index < chunks.count - 1, !endsAtALineEdge(index) {
+            let pair = chunks[index...(index + 1)]
+            chunks.replaceSubrange(index...(index + 1), with: [Self.merged(pair, text: pair.map(\.text).joined())])
+        }
+        return chunks[index].id
+    }
+
+    /// Chunks an edit merged, holding `text`: the lowest id, the union of their blocks and the
+    /// common text they held; `.edited` with a block, else `.common`.
+    private static func merged(_ span: ArraySlice<ResolverChunk>, text: String) -> ResolverChunk {
         let blocks = span.flatMap(\.blocks)
         let originals = span.compactMap(\.commonOriginal)
-        let merged = ResolverChunk(
-            id: span.map(\.id).min() ?? span[first].id, state: blocks.isEmpty ? .common : .edited, text: text,
-            blocks: blocks, commonOriginal: originals.isEmpty ? nil : originals.joined())
-        chunks.replaceSubrange(first...last, with: [merged])
+        return ResolverChunk(
+            id: span.map(\.id).min() ?? span[span.startIndex].id, state: blocks.isEmpty ? .common : .edited,
+            text: text, blocks: blocks, commonOriginal: originals.isEmpty ? nil : originals.joined())
+    }
+
+    /// Whether the chunk at `index` ends where a line starts: the text up to its end is empty or
+    /// ends in `\n` (a CRLF's last byte too).
+    private func endsAtALineEdge(_ index: Int) -> Bool {
+        for chunk in chunks[...index].reversed() {
+            if let last = chunk.text.utf8.last { return last == UInt8(ascii: "\n") }
+        }
+        return true
     }
 
     // MARK: - Writing

@@ -366,9 +366,10 @@ import Testing
         #expect(rows[4].isSlot && rows[4].ours == Self.filler)
     }
 
-    @Test func aChunkEndingInsideALineSharesItsNumberWithTheNext() throws {
+    @Test func noTwoResultRowsShareALineNumberAfterABreakIsDeleted() throws {
         // Deleting the line break a taken conflict ends with: its last line runs on into the
-        // common text's first, so both rows carry the Result's line 2.
+        // common text's first, and the two chunks merge (Ruling 11), so the joined line is one
+        // Result row.
         let sides = Self.sides(ours: "a\nO\nz\n", base: "a\nB\nz\n", theirs: "a\nT\nz\n")
         var document = try Self.document(
             [Self.common("a\n"), Self.block("O\n", "B\n", "T\n"), Self.common("z\n")], sides: sides)
@@ -376,9 +377,11 @@ import Testing
         document.replace(NSRange(location: 3, length: 1), with: "")
         #expect(document.resultText == "a\nOz\n")
         let rows = ResolverLayout.rows(document, sides: sides, showBase: false)
-        #expect(rows.map(\.result.text) == ["a", "O", "z"])
-        #expect(rows.map(\.result.lineNumber) == [1, 2, 2])
-        #expect(rows.map(\.ours.lineNumber) == [1, 2, 3])
+        let numbers = rows.compactMap(\.result.lineNumber)
+        #expect(numbers == [1, 2])
+        #expect(Set(numbers).count == numbers.count)
+        #expect(rows.compactMap(\.result.text) == ["a", "Oz"])
+        #expect(rows.compactMap(\.ours.lineNumber) == [1, 2, 3])
     }
 
     // MARK: - Show Base
