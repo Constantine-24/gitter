@@ -104,6 +104,11 @@ import Observation
     @ObservationIgnored private var held: LatestRelease?
     @ObservationIgnored private var loop: Task<Void, Never>?
 
+    #if DEBUG
+        /// The held automatic result's version, for the harness's `update:state`.
+        var debugHeldVersion: ReleaseVersion? { held?.version }
+    #endif
+
     init(
         defaults: UserDefaults, running: ReleaseVersion?, fetcher: any UpdateFetching,
         presenter: any UpdatePresenting, log: EventLog, now: @escaping @MainActor () -> Date = { Date() },

@@ -36,6 +36,11 @@
     ///     notice                       openlink
     ///     newwindow:<path>             inwindow:<n>                 closewindow
     ///
+    ///   The update notices (`UpdateChecker`, `UpdatePanelController`, `DebugLaunchHooks+Updates`):
+    ///
+    ///     update:check                 update:look                  update:wait
+    ///     update:press:<download|later|skip|page|close>             update:state
+    ///
     ///   The stash (`RepositoryStore+Stash`, `DebugLaunchHooks+Stash`):
     ///
     ///     stash:<msg>[:u]              stashpaths:<p,p>:<msg>
@@ -482,6 +487,7 @@
                 log("notice transient: \(describe(store.notice))")
                 log("notice sticky: \(describe(store.stickyNotice))")
             case "openlink": openLink(store: store)
+            case "update": await updateStep(step)
             case "stash", "stashpaths", "apply", "pop", "dropstash", "confirmdropstash", "stashes",
                 "selectstash", "noticepop":
                 await stashStep(command, step: step, store: store)

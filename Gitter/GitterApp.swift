@@ -47,21 +47,15 @@ enum AppModel {
             defaults: UserDefaults.standard, running: UpdateChecker.runningVersion(info: info, environment: environment),
             fetcher: GitHubUpdateFeed(
                 url: UpdateChecker.feedURL(environment: environment), userAgent: GitHubUpdateFeed.userAgent(info: info)),
-            presenter: LoggingUpdatePresenter(log: log), log: log)
+            presenter: updatePanel, log: log)
     }
 
-    /// Until the update window exists: each result only goes to the log.
-    @MainActor private final class LoggingUpdatePresenter: UpdatePresenting {
-        let log: EventLog
-        init(log: EventLog) { self.log = log }
-        var canShowAutomatic: Bool { true }
-        func show(_ release: LatestRelease, running: ReleaseVersion, manual: Bool) {
-            log.write("update notice: \(release.tag) available, running \(running) (\(manual ? "manual" : "automatic"))")
-        }
-        func tell(_ outcome: UpdateOutcome) {
-            log.write("update notice: \(UpdateWording.logLine(outcome, running: nil, manual: true))")
-        }
-    }
+    /// The update window and the manual check's alerts: `updates`' presenter, built before it and
+    /// reaching it only through the closure, when a button or an observer needs it. Built only with
+    /// `updates` (and by the harness's `update:` steps), so never under the test host.
+    static let updatePanel = UpdatePanelController(
+        checker: { AppModel.updates },
+        opener: .live(environment: ProcessInfo.processInfo.environment, log: AppLog.events), log: AppLog.events)
 
     /// The repository windows' scene id, for `openWindow(id:)`: an empty window.
     static let windowID = "main"
@@ -119,6 +113,8 @@ struct GitterApp: App {
             CommandGroup(replacing: .appInfo) {
                 Button("About Gitter") { AboutPanel.show() }
             }
+            // Update notices: after About Gitter, app-wide, enabled with no window open.
+            UpdateCommands()
             CommandGroup(after: .help) {
                 Button("Show Logs") { AppLog.showLogs() }
             }
@@ -217,6 +213,32 @@ struct RepositoryCommands: Commands {
     static func refreshIsOff(_ store: RepositoryStore?) -> Bool {
         store?.root == nil || store?.activeSheet != nil
     }
+}
+
+/// Gitter › Check for Updates… and Check for Updates Automatically, after About Gitter: app-wide
+/// commands, not `RepositoryCommands`, so they need no window. Check for Updates… is off with no
+/// checker (the test host, a scripted launch without a feed of its own) and while a check is in
+/// flight; the toggle is `updateCheckEnabled`, like Fetch Automatically.
+struct UpdateCommands: Commands {
+    @AppStorage(UpdateChecker.enabledKey) private var updateCheckEnabled = true
+
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button(UpdateWording.checkMenu) { AppModel.updates?.checkNow() }
+                .disabled(Self.checkIsOff(AppModel.updates))
+            Toggle(
+                UpdateWording.automaticMenu,
+                isOn: Binding(
+                    get: { updateCheckEnabled },
+                    set: { enabled in
+                        updateCheckEnabled = enabled
+                        AppModel.updates?.setEnabled(enabled)
+                    }))
+        }
+    }
+
+    /// Whether Check for Updates… is off: no checker, or a check in flight.
+    static func checkIsOff(_ checker: UpdateChecker?) -> Bool { checker?.isChecking ?? true }
 }
 
 /// "Filter Sidebar" (⌘F) in the Edit menu, after its text-editing items: puts the keyboard in the

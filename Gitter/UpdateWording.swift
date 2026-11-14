@@ -9,6 +9,10 @@ enum UpdateWording {
     static let releasePage = "Release page", noNotes = "No release notes."
     static let checkMenu = "Check for Updates…", automaticMenu = "Check for Updates Automatically"
 
+    /// `update window: <what> — <tag>`: what the user did with the update window — a button's
+    /// title, or "closed" for the close button and ⌘W.
+    static func windowLogLine(_ what: String, tag: String) -> String { "update window: \(what) — \(tag)" }
+
     /// What a manual check says; nil for a newer release, which opens the window instead.
     static func alert(for outcome: UpdateOutcome) -> String? {
         switch outcome {
