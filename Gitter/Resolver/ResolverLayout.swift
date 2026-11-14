@@ -54,13 +54,67 @@ struct LayoutRow: Hashable, Sendable {
 ///     one side has is `fromOurs`/`fromTheirs`, marked against the other side's line it
 ///     replaces; a line not in git's text is `edited`. A line the Result lacks is a filler there.
 ///
-/// It reruns on every change, so its cost is near-linear in the lines plus the line diffs.
+/// **Cost.** The sides' work — splitting both stages, the whole-stage line diffs against stage 1
+/// (`CollectionDifference`, O(N·D): seconds for a side that rewrote most of a 20,000-line file),
+/// the block placement and the side lines' word marks — depends only on the stages and the chunk
+/// structure, never on typed text. `Sides` holds it, built once and reused while it `fits`. Each
+/// `rows(_:using:showBase:)` call then splits the Result's text and runs, per common chunk, the
+/// line diffs of that chunk's ours and theirs lines against its Result lines (and against git's
+/// text once typed into), so a call costs the Result's length plus diffs bounded by each common
+/// chunk's size and changes. `rows(_:sides:showBase:)` builds `Sides` every time: for one-off use.
 enum ResolverLayout {
+    /// What the layout needs from the sides that typing cannot change: both columns' lines, side
+    /// tints and word marks, and each chunk's span of lines in each stage.
+    ///
+    /// **When it still fits** (`fits`): while the document's chunks have the same ids and each the
+    /// same number of blocks as when it was built. Typing inside a chunk and takes (taking again,
+    /// Use Ours/Theirs for the rest) keep that, since the columns never read a chunk's text or
+    /// state. An edit that crosses a chunk's edge merges chunks and changes it, and so can undo or
+    /// redo across such an edit: rebuild then. Build it from the draft's own `ConflictSides`;
+    /// other stages need a new one. A `Sides` that does not fit is rebuilt by `rows` rather than
+    /// misused, at the full cost.
+    struct Sides: Sendable {
+        fileprivate let ours: Column, theirs: Column
+        private let stages: ConflictSides
+        private let shape: [Shape]
+
+        private struct Shape: Hashable, Sendable {
+            let id: Int
+            let blocks: Int
+        }
+
+        init(_ sides: ConflictSides, document: ResolverDocument) {
+            let chunks = document.chunks
+            let base = sides.base.map { ResolverLayout.lines(of: $0) }
+            ours = Column(stage: sides.ours, side: .ours, chunks: chunks, base: base)
+            theirs = Column(stage: sides.theirs, side: .theirs, chunks: chunks, base: base)
+            stages = sides
+            shape = Self.shape(of: document)
+        }
+
+        /// The document's chunks are still the ones these columns were placed for.
+        func fits(_ document: ResolverDocument) -> Bool { Self.shape(of: document) == shape }
+
+        /// Itself while it fits `document`, else one built for it from the same stages.
+        fileprivate func fitted(to document: ResolverDocument) -> Sides {
+            fits(document) ? self : Sides(stages, document: document)
+        }
+
+        private static func shape(of document: ResolverDocument) -> [Shape] {
+            document.chunks.map { Shape(id: $0.id, blocks: $0.blocks.count) }
+        }
+    }
+
+    /// The rows, building the sides' part afresh: the brief's entry point, for one-off use.
     static func rows(_ document: ResolverDocument, sides: ConflictSides, showBase: Bool) -> [LayoutRow] {
+        rows(document, using: Sides(sides, document: document), showBase: showBase)
+    }
+
+    /// The rows, reusing `sides` (rebuilt here only when it does not fit `document`).
+    static func rows(_ document: ResolverDocument, using sides: Sides, showBase: Bool) -> [LayoutRow] {
         let chunks = document.chunks
-        let base = sides.base.map { lines(of: $0) }
-        let ours = Column(stage: sides.ours, side: .ours, chunks: chunks, base: base)
-        let theirs = Column(stage: sides.theirs, side: .theirs, chunks: chunks, base: base)
+        let sides = sides.fitted(to: document)
+        let ours = sides.ours, theirs = sides.theirs
 
         var rows: [LayoutRow] = []
         var nextNumber = 1
@@ -346,7 +400,7 @@ enum ResolverLayout {
     // MARK: - A side's column
 
     /// One side's stage: its lines, each line's tint and marks, and each chunk's span of lines.
-    private struct Column {
+    fileprivate struct Column {
         let lines: [Line]
         let tints: [RowTint]
         let marks: [[Range<Int>]]

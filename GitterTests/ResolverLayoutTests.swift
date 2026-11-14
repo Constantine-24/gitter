@@ -530,6 +530,53 @@ import Testing
         #expect(merged.map(\.badge) == [nil, nil, .editedByYou, nil, nil])
     }
 
+    // MARK: - Prebuilt sides
+
+    @Test func prebuiltSidesGiveTheSameRows() throws {
+        // Built once from the pristine document, then reused through a take, typing in common
+        // text and typing in the taken conflict: every call matches a fresh build.
+        var document = try Self.document(Self.unitsSegments, sides: Self.unitsSides)
+        let prebuilt = ResolverLayout.Sides(Self.unitsSides, document: document)
+        func expectSameRows(sourceLocation: SourceLocation = #_sourceLocation) {
+            #expect(prebuilt.fits(document), sourceLocation: sourceLocation)
+            for showBase in [false, true] {
+                let fresh = ResolverLayout.rows(document, sides: Self.unitsSides, showBase: showBase)
+                #expect(!fresh.isEmpty, sourceLocation: sourceLocation)
+                #expect(
+                    ResolverLayout.rows(document, using: prebuilt, showBase: showBase) == fresh,
+                    sourceLocation: sourceLocation)
+            }
+        }
+        expectSameRows()
+        document = try Self.mockup()
+        expectSameRows()
+        document.replace(NSRange(location: document.range(ofChunk: 2).location, length: 0), with: "# note\n")
+        expectSameRows()
+        document.replace(NSRange(location: document.range(ofChunk: 1).location, length: 0), with: "    \"cl\": 10.0,\n")
+        #expect(document.chunks.first { $0.id == 1 }?.state == .edited)
+        expectSameRows()
+    }
+
+    @Test func prebuiltSidesFitUntilChunksMerge() throws {
+        var document = try Self.mockup()
+        let prebuilt = ResolverLayout.Sides(Self.unitsSides, document: document)
+        #expect(prebuilt.fits(document))
+        document.take(.theirs, chunk: 3)
+        document.replace(NSRange(location: document.range(ofChunk: 4).location, length: 0), with: "x")
+        #expect(prebuilt.fits(document))  // takes and typing inside one chunk keep the structure
+
+        // An edit across conflict 1 and the common text below merges chunks 1 and 2.
+        let start = document.range(ofChunk: 1).location
+        let end = (document.resultText as NSString).range(of: "WEIGHT").location
+        document.replace(NSRange(location: start, length: end - start), with: "")
+        #expect(!prebuilt.fits(document))
+        // Used anyway, it rebuilds rather than misplacing the merged chunk.
+        #expect(
+            ResolverLayout.rows(document, using: prebuilt, showBase: false)
+                == ResolverLayout.rows(document, sides: Self.unitsSides, showBase: false))
+        #expect(ResolverLayout.Sides(Self.unitsSides, document: document).fits(document))
+    }
+
     @Test func crlfLinesHaveNoTerminatorInTheirText() throws {
         let sides = Self.sides(ours: "a\r\nO\r\nz\r\n", base: "a\r\nB\r\nz\r\n", theirs: "a\r\nT\r\nz\r\n")
         var document = try Self.document(
