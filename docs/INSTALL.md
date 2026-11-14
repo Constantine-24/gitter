@@ -33,6 +33,14 @@ Nothing about git is set up inside Gitter.
 
 ## 3. Updating
 
+Gitter checks GitHub once a day for a newer release. When there is one, the **Software Update**
+window opens with the release notes and the version; **Download** opens the DMG's address in your
+browser. Choose **Gitter › Check for Updates…** to ask at any time, and untick **Gitter › Check for
+Updates Automatically** to stop the daily check. The [guide](GUIDE.md#updates) has the details.
+
+Gitter 0.2.0 has no checker, so it never tells you about a newer one. Update from 0.2.0 by hand, once,
+as below; every version after it checks.
+
 1. Quit Gitter.
 2. Download the new DMG from [the latest release](https://github.com/Constantine-24/gitter/releases/latest), open it, and drag Gitter onto Applications over the old one (Finder asks: **Replace**).
 3. Open Gitter.

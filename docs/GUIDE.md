@@ -139,6 +139,33 @@ the top is the window as it is now; the rest still show the older layout.
 
 ![Removing the remote "fork": its four remote-tracking branches with their ids, the one commit only they hold with a ticked box keeping a branch at it, and the branch that will be left with no upstream](screenshots/remove-remote.png)
 
+## Updates
+
+Gitter checks GitHub for a newer release once a day. The first look comes shortly after launch, and
+a later look runs when a day has passed since the last one. Nothing is downloaded or installed by
+itself.
+
+When there is a newer release, the **Software Update** window opens beside your work without taking
+the keyboard. It shows the new version, yours, and the release notes as plain text, with:
+
+- **Download** (the default button): opens the release's DMG in your browser and closes the window.
+  Install it as in [INSTALL.md](INSTALL.md#3-updating).
+- **Later**: closes the window and remembers nothing. The next daily check offers it again.
+- **Skip This Version**: remembers that version and stays quiet about it. A newer one is offered again.
+- **Release page ↗**: opens the release's page in your browser and leaves the window open.
+
+The window waits while Gitter is in the background, a sheet or alert is up, or a quit is under way,
+and appears when you are back.
+
+In the **Gitter** menu, after About Gitter:
+
+- **Check for Updates…** asks now, whatever the daily timer says, and answers every time: the window
+  for a newer release (a skipped one too), or an alert saying you are up to date, that no release is
+  published yet, that GitHub is limiting requests from your network, or that it could not be reached or read. It
+  is dimmed while a check is running.
+- **Check for Updates Automatically** is ticked from the start. Unticking it stops the daily check
+  and drops one that is running; Check for Updates… still works.
+
 ## Safety
 
 Staging and unstaging change only the index (`git apply --cached`, `git add`, `git reset`)
@@ -244,6 +271,22 @@ and after each staging operation and require them to be identical (`worktreeSnap
 the file contents, not a digest, so a failure can print what changed); every branch refusal is
 tested the same way, with the index, HEAD and every ref compared as well, and every remote
 refusal also compares every ref of the bare "server" repository.
+
+### What Gitter sends
+
+Gitter's only connection of its own is the daily update check. It is an HTTPS GET to
+`api.github.com`, once a day, that asks for the latest release of Gitter. Gitter itself sets exactly
+four headers on it:
+
+- `X-GitHub-Api-Version: 2022-11-28`
+- `Accept: application/vnd.github+json`
+- `User-Agent: Gitter/<version>`
+- `Accept-Language: en`
+
+macOS adds its standard connection headers (`Host`, `Accept-Encoding`, `Connection`). No cookies,
+credentials, cache or keychain are used. The only thing about you in the request is the version you
+run, in the `User-Agent`; your repositories, paths and settings are not sent. Untick **Gitter ›
+Check for Updates Automatically** to stop it. Every other network call is your own `git`, below.
 
 ### Credentials: whatever git already has
 

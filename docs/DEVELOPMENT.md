@@ -63,6 +63,11 @@ identity: it signs with a secure timestamp, submits the app to Apple's notary se
 that too, and checks both with `spctl` before the DMG takes its final name. Every build also refuses
 an app that carries `get-task-allow`. `bash scripts/package-selftest.sh` pins the refusals on a scratch clone, and that a
 clean tree and a `--sign` with a value get past them to the build.
+**A release** is a full GitHub release, not a pre-release or a draft, tagged `vX.Y.Z` to match
+`MARKETING_VERSION` in `project.yml`, with the notarized DMG attached as an asset. The update check
+asks GitHub for the latest release: a pre-release or a draft is never found, a tag that is not a
+version is skipped, and a release with no `.dmg` asset sends **Download** to the release page instead
+of the DMG. Gitter 0.2.0 has no checker, so its users update by hand once.
 [`docs/INSTALL.md`](INSTALL.md) is the whole path: download, the Command Line Tools, updating, keeping one copy
 in `/Applications`, the log, and building your own DMG.
 
@@ -577,6 +582,15 @@ GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app):
                           log's lines, file and About panel need no git
 ```
 
+**Updates.** `UpdateChecker` (started from `AppModel.updates`) looks 10 s after launch and then
+hourly, and checks when the toggle is on and a day has passed. **Gitter › Check for Updates…** is a
+manual check; **Check for Updates Automatically** is the `updateCheckEnabled` default (absent means
+on). `updateLastCheck` and `updateSkippedVersion` are the other two keys. Every check writes one
+`update check (…)` line to the log, never a URL, header or body. The request is an ephemeral
+`URLSession` with no cookies, credentials or cache, and a Release build has no `GITTER_DEBUG_` name.
+Under the test host there is no checker, and a scripted Debug launch has one only when it names its
+own feed (below), so nothing a script or a test does reaches GitHub.
+
 ## Debug launch hooks
 
 `Gitter/DebugLaunchHooks.swift`, `DebugLaunchHooks+Events.swift`,
@@ -639,6 +653,8 @@ write your real one.
 | `GITTER_DEBUG_THEN=<step>[;<step>…]` | more branch steps, run **after** the clicks and keys — what a click on a toolbar button did: `idle;snapshot:after-click` |
 | `GITTER_DEBUG_AUTOFETCH=<interval>[,<timeout>]` | run the automatic fetch every `<interval>` seconds instead of 10 minutes, stopping each one after `<timeout>` seconds (default 120) instead of 2 minutes — so a script sees several ticks. Every tick and every ending prints an `AUTOFETCH …` line, naming the store (`store 1`); `STORES built: <n>, registered: <m>` lines at launch and on every open event say how many stores were built and how many the window registry made — each window has one, so built and registered must be equal, and the line says so when a store was built outside the registry |
 | `GITTER_DEBUG_QUIT_WAIT=<seconds>` | how long **Wait**, in the quit alert, waits for a write before calling the quit off with a banner, instead of 10 minutes — so a script can reach the bound with a slow scratch transport |
+| `GITTER_DEBUG_UPDATE_FEED=<url>` | the update checker's feed instead of GitHub's API: a `file://` path to a JSON file shaped like the latest-release answer, or an `http://127.0.0.1:<port>/` URL. Any other value (an empty one, a remote one) checks nothing rather than fall back to GitHub. With no such value a scripted launch has no checker, and the `update:` steps log `no update checker` and do nothing |
+| `GITTER_DEBUG_UPDATE_VERSION=<v>` | the running version the checker compares with, instead of `CFBundleShortVersionString`; one that does not parse as a version leaves the checker with none, so nothing is offered |
 | `GITTER_LOG_DIR=<dir>` | write the diagnostics log (`gitter.log` and its rotations) there instead of `~/Library/Logs/Gitter`; read only in Debug. A scripted launch without it writes no log |
 | `GITTER_DEBUG_SNAPSHOT_DIR=<dir>` | where a `snapshot:<name>` step writes `<name>.png`: the window and any sheet on it, drawn by the app itself — no Screen Recording needed, and it works for a window on a Space nobody is looking at |
 
@@ -693,6 +709,7 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `undodiscard` | **acts**: the sticky notice's **Undo Discard**; logs each receipt (kind, paths, record, Trash URLs) |
 | `stashcontinue[:merge\|:rebase]` | **acts**: the error banner's **Stash and Continue**, waiting for the stash and the retry; with a mode, then answers the pull sheet if the retry opened one. Logs `stashcontinue: not offered` when the banner offers nothing |
 | `alert` / `alertbutton:<title>` / `alertsnapshot:<name>` | log every text and button (with its key equivalent) of each alert sheet on screen and of the app-modal alert if one is up (`app-modal …`: the quit question with no window to ask on, a hidden window's ending), and for the app-modal alert how it is presented (`state: app active: … \| panel key: … \| default button cell: …`) — the snapshot draws an alert's buttons but not its text — and click one of its buttons, the app-modal alert's first; `alertsnapshot:` draws the app-modal alert's own window, text included, into `GITTER_DEBUG_SNAPSHOT_DIR/<name>.png`. A hidden window's ending alert also logs its buttons as built (`alert built: …`) |
+| `update:check` / `update:look` / `update:wait` / `update:press:<download\|later\|skip\|page\|close>` / `update:state` | drive the update checker (needs `GITTER_DEBUG_UPDATE_FEED`). `update:check` is Check for Updates…, started or joined and not waited for; a newer release opens the Software Update window, and any other answer raises the app-modal alert that `alert` and `alertbutton:OK` reach. `update:look` is one automatic look, due or not (the toggle still counts), waited for. `update:wait` waits up to 40 s until no check is in flight. `update:press:<b>` presses a window button (`close` is the close button) and logs which version was showing. `update:state` logs the window, whether it is key, whether a check runs, the skipped version, the last check and the held automatic result. The scripted opener only logs `UPDATE would open <url>`; no browser starts. `panelsnapshot:<name>` draws the window and `menu:Gitter` lists the two menu items |
 | `activate` | make Gitter the active app (`NSApp.activate()`), as a click on it would, and log whether it is and which window is key |
 | `select:<path>` / `resolver` | select a working-copy file (a conflicted file's unstaged row, a resolved one's staged row) and wait for the resolver's read; `resolver` logs its state: kind, blocks or the whole-file reason, whether the file is what git wrote, the hash, the side names, the actions offered |
 | `blocks:<path>:<O\|T\|B\|b\|.…>` | choose each block in turn — Ours, Theirs, Both (ours first), Both (theirs first), `.` none — and log the composed file and its SHA-256; writes nothing |
