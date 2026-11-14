@@ -36,14 +36,16 @@ enum UpdateButton: String, CaseIterable {
 /// - **Not a main window.** An `NSPanel` cannot become main, so `visibleMainWindows()` and the
 ///   windowless-launch check never count it; it is not restorable, and outlives its close.
 /// - **An automatic result does not take the keyboard:** it is ordered to the front without
-///   becoming key, and the panel becomes key only when the user clicks into it,
-///   so typing, Return and ⌘W stay in the repository window. A manual result is made key, and the
-///   app active: the user just asked.
+///   becoming key, and the panel can become key only once the user clicks into it (Ruling 9:
+///   `UpdatePanel.canBecomeKey`), so typing, Return and ⌘W stay in the repository window — even
+///   when that window closes and AppKit picks another key window. A manual result is made key, and
+///   the app active: the user just asked.
 /// - **One at a time.** A second result updates the open window.
 /// - **When an automatic result may show** (`canShowAutomatic`): the app is active, no visible
 ///   window has a sheet attached, no modal window is up and no quit is under way. The checker holds
-///   it otherwise and tries it again on a timer (`UpdateChecker`); this controller also asks for it
-///   at once when the app becomes active or a sheet ends.
+///   it otherwise and tries it again on a timer while the app is active (`UpdateChecker`); this
+///   controller also asks for it at once when the app becomes active or a sheet ends, and when the
+///   app resigns active, so the timer stops at once.
 @MainActor final class UpdatePanelController: NSObject, UpdatePresenting, NSWindowDelegate {
     private let checker: @MainActor () -> UpdateChecker?
     private let opener: UpdateOpener
@@ -68,6 +70,8 @@ enum UpdateButton: String, CaseIterable {
             self, selector: #selector(mayShowHeld(_:)), name: NSApplication.didBecomeActiveNotification, object: nil)
         center.addObserver(
             self, selector: #selector(mayShowHeld(_:)), name: NSWindow.didEndSheetNotification, object: nil)
+        center.addObserver(
+            self, selector: #selector(mayShowHeld(_:)), name: NSApplication.didResignActiveNotification, object: nil)
     }
 
     var isShowing: Bool { panel?.isVisible == true }
@@ -77,9 +81,13 @@ enum UpdateButton: String, CaseIterable {
     // MARK: - UpdatePresenting
 
     var canShowAutomatic: Bool {
-        NSApp.isActive && !NSApp.windows.contains { $0.isVisible && $0.attachedSheet != nil }
-            && NSApp.modalWindow == nil && !QuitFlow.isUnderWay
+        isAppActive && !NSApp.windows.contains { $0.isVisible && $0.attachedSheet != nil }
+            && NSApp.modalWindow == nil && !isQuitUnderWay
     }
+
+    var isAppActive: Bool { NSApp.isActive }
+
+    var isQuitUnderWay: Bool { QuitFlow.isUnderWay }
 
     func show(_ release: LatestRelease, running: ReleaseVersion, manual: Bool) {
         shown = (release, running)
@@ -93,8 +101,10 @@ enum UpdateButton: String, CaseIterable {
         }
         if let hosting { panel.setContentSize(hosting.fittingSize) }
         if !manual {
+            panel.mayBecomeKey = false
             panel.orderFront(nil)
         } else {
+            panel.mayBecomeKey = true
             NSApp.activate()
             panel.makeKeyAndOrderFront(nil)
         }
@@ -155,7 +165,8 @@ enum UpdateButton: String, CaseIterable {
 
     // MARK: - The held result
 
-    /// The app became active or a sheet ended: the held automatic result may show now. A turn
+    /// The app became active or a sheet ended: the held automatic result may show now. The app
+    /// resigned active: its retry stops (`showHeldIfPossible` finds the app inactive). A turn
     /// later, so the sheet that ended is detached by then.
     @objc private func mayShowHeld(_ notification: Notification) {
         Task { @MainActor [weak self] in self?.checker()?.showHeldIfPossible() }
@@ -172,7 +183,8 @@ enum UpdateButton: String, CaseIterable {
         panel.isRestorable = false
         panel.hidesOnDeactivate = false
         // A click into the panel makes it key, so Return reaches Download and ⌘W closes it
-        // (Ruling 5); an automatic result is still only ordered to the front.
+        // (Ruling 5); an automatic result is still only ordered to the front, and until that click
+        // the panel cannot become key at all (Ruling 9, `UpdatePanel.canBecomeKey`).
         panel.becomesKeyOnlyIfNeeded = false
         panel.delegate = self
         let hosting = NSHostingView(rootView: view)
@@ -189,8 +201,24 @@ enum UpdateButton: String, CaseIterable {
 /// The update window's `NSPanel`, which records each ordering call made on it — `orderFront` or
 /// `makeKeyAndOrderFront` — so a test can tell an automatic result's ordering from a manual one's
 /// by the call itself, whether the test host is active or not.
+///
+/// Ruling 9: it can become key only after a manual show or a left mouse-down in it. With
+/// `becomesKeyOnlyIfNeeded` false, AppKit could otherwise make an automatic notice key when the key
+/// repository window closes, and Return would press Download.
 final class UpdatePanel: NSPanel {
     enum Ordering: Equatable { case orderFront, makeKeyAndOrderFront }
+
+    /// Set by the controller before each show: true for a manual one, false for an automatic one;
+    /// a left mouse-down in the panel sets it true.
+    var mayBecomeKey = false
+
+    override var canBecomeKey: Bool { mayBecomeKey && super.canBecomeKey }
+
+    /// The click is recorded first, so AppKit's own make-key for that click finds the panel willing.
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown { mayBecomeKey = true }
+        super.sendEvent(event)
+    }
 
     private(set) var orderingCalls: [Ordering] = []
     /// While `makeKeyAndOrderFront` runs: an `orderFront` AppKit makes inside it is not a call of its own.

@@ -7,7 +7,9 @@ protocol UpdateFetching: Sendable {
 
 /// GitHub's latest-release endpoint (or, in DEBUG, the harness's `file://` or 127.0.0.1 feed),
 /// asked through an ephemeral session that keeps no credentials, cookies or cache, with exactly
-/// four headers and redirects only to `https://api.github.com/` (`UpdateRedirectGuard`).
+/// four headers, redirects only to `https://api.github.com/` — or, for the harness's feed, only to
+/// that feed's own scheme, host and port (`UpdateRedirectGuard`) — and a wait for the network
+/// (after a wake) within the 30 s resource timeout.
 struct GitHubUpdateFeed: UpdateFetching {
     let url: URL
     let userAgent: String
@@ -32,7 +34,9 @@ struct GitHubUpdateFeed: UpdateFetching {
     }
 
     /// Ephemeral, and keeping nothing even in memory: no credential storage, cookie storage or
-    /// cache, no cookies sent or accepted. 15 s for the request, 30 s for the whole answer.
+    /// cache, no cookies sent or accepted. 15 s for the request, 30 s for the whole answer — which
+    /// bounds the wait for connectivity, so a look right after a wake waits for the network to
+    /// come back instead of failing at once.
     static func configuration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCredentialStorage = nil
@@ -42,6 +46,7 @@ struct GitHubUpdateFeed: UpdateFetching {
         configuration.httpCookieAcceptPolicy = .never
         configuration.timeoutIntervalForRequest = 15
         configuration.timeoutIntervalForResource = 30
+        configuration.waitsForConnectivity = true
         return configuration
     }
 
@@ -65,27 +70,30 @@ struct GitHubUpdateFeed: UpdateFetching {
     }
 }
 
-/// Follows a redirect only to `https://api.github.com/…` — and, in DEBUG, to the harness feed's
-/// own 127.0.0.1 host and port. Any other redirect is refused, and the redirect's own answer
-/// becomes the response (a 3xx: `UpdateOutcome.httpError`).
+/// Follows a redirect from GitHub's API only to `https://api.github.com/…`, and — in DEBUG — one
+/// from the harness's 127.0.0.1 feed only to that feed's own scheme, host and port. Any other
+/// redirect is refused, and the redirect's own answer becomes the response (a 3xx:
+/// `UpdateOutcome.httpError`).
 final class UpdateRedirectGuard: NSObject, URLSessionTaskDelegate, Sendable {
     let feed: URL
 
     init(feed: URL) { self.feed = feed }
 
-    /// The rule, pure: an https URL on exactly `api.github.com`, with no port and no user — or,
-    /// in DEBUG, an http URL on the feed's own 127.0.0.1 host and port.
+    /// The rule, pure, with no user in the target: for the API feed (`UpdateCheck.apiURL`), an
+    /// https URL on exactly `api.github.com` with no port; for any other feed, in DEBUG, an http
+    /// URL on the feed's own scheme, host and port when the feed is an http 127.0.0.1 one — never
+    /// GitHub. Any other feed (a `file://` one) follows no redirect.
     static func allows(_ target: URL?, feed: URL) -> Bool {
         guard let target, let components = URLComponents(url: target, resolvingAgainstBaseURL: false) else {
             return false
         }
         guard components.user == nil, components.password == nil else { return false }
-        if components.scheme == "https", components.host == "api.github.com", components.port == nil {
-            return true
+        if feed == UpdateCheck.apiURL {
+            return components.scheme == "https" && components.host == "api.github.com" && components.port == nil
         }
         #if DEBUG
-            if feed.scheme == "http", feed.host == "127.0.0.1", components.scheme == "http",
-                components.host == "127.0.0.1", components.port == feed.port
+            if feed.scheme == "http", feed.host == "127.0.0.1", components.scheme == feed.scheme,
+                components.host == feed.host, components.port == feed.port
             {
                 return true
             }

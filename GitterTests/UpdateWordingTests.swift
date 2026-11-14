@@ -64,6 +64,11 @@ import Testing
             .unreachable("Could not connect to https://api.github.com/x?y=1"),
             .unreadable("https://evil.example/"),
         ]
+        // Every control and line-separating character of the untrusted reason becomes a space (I1).
+        #expect(
+            UpdateWording.logLine(
+                .unreadable("a\rb\u{2028}c\u{1B}[31md\u{2029}e\r\nf"), running: Self.v020, manual: false)
+                == "update check (automatic): unreadable (a b c [31md e  f) — latest ?, running 0.2.0")
         for outcome in outcomes {
             for manual in [true, false] {
                 let line = UpdateWording.logLine(outcome, running: Self.v020, manual: manual)

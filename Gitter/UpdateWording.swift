@@ -28,22 +28,36 @@ enum UpdateWording {
 
     /// `update check (automatic|manual): <outcome> — latest <tag>, running <v>`. Never a URL, a
     /// header or the body: an unreachable check's description is left out, and an unreadable
-    /// check's reason (the raw tag) is cut short and flattened to one line.
+    /// check's reason (the raw tag) is cut short and flattened to one line: every control and
+    /// line-separating character (Unicode Cc, Zl, Zp) becomes a space.
     static func logLine(_ outcome: UpdateOutcome, running: ReleaseVersion?, manual: Bool) -> String {
         let name: String
         var latest = "?"
         switch outcome {
-        case .newer(let release): name = "newer"; latest = release.tag
+        case .newer(let release): name = "newer"; latest = flat(release.tag)
         case .upToDate(let v): name = "up to date"; latest = v.description
         case .noRelease: name = "no release"
         case .rateLimited: name = "rate limited"
         case .httpError(let n): name = "HTTP \(n)"
         case .unreachable: name = "unreachable"
         case .unreadable(let reason):
-            let flat = String(reason.prefix(40)).replacingOccurrences(of: "\n", with: " ")
-                .replacingOccurrences(of: "://", with: ":/")
-            name = "unreadable (\(flat))"
+            name = "unreadable (\(flat(String(reason.prefix(40))).replacingOccurrences(of: "://", with: ":/")))"
         }
         return "update check (\(manual ? "manual" : "automatic")): \(name) — latest \(latest), running \(running?.description ?? "?")"
+    }
+
+    /// A manual check's answer that landed while a quit was under way: neither told nor shown.
+    static let droppedDuringQuitLine = "update check (manual): not shown — a quit is under way"
+
+    /// Untrusted text on one line: each control or line-separating scalar (Cc, Zl, Zp) as a space.
+    private static func flat(_ text: String) -> String {
+        var scalars = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            switch scalar.properties.generalCategory {
+            case .control, .lineSeparator, .paragraphSeparator: scalars.append(" ")
+            default: scalars.append(scalar)
+            }
+        }
+        return String(scalars)
     }
 }

@@ -161,8 +161,8 @@ In the **Gitter** menu, after About Gitter:
 
 - **Check for Updates…** asks now, whatever the daily timer says, and answers every time: the window
   for a newer release (a skipped one too), or an alert saying you are up to date, that no release is
-  published yet, that GitHub is limiting requests from your network, or that it could not be reached or read. It
-  is dimmed while a check is running.
+  published yet, that GitHub is limiting requests from your network, that GitHub answered with an
+  error, or that it could not be reached or read. It is dimmed while a check is running.
 - **Check for Updates Automatically** is ticked from the start. Unticking it stops the daily check
   and drops one that is running; Check for Updates… still works.
 

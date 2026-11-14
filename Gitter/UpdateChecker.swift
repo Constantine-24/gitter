@@ -7,6 +7,10 @@ import Observation
     /// Whether an automatic result may show now: the app is active, no window has a sheet up,
     /// no modal window is up and no quit is under way. Otherwise the result is held.
     var canShowAutomatic: Bool { get }
+    /// Whether the app is active: the held result's retry runs only then (`UpdateChecker`).
+    var isAppActive: Bool { get }
+    /// Whether a quit is under way: a manual check's answer is then neither told nor shown.
+    var isQuitUnderWay: Bool { get }
     /// Opens the update window, or updates the one already open.
     func show(_ release: LatestRelease, running: ReleaseVersion, manual: Bool)
     /// A manual check's answer when it is not a newer release.
@@ -26,7 +30,8 @@ import Observation
 ///
 /// - **Automatic looks** come `firstLook` after `start()`, then every `lookInterval`. A look checks
 ///   when the toggle is on, the running version is known, and a day has passed since
-///   `updateLastCheck` (`UpdateCheck.isDue`).
+///   `updateLastCheck` (`UpdateCheck.isDue`). With the toggle on and no running version, the
+///   first look says so in one line and later looks say nothing.
 /// - **One check in flight.** A manual check pressed during an automatic one joins it: that check
 ///   then counts as manual, and its one answer is reported as a manual result. Turning the toggle
 ///   off drops an automatic check in flight, never a manual (or joined) one.
@@ -34,8 +39,11 @@ import Observation
 ///   outcome, so a failure still waits a day. A dropped check writes neither.
 /// - **An automatic newer release** that is not the skipped version shows when the presenter can
 ///   show it, and is held otherwise until `showHeldIfPossible()` — which a timer calls every
-///   `retryInterval` while it is held, and the presenter on its own notifications; showing it
-///   clears a skip below it. A later check that says anything about the latest release replaces or drops it.
+///   `retryInterval` while it is held and the app is active, and the presenter on its own
+///   notifications; showing it clears a skip below it. A later check that says anything about the
+///   latest release replaces or drops it.
+/// - **A manual answer** is the window or an alert — neither while a quit is under way, when one
+///   line says it was dropped.
 @Observable @MainActor final class UpdateChecker {
     static let enabledKey = "updateCheckEnabled"
     static let lastCheckKey = "updateLastCheck"
@@ -103,16 +111,21 @@ import Observation
     private(set) var isChecking = false
 
     @ObservationIgnored private var flight: UpdateFlight?
-    /// The automatic result waiting for the presenter. While there is one, `retry` tries it again
-    /// every `retryInterval` (Ruling 4).
+    /// The automatic result waiting for the presenter. While there is one and the app is active,
+    /// `retry` tries it again every `retryInterval` (Ruling 4).
     @ObservationIgnored private var held: LatestRelease? {
-        didSet { held == nil ? stopRetry() : startRetry() }
+        didSet { held == nil ? stopRetry() : updateRetry() }
     }
     @ObservationIgnored private var retry: Timer?
     @ObservationIgnored private var loop: Task<Void, Never>?
+    /// Whether a look has said there is no running version: once per checker, the app's one.
+    @ObservationIgnored private var saidNoVersion = false
 
     /// Whether a held result is being tried again on the timer (internal for tests).
     var isRetryingHeld: Bool { retry != nil }
+
+    /// The retry timer's tolerance, while there is one (internal for tests).
+    var retryTolerance: TimeInterval? { retry?.tolerance }
 
     #if DEBUG
         /// The held automatic result's version, for the harness's `update:state`.
@@ -161,14 +174,16 @@ import Observation
         }
     }
 
-    /// Ends the looks and the held result's retry. A check in flight still completes.
+    /// Ends the looks and the held result's retry (a later `showHeldIfPossible()` that still cannot
+    /// show it starts the retry again while the app is active). A check in flight still completes.
     func stop() {
         loop?.cancel()
         loop = nil
         stopRetry()
     }
 
-    /// The held result's retry: `showHeldIfPossible()` every `retryInterval`, from a repeating
+    /// The held result's retry: `showHeldIfPossible()` every `retryInterval` (up to 1 s late, or half
+    /// the interval when that is less, so the system may coalesce its wakes), from a repeating
     /// timer on the main run loop in `.default` **and `.modalPanel`** — the mode AppKit runs while
     /// an app-modal alert (QuitGuard's question, a manual check's answer) or an Open panel is up.
     /// The notifications the presenter watches (the app became active, a sheet ended) are not
@@ -176,6 +191,14 @@ import Observation
     /// finds the presenter unable) and right after it. Not `.eventTracking`: a menu being tracked
     /// holds it until the menu closes. Here, not in the presenter, because the held state lives here
     /// and every path that holds or drops a result sets `held`.
+    ///
+    /// Only while the app is active (I2): in the background nothing can show, and a timer would wake
+    /// the app every interval for as long as it stays there. A tick that finds the app inactive
+    /// stops it; becoming active calls `showHeldIfPossible()`, which shows the result or starts it again.
+    private func updateRetry() {
+        presenter.isAppActive ? startRetry() : stopRetry()
+    }
+
     private func startRetry() {
         guard retry == nil else { return }
         let (seconds, attoseconds) = retryInterval.components
@@ -185,6 +208,7 @@ import Observation
             guard let self else { return timer.invalidate() }
             MainActor.assumeIsolated { self.showHeldIfPossible() }
         }
+        timer.tolerance = min(1, interval / 2)
         RunLoop.main.add(timer, forMode: .default)
         RunLoop.main.add(timer, forMode: .modalPanel)
         retry = timer
@@ -228,9 +252,11 @@ import Observation
     }
 
     /// Shows the held automatic result, if there is one and the presenter can show it now; the
-    /// skip is read again first.
+    /// skip is read again first. One that still may not show keeps its retry running while the app
+    /// is active, and stopped while it is not.
     func showHeldIfPossible() {
-        guard let held, let running, presenter.canShowAutomatic else { return }
+        guard let held, let running else { return }
+        guard presenter.canShowAutomatic else { return updateRetry() }
         self.held = nil
         showAutomatic(held, running: running)
     }
@@ -238,7 +264,15 @@ import Observation
     /// One automatic look: false when it found nothing to do (no running version, the toggle off,
     /// or — unless `force` — not due), true when it ran a check or joined the one in flight.
     @discardableResult func look(force: Bool = false) async -> Bool {
-        guard let running, isEnabled else { return false }
+        guard isEnabled else { return false }
+        guard let running else {
+            // M1: the version did not parse, so no look will ever check; say it once.
+            if !saidNoVersion {
+                saidNoVersion = true
+                log.write(UpdateWording.logLine(.unreadable("version"), running: nil, manual: false))
+            }
+            return false
+        }
         if let flight {
             await flight.task?.value
             return true
@@ -254,7 +288,7 @@ import Observation
     private func beginManual() -> UpdateFlight? {
         guard let running else {
             log.write(UpdateWording.logLine(.unreadable("version"), running: nil, manual: true))
-            presenter.tell(.unreadable("version"))
+            answerManual(.unreadable("version"), running: nil)
             return nil
         }
         return begin(manual: true, running: running)
@@ -291,17 +325,24 @@ import Observation
         default: break  // a failure says nothing about it
         }
         if flight.manual {
-            if case .newer(let release) = outcome {
-                presenter.show(release, running: running, manual: true)
-            } else {
-                presenter.tell(outcome)
-            }
+            answerManual(outcome, running: running)
         } else if case .newer(let release) = outcome {
             if presenter.canShowAutomatic {
                 showAutomatic(release, running: running)
             } else if UpdateCheck.showsAutomatically(release, skipped: skipped) {
                 held = release
             }
+        }
+    }
+
+    /// A manual check's answer: the window for a newer release, an alert for any other — neither
+    /// while a quit is under way (M3), when one line says so instead.
+    private func answerManual(_ outcome: UpdateOutcome, running: ReleaseVersion?) {
+        guard !presenter.isQuitUnderWay else { return log.write(UpdateWording.droppedDuringQuitLine) }
+        if case .newer(let release) = outcome, let running {
+            presenter.show(release, running: running, manual: true)
+        } else {
+            presenter.tell(outcome)
         }
     }
 

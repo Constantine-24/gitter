@@ -167,16 +167,43 @@ import Testing
         rig.controller.show(Self.release("v0.3.0"), running: Self.running, manual: false)
         let panel = try #require(rig.controller.panel)
         #expect(panel.orderingCalls == [.orderFront])
+        // Ruling 9: nor can AppKit make it key by itself (when the key window closes).
+        #expect(panel.canBecomeKey == false)
         // A second automatic result (the open window updated) still only orders it to the front.
         rig.controller.show(Self.release("v0.4.0"), running: Self.running, manual: false)
         #expect(panel.orderingCalls == [.orderFront, .orderFront])
+        #expect(panel.canBecomeKey == false)
         // Secondary only: an inactive test host has no key window either way.
         #expect(panel.isVisible)
         #expect(panel.isKeyWindow == false)
 
+        // A click into the panel lets it become key; a later automatic result takes that back.
+        Self.click(panel)
+        #expect(panel.canBecomeKey)
+        rig.controller.show(Self.release("v0.4.0"), running: Self.running, manual: false)
+        #expect(panel.canBecomeKey == false)
+
         // The control: a manual result makes the panel key, and the panel records that call.
         rig.controller.show(Self.release("v0.4.0"), running: Self.running, manual: true)
-        #expect(panel.orderingCalls == [.orderFront, .orderFront, .makeKeyAndOrderFront])
+        #expect(panel.orderingCalls == [.orderFront, .orderFront, .orderFront, .makeKeyAndOrderFront])
+        #expect(panel.canBecomeKey)
+    }
+
+    /// A left mouse-down sent through the panel's `sendEvent`, in the content's padding (on no
+    /// control), with its mouse-up queued first so no tracking loop waits for one.
+    static func click(_ panel: NSWindow) {
+        func event(_ type: NSEvent.EventType) -> NSEvent? {
+            NSEvent.mouseEvent(
+                with: type, location: NSPoint(x: 4, y: 4), modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1)
+        }
+        guard let down = event(.leftMouseDown), let up = event(.leftMouseUp) else {
+            Issue.record("could not make the mouse events")
+            return
+        }
+        NSApp.postEvent(up, atStart: false)
+        panel.sendEvent(down)
     }
 
     @Test func theScriptedOpenerOnlyLogs() {

@@ -38,6 +38,8 @@ import Testing
         #expect(configuration.timeoutIntervalForRequest == 15)
         #expect(configuration.timeoutIntervalForResource == 30)
         #expect(configuration.httpAdditionalHeaders == nil)
+        // A look right after wake waits for the network, still within the 30 s resource timeout (M4).
+        #expect(configuration.waitsForConnectivity)
     }
 
     @Test func theRedirectRuleRefusesOtherHosts() {
@@ -50,6 +52,7 @@ import Testing
         #expect(!allows("https://api.github.com:8443/x"))
         #expect(!allows("https://user@api.github.com/x"))
         #expect(!allows("https://127.0.0.1:8080/x"))
+        #expect(!allows("http://127.0.0.1:8123/x"))
         #expect(!UpdateRedirectGuard.allows(nil, feed: feed))
     }
 
@@ -62,7 +65,8 @@ import Testing
     }
 
     #if DEBUG
-        /// The harness's 127.0.0.1 feed may redirect on its own host and port, and nowhere else.
+        /// The harness's 127.0.0.1 feed may redirect on its own scheme, host and port, and nowhere
+        /// else — not to GitHub's API either (M2).
         @Test func aLocalFeedMayRedirectOnlyToItself() {
             let feed = URL(string: "http://127.0.0.1:8123/feed.json")!
             func allows(_ text: String) -> Bool { UpdateRedirectGuard.allows(URL(string: text), feed: feed) }
@@ -70,7 +74,12 @@ import Testing
             #expect(!allows("http://127.0.0.1:8124/other.json"))
             #expect(!allows("http://localhost:8123/other.json"))
             #expect(!allows("https://github.com/x"))
-            #expect(allows("https://api.github.com/x"))
+            #expect(!allows("https://api.github.com/x"))
+            #expect(!allows("https://127.0.0.1:8123/other.json"))
+            // A file:// feed follows no redirect at all.
+            let file = URL(string: "file:///tmp/feed.json")!
+            #expect(!UpdateRedirectGuard.allows(URL(string: "file:///tmp/other.json"), feed: file))
+            #expect(!UpdateRedirectGuard.allows(URL(string: "https://api.github.com/x"), feed: file))
         }
     #endif
 

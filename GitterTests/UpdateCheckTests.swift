@@ -96,6 +96,11 @@ import Testing
             "https://github.com/other/gitter/releases/download/v1/G.dmg",
             "https://github.com.evil.example/Constantine-24/gitter/releases/download/v1/G.dmg",
             "https://github.com/Constantine-24/gitter/releases/download/../../../../other/x.dmg",
+            // Percent-encoded dot segments, which a browser treats as ".." and "." (I1).
+            "https://github.com/Constantine-24/gitter/releases/download/%2e%2e/%2e%2e/%2e%2e/%2e%2e/evil/repo/releases/download/v9/x.dmg",
+            "https://github.com/Constantine-24/gitter/releases/download/.%2E/.%2E/.%2E/.%2E/evil/repo/releases/download/v9/x.dmg",
+            "https://github.com/Constantine-24/gitter/releases/download/%2e./%2e./%2e./%2e./evil/repo/releases/download/v9/x.dmg",
+            "https://github.com/Constantine-24/gitter/releases/download/v1/%2e/G.dmg",
             "javascript:alert(1)",
             "",
         ] {
@@ -113,6 +118,9 @@ import Testing
             UpdateCheck.downloadURL(assets: [], htmlURL: Self.goodPage) == URL(string: Self.goodPage)!)
         #expect(UpdateCheck.pageURL(htmlURL: Self.goodPage) == URL(string: Self.goodPage)!)
         #expect(UpdateCheck.pageURL(htmlURL: "https://evil.example/") == Self.fallback)
+        #expect(
+            UpdateCheck.pageURL(htmlURL: "https://github.com/Constantine-24/gitter/releases/%2e%2e/%2e%2e/%2e%2e/evil/x")
+                == Self.fallback)
         #expect(UpdateCheck.pageURL(htmlURL: nil) == Self.fallback)
     }
 

@@ -65,6 +65,8 @@ final class FakeFetcher: UpdateFetching, Sendable {
         let manual: Bool
     }
     var canShowAutomatic = true
+    var isAppActive = true
+    var isQuitUnderWay = false
     private(set) var shown: [Shown] = []
     private(set) var told: [UpdateOutcome] = []
 
@@ -266,6 +268,84 @@ final class FakeFetcher: UpdateFetching, Sendable {
         #expect(!rig.checker.isRetryingHeld)
     }
 
+    /// I2: the retry wakes the app only while it is active. A result held while the app is in the
+    /// background starts no timer; becoming active (`showHeldIfPossible()`, which the presenter
+    /// calls on `didBecomeActive`) shows it, or starts the timer when it still may not show; going
+    /// to the background again stops the timer at its next tick.
+    @Test func theRetryRunsOnlyWhileTheAppIsActive() async {
+        let rig = Rig([Self.release("v0.3.0"), Self.release("v0.3.0")], retryInterval: .milliseconds(10))
+        defer { rig.scratch.remove() }
+        rig.presenter.canShowAutomatic = false
+        rig.presenter.isAppActive = false
+        #expect(await rig.checker.look(force: true))
+        #expect(rig.presenter.shown.isEmpty)
+        #expect(rig.checker.debugHeldVersion == Self.v("0.3.0"))
+        #expect(!rig.checker.isRetryingHeld)
+
+        // Active again, but still unable to show (a modal is up): the timer starts.
+        rig.presenter.isAppActive = true
+        rig.checker.showHeldIfPossible()
+        #expect(rig.presenter.shown.isEmpty)
+        #expect(rig.checker.isRetryingHeld)
+
+        // In the background again: the next tick stops it, and the result stays held.
+        rig.presenter.isAppActive = false
+        #expect(await Self.within { !rig.checker.isRetryingHeld })
+        #expect(rig.presenter.shown.isEmpty)
+        #expect(rig.checker.debugHeldVersion == Self.v("0.3.0"))
+
+        // Active and able: shown at once, and no timer.
+        rig.presenter.isAppActive = true
+        rig.presenter.canShowAutomatic = true
+        rig.checker.showHeldIfPossible()
+        #expect(rig.presenter.shown == [.init(version: Self.v("0.3.0"), running: Self.v020, manual: false)])
+        #expect(!rig.checker.isRetryingHeld)
+    }
+
+    /// I2: the retry timer may fire late — 1 s at the app's 2 s interval (half the interval when
+    /// that is shorter) — so the system can coalesce its wakes.
+    @Test func theRetryTimerHasATolerance() async {
+        let rig = Rig([Self.release("v0.3.0")], retryInterval: .seconds(2))
+        defer { rig.scratch.remove() }
+        rig.presenter.canShowAutomatic = false
+        #expect(await rig.checker.look(force: true))
+        #expect(rig.checker.isRetryingHeld)
+        #expect(rig.checker.retryTolerance == 1)
+        rig.checker.stop()
+    }
+
+    /// M3: a manual check's answer that lands while a quit is under way is neither told nor shown;
+    /// the check still writes its date and its line, and one line says the answer was dropped.
+    @Test func aManualAnswerDuringAQuitIsDropped() async {
+        let rig = Rig([Self.release("v0.3.0"), Self.release("v0.2.0")])
+        defer { rig.scratch.remove() }
+        rig.presenter.isQuitUnderWay = true
+        await rig.checker.checkNowAndWait()
+        await rig.checker.checkNowAndWait()
+        #expect(rig.presenter.shown.isEmpty)
+        #expect(rig.presenter.told.isEmpty)
+        #expect(rig.lastCheck == Self.now)
+        #expect(
+            rig.log.lines == [
+                "update check (manual): newer — latest v0.3.0, running 0.2.0",
+                "update check (manual): not shown — a quit is under way",
+                "update check (manual): up to date — latest 0.2.0, running 0.2.0",
+                "update check (manual): not shown — a quit is under way",
+            ])
+
+        // No running version: the at-once answer is dropped the same way.
+        let unknown = Rig([], running: nil)
+        defer { unknown.scratch.remove() }
+        unknown.presenter.isQuitUnderWay = true
+        await unknown.checker.checkNowAndWait()
+        #expect(unknown.presenter.told.isEmpty)
+        #expect(
+            unknown.log.lines == [
+                "update check (manual): unreadable (version) — latest ?, running ?",
+                "update check (manual): not shown — a quit is under way",
+            ])
+    }
+
     /// The retry runs only while a result is held: a later word on the latest release, a skip, the
     /// toggle going off and `stop()` each end it.
     @Test func theRetryEndsWhenTheHeldResultIsDroppedOrTheChecksStop() async {
@@ -460,14 +540,22 @@ final class FakeFetcher: UpdateFetching, Sendable {
     @Test func noRunningVersionMeansNoAutomaticCheck() async {
         let rig = Rig([Self.release("v0.3.0")], running: nil)
         defer { rig.scratch.remove() }
+        // M1: the automatic look says once per process (the app's one checker) why it checks nothing;
+        // a second look adds no line, and neither writes the date.
+        #expect(await rig.checker.look(force: true) == false)
         #expect(await rig.checker.look(force: true) == false)
         #expect(rig.fetcher.calls == 0)
         #expect(rig.lastCheck == nil)
-        #expect(rig.log.lines.isEmpty)
+        #expect(rig.presenter.told.isEmpty)
+        #expect(rig.log.lines == ["update check (automatic): unreadable (version) — latest ?, running ?"])
         await rig.checker.checkNowAndWait()
         #expect(rig.fetcher.calls == 0)
         #expect(rig.presenter.told == [.unreadable("version")])
-        #expect(rig.log.lines == ["update check (manual): unreadable (version) — latest ?, running ?"])
+        #expect(
+            rig.log.lines == [
+                "update check (automatic): unreadable (version) — latest ?, running ?",
+                "update check (manual): unreadable (version) — latest ?, running ?",
+            ])
     }
 
     /// `stop()` here only ends the loop the test started; nothing measures that no later look runs.

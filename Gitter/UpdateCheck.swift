@@ -138,11 +138,12 @@ enum UpdateCheck {
         htmlURL.flatMap { trusted($0, prefix: releasesPrefix) } ?? latestPage
     }
 
-    /// The URL when the text starts with the prefix, parses as an https github.com URL and climbs
-    /// out of the prefix through no ".." segment.
+    /// The URL when the text starts with the prefix, parses as an https github.com URL and has no
+    /// "." or ".." segment once decoded — a browser reads `%2e%2e`, `.%2E` and `%2e.` as "..", so
+    /// the raw text cannot be trusted to say where the path ends up.
     private static func trusted(_ text: String, prefix: String) -> URL? {
         guard text.hasPrefix(prefix), let url = URL(string: text), url.scheme == "https", url.host == "github.com",
-            !text.dropFirst(prefix.count).split(separator: "/").contains("..")
+            !url.pathComponents.contains(where: { $0 == ".." || $0 == "." })
         else { return nil }
         return url
     }
