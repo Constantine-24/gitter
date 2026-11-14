@@ -33,8 +33,9 @@ import Observation
 /// - **Every completed check** writes `updateLastCheck` and one event-log line, whatever its
 ///   outcome, so a failure still waits a day. A dropped check writes neither.
 /// - **An automatic newer release** that is not the skipped version shows when the presenter can
-///   show it, and is held otherwise until `showHeldIfPossible()`; showing it clears a skip below
-///   it. A later check that says anything about the latest release replaces or drops it.
+///   show it, and is held otherwise until `showHeldIfPossible()` — which a timer calls every
+///   `retryInterval` while it is held, and the presenter on its own notifications; showing it
+///   clears a skip below it. A later check that says anything about the latest release replaces or drops it.
 @Observable @MainActor final class UpdateChecker {
     static let enabledKey = "updateCheckEnabled"
     static let lastCheckKey = "updateLastCheck"
@@ -96,13 +97,22 @@ import Observation
     private let now: @MainActor () -> Date
     private let firstLook: Duration
     private let lookInterval: Duration
+    private let retryInterval: Duration
 
     /// Whether a check is in flight: Check for Updates… is off meanwhile.
     private(set) var isChecking = false
 
     @ObservationIgnored private var flight: UpdateFlight?
-    @ObservationIgnored private var held: LatestRelease?
+    /// The automatic result waiting for the presenter. While there is one, `retry` tries it again
+    /// every `retryInterval` (Ruling 4).
+    @ObservationIgnored private var held: LatestRelease? {
+        didSet { held == nil ? stopRetry() : startRetry() }
+    }
+    @ObservationIgnored private var retry: Timer?
     @ObservationIgnored private var loop: Task<Void, Never>?
+
+    /// Whether a held result is being tried again on the timer (internal for tests).
+    var isRetryingHeld: Bool { retry != nil }
 
     #if DEBUG
         /// The held automatic result's version, for the harness's `update:state`.
@@ -112,7 +122,8 @@ import Observation
     init(
         defaults: UserDefaults, running: ReleaseVersion?, fetcher: any UpdateFetching,
         presenter: any UpdatePresenting, log: EventLog, now: @escaping @MainActor () -> Date = { Date() },
-        firstLook: Duration = .seconds(10), lookInterval: Duration = .seconds(3600)
+        firstLook: Duration = .seconds(10), lookInterval: Duration = .seconds(3600),
+        retryInterval: Duration = .seconds(2)
     ) {
         self.defaults = defaults
         self.running = running
@@ -122,6 +133,7 @@ import Observation
         self.now = now
         self.firstLook = firstLook
         self.lookInterval = lookInterval
+        self.retryInterval = retryInterval
     }
 
     /// "Check for Updates Automatically". Absent means on.
@@ -149,10 +161,38 @@ import Observation
         }
     }
 
-    /// Ends the looks. A check in flight still completes.
+    /// Ends the looks and the held result's retry. A check in flight still completes.
     func stop() {
         loop?.cancel()
         loop = nil
+        stopRetry()
+    }
+
+    /// The held result's retry: `showHeldIfPossible()` every `retryInterval`, from a repeating
+    /// timer on the main run loop in `.default` **and `.modalPanel`** — the mode AppKit runs while
+    /// an app-modal alert (QuitGuard's question, a manual check's answer) or an Open panel is up.
+    /// The notifications the presenter watches (the app became active, a sheet ended) are not
+    /// posted when such a modal ends with the app still active; the timer fires during it (and
+    /// finds the presenter unable) and right after it. Not `.eventTracking`: a menu being tracked
+    /// holds it until the menu closes. Here, not in the presenter, because the held state lives here
+    /// and every path that holds or drops a result sets `held`.
+    private func startRetry() {
+        guard retry == nil else { return }
+        let (seconds, attoseconds) = retryInterval.components
+        let interval = max(Double(seconds) + Double(attoseconds) / 1e18, 0.001)
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] timer in
+            // A checker that is gone takes its timer with it.
+            guard let self else { return timer.invalidate() }
+            MainActor.assumeIsolated { self.showHeldIfPossible() }
+        }
+        RunLoop.main.add(timer, forMode: .default)
+        RunLoop.main.add(timer, forMode: .modalPanel)
+        retry = timer
+    }
+
+    private func stopRetry() {
+        retry?.invalidate()
+        retry = nil
     }
 
     /// The manual check: starts one, or joins the one in flight, which then answers as manual.

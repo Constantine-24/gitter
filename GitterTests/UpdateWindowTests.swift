@@ -150,7 +150,8 @@ import Testing
         #expect(panel.isRestorable == false)
         #expect(panel.isReleasedWhenClosed == false)
         #expect(panel.hidesOnDeactivate == false)
-        #expect(panel.becomesKeyOnlyIfNeeded)
+        // Ruling 5: a click into the panel makes it key, so Return reaches Download and ⌘W closes it.
+        #expect(panel.becomesKeyOnlyIfNeeded == false)
         #expect(panel.styleMask.contains(.titled) && panel.styleMask.contains(.closable))
         #expect(panel.title == UpdateWording.windowTitle)
         // What `visibleMainWindows()` and the windowless-launch check count.

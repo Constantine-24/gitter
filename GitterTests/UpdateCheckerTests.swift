@@ -114,13 +114,14 @@ final class FakeFetcher: UpdateFetching, Sendable {
         init(
             _ answers: [UpdateAnswer], gated: Bool = false, running: ReleaseVersion? = UpdateCheckerTests.v020,
             firstLook: Duration = .seconds(10), lookInterval: Duration = .seconds(3600),
-            setUp: (UserDefaults) -> Void = { _ in }
+            retryInterval: Duration = .seconds(2), setUp: (UserDefaults) -> Void = { _ in }
         ) {
             fetcher = FakeFetcher(answers, gated: gated)
             setUp(scratch.defaults)
             checker = UpdateChecker(
                 defaults: scratch.defaults, running: running, fetcher: fetcher, presenter: presenter,
-                log: log.eventLog, now: { UpdateCheckerTests.now }, firstLook: firstLook, lookInterval: lookInterval)
+                log: log.eventLog, now: { UpdateCheckerTests.now }, firstLook: firstLook, lookInterval: lookInterval,
+                retryInterval: retryInterval)
         }
 
         var defaults: UserDefaults { scratch.defaults }
@@ -226,6 +227,93 @@ final class FakeFetcher: UpdateFetching, Sendable {
         rig.checker.showHeldIfPossible()
         rig.checker.showHeldIfPossible()
         #expect(rig.presenter.shown == [.init(version: Self.v("0.3.0"), running: Self.v020, manual: false)])
+    }
+
+    /// Ruling 4: a held result is tried again on a timer, so it shows once the presenter can
+    /// although nothing posts a notification — an app-modal alert or an Open panel ending posts
+    /// neither "became active" nor "sheet ended".
+    @Test func aHeldResultIsRetriedWithoutANotification() async {
+        let rig = Rig([Self.release("v0.3.0")], retryInterval: .milliseconds(10))
+        defer { rig.scratch.remove() }
+        rig.presenter.canShowAutomatic = false
+        #expect(await rig.checker.look())
+        #expect(rig.presenter.shown.isEmpty)
+        #expect(rig.checker.isRetryingHeld)
+        // Several retries while it may not show: still held, still retrying.
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(rig.presenter.shown.isEmpty)
+        #expect(rig.checker.isRetryingHeld)
+
+        // No notification and no `showHeldIfPossible()` from the test: only the timer.
+        rig.presenter.canShowAutomatic = true
+        #expect(await Self.within { !rig.presenter.shown.isEmpty })
+        #expect(rig.presenter.shown == [.init(version: Self.v("0.3.0"), running: Self.v020, manual: false)])
+        #expect(!rig.checker.isRetryingHeld)
+    }
+
+    /// The retry fires in the modal-panel run-loop mode too: the mode AppKit runs while an
+    /// app-modal alert (`ModalAlert`, QuitGuard's question) or an Open panel is up.
+    @Test func aHeldResultIsRetriedInTheModalPanelMode() async {
+        let rig = Rig([Self.release("v0.3.0")], retryInterval: .milliseconds(10))
+        defer { rig.scratch.remove() }
+        rig.presenter.canShowAutomatic = false
+        #expect(await rig.checker.look())
+        #expect(rig.checker.isRetryingHeld)
+        rig.presenter.canShowAutomatic = true
+        // Only `.modalPanel` runs here: a timer added for `.default` alone would never fire.
+        Self.runModalPanelMode(until: { !rig.presenter.shown.isEmpty })
+        #expect(rig.presenter.shown == [.init(version: Self.v("0.3.0"), running: Self.v020, manual: false)])
+        #expect(!rig.checker.isRetryingHeld)
+    }
+
+    /// The retry runs only while a result is held: a later word on the latest release, a skip, the
+    /// toggle going off and `stop()` each end it.
+    @Test func theRetryEndsWhenTheHeldResultIsDroppedOrTheChecksStop() async {
+        let rig = Rig(
+            [Self.release("v0.3.0"), Self.release("v0.2.0"), Self.release("v0.3.0"), Self.release("v0.3.0"),
+             Self.release("v0.3.0")], retryInterval: .seconds(3600))
+        defer { rig.scratch.remove() }
+        rig.presenter.canShowAutomatic = false
+        #expect(!rig.checker.isRetryingHeld)
+        #expect(await rig.checker.look(force: true))
+        #expect(rig.checker.isRetryingHeld)
+        #expect(await rig.checker.look(force: true))  // up to date: dropped
+        #expect(!rig.checker.isRetryingHeld)
+
+        #expect(await rig.checker.look(force: true))
+        #expect(rig.checker.isRetryingHeld)
+        rig.checker.skip(Self.v("0.3.0"))
+        #expect(!rig.checker.isRetryingHeld)
+        rig.scratch.defaults.removeObject(forKey: UpdateChecker.skippedKey)
+
+        #expect(await rig.checker.look(force: true))
+        #expect(rig.checker.isRetryingHeld)
+        rig.checker.setEnabled(false)
+        #expect(!rig.checker.isRetryingHeld)
+        rig.scratch.defaults.removeObject(forKey: UpdateChecker.enabledKey)
+
+        #expect(await rig.checker.look(force: true))
+        #expect(rig.checker.isRetryingHeld)
+        rig.checker.stop()
+        #expect(!rig.checker.isRetryingHeld)
+        #expect(rig.presenter.shown.isEmpty)
+    }
+
+    /// Runs the main run loop in `.modalPanel` mode only, as AppKit does under an app-modal alert,
+    /// until `condition` holds or about two seconds pass.
+    static func runModalPanelMode(until condition: @MainActor () -> Bool) {
+        for _ in 0..<200 where !condition() {
+            RunLoop.main.run(mode: .modalPanel, before: Date().addingTimeInterval(0.01))
+        }
+    }
+
+    /// Whether `condition` held within about two seconds.
+    static func within(_ condition: @MainActor () -> Bool) async -> Bool {
+        for _ in 0..<2_000 {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return condition()
     }
 
     @Test func aLaterHeldResultReplacesAnEarlierOne() async {

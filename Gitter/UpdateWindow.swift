@@ -36,13 +36,14 @@ enum UpdateButton: String, CaseIterable {
 /// - **Not a main window.** An `NSPanel` cannot become main, so `visibleMainWindows()` and the
 ///   windowless-launch check never count it; it is not restorable, and outlives its close.
 /// - **An automatic result does not take the keyboard:** it is ordered to the front without
-///   becoming key, and the panel becomes key only when a click needs it (`becomesKeyOnlyIfNeeded`),
+///   becoming key, and the panel becomes key only when the user clicks into it,
 ///   so typing, Return and ⌘W stay in the repository window. A manual result is made key, and the
 ///   app active: the user just asked.
 /// - **One at a time.** A second result updates the open window.
 /// - **When an automatic result may show** (`canShowAutomatic`): the app is active, no visible
 ///   window has a sheet attached, no modal window is up and no quit is under way. The checker holds
-///   it otherwise, and this controller asks for it again when the app becomes active or a sheet ends.
+///   it otherwise and tries it again on a timer (`UpdateChecker`); this controller also asks for it
+///   at once when the app becomes active or a sheet ends.
 @MainActor final class UpdatePanelController: NSObject, UpdatePresenting, NSWindowDelegate {
     /// Which ordering call the last `show` made: the tests' control for "does not take key".
     enum Presentation: Equatable { case front, key }
@@ -176,7 +177,9 @@ enum UpdateButton: String, CaseIterable {
         panel.isReleasedWhenClosed = false
         panel.isRestorable = false
         panel.hidesOnDeactivate = false
-        panel.becomesKeyOnlyIfNeeded = true
+        // A click into the panel makes it key, so Return reaches Download and ⌘W closes it
+        // (Ruling 5); an automatic result is still only ordered to the front.
+        panel.becomesKeyOnlyIfNeeded = false
         panel.delegate = self
         let hosting = NSHostingView(rootView: view)
         panel.contentView = hosting
