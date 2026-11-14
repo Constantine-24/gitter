@@ -382,7 +382,8 @@ final class FakeFetcher: UpdateFetching, Sendable {
         #expect(rig.log.lines == ["update check (manual): unreadable (version) — latest ?, running ?"])
     }
 
-    @Test func theLoopLooksAfterTheFirstDelayAndStopEndsIt() async {
+    /// `stop()` here only ends the loop the test started; nothing measures that no later look runs.
+    @Test func theLoopLooksAfterTheFirstDelay() async {
         let rig = Rig([Self.release("v0.3.0")], firstLook: .milliseconds(1), lookInterval: .milliseconds(1))
         defer { rig.scratch.remove() }
         rig.checker.start()

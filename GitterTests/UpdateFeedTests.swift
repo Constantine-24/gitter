@@ -53,6 +53,14 @@ import Testing
         #expect(!UpdateRedirectGuard.allows(nil, feed: feed))
     }
 
+    /// The session finds the delegate's redirect method (the async Swift form is this selector).
+    @Test func theRedirectGuardAnswersTheRedirectCallback() {
+        let guardian = UpdateRedirectGuard(feed: UpdateCheck.apiURL)
+        #expect(
+            guardian.responds(
+                to: NSSelectorFromString("URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:")))
+    }
+
     #if DEBUG
         /// The harness's 127.0.0.1 feed may redirect on its own host and port, and nowhere else.
         @Test func aLocalFeedMayRedirectOnlyToItself() {

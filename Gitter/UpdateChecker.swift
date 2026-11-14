@@ -40,8 +40,11 @@ import Observation
     static let lastCheckKey = "updateLastCheck"
     static let skippedKey = "updateSkippedVersion"
 
-    static let feedVariable = "GITTER_DEBUG_UPDATE_FEED"
-    static let versionVariable = "GITTER_DEBUG_UPDATE_VERSION"
+    #if DEBUG
+        /// The harness's overrides, compiled out of Release.
+        static let feedVariable = "GITTER_DEBUG_UPDATE_FEED"
+        static let versionVariable = "GITTER_DEBUG_UPDATE_VERSION"
+    #endif
 
     /// Never under the test host. In DEBUG, a scripted launch checks only when the harness names
     /// its own feed (`GITTER_DEBUG_UPDATE_FEED`, a `file://` or 127.0.0.1 URL): an empty or remote
