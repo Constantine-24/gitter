@@ -31,6 +31,38 @@ enum AppModel {
         #endif
     }
 
+    /// The app's one update checker, started by the delegate after launch. Nil under the test host
+    /// and, in DEBUG, in a scripted launch that names no feed of its own (`UpdateChecker.runsChecks`):
+    /// neither ever asks GitHub.
+    static let updates: UpdateChecker? = makeUpdates()
+
+    private static func makeUpdates() -> UpdateChecker? {
+        let environment = ProcessInfo.processInfo.environment
+        guard UpdateChecker.runsChecks(environment: environment, isRunningTests: TestHost.isRunningTests) else {
+            return nil
+        }
+        let info = Bundle.main.infoDictionary ?? [:]
+        let log = AppLog.events
+        return UpdateChecker(
+            defaults: UserDefaults.standard, running: UpdateChecker.runningVersion(info: info, environment: environment),
+            fetcher: GitHubUpdateFeed(
+                url: UpdateChecker.feedURL(environment: environment), userAgent: GitHubUpdateFeed.userAgent(info: info)),
+            presenter: LoggingUpdatePresenter(log: log), log: log)
+    }
+
+    /// Until the update window exists: each result only goes to the log.
+    @MainActor private final class LoggingUpdatePresenter: UpdatePresenting {
+        let log: EventLog
+        init(log: EventLog) { self.log = log }
+        var canShowAutomatic: Bool { true }
+        func show(_ release: LatestRelease, running: ReleaseVersion, manual: Bool) {
+            log.write("update notice: \(release.tag) available, running \(running) (\(manual ? "manual" : "automatic"))")
+        }
+        func tell(_ outcome: UpdateOutcome) {
+            log.write("update notice: \(UpdateWording.logLine(outcome, running: nil, manual: true))")
+        }
+    }
+
     /// The repository windows' scene id, for `openWindow(id:)`: an empty window.
     static let windowID = "main"
 
@@ -234,6 +266,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated {
             // Before the guard: every launch, not only one with a log.
             DispatchQueue.main.async { Self.askForAWindowIfNoneCame() }
+            // The update looks (nil, so none, under the test host and most scripted launches).
+            AppModel.updates?.start()
             guard AppLog.writer != nil else { return }
             let info = Bundle.main.infoDictionary ?? [:]
             Task {
