@@ -165,7 +165,7 @@ window closed while its push is still running (a push held by a `receivepack` sc
 test lets it go) are tested the same way.
 
 **A test backend over real git.** `TestBackend` (GitterTests) forwards every one of the twelve
-backend protocols' 104 calls to a real `CLIGitBackend` on the test's scratch repository, and lets a
+backend protocols' 106 calls to a real `CLIGitBackend` on the test's scratch repository, and lets a
 test act at any one call: run code before or after it (`hook`), make the next one throw without
 running git (`fail`), park the next one until the test lets it go (`hold`, on a `StuckCall`),
 replace the stash pop with one that changes the repository between its apply and its drop

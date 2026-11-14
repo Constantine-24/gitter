@@ -144,6 +144,28 @@ public struct ConflictSnapshot: Sendable, Hashable {
     }
 }
 
+/// The three versions of a conflicted path as the resolver's columns show them: each stage in
+/// worktree form (`cat-file --filters --path`, so end-of-line conversion and smudge filters
+/// applied, as the parse rebuild's text is), nil where the path has no such stage — no base
+/// for an add/add, no ours or theirs for a deletion. See `GitConflictBackend.conflictSides`.
+public struct ConflictSides: Sendable, Hashable {
+    /// Stage 2.
+    public let ours: Data?
+    /// Stage 1.
+    public let base: Data?
+    /// Stage 3.
+    public let theirs: Data?
+    /// The path's `conflict-marker-size` attribute (7 when unset or not a positive number).
+    public let markerSize: Int
+
+    public init(ours: Data?, base: Data?, theirs: Data?, markerSize: Int) {
+        self.ours = ours
+        self.base = base
+        self.theirs = theirs
+        self.markerSize = markerSize
+    }
+}
+
 /// How a conflicted path can be shown.
 public enum ConflictPresentation: Sendable, Hashable {
     /// UU / AA with text on both sides.

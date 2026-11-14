@@ -38,6 +38,14 @@ public protocol GitConflictBackend: Sendable {
     ///   target path, a regular file's content, nil for anything else.
     func conflictDocument(for file: ConflictedFile, at root: URL) async throws -> ConflictDocument
 
+    /// The stages of `snapshot`'s path for the resolver's columns, in worktree form — the form
+    /// of the parse rebuild and of what `resolve(_:text:…)` takes — and the path's
+    /// `conflict-marker-size`. A stage the snapshot does not have is nil and is not read. Reads
+    /// only (`cat-file --filters --path`, `check-attr`): the index's stages as they are now,
+    /// which the write checks against the snapshot again. Meant for a `.blocks` document; a
+    /// gitlink's stage has no blob to read, and the read throws.
+    func conflictSides(_ snapshot: ConflictSnapshot, at root: URL) async throws -> ConflictSides
+
     // MARK: - Writes (A2 Task 2)
     //
     // Every write first re-reads the path's index entries and worktree bytes and throws
@@ -59,6 +67,13 @@ public protocol GitConflictBackend: Sendable {
     /// `.notAvailable` unless the document is `.blocks`; `.choicesDoNotMatch` unless there is
     /// one choice per block.
     func resolve(_ snapshot: ConflictSnapshot, choices: [BlockChoice], recordIfEdited: Bool, at root: URL) async throws -> ConflictReceipt
+
+    /// Resolves a text conflict with the resolver's Result: `text`, taken as worktree-form
+    /// bytes and written exactly as given — no final-newline adjustment, since the caller
+    /// composes every byte, Ruling 9's final-newline rule included — over the file in place,
+    /// so the executable bit survives (M 9), then `add`, which cleans them for the index.
+    /// `.notAvailable` unless the document is `.blocks`.
+    func resolve(_ snapshot: ConflictSnapshot, text: Data, recordIfEdited: Bool, at root: URL) async throws -> ConflictReceipt
 
     /// The whole file as one side has it: `restore --ours|--theirs`, then `add` — byte-exact
     /// under filters and end-of-line conversion, and for binary, symlink and mode-only

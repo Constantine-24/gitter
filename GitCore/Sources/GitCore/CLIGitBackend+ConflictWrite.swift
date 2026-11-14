@@ -41,8 +41,20 @@ extension CLIGitBackend {
             let stage = try await stageText(last.stage, of: path, at: root)
             bytes.removeLast(Self.addedTerminator(side: last.bytes, stage: stage))
         }
-        try Self.writeInPlace(bytes, to: path, executable: snapshot.file.ours?.mode == "100755", at: root)
-        _ = try await run(["add", "--", literalPathspec(path)], cwd: root)
+        try await writeAndStage(bytes, snapshot, at: root)
+        return ConflictReceipt(path: path, recorded: recorded)
+    }
+
+    public func resolve(
+        _ snapshot: ConflictSnapshot, text: Data, recordIfEdited: Bool, at root: URL
+    ) async throws -> ConflictReceipt {
+        let path = snapshot.file.path
+        let document = try await currentDocument(snapshot, at: root)
+        guard case .blocks = document.presentation else { throw ConflictError.notAvailable(path) }
+        let recorded = try await recordUnlessWrittenByGit(document, recordIfEdited: recordIfEdited, at: root)
+        // The caller's bytes are the Result in worktree form, final line terminator decided
+        // already: written as they are, and `add` cleans them for the index (M 9 route b).
+        try await writeAndStage(text, snapshot, at: root)
         return ConflictReceipt(path: path, recorded: recorded)
     }
 
@@ -281,6 +293,14 @@ extension CLIGitBackend {
         guard recordIfEdited else { throw ConflictError.wouldReplaceEdits(path) }
         return try await StashRecord.record(
             paths: [path], message: Self.replacedByGitter + path, allowingUnmerged: true, backend: self, at: root)
+    }
+
+    /// A text resolution's last two steps: `bytes` over the file in place (`writeInPlace`,
+    /// executable when ours is 100755), then `add` of the one path.
+    private func writeAndStage(_ bytes: Data, _ snapshot: ConflictSnapshot, at root: URL) async throws {
+        let path = snapshot.file.path
+        try Self.writeInPlace(bytes, to: path, executable: snapshot.file.ours?.mode == "100755", at: root)
+        _ = try await run(["add", "--", literalPathspec(path)], cwd: root)
     }
 
     /// `restore --ours|--theirs` of the one path: the stage in worktree form, its mode, a
