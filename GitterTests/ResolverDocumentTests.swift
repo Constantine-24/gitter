@@ -495,6 +495,11 @@ import Testing
         #expect(document.leftoverMarkerLines(markerSize: 7) == 0)
         document.replace(Self.range(of: "text", in: document), with: "|||||||\n=======")
         #expect(document.leftoverMarkerLines(markerSize: 7) == 1)
+        // A separator with text after it still counts: the check errs toward asking.
+        document.replace(Self.range(of: "|||||||\n", in: document), with: "======= x\n")
+        #expect(document.leftoverMarkerLines(markerSize: 7) == 1)
+        document.replace(Self.range(of: "======= x", in: document), with: "========")
+        #expect(document.leftoverMarkerLines(markerSize: 7) == 0)
     }
 
     /// Untouched text counts nothing: a taken side's lines are a stage's.
@@ -536,6 +541,13 @@ import Testing
 
         let wide = String(repeating: "x", count: ResolverDocument.editLimitBytes) + "\n"
         #expect(try Self.document([Self.common(wide), .block(Self.block1)]).notEditable == .tooLarge)
+
+        // Too large and not UTF-8: the lossy text is never written.
+        var both = try Self.document([.common(Data(lines.utf8) + Data([0xFF, 0x0A])), .block(Self.block1)])
+        #expect(both.notEditable == .notUTF8)
+        both.take(.ours, chunk: 1)
+        #expect(both.bytes(sides: Self.endedSides) == nil)
+        #expect(both.blockChoices() == [.ours])
 
         let under = String(repeating: "x\n", count: ResolverDocument.editLimitLines - 10)
         #expect(try Self.document([Self.common(under), .block(Self.block1)]).notEditable == nil)

@@ -173,14 +173,6 @@ public enum ConflictSegment: Sendable, Hashable {
         }
         return bytes
     }
-
-    /// Whether `line` — one line, with or without its `\n`, `\r\n` or `\r` — is a conflict marker
-    /// at `markerSize` as the parser reads one: exactly that many `<`, `|`, `=` or `>`, then the
-    /// end of the line or, for all but `=`, a space and a label. Pure; for the app's count of
-    /// marker lines left in a Result.
-    public static func isMarkerLine(_ line: Data, markerSize: Int) -> Bool {
-        ConflictParser.marker(line, size: markerSize) != nil
-    }
 }
 
 /// What the UI showed, carried into every write so it can refuse when the repository moved.

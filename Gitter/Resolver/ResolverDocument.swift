@@ -96,10 +96,11 @@ struct ResolverDocument: Hashable, Sendable {
         }
         self.chunks = chunks
         self.lineEnding = crlf > lf ? "\r\n" : "\n"
-        if size > Self.editLimitBytes || lines > Self.editLimitLines {
-            notEditable = .tooLarge
-        } else if !valid {
+        // Not UTF-8 wins over too large: its text is a lossy decoding, which `bytes` never writes.
+        if !valid {
             notEditable = .notUTF8
+        } else if size > Self.editLimitBytes || lines > Self.editLimitLines {
+            notEditable = .tooLarge
         } else {
             notEditable = nil
         }
@@ -260,8 +261,7 @@ struct ResolverDocument: Hashable, Sendable {
         return bytes
     }
 
-    /// Marker lines at `markerSize` (`ConflictSegment.isMarkerLine`, the parser's rule) in text
-    /// the user typed into: `.edited` chunks and edited common ones. A line equal to one of the
+    /// Marker lines at `markerSize` (`isMarker`) in text the user typed into: `.edited` chunks and edited common ones. A line equal to one of the
     /// chunk's own stage lines — its blocks' ours, base and theirs, or the common text it holds
     /// from git — is not counted: a stage's own lines are not markers (M 5).
     func leftoverMarkerLines(markerSize: Int) -> Int {
@@ -280,7 +280,7 @@ struct ResolverDocument: Hashable, Sendable {
             }
             if let original = chunk.commonOriginal { stageLines.formUnion(Self.lines(of: Data(original.utf8))) }
             count += Self.lines(of: Data(chunk.text.utf8)).count { line in
-                ConflictSegment.isMarkerLine(line, markerSize: markerSize) && !stageLines.contains(line)
+                Self.isMarker(line, size: markerSize) && !stageLines.contains(line)
             }
         }
         return count
@@ -292,6 +292,17 @@ struct ResolverDocument: Hashable, Sendable {
     private static func same(_ text: String, _ original: String?) -> Bool {
         guard let original else { return false }
         return text.utf8.elementsEqual(original.utf8)
+    }
+
+    /// A line (without its line ending) that is exactly `size` of `<`, `=`, `>` or `|`, then a
+    /// space or nothing — the shape of Mark Resolved's scan, for all four characters. `=` with a
+    /// label counts too, though git never writes one: the check errs toward asking.
+    private static func isMarker(_ line: Data, size: Int) -> Bool {
+        guard let first = line.first, "<=>|".utf8.contains(first) else { return false }
+        let run = line.prefix { $0 == first }.count
+        guard run == size else { return false }
+        let rest = line.dropFirst(run)
+        return rest.isEmpty || rest.first == UInt8(ascii: " ")
     }
 
     /// Each line of `data` without its `\n` or `\r\n`.

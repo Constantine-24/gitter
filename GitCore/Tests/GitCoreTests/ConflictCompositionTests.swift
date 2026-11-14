@@ -48,23 +48,6 @@ import Testing
         #expect(crlf.addedFinalTerminator(.theirs, stage: Data("x".utf8)) == 0)
     }
 
-    /// The parser's marker rule, public for the app's leftover-marker count.
-    @Test func aMarkerLineIsExactlyTheSizeThenALabelOrTheEnd() {
-        func isMarker(_ line: String, _ size: Int = 7) -> Bool {
-            ConflictSegment.isMarkerLine(Data(line.utf8), markerSize: size)
-        }
-        #expect(isMarker("<<<<<<< ours\n"))
-        #expect(isMarker("|||||||"))
-        #expect(isMarker("=======\r\n"))
-        #expect(isMarker(">>>>>>>\r"))
-        #expect(!isMarker("======= x"))
-        #expect(!isMarker("<<<<<<<< ours"))
-        #expect(!isMarker("<<<<<<<x"))
-        #expect(!isMarker("<<<<<<< x", 11))
-        #expect(isMarker("<<<<<<<<<<< x", 11))
-        #expect(!isMarker("text"))
-    }
-
     @Test func aFileComposesOnlyWithOneChoicePerBlock() {
         let segments: [ConflictSegment] = [
             .common(Data("a\n".utf8)),

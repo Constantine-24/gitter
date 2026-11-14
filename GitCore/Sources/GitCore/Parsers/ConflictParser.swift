@@ -126,7 +126,7 @@ enum ConflictParser {
     /// After the run: the end of the line (`\n`, `\r\n`, or the end of the text, with or without
     /// a `\r`), or — for `<`,
     /// `|` and `>`, which git labels — a space. `=` is never labelled, so `======= x` is content.
-    static func marker(_ line: Data, size: Int) -> UInt8? {
+    private static func marker(_ line: Data, size: Int) -> UInt8? {
         guard let first = line.first, markerCharacters.contains(first) else { return nil }
         let run = line.prefix { $0 == first }.count
         guard run == size else { return nil }
