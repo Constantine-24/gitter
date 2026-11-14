@@ -8,7 +8,8 @@ enum ChunkState: Hashable, Sendable {
     case common
     /// A conflict no side has been chosen for: an empty slot.
     case waiting
-    /// A conflict whose text is exactly `ConflictBlock.composed` of the choice.
+    /// A conflict whose text is exactly `ConflictBlock.composed` of the choice — for the one
+    /// that ends the file, less the terminator merge-file added (see `ResolverDocument.take`).
     case taken(BlockChoice)
     /// A conflict the user typed into, or chunks an edit spanned, merged.
     case edited
@@ -54,11 +55,13 @@ struct ResolverDocument: Hashable, Sendable {
     /// What typed line breaks become: `"\r\n"` when more lines of the conflict text end in
     /// CRLF than in a bare LF, else `"\n"`.
     let lineEnding: String
+    /// Stages 2 and 3 in worktree form, for a take of the conflict that ends the file.
+    private let oursStage: Data?, theirsStage: Data?
 
     /// The Result of `document`'s blocks, every conflict waiting; nil unless the presentation
     /// is `.blocks`. Every segment's bytes are decoded as UTF-8, else the document is
-    /// `.notUTF8` and shows a lossy decoding; over the edit limits it is `.tooLarge`. `sides` is
-    /// what `bytes(sides:)` will be given; the Result reads nothing from it yet.
+    /// `.notUTF8` and shows a lossy decoding; over the edit limits it is `.tooLarge`. Of `sides`
+    /// it keeps ours and theirs, which decide how a take of a conflict ending the file ends.
     init?(document: ConflictDocument, sides: ConflictSides) {
         guard case .blocks(let segments) = document.presentation else { return nil }
         var size = 0, lines = 0, crlf = 0, lf = 0
@@ -96,6 +99,8 @@ struct ResolverDocument: Hashable, Sendable {
         }
         self.chunks = chunks
         self.lineEnding = crlf > lf ? "\r\n" : "\n"
+        self.oursStage = sides.ours
+        self.theirsStage = sides.theirs
         // Not UTF-8 wins over too large: its text is a lossy decoding, which `bytes` never writes.
         if !valid {
             notEditable = .notUTF8
@@ -145,11 +150,21 @@ struct ResolverDocument: Hashable, Sendable {
     /// Puts `choice`'s composition of the chunk's block in place, waiting, taken or edited
     /// alike (taking again replaces the text; undo is the history's). Nothing for common text,
     /// a merged chunk or an unknown id. Works while `notEditable` is set.
+    ///
+    /// A conflict that ends the file is composed without the line terminator merge-file gave a
+    /// side whose stage has none — GitCore's `ConflictBlock.addedFinalTerminator`, the rule
+    /// `resolve(choices:)` follows (Ruling 9) — so the Result shows the file's end exactly as it
+    /// is written, and an edit anywhere in the chunk keeps it.
     mutating func take(_ choice: BlockChoice, chunk id: Int) {
         guard let index = chunks.firstIndex(where: { $0.id == id }), !chunks[index].isMerged,
             let block = chunks[index].blocks.first
         else { return }
-        let composed = block.composed(choice)
+        var composed = block.composed(choice)
+        if index == chunks.count - 1, let side = block.lastSideWritten(choice),
+            let stage = side == .ours ? oursStage : theirsStage
+        {
+            composed.removeLast(block.addedFinalTerminator(choice, stage: stage))
+        }
         chunks[index].text = String(validating: composed, as: UTF8.self) ?? String(decoding: composed, as: UTF8.self)
         chunks[index].state = .taken(choice)
     }
@@ -192,6 +207,16 @@ struct ResolverDocument: Hashable, Sendable {
         guard range.length > 0 || !typed.isEmpty else { return }
 
         let lengths = chunks.map { $0.text.utf16.count }
+        // An end between the halves of a surrogate pair is refused, not widened: replacing there
+        // would turn the other half into U+FFFD, a byte change outside the edit. A pair never
+        // spans two chunks, each being whole text.
+        func splitsAPair(_ offset: Int) -> Bool {
+            guard let index = chunks.indices.first(where: { starts[$0] < offset && offset < starts[$0] + lengths[$0] })
+            else { return false }
+            let units = chunks[index].text.utf16
+            return UTF16.isTrailSurrogate(units[units.index(units.startIndex, offsetBy: offset - starts[index])])
+        }
+        guard !splitsAPair(range.location), !splitsAPair(end) else { return }
         let touched: [Int]
         if range.length == 0 {
             let at = range.location
@@ -245,20 +270,14 @@ struct ResolverDocument: Hashable, Sendable {
         return choices
     }
 
-    /// The bytes Resolve File writes: `resultText` as UTF-8, in worktree form. When the last
-    /// chunk is a take (not edited), the file ends as the last side written ends in its stage —
-    /// GitCore's `ConflictBlock.addedFinalTerminator`, the rule `resolve(choices:)` follows; an
-    /// edited end is written as typed. nil while a conflict is waiting, and for a `.notUTF8`
-    /// document, whose text is a lossy decoding: its block choices do the writing.
+    /// The bytes Resolve File writes: `resultText` as UTF-8, in worktree form, exactly as shown
+    /// — a take of the conflict ending the file already ends as `resolve(choices:)` would end it
+    /// (see `take`). nil while a conflict is waiting, and for a `.notUTF8` document, whose text
+    /// is a lossy decoding: its block choices do the writing. `sides` is the interface's; the
+    /// stages that decide the end were kept at init.
     func bytes(sides: ConflictSides) -> Data? {
         guard waitingCount == 0, notEditable != .notUTF8 else { return nil }
-        var bytes = Data(resultText.utf8)
-        if let last = chunks.last, case .taken(let choice) = last.state, let block = last.blocks.first,
-            let side = block.lastSideWritten(choice), let stage = side == .ours ? sides.ours : sides.theirs
-        {
-            bytes.removeLast(block.addedFinalTerminator(choice, stage: stage))
-        }
-        return bytes
+        return Data(resultText.utf8)
     }
 
     /// Marker lines at `markerSize` (`isMarker`) in text the user typed into: `.edited` chunks and edited common ones. A line equal to one of the

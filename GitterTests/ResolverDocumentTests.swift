@@ -256,6 +256,22 @@ import Testing
         #expect(tie.lineEnding == "\n")
     }
 
+    /// A range end between the halves of a surrogate pair is refused, not widened: the
+    /// document, and so every byte, stays as it was.
+    @Test func aRangeThatSplitsASurrogatePairChangesNothing() throws {
+        var document = try Self.document([Self.common("a😀b\n"), .block(Self.block1)])
+        document.take(.ours, chunk: 1)
+        let before = document
+        let bytes = try #require(document.bytes(sides: Self.endedSides))
+        for range in [NSRange(location: 2, length: 0), NSRange(location: 1, length: 1), NSRange(location: 2, length: 2)] {
+            document.replace(range, with: "x")
+            #expect(document == before, "\(range)")
+            #expect(document.bytes(sides: Self.endedSides) == bytes, "\(range)")
+        }
+        document.replace(NSRange(location: 1, length: 2), with: "x")
+        #expect(document.resultText == "axb\no1\n")
+    }
+
     @Test func aRangeOutsideTheTextChangesNothing() throws {
         var document = try Self.document(Self.three)
         let before = document
@@ -438,17 +454,34 @@ import Testing
     static let endBlock = block("last OURS\n", "last\n", "last THEIRS\n")
     static let endsInABlock: [ConflictSegment] = [common("a\n"), .block(endBlock)]
 
+    /// A conflict that ends the file is taken without the terminator merge-file added, so the
+    /// Result shows exactly what is written, and an edit elsewhere in it keeps that end (Ruling 6).
     @Test func theFinalNewlineRuleMatchesGitCore() throws {
         var document = try Self.document(Self.endsInABlock, sides: Self.unendedSides)
+        func expectWritten(_ text: String, sourceLocation: SourceLocation = #_sourceLocation) {
+            #expect(document.resultText == text, sourceLocation: sourceLocation)
+            #expect(document.bytes(sides: Self.unendedSides) == Data(text.utf8), sourceLocation: sourceLocation)
+        }
         document.take(.ours, chunk: 1)
-        #expect(document.bytes(sides: Self.unendedSides) == Data("a\nlast OURS".utf8))
+        expectWritten("a\nlast OURS")
         document.take(.theirsThenOurs, chunk: 1)
-        #expect(document.bytes(sides: Self.unendedSides) == Data("a\nlast THEIRS\nlast OURS".utf8))
+        expectWritten("a\nlast THEIRS\nlast OURS")
         document.take(.theirs, chunk: 1)
-        #expect(document.bytes(sides: Self.unendedSides) == Data("a\nlast THEIRS\n".utf8))
+        expectWritten("a\nlast THEIRS\n")
         document.take(.ours, chunk: 1)
         document.replace(Self.range(of: "OURS", in: document), with: "MINE")
-        #expect(document.bytes(sides: Self.unendedSides) == Data("a\nlast MINE\n".utf8))
+        #expect(try Self.chunk(1, document).state == .edited)
+        expectWritten("a\nlast MINE")
+        document.replace(NSRange(location: document.resultText.utf16.count, length: 0), with: "\n")
+        expectWritten("a\nlast MINE\n")
+
+        // takeRest too; a block that does not end the file keeps every byte.
+        var rest = try Self.document(Self.endsInABlock, sides: Self.unendedSides)
+        rest.takeRest(.ours)
+        #expect(rest.resultText == "a\nlast OURS")
+        var inside = try Self.document(Self.endsInABlock + [Self.common("z")], sides: Self.unendedSides)
+        inside.take(.ours, chunk: 1)
+        #expect(inside.resultText == "a\nlast OURS\nz")
     }
 
     /// Every take, LF and CRLF, with neither stage ending in a newline: the bytes are GitCore's
@@ -467,6 +500,7 @@ import Testing
         #expect(dropped == eol.utf8.count)
         expected.removeLast(dropped)
         #expect(document.bytes(sides: sides) == expected)
+        #expect(Data(document.resultText.utf8) == expected)
     }
 
     // MARK: - Leftover markers
