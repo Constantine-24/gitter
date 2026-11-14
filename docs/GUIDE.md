@@ -284,8 +284,8 @@ four headers on it:
 - `Accept-Language: en`
 
 macOS adds its standard connection headers (`Host`, `Accept-Encoding`, `Connection`). No cookies,
-credentials, cache or keychain are used. The only thing about you in the request is the version you
-run, in the `User-Agent`; your repositories, paths and settings are not sent. Untick **Gitter ›
+credentials, cache or keychain are used. GitHub sees your IP address, as any server does, and the version you
+run in the `User-Agent`; your repositories, paths and settings are not sent. Untick **Gitter ›
 Check for Updates Automatically** to stop it. Every other network call is your own `git`, below.
 
 ### Credentials: whatever git already has

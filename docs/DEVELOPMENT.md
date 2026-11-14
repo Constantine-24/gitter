@@ -65,8 +65,8 @@ an app that carries `get-task-allow`. `bash scripts/package-selftest.sh` pins th
 clean tree and a `--sign` with a value get past them to the build.
 **A release** is a full GitHub release, not a pre-release or a draft, tagged `vX.Y.Z` to match
 `MARKETING_VERSION` in `project.yml`, with the notarized DMG attached as an asset. The update check
-asks GitHub for the latest release: a pre-release or a draft is never found, a tag that is not a
-version is skipped, and a release with no `.dmg` asset sends **Download** to the release page instead
+asks GitHub for the latest release: a pre-release or a draft is never found, a latest release whose tag is not
+a version is never offered (a manual check says it could not read the answer), and a release with no `.dmg` asset sends **Download** to the release page instead
 of the DMG. Gitter 0.2.0 has no checker, so its users update by hand once.
 [`docs/INSTALL.md`](INSTALL.md) is the whole path: download, the Command Line Tools, updating, keeping one copy
 in `/Applications`, the log, and building your own DMG.

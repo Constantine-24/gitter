@@ -51,7 +51,7 @@ The [user guide](docs/GUIDE.md) describes every feature in detail, and the [webs
   It is checked again just before git runs, and the action is refused if anything changed.
 - Every git call Gitter makes is written to `~/Library/Logs/Gitter/gitter.log`, with credentials
   removed from URLs. The log never leaves your Mac.
-- Gitter's only connection of its own is a daily check of GitHub for a newer release. It sends the running version, and you can turn it off in the Gitter menu.
+- Gitter's only connection of its own is a daily check of GitHub for a newer release. It tells GitHub your IP address and the version you run, and you can turn it off in the Gitter menu.
 
 The [Safety section of the guide](docs/GUIDE.md#safety) gives the full rules for credentials,
 fetch and push, stash and discard, conflicts, history actions and remotes.
