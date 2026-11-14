@@ -37,7 +37,10 @@ struct LayoutRow: Hashable, Sendable {
 /// - **Where a chunk sits in a stage.** A conflict's side is in the stage line for line, so each
 ///   block's side is found there in order, as an exact match of lines; among several places the
 ///   one whose neighbouring lines match the common text around the block (`commonOriginal`, git's,
-///   never the typed text) wins, then the one nearest the common text's length. Common text
+///   never the typed text) wins, then the one nearest the common text's length. Since the parse's
+///   common text and blocks alternate, the chunk ids tell each segment's kind, which places a
+///   merged chunk's blocks and, when it took in one stretch of common text, gives that text as
+///   their neighbour (`Column.Segments`). Common text
 ///   takes the stage lines between its blocks; a merged chunk takes the gap between its
 ///   neighbours, so the chunks tile each stage.
 /// - **Side tints.** A side line that differs from the base gets its side's tint and word marks
@@ -362,14 +365,15 @@ enum ResolverLayout {
             let keys = lines.map(\.key)
 
             var blocks: [Located] = []
+            var contexts = Context.all(chunks).makeIterator()
             for (index, chunk) in chunks.enumerated() {
-                for (position, block) in chunk.blocks.enumerated() {
+                for block in chunk.blocks {
+                    let context = contexts.next() ?? (.unknown, .unknown)
                     blocks.append(
                         Located(
                             chunk: index, lines: ResolverLayout.lines(of: sideOf(block)).map(\.key),
-                            base: block.base.map { ResolverLayout.lines(of: $0) },
-                            before: position == 0 ? Context.before(chunks, index) : .unknown,
-                            after: position == chunk.blocks.count - 1 ? Context.after(chunks, index) : .unknown))
+                            base: block.base.map { ResolverLayout.lines(of: $0) }, before: context.before,
+                            after: context.after))
                 }
             }
             let starts = Self.locate(blocks, in: keys)
@@ -441,7 +445,7 @@ enum ResolverLayout {
 
         /// What is known to sit next to a block in the stage.
         enum Context {
-            /// Nothing known (a merged chunk's edges).
+            /// Nothing known.
             case unknown
             /// Right at the previous block's end, or at the file's start.
             case adjacent
@@ -450,19 +454,104 @@ enum ResolverLayout {
             /// Git's common text.
             case common([[UInt8]])
 
-            static func before(_ chunks: [ResolverChunk], _ index: Int) -> Context {
-                guard !chunks[index].isMerged else { return .unknown }
-                guard index > 0 else { return .adjacent }
-                let previous = chunks[index - 1]
-                if previous.blocks.isEmpty { return .common(ResolverLayout.lines(of: previous.commonOriginal ?? "").map(\.key)) }
-                return previous.isMerged ? .unknown : .adjacent
+            /// Each block's neighbours, for every block in document order. Through `Segments`
+            /// when the chunk ids allow it, which also sees inside merged chunks; else from the
+            /// neighbouring chunks alone.
+            static func all(_ chunks: [ResolverChunk]) -> [(before: Context, after: Context)] {
+                if let segments = Segments(chunks) {
+                    return chunks.indices.flatMap { index in segments.blockSegments(of: index).map(segments.context) }
+                }
+                return chunks.indices.flatMap { index in
+                    let count = chunks[index].blocks.count
+                    return (0..<count).map { position in
+                        (
+                            before: position == 0 ? before(chunks, index) : .unknown,
+                            after: position == count - 1 ? after(chunks, index) : .unknown
+                        )
+                    }
+                }
             }
 
-            static func after(_ chunks: [ResolverChunk], _ index: Int) -> Context {
-                guard !chunks[index].isMerged else { return .unknown }
-                guard index < chunks.count - 1 else { return .end }
+            /// Next to common text the chunk's edge is a block, merged or not (the parse never
+            /// writes two common segments in a row).
+            private static func before(_ chunks: [ResolverChunk], _ index: Int) -> Context {
+                let merged = chunks[index].isMerged
+                guard index > 0 else { return merged ? .unknown : .adjacent }
+                let previous = chunks[index - 1]
+                if previous.blocks.isEmpty { return .common(ResolverLayout.lines(of: previous.commonOriginal ?? "").map(\.key)) }
+                return merged || previous.isMerged ? .unknown : .adjacent
+            }
+
+            private static func after(_ chunks: [ResolverChunk], _ index: Int) -> Context {
+                guard index < chunks.count - 1 else { return chunks[index].isMerged ? .unknown : .end }
                 let next = chunks[index + 1]
                 return next.blocks.isEmpty ? .common(ResolverLayout.lines(of: next.commonOriginal ?? "").map(\.key)) : .unknown
+            }
+        }
+
+        /// The conflict's segments as the parse wrote them, recovered from the chunk ids (a chunk's
+        /// id is its first segment's index): common text and blocks alternate, so one chunk that
+        /// is not merged gives every segment's kind. That places each block of a merged chunk at
+        /// its segment, and gives a merged chunk's common text when it held one stretch of it.
+        /// nil when no chunk is unmerged, or when the ids do not alternate as that predicts.
+        struct Segments {
+            let chunks: [ResolverChunk]
+            let reference: (id: Int, isBlock: Bool)
+
+            init?(_ chunks: [ResolverChunk]) {
+                guard let plain = chunks.first(where: { !$0.isMerged }) else { return nil }
+                self.chunks = chunks
+                reference = (plain.id, !plain.blocks.isEmpty)
+                for index in chunks.indices {
+                    let chunk = chunks[index]
+                    if !chunk.isMerged {
+                        guard isBlock(chunk.id) == !chunk.blocks.isEmpty else { return nil }
+                    } else if let ids = ids(of: index) {
+                        guard ids.count(where: isBlock) == chunk.blocks.count else { return nil }
+                    }
+                }
+            }
+
+            func isBlock(_ segment: Int) -> Bool { ((segment - reference.id) % 2 == 0) == reference.isBlock }
+
+            /// The segments chunk `index` covers; nil for a merged last chunk, whose count is not
+            /// known (it may or may not end with common text).
+            func ids(of index: Int) -> Range<Int>? {
+                if index + 1 < chunks.count { return chunks[index].id..<chunks[index + 1].id }
+                return chunks[index].isMerged ? nil : chunks[index].id..<(chunks[index].id + 1)
+            }
+
+            func blockSegments(of index: Int) -> [Int] {
+                var segments: [Int] = []
+                var segment = chunks[index].id
+                while segments.count < chunks[index].blocks.count {
+                    if isBlock(segment) { segments.append(segment) }
+                    segment += 1
+                }
+                return segments
+            }
+
+            /// Git's text of a common segment, when its chunk holds no other common segment.
+            func commonText(_ segment: Int) -> [[UInt8]]? {
+                guard !isBlock(segment), let index = chunks.lastIndex(where: { $0.id <= segment }),
+                    let ids = ids(of: index), ids.contains(segment),
+                    !chunks[index].isMerged || ids.count(where: { !isBlock($0) }) == 1
+                else { return nil }
+                return ResolverLayout.lines(of: chunks[index].commonOriginal ?? "").map(\.key)
+            }
+
+            func context(_ segment: Int) -> (before: Context, after: Context) {
+                let before: Context =
+                    segment == 0 || isBlock(segment - 1) ? .adjacent : commonText(segment - 1).map(Context.common) ?? .unknown
+                let after: Context
+                if let total = ids(of: chunks.count - 1)?.upperBound, segment == total - 1 {
+                    after = .end
+                } else if isBlock(segment + 1) {
+                    after = .unknown
+                } else {
+                    after = commonText(segment + 1).map(Context.common) ?? .unknown
+                }
+                return (before, after)
             }
         }
 

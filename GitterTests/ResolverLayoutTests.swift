@@ -471,6 +471,65 @@ import Testing
         #expect(rows.map(\.theirs.lineNumber).compactMap { $0 } == Array(1...30))
     }
 
+    /// The repeated-"}" fixture with conflict 1 taken Theirs: "a\n}\nX2\n}\nB\n".
+    static let repeatedSides = sides(ours: "a\n}\n}\nb\n", base: "a\n}\nx\n}\nb\n", theirs: "a\n}\nX2\n}\nB\n")
+    static func repeatedTakenTheirs() throws -> ResolverDocument {
+        var document = try document(
+            [common("a\n}\n"), block("", "x\n", "X2\n"), common("}\nB\n")], sides: repeatedSides)
+        document.take(.theirs, chunk: 1)
+        return document
+    }
+
+    @Test func aMergedChunkAfterCommonTextIsPlacedByThatText() throws {
+        // An edit from conflict 1 into the common text below merges chunks 1 and 2. The empty
+        // ours side could sit before either "}": chunk 0's text says which.
+        var document = try Self.repeatedTakenTheirs()
+        document.replace(NSRange(location: 5, length: 3), with: "")
+        #expect(document.chunks.map(\.id) == [0, 1])
+        let rows = ResolverLayout.rows(document, sides: Self.repeatedSides, showBase: false)
+        let chunk0 = rows.filter { $0.chunk == 0 }
+        #expect(chunk0.map(\.ours.lineNumber) == [1, 2])
+        #expect(chunk0.map(\.result.tint) == [.none, .none] && chunk0.map(\.badge) == [nil, nil])
+        let merged = rows.filter { $0.chunk == 1 }
+        #expect(merged.map(\.ours.lineNumber) == [3, 4, nil])
+        #expect(merged.map(\.theirs.lineNumber) == [3, 4, 5])
+    }
+
+    @Test func aMergedChunkBeforeCommonTextKeepsItsOwnCommonLines() throws {
+        // An edit from chunk 0 into conflict 1 merges them; the common text it took in places
+        // the empty ours side after its own "}".
+        var document = try Self.repeatedTakenTheirs()
+        document.replace(NSRange(location: 2, length: 3), with: "")
+        #expect(document.chunks.map(\.id) == [0, 2])
+        let rows = ResolverLayout.rows(document, sides: Self.repeatedSides, showBase: false)
+        #expect(rows.filter { $0.chunk == 0 }.map(\.ours.lineNumber) == [1, 2, nil])
+        let chunk2 = rows.filter { $0.chunk == 2 }
+        #expect(chunk2.map(\.ours.lineNumber) == [3, 4])
+        #expect(chunk2.map(\.result.tint) == [.none, .fromTheirs])
+        #expect(chunk2.map(\.badge) == [nil, .fromTheirs])
+    }
+
+    @Test func aMergedChunksBaseStripJoinsItsBlocksBases() throws {
+        let sides = Self.sides(ours: "top\no1\nmid\no2\nend\n", base: "top\nb1\nmid\nb2\nend\n", theirs: "top\nt1\nmid\nt2\nend\n")
+        var document = try Self.document(
+            [
+                Self.common("top\n"), Self.block("o1\n", "b1\n", "t1\n"), Self.common("mid\n"),
+                Self.block("o2\n", "b2\n", "t2\n"), Self.common("end\n"),
+            ], sides: sides)
+        document.take(.ours, chunk: 1)
+        document.take(.ours, chunk: 3)
+        let range = (document.resultText as NSString).range(of: "o1\nmid\no2")
+        document.replace(range, with: "one")
+        #expect(document.chunks.map(\.id) == [0, 1, 4])
+        #expect(ResolverLayout.baseStrip(document, chunk: 1) == ["b1", "b2"])
+        let rows = ResolverLayout.rows(document, sides: sides, showBase: true)
+        let merged = rows.filter { $0.chunk == 1 }
+        #expect(merged.map(\.isBaseStrip) == [true, true, false, false, false])
+        #expect(merged.map(\.result.text) == ["b1", "b2", "one", nil, nil])
+        #expect(merged.map(\.ours.lineNumber) == [nil, nil, 2, 3, 4])
+        #expect(merged.map(\.badge) == [nil, nil, .editedByYou, nil, nil])
+    }
+
     @Test func crlfLinesHaveNoTerminatorInTheirText() throws {
         let sides = Self.sides(ours: "a\r\nO\r\nz\r\n", base: "a\r\nB\r\nz\r\n", theirs: "a\r\nT\r\nz\r\n")
         var document = try Self.document(
