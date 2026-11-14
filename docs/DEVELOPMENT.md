@@ -125,7 +125,9 @@ when the worktree state's read starts and is written (`WorktreeReadSchedule`), a
 switch refused before anything runs, the no-URL gates, Copy URL's redaction, the banners' height, the commit list's set selection, the deleted tags' receipts in the store, the pull-request link extraction and
 the notices' lifetime, which files a discard is offered for and when its sheet reads git again,
 which refusals Stash and Continue answers, when the toolbar reveals a lane's activity, the
-resolver's choices and previews (the same composition GitCore writes), and every state of the
+resolver's choices and previews (the same composition GitCore writes), the resolver's Result
+(`ResolverDocument`: chunks, takes, spanning edits, typed line endings, the bytes written with
+GitCore's final-newline rule, leftover markers; `ResolverHistory`'s undo steps), and every state of the
 operation bar and the composer's prefill, and the launch guard's decisions (`DebugLaunchGuard`),
 and the diagnostics log: its lines (`LogLine`), the file's order, rotation, recreation and stop
 (`LogFileWriter`, in a temporary folder only), the events a store and the window registry write, the
@@ -505,6 +507,8 @@ Gitter/                   macOS app (SwiftUI)
   StashWording.swift         Every sentence about a stash and Stash and Continue
   DiscardWording.swift       Every sentence a discard, its sheet and its Undo show
   ConflictWording.swift      Every sentence of the resolver and its sheets; side labels
+  Resolver/ResolverDocument.swift  The resolver's Result, pure: chunks, takes, typing,
+                              the bytes written, leftover markers, undo (ResolverHistory)
   ContinueWording.swift      Every sentence of the operation bar, Continue, Skip and the
                               halted and stale ranges
   HistoryRows.swift          The commit table's rows, built once per snapshot, with the end
@@ -563,7 +567,8 @@ Gitter/                   macOS app (SwiftUI)
 GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app): wording,
                           notices and links, the discard (and its sheet's stale check) and
                           Stash and Continue decisions, the toolbar's activity reveal, the
-                          resolver's choices, the operation bar's states and the prefill,
+                          resolver's choices and its Result (`ResolverDocument`), the
+                          operation bar's states and the prefill,
                           the history and tag wording, the commit set and the deleted tags'
                           receipts, remotes housekeeping's wording and menu reasons, the
                           no-URL gates, Copy URL's redaction, the banners' height, the

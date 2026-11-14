@@ -19,6 +19,52 @@ import Testing
         #expect(block.composed(.theirsThenOurs) == Data("t\r\no\n".utf8))
     }
 
+    /// The final-newline rule's two halves, as `resolve(choices:)` and the app's Result both use
+    /// them: which side's bytes end a choice, and how many of them merge-file added, told from
+    /// that side's stage. `FinalNewlineTests` checks the same rule against real merges.
+    @Test func theLastSideWrittenSkipsAnEmptySide() {
+        let block = ConflictBlock(ours: Data("o\n".utf8), base: nil, theirs: Data("t\n".utf8))
+        #expect(block.lastSideWritten(.ours) == .ours)
+        #expect(block.lastSideWritten(.theirs) == .theirs)
+        #expect(block.lastSideWritten(.oursThenTheirs) == .theirs)
+        #expect(block.lastSideWritten(.theirsThenOurs) == .ours)
+        let deleted = ConflictBlock(ours: Data("o\n".utf8), base: nil, theirs: Data())
+        #expect(deleted.lastSideWritten(.oursThenTheirs) == .ours)
+        #expect(deleted.lastSideWritten(.theirs) == nil)
+        #expect(ConflictBlock(ours: Data(), base: nil, theirs: Data()).lastSideWritten(.theirsThenOurs) == nil)
+    }
+
+    @Test func theAddedTerminatorIsToldFromTheStage() {
+        let lf = ConflictBlock(ours: Data("o\n".utf8), base: nil, theirs: Data("t\n".utf8))
+        #expect(lf.addedFinalTerminator(.ours, stage: Data("x\no".utf8)) == 1)
+        #expect(lf.addedFinalTerminator(.ours, stage: Data("x\no\n".utf8)) == 0)
+        #expect(lf.addedFinalTerminator(.theirsThenOurs, stage: Data("o".utf8)) == 1)
+        #expect(lf.addedFinalTerminator(.oursThenTheirs, stage: Data("x\nt".utf8)) == 1)
+        #expect(lf.addedFinalTerminator(.ours, stage: Data("unrelated".utf8)) == 0)
+        let crlf = ConflictBlock(ours: Data("o\r\n".utf8), base: nil, theirs: Data())
+        #expect(crlf.addedFinalTerminator(.ours, stage: Data("x\r\no".utf8)) == 2)
+        // A last line ending in a lone `\r`: merge-file added only the `\n` (measured).
+        #expect(crlf.addedFinalTerminator(.ours, stage: Data("x\no\r".utf8)) == 1)
+        #expect(crlf.addedFinalTerminator(.theirs, stage: Data("x".utf8)) == 0)
+    }
+
+    /// The parser's marker rule, public for the app's leftover-marker count.
+    @Test func aMarkerLineIsExactlyTheSizeThenALabelOrTheEnd() {
+        func isMarker(_ line: String, _ size: Int = 7) -> Bool {
+            ConflictSegment.isMarkerLine(Data(line.utf8), markerSize: size)
+        }
+        #expect(isMarker("<<<<<<< ours\n"))
+        #expect(isMarker("|||||||"))
+        #expect(isMarker("=======\r\n"))
+        #expect(isMarker(">>>>>>>\r"))
+        #expect(!isMarker("======= x"))
+        #expect(!isMarker("<<<<<<<< ours"))
+        #expect(!isMarker("<<<<<<<x"))
+        #expect(!isMarker("<<<<<<< x", 11))
+        #expect(isMarker("<<<<<<<<<<< x", 11))
+        #expect(!isMarker("text"))
+    }
+
     @Test func aFileComposesOnlyWithOneChoicePerBlock() {
         let segments: [ConflictSegment] = [
             .common(Data("a\n".utf8)),

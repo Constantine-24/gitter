@@ -36,10 +36,10 @@ extension CLIGitBackend {
         // a block that ends the file, a stage whose last line has none looks as if it had one.
         // The file then ends as the last side written ends in its stage.
         if case .block(let block)? = segments.last, let choice = choices.last,
-            let last = Self.lastSideWritten(block, choice), !last.bytes.isEmpty
+            let last = block.lastSideWritten(choice)
         {
-            let stage = try await stageText(last.stage, of: path, at: root)
-            bytes.removeLast(Self.addedTerminator(side: last.bytes, stage: stage))
+            let stage = try await stageText(last == .ours ? 2 : 3, of: path, at: root)
+            bytes.removeLast(block.addedFinalTerminator(choice, stage: stage))
         }
         try await writeAndStage(bytes, snapshot, at: root)
         return ConflictReceipt(path: path, recorded: recorded)
@@ -310,36 +310,6 @@ extension CLIGitBackend {
         case .ours: _ = try await run(["restore", "--no-recurse-submodules", "--ours", "--", literalPathspec(path)], cwd: root)
         case .theirs: _ = try await run(["restore", "--no-recurse-submodules", "--theirs", "--", literalPathspec(path)], cwd: root)
         }
-    }
-
-    /// The stage (2 or 3) and bytes of the side `choice` writes last, skipping an empty one;
-    /// nil when neither side has bytes.
-    static func lastSideWritten(_ block: ConflictBlock, _ choice: BlockChoice) -> (stage: Int, bytes: Data)? {
-        let ours = (stage: 2, bytes: block.ours), theirs = (stage: 3, bytes: block.theirs)
-        let order: [(stage: Int, bytes: Data)]
-        switch choice {
-        case .ours: order = [ours]
-        case .theirs: order = [theirs]
-        case .oursThenTheirs: order = [theirs, ours]
-        case .theirsThenOurs: order = [ours, theirs]
-        }
-        return order.first { !$0.bytes.isEmpty }
-    }
-
-    /// How many bytes at the end of `side` — a block side that ends the file — merge-file
-    /// added, told from the stage it came from (worktree form): none when the stage ends in
-    /// `\n`; else 1 when the stage ends with `side` less its last `\n`, 2 when it ends with
-    /// `side` less a final `\r\n`. merge-file adds `\r\n` only in a file whose lines are CRLF, and
-    /// a lone `\n` otherwise — after a last line ending in `\r` too (fix round 2, measured) — so
-    /// the stage decides, never the bytes alone. Anything else: none.
-    static func addedTerminator(side: Data, stage: Data) -> Int {
-        func stageEnds(with tail: Data) -> Bool {
-            stage.count >= tail.count && stage.suffix(tail.count).elementsEqual(tail)
-        }
-        guard stage.last != UInt8(ascii: "\n"), side.last == UInt8(ascii: "\n") else { return 0 }
-        if stageEnds(with: side.dropLast(1)) { return 1 }
-        if side.dropLast().last == UInt8(ascii: "\r"), stageEnds(with: side.dropLast(2)) { return 2 }
-        return 0
     }
 
     /// Writes `bytes` over the regular file at `path` **in place** — truncate, then write — so
