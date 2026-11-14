@@ -159,19 +159,24 @@ import Testing
         #expect(panel.isVisible)
     }
 
+    /// The ordering call is recorded by the panel itself (`UpdatePanel`), so the test fails if the
+    /// automatic branch makes the panel key, whether or not the test host is active.
     @Test func anAutomaticResultDoesNotTakeKey() throws {
         let rig = Rig()
         defer { rig.tearDown() }
         rig.controller.show(Self.release("v0.3.0"), running: Self.running, manual: false)
         let panel = try #require(rig.controller.panel)
+        #expect(panel.orderingCalls == [.orderFront])
+        // A second automatic result (the open window updated) still only orders it to the front.
+        rig.controller.show(Self.release("v0.4.0"), running: Self.running, manual: false)
+        #expect(panel.orderingCalls == [.orderFront, .orderFront])
+        // Secondary only: an inactive test host has no key window either way.
         #expect(panel.isVisible)
         #expect(panel.isKeyWindow == false)
-        #expect(NSApp.keyWindow !== panel)
-        #expect(rig.controller.lastPresentation == .front)
 
-        // The control: a manual result is made key (whether the test host is active or not).
-        rig.controller.show(Self.release("v0.3.0"), running: Self.running, manual: true)
-        #expect(rig.controller.lastPresentation == .key)
+        // The control: a manual result makes the panel key, and the panel records that call.
+        rig.controller.show(Self.release("v0.4.0"), running: Self.running, manual: true)
+        #expect(panel.orderingCalls == [.orderFront, .orderFront, .makeKeyAndOrderFront])
     }
 
     @Test func theScriptedOpenerOnlyLogs() {

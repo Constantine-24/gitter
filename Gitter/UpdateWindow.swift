@@ -45,20 +45,16 @@ enum UpdateButton: String, CaseIterable {
 ///   it otherwise and tries it again on a timer (`UpdateChecker`); this controller also asks for it
 ///   at once when the app becomes active or a sheet ends.
 @MainActor final class UpdatePanelController: NSObject, UpdatePresenting, NSWindowDelegate {
-    /// Which ordering call the last `show` made: the tests' control for "does not take key".
-    enum Presentation: Equatable { case front, key }
-
     private let checker: @MainActor () -> UpdateChecker?
     private let opener: UpdateOpener
     private let log: EventLog
 
     /// Built at the first `show`, kept after a close (internal for tests and the harness).
-    private(set) var panel: NSPanel?
+    private(set) var panel: UpdatePanel?
     private var hosting: NSHostingView<UpdateView>?
     private var shown: (release: LatestRelease, running: ReleaseVersion)?
     /// The button a close came from, for its log line; a close with none is the close button's.
     private var closingBy: UpdateButton?
-    private(set) var lastPresentation: Presentation?
 
     /// `checker` is read only when a button or an observer needs it — never here, where
     /// `AppModel.updates` may still be being built.
@@ -88,7 +84,7 @@ enum UpdateButton: String, CaseIterable {
     func show(_ release: LatestRelease, running: ReleaseVersion, manual: Bool) {
         shown = (release, running)
         let view = UpdateView(release: release, running: running) { [weak self] in self?.press($0) }
-        let panel: NSPanel
+        let panel: UpdatePanel
         if let existing = self.panel, let hosting {
             hosting.rootView = view
             panel = existing
@@ -98,11 +94,9 @@ enum UpdateButton: String, CaseIterable {
         if let hosting { panel.setContentSize(hosting.fittingSize) }
         if !manual {
             panel.orderFront(nil)
-            lastPresentation = .front
         } else {
             NSApp.activate()
             panel.makeKeyAndOrderFront(nil)
-            lastPresentation = .key
         }
     }
 
@@ -141,7 +135,7 @@ enum UpdateButton: String, CaseIterable {
         }
     }
 
-    private func close(_ panel: NSPanel, by button: UpdateButton) {
+    private func close(_ panel: UpdatePanel, by button: UpdateButton) {
         closingBy = button
         panel.close()
     }
@@ -169,8 +163,8 @@ enum UpdateButton: String, CaseIterable {
 
     // MARK: - The panel
 
-    private func makePanel(_ view: UpdateView) -> NSPanel {
-        let panel = NSPanel(
+    private func makePanel(_ view: UpdateView) -> UpdatePanel {
+        let panel = UpdatePanel(
             contentRect: NSRect(x: 0, y: 0, width: UpdateView.width, height: 300), styleMask: [.titled, .closable],
             backing: .buffered, defer: true)
         panel.title = UpdateWording.windowTitle
@@ -189,6 +183,29 @@ enum UpdateButton: String, CaseIterable {
         self.panel = panel
         self.hosting = hosting
         return panel
+    }
+}
+
+/// The update window's `NSPanel`, which records each ordering call made on it — `orderFront` or
+/// `makeKeyAndOrderFront` — so a test can tell an automatic result's ordering from a manual one's
+/// by the call itself, whether the test host is active or not.
+final class UpdatePanel: NSPanel {
+    enum Ordering: Equatable { case orderFront, makeKeyAndOrderFront }
+
+    private(set) var orderingCalls: [Ordering] = []
+    /// While `makeKeyAndOrderFront` runs: an `orderFront` AppKit makes inside it is not a call of its own.
+    private var inMakeKey = false
+
+    override func orderFront(_ sender: Any?) {
+        if !inMakeKey { orderingCalls.append(.orderFront) }
+        super.orderFront(sender)
+    }
+
+    override func makeKeyAndOrderFront(_ sender: Any?) {
+        orderingCalls.append(.makeKeyAndOrderFront)
+        inMakeKey = true
+        defer { inMakeKey = false }
+        super.makeKeyAndOrderFront(sender)
     }
 }
 
