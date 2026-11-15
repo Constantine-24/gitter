@@ -433,20 +433,81 @@ import Testing
         #expect(crlf == crlfBefore)
     }
 
-    /// More than the break, or typing over it, is an ordinary edit: Ruling 11 merges as before.
-    @Test func deletingMoreThanTheBreakBeforeASlotStillMerges() throws {
-        var document = try Self.document(Self.three)
-        let slot = document.range(ofChunk: 3).location
+    /// More than the break before a waiting slot deleted, or typed over, is no spanning edit
+    /// (Ruling 50, which replaces the earlier merge here): the line ending comes back after what
+    /// is left, so the slot stays waiting and the line stays its own. Undo and redo step over it
+    /// whole.
+    @Test func deletingTheEndOfTheLineBeforeASlotKeepsTheSlotWaiting() throws {
+        let fresh = try Self.document(Self.three)
+        let slot = fresh.range(ofChunk: 3).location
+        var document = fresh
+        var history = ResolverHistory()
+        history.record(document, coalescingTypingIn: 2, at: Self.t0)
         let changed = document.replace(NSRange(location: slot - 2, length: 2), with: "")
         #expect(changed == 2)
-        #expect(document.chunks.map(\.id) == [0, 1, 2, 5, 6])
-        #expect(try Self.chunk(2, document).text == "mimid2\n")
+        #expect(document.chunks.map(\.id) == Array(0...6))
+        #expect(try Self.chunk(2, document).text == "mi\n")
+        #expect(try Self.chunk(3, document).state == .waiting)
+        #expect(document.waitingCount == 3)
         #expect(Self.everyChunkEndsAtALineEdge(document))
+        let deleted = document
+        let undone = try Self.undo(&history, document)
+        #expect(undone == fresh)
+        #expect(try Self.redo(&history, undone) == deleted)
 
         var typed = try Self.document(Self.three)
-        let at = typed.range(ofChunk: 3).location
-        #expect(typed.replace(NSRange(location: at - 1, length: 1), with: "!") == 2)
-        #expect(try Self.chunk(2, typed).text == "mid!mid2\n")
+        #expect(typed.replace(NSRange(location: slot - 1, length: 1), with: "!") == 2)
+        #expect(try Self.chunk(2, typed).text == "mid!\n")
+        #expect(try Self.chunk(3, typed).state == .waiting)
+        #expect(typed.chunks.map(\.id) == Array(0...6))
+    }
+
+    /// Replacing the whole line just above a waiting slot — a triple-click (the line with its
+    /// break) or a Shift-↓ selection, then typing — keeps the replacement on its own line and the
+    /// slot waiting (Ruling 50): the range only reaches the slot's edge.
+    @Test func replacingTheLineBeforeASlotKeepsTheSlotWaiting() throws {
+        let fresh = try Self.document(Self.two)
+        var document = fresh
+        var history = ResolverHistory()
+        history.record(document, coalescingTypingIn: 0, at: Self.t0)
+        #expect(document.replace(Self.range(of: "line\n", in: document), with: "x") == 0)
+        #expect(try Self.chunk(0, document).text == "top\nx\n")
+        #expect(try Self.chunk(1, document).state == .waiting)
+        #expect(document.chunks.map(\.id) == Array(0...4))
+        #expect(document.waitingCount == 2)
+        #expect(document.resultText == "top\nx\nmid\nend\n")
+        let replaced = document
+        let undone = try Self.undo(&history, document)
+        #expect(undone == fresh)
+        #expect(try Self.redo(&history, undone) == replaced)
+
+        // A typed line break of its own is kept as it is; CRLF files get CRLF back.
+        var ended = try Self.document(Self.two)
+        ended.replace(Self.range(of: "line\n", in: ended), with: "x\n")
+        #expect(try Self.chunk(0, ended).text == "top\nx\n")
+        var crlf = try Self.document([
+            Self.common("a\r\nb\r\n"), .block(Self.block("o\r\n", "b\r\n", "t\r\n")), Self.common("z\r\n"),
+        ])
+        crlf.replace(Self.range(of: "b\r\n", in: crlf), with: "x")
+        #expect(try Self.chunk(0, crlf).text == "a\r\nx\r\n")
+        #expect(try Self.chunk(1, crlf).state == .waiting)
+    }
+
+    /// A range that reaches past a waiting slot, into the line after it, is still a spanning
+    /// edit: the chunks merge, and undo splits them back.
+    @Test func aSelectionThroughASlotStillMerges() throws {
+        let fresh = try Self.document(Self.three)
+        var document = fresh
+        var history = ResolverHistory()
+        history.record(document, coalescingTypingIn: 2, at: Self.t0)
+        let start = Self.range(of: "mid\n", in: document).location
+        let end = Self.range(of: "mid2", in: document).location + 1
+        #expect(document.replace(NSRange(location: start, length: end - start), with: "Q") == 2)
+        #expect(document.chunks.map(\.id) == [0, 1, 2, 5, 6])
+        #expect(try Self.chunk(2, document).text == "Qid2\n")
+        #expect(try Self.chunk(2, document).state == .edited)
+        #expect(try Self.chunk(2, document).blocks == [Self.block2])
+        #expect(try Self.undo(&history, document) == fresh)
     }
 
     /// Half a CRLF is no line edge: the `\r` left behind still merges.
@@ -525,6 +586,45 @@ import Testing
         document.replace(document.range(ofChunk: 1), with: "x")
         #expect(try Self.chunk(1, document).text == "x")
         #expect(document.resultText == "a\nx")
+    }
+
+    /// Both stages end in a line terminator.
+    static let terminatedSides = ConflictSides(
+        ours: Data("a\nlast OURS\n".utf8), base: Data("a\nlast\n".utf8), theirs: Data("a\nlast THEIRS\n".utf8),
+        markerSize: 7)
+
+    /// The conflict that ends the file, when both its sides end in a line terminator: what is
+    /// typed into it, waiting or taken, keeps the file's final line ending (Ruling 52), so the
+    /// file does not lose it unseen.
+    @Test func typingIntoTheLastConflictKeepsTheFinalLineEnding() throws {
+        var slot = try Self.document(Self.endsInABlock, sides: Self.terminatedSides)
+        #expect(slot.replace(slot.range(ofChunk: 1), with: "x") == 1)
+        #expect(try Self.chunk(1, slot).text == "x\n")
+        #expect(try Self.chunk(1, slot).state == .edited)
+        #expect(slot.bytes(sides: Self.terminatedSides) == Data("a\nx\n".utf8))
+
+        // A taken one, its whole text typed over (a triple-click on its last line).
+        var taken = try Self.document(Self.endsInABlock, sides: Self.terminatedSides)
+        taken.take(.ours, chunk: 1)
+        #expect(taken.resultText == "a\nlast OURS\n")
+        taken.replace(Self.range(of: "last OURS\n", in: taken), with: "y")
+        #expect(taken.resultText == "a\ny\n")
+
+        // Removing only that final break of a taken conflict changes nothing, like Ruling 14.
+        var backspace = try Self.document(Self.endsInABlock, sides: Self.terminatedSides)
+        backspace.take(.theirs, chunk: 1)
+        let before = backspace
+        let end = backspace.resultText.utf16.count
+        #expect(backspace.replace(NSRange(location: end - 1, length: 1), with: "") == nil)
+        #expect(backspace == before)
+
+        // CRLF files get CRLF.
+        let crlfSides = ConflictSides(
+            ours: Data("a\r\nO\r\n".utf8), base: Data("a\r\nB\r\n".utf8), theirs: Data("a\r\nT\r\n".utf8), markerSize: 7)
+        var crlf = try Self.document(
+            [Self.common("a\r\n"), .block(Self.block("O\r\n", "B\r\n", "T\r\n"))], sides: crlfSides)
+        crlf.replace(crlf.range(ofChunk: 1), with: "x")
+        #expect(crlf.resultText == "a\r\nx\r\n")
     }
 
     @Test func replaceAndTakeSayWhetherAnythingChanged() throws {

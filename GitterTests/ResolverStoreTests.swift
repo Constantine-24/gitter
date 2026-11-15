@@ -405,6 +405,47 @@ import Testing
         #expect(store.resolvedThisSession == ["a.txt"])
     }
 
+    /// A merge stopped with one conflict that ends `e.txt`: both sides appended a line.
+    /// `terminated`: both end in a newline; else ours does not.
+    static func endingMerge(terminated: Bool) throws -> ScratchRepo {
+        let repo = try ScratchRepo()
+        try repo.write("e.txt", "top\nx\n")
+        try repo.git("add", ".")
+        try repo.git("commit", "-m", "base")
+        try repo.git("switch", "-c", "topic")
+        try repo.write("e.txt", "top\nx\ntopic\n")
+        try repo.git("commit", "-qam", "topic")
+        try repo.git("switch", "-q", "main")
+        try repo.write("e.txt", terminated ? "top\nx\nmain\n" : "top\nx\nmain")
+        try repo.git("commit", "-qam", "main")
+        try repo.gitExpectingFailure("merge", "topic")
+        return repo
+    }
+
+    /// Typing into the slot that ends the file, through the store's text write: the file keeps
+    /// its final newline when both sides end in one (Ruling 52), and does not gain one when a
+    /// side lacks it.
+    @Test(.timeLimit(.minutes(10)), arguments: [true, false])
+    func typingIntoTheLastSlotWritesTheFinalNewlineBothSidesHave(terminated: Bool) async throws {
+        let repo = try Self.endingMerge(terminated: terminated)
+        defer { repo.remove() }
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        let draft = try #require(await Self.openDraft(store))
+        let slot = try #require(draft.document.chunks.last)
+        #expect(slot.state == .waiting)
+        store.resolverReplace(draft.document.range(ofChunk: slot.id), with: "mine", intoEmptyChunk: true)
+        store.resolveFocusedFile()
+        await waitUntilIdle(store)
+
+        let written = terminated ? "top\nx\nmine\n" : "top\nx\nmine"
+        #expect(backend.calls.filter { $0 == .resolveText }.count == 1)
+        #expect(try Self.file(repo, "e.txt") == Data(written.utf8))
+        #expect(try repo.git("show", ":0:e.txt") == written)
+        #expect(try !Self.isUnmerged(repo, "e.txt"))
+    }
+
     @Test(.timeLimit(.minutes(10))) func markersAskBeforeAnyWrite() async throws {
         let repo = try Self.stoppedMerge()
         defer { repo.remove() }

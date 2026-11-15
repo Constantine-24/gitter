@@ -63,6 +63,9 @@ struct ResolverDocument: Hashable, Sendable {
     let lineEnding: String
     /// Stages 2 and 3 in worktree form, for a take of the conflict that ends the file.
     private let oursStage: Data?, theirsStage: Data?
+    /// Both stages end in a line terminator, so the file does on either side: typing into the
+    /// conflict that ends it keeps that ending (Ruling 52).
+    private let stagesEndALine: Bool
 
     /// The Result of `document`'s blocks, every conflict waiting; nil unless the presentation
     /// is `.blocks`. Every segment's bytes are decoded as UTF-8, else the document is
@@ -107,6 +110,7 @@ struct ResolverDocument: Hashable, Sendable {
         self.lineEnding = crlf > lf ? "\r\n" : "\n"
         self.oursStage = sides.ours
         self.theirsStage = sides.theirs
+        self.stagesEndALine = sides.ours?.last == UInt8(ascii: "\n") && sides.theirs?.last == UInt8(ascii: "\n")
         // Not UTF-8 wins over too large: its text is a lossy decoding, which `bytes` never writes.
         if !valid {
             notEditable = .notUTF8
@@ -213,13 +217,21 @@ struct ResolverDocument: Hashable, Sendable {
     /// it changed ending inside a line — a backspace at the start of the line after a taken
     /// conflict — merges that chunk with the next, by the same rule, until it ends at a line
     /// edge or is the last; an empty chunk in between (a waiting slot) is merged in too. Undo
-    /// splits it back, like any edit. Two exceptions keep a conflict from turning "edited" with
+    /// splits it back, like any edit. Three exceptions keep a conflict from turning "edited" with
     /// neither side chosen:
     /// - removing only the line break just before a waiting slot (a backspace with the caret in
     ///   the slot) is refused, and nothing changes (Ruling 14);
     /// - text typed into an empty conflict that is not the last chunk — a waiting slot, or a take
     ///   of an empty side — gets `lineEnding` after it when it does not end in a line break
-    ///   (Rulings 12 and 15).
+    ///   (Rulings 12 and 15);
+    /// - a range that ends exactly at a waiting slot, replacing text that ended a line, gets
+    ///   `lineEnding` back when what is left ends inside a line — a triple-click on the line above
+    ///   the slot, then typing; a deletion from inside that line — so the slot stays waiting and
+    ///   the line stays its own (Ruling 50). A range that goes on past the slot still merges.
+    ///
+    /// And one keeps the file's end: an edit of the conflict that ends the file, waiting or taken,
+    /// that leaves it ending inside a line gets `lineEnding` when both stages end in a terminator
+    /// (Ruling 52); removing only that final break is refused, as above.
     ///
     /// Returns the id of the chunk the edit ended in, or nil when nothing was changed.
     @discardableResult
@@ -279,7 +291,30 @@ struct ResolverDocument: Hashable, Sendable {
         {
             return nil
         }
-        let text = joined.replacingCharacters(in: local, with: typed)
+        var text = joined.replacingCharacters(in: local, with: typed)
+        let endedALine = joined.substring(with: local).utf8.last == UInt8(ascii: "\n")
+        let leftInsideALine = !text.isEmpty && text.utf8.last != UInt8(ascii: "\n")
+        // The range ends at a waiting slot it does not take in (Ruling 50): what it replaced ended
+        // a line, so the line ending goes back, and the slot stays waiting below its own line.
+        let beforeASlot = chunks.indices.contains { index in
+            !touched.contains(index) && starts[index] == end && lengths[index] == 0 && chunks[index].state == .waiting
+        }
+        // The conflict that ends the file, waiting or taken, when both stages end in a terminator
+        // (Ruling 52): what is typed into it keeps the file's final line ending.
+        let keepsTheFinalEnding: Bool
+        switch chunks[last].state {
+        case .waiting, .taken:
+            keepsTheFinalEnding = last == chunks.count - 1 && !chunks[last].blocks.isEmpty && stagesEndALine
+        case .common, .edited:
+            keepsTheFinalEnding = false
+        }
+        var restored = false
+        if leftInsideALine, (beforeASlot && endedALine) || keepsTheFinalEnding {
+            text += lineEnding
+            restored = true
+        }
+        // Only the line ending removed, and put back: nothing changes (as Ruling 14).
+        if restored, first == last, text.utf8.elementsEqual((joined as String).utf8) { return nil }
         if first == last {
             chunks[first].text = text
             if !chunks[first].blocks.isEmpty { chunks[first].state = .edited }

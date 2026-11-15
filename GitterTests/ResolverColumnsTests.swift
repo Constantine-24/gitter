@@ -178,6 +178,50 @@ import Testing
     }
 
     /// Every caret position on a text row maps to the document and back to itself.
+    /// The view's own gestures on the line just above a waiting slot, through the map: a
+    /// triple-click selects the line with its break, which ends at the slot row's start; typing
+    /// over it keeps the slot waiting and the new text on its own line (Ruling 50). So does a
+    /// deletion from inside the line to the slot. Undo brings each back.
+    @Test func replacingTheLineAboveASlotThroughTheMapKeepsItWaiting() throws {
+        let fresh = try ResolverLayoutTests.mockup()
+        let (map, rows) = Self.map(fresh)
+        let slotRow = try #require(rows.firstIndex { $0.isSlot && $0.chunk == 3 })
+        let above = slotRow - 1
+        let lineStart = map.displayStart(ofRow: above), slotStart = map.displayStart(ofRow: slotRow)
+        let slotAt = fresh.range(ofChunk: 3).location
+
+        // Triple-click, then typing.
+        let line = try #require(map.edit(for: NSRange(location: lineStart, length: slotStart - lineStart)))
+        #expect(NSMaxRange(line.range) == slotAt)
+        var document = fresh
+        var history = ResolverHistory()
+        history.record(document, coalescingTypingIn: nil, at: ResolverDocumentTests.t0)
+        #expect(document.replace(line.range, with: "x", intoEmptyChunk: line.intoEmptyChunk) != nil)
+        #expect(document.chunks.first { $0.id == 3 }?.state == .waiting)
+        #expect(document.waitingCount == fresh.waitingCount)
+        #expect(document.chunks.map(\.id) == fresh.chunks.map(\.id))
+        let chunk2 = try #require(document.chunks.first { $0.id == 2 })
+        #expect(chunk2.text.hasSuffix("\nx\n") || chunk2.text == "x\n")
+        let typed = document
+        let undone = try ResolverDocumentTests.undo(&history, document)
+        #expect(undone == fresh)
+        #expect(try ResolverDocumentTests.redo(&history, undone) == typed)
+
+        // A deletion from the line's second character to the slot.
+        let tail = try #require(map.edit(for: NSRange(location: lineStart + 1, length: slotStart - lineStart - 1), deleting: true))
+        var deleted = fresh
+        var deletions = ResolverHistory()
+        deletions.record(deleted, coalescingTypingIn: nil, at: ResolverDocumentTests.t0)
+        #expect(deleted.replace(tail.range, with: "", intoEmptyChunk: tail.intoEmptyChunk) != nil)
+        #expect(deleted.chunks.first { $0.id == 3 }?.state == .waiting)
+        #expect(deleted.chunks.map(\.id) == fresh.chunks.map(\.id))
+        #expect(deleted.chunks.first { $0.id == 2 }?.text.hasSuffix("\n") == true)
+        let afterDeletion = deleted
+        let back = try ResolverDocumentTests.undo(&deletions, deleted)
+        #expect(back == fresh)
+        #expect(try ResolverDocumentTests.redo(&deletions, back) == afterDeletion)
+    }
+
     @Test func textPositionsRoundTrip() throws {
         let document = try ResolverLayoutTests.mockup()
         let (map, rows) = Self.map(document)
