@@ -108,6 +108,10 @@ import Testing
         }
         let (store, cleanup) = await openedTestStore(repo, backend: backend)
         defer { cleanup() }
+        defer { await releaseAndSettle([backend], [store]) }
+        // The write in the hook wakes the watcher: its reload is held, so nothing reads the file
+        // again before the assertions below.
+        _ = backend.hold(.snapshot)
 
         store.openResolver(at: "a.txt")
         await waitUntil("the refusal") { store.lastError != nil }
@@ -115,6 +119,7 @@ import Testing
         #expect(store.resolverDrafts["a.txt"] == nil)
 
         // Read again, the reads agree: the draft opens on the file as it is now.
+        backend.releaseAll()
         await store.refresh()
         await waitUntil("the draft") { store.resolverDrafts["a.txt"] != nil }
         let draft = try #require(store.resolverDrafts["a.txt"])
