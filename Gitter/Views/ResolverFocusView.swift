@@ -557,7 +557,8 @@ struct ResolverHeaders: View {
             if let draft {
                 Divider()
                 Button(ConflictWording.copyResult) { store.copyResult(path) }
-                Button(ConflictWording.discardChanges) { store.discardDraft(path) }
+                // Asks first when the draft has changes (`requestDiscardDraft`).
+                Button(ConflictWording.discardChanges) { store.requestDiscardDraft(path) }
                     .disabled(!draft.hasUserChanges && draft.detached == nil)
                 if ResolverShell.offersReload(draft) {
                     Button(ConflictWording.reloadMenuItem) {
@@ -627,7 +628,7 @@ struct ResolverBottomBar: View {
                 Button(ConflictWording.title(.resolveFile, draft.snapshot.file)) { store.resolveFocusedFile() }
                     .disabled(
                         !ResolverShell.resolveFileEnabled(draft, blocked: blocked),
-                        help: blocked ?? ConflictWording.resolveHelp(remaining: waiting))
+                        help: ResolverShell.resolveFileHelp(draft, blocked: blocked))
             }
         }
         .lineLimit(1)

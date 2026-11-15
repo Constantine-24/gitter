@@ -113,6 +113,14 @@ enum ResolverShell {
         return draft.isWritable && draft.document.waitingCount == 0
     }
 
+    /// Resolve File's tooltip: what is in the way, else why the draft can't be written (a
+    /// detached one, Ruling 17), else what it does or how many conflicts are left.
+    static func resolveFileHelp(_ draft: ResolverDraft, blocked: String?) -> String {
+        if let blocked { return blocked }
+        if let detached = draft.detached { return ConflictWording.notWritableHelp(detached) }
+        return ConflictWording.resolveHelp(remaining: draft.document.waitingCount)
+    }
+
     /// Done is the default button once every file is resolved — what is left is Continue, in the
     /// normal window — and once the operation has ended (Ruling 24).
     static func doneIsDefault(allResolved: Bool, ended: Bool) -> Bool { allResolved || ended }

@@ -515,4 +515,16 @@ import Testing
             ConflictWording.abortDrafts(["a.txt", "b.txt"])
                 == "Your changes to \"a.txt\" and \"b.txt\" in Resolve Conflicts are discarded too.")
     }
+
+    /// The kept notice when Results with changes are made read-only outside Gitter while Resolve
+    /// Conflicts is closed (Ruling 49): one file or several, resolved or the operation ended.
+    @Test func theKeptNoticeNamesTheFiles() {
+        #expect(ConflictWording.keptOutside(["a.txt"], ended: nil)
+            == "Your changes to \"a.txt\" in Resolve Conflicts are kept, but it changed outside Gitter.")
+        #expect(ConflictWording.keptOutside(["a.txt", "b.txt"], ended: nil)
+            == "Your changes to \"a.txt\" and \"b.txt\" in Resolve Conflicts are kept, but they changed outside Gitter.")
+        #expect(ConflictWording.keptOutside(["a.txt"], ended: .rebase)
+            == "The rebase ended outside Gitter. Your changes to \"a.txt\" in Resolve Conflicts are kept.")
+        #expect(ConflictWording.showKeptChanges == "Show Changes")
+    }
 }

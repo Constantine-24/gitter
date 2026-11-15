@@ -463,6 +463,14 @@ extension RepositoryStore {
         loadConflict()
     }
 
+    /// The Result menu's Discard Changes: asks first when the draft has changes ("Discard your
+    /// changes to <file>?", Cancel / Discard Changes, through the drafts' own question); a
+    /// pristine one goes at once.
+    func requestDiscardDraft(_ path: String) {
+        guard resolverDrafts[path] != nil else { return }
+        confirmDiscardingDrafts(for: [path]) { [weak self] in self?.discardDraft(path) }
+    }
+
     /// A focused path with neither a conflict record nor a draft moves on
     /// (`ResolverShell.focusAfterLosing`): to the next file with conflicts, else the all-resolved
     /// state. Whether it moved.
@@ -550,7 +558,9 @@ extension RepositoryStore {
     /// `.changedOutside` — still editable (Keep Editing), never written; one whose path is no longer unmerged `.resolvedOutside`; and
     /// when the operation focus mode opened under has ended, every draft `.operationEnded` —
     /// pristine ones go, focus mode stays only while a draft has changes, and a kept notice says
-    /// so. A draft is never re-attached or dropped with changes in it.
+    /// so. A draft is never re-attached or dropped with changes in it. With focus mode closed, a
+    /// kept Result with changes made read-only here is announced by a kept notice whose button
+    /// opens focus mode on it (Ruling 49), where the sidebar lists every draft.
     ///
     /// During one of Gitter's own writes this waits for the write to finish (`finishMutation`
     /// calls it again with `afterGitterWrite`): the file that write resolved is not resolved
@@ -564,6 +574,8 @@ extension RepositoryStore {
         let files = snapshot?.status.files ?? []
         let ended = resolverOperation.map { $0 != operationInProgress } ?? false
         var drafts = resolverDrafts
+        // Kept Results with changes that this pass makes read-only (Ruling 49).
+        var madeReadOnly: [String] = []
         for (path, draft) in resolverDrafts {
             let record = files.first { $0.path == path }?.conflict
             let reason: DraftDetachment
@@ -581,19 +593,33 @@ extension RepositoryStore {
             if !draft.hasUserChanges, reason == .operationEnded || (reason == .resolvedOutside && afterGitterWrite) {
                 drafts[path] = nil
             } else if (draft.detached?.rank ?? 0) < reason.rank {
+                if draft.hasUserChanges, draft.isEditable, reason != .changedOutside { madeReadOnly.append(path) }
                 drafts[path]?.detached = reason
             }
         }
         setResolverDrafts(drafts)
-        guard ended, let operation = resolverOperation else {
+        let operation = ended ? resolverOperation : nil
+        if ended {
+            setResolverOperation(nil)
+            // Named in the subtitle while its drafts are kept, until Done (Ruling 24) — also when
+            // Resolve Conflicts opens on one later, from the notice below.
+            if let operation { setResolverEndedOperation(operation) }
+        }
+        // Resolve Conflicts closed: nothing on screen shows these Results, so a kept notice says
+        // they are kept, with the way back to them (Ruling 49). Gitter's own writes never leave
+        // one (they ask, and drop it).
+        if resolverFocus == nil, !afterGitterWrite, let first = madeReadOnly.sorted().first {
+            showStickyNotice(
+                Notice(
+                    text: ConflictWording.keptOutside(madeReadOnly.sorted(), ended: operation),
+                    actions: [.openResolver(first)], keep: true))
+        }
+        guard let operation else {
             // A draft dropped above may leave the focus on a path with nothing to show.
             if resolverFocus != nil { settleResolverFocus() }
             return
         }
-        setResolverOperation(nil)
         guard let focus = resolverFocus else { return }
-        // Named in the subtitle while its drafts are kept, until Done (Ruling 24).
-        setResolverEndedOperation(operation)
         if let kept = drafts.keys.sorted().first {
             if drafts[focus.path] == nil { setResolverFocus(ResolverFocus(path: kept, currentChunk: nil)) }
         } else {

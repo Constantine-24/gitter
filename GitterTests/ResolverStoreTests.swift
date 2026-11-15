@@ -822,6 +822,71 @@ import Testing
         #expect(store.resolverFocus == nil)
     }
 
+    /// Done keeps an edited draft; then the file is resolved, or the merge ends, in a terminal
+    /// while Resolve Conflicts is closed. A kept notice in the normal window says the changes are
+    /// kept, once, and its button opens Resolve Conflicts on the draft — read-only, listed in the
+    /// sidebar, Copy Result working — so the close and quit questions name work that can be
+    /// found (Ruling 49).
+    @Test(.timeLimit(.minutes(10)), arguments: [false, true])
+    func aKeptDraftMadeReadOnlyWhileClosedRaisesAKeptNotice(endTheMerge: Bool) async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        _ = try #require(await Self.openDraft(store))
+        store.resolverTake(.ours)
+        store.closeResolver()
+        #expect(store.resolverFocus == nil)
+        #expect(store.resolverDrafts["a.txt"]?.hasUserChanges == true)
+        #expect(store.stickyNotice == nil)
+
+        if endTheMerge {
+            try repo.git("merge", "--abort")
+        } else {
+            try repo.git("add", "a.txt")
+        }
+        await store.refresh()
+        await waitUntilIdle(store)
+        let detached: DraftDetachment = endTheMerge ? .operationEnded : .resolvedOutside
+        #expect(store.resolverDrafts["a.txt"]?.detached == detached)
+        let notice = try #require(store.stickyNotice)
+        #expect(notice.text == (endTheMerge
+            ? "The merge ended outside Gitter. Your changes to \"a.txt\" in Resolve Conflicts are kept."
+            : "Your changes to \"a.txt\" in Resolve Conflicts are kept, but it changed outside Gitter."))
+        #expect(notice.actions == [.openResolver("a.txt")])
+        #expect(NoticeWording.title(.openResolver("a.txt")) == "Show Changes")
+        #expect(store.changedDraftPaths == ["a.txt"])
+
+        // Not raised again by the next reload.
+        store.dismissStickyNotice()
+        await store.refresh()
+        await waitUntilIdle(store)
+        #expect(store.stickyNotice == nil)
+
+        // Its button: Resolve Conflicts on the draft, read-only, in the sidebar, copyable.
+        store.perform(notice.actions[0])
+        #expect(store.resolverFocus?.path == "a.txt")
+        let draft = try #require(store.focusedDraft)
+        #expect(draft.detached == detached && !draft.isEditable && draft.hasUserChanges)
+        let rows = ResolverShell.rows(
+            files: store.resolverFiles, resolved: store.resolvedThisSession, drafts: store.resolverDrafts,
+            summaries: store.resolverSummaries.mapValues(\.summary))
+        #expect(rows.first { $0.path == "a.txt" }?.status == .readOnly)
+        #expect(ResolverShell.bars(draft, matchesGitsConflict: true, keptEditing: false)
+            == [endTheMerge ? .operationEnded : .resolvedOutside])
+        #expect(ResolverShell.centre(
+            path: "a.txt", draft: store.focusedDraft, document: store.selectedConflict,
+            failure: store.conflictLoadFailure, allResolved: store.resolverAllResolved) == .columns)
+        if endTheMerge {
+            #expect(store.resolverEndedShown == .merge)
+        }
+        let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.tests.kept-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        store.copyResult("a.txt", to: pasteboard)
+        #expect(pasteboard.string(forType: .string) == draft.document.resultText)
+        #expect(draft.document.resultText.contains("main x"))
+    }
+
     // MARK: - Done
 
     /// Done keeps an edited draft changed outside — it is still edited (Keep Editing), and opens

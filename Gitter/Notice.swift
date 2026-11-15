@@ -78,6 +78,9 @@ enum NoticeAction: Equatable {
     /// Switches this window to the worktree Add Worktree just added, by its path as `list`
     /// printed it (`RepositoryStore.openAddedWorktree`) — Open Worktree's own path.
     case openWorktree(String)
+    /// Opens Resolve Conflicts on the path whose kept Result outside events made read-only while
+    /// it was closed (`RepositoryStore.openResolver(at:)`, Ruling 49): the way back to it.
+    case openResolver(String)
 }
 
 /// The words on a notice's buttons.
@@ -91,6 +94,7 @@ enum NoticeWording {
         case .showStash: ConflictWording.showCopy
         case .restoreTag(let receipts): TagWording.restoreButton(count: receipts.count)
         case .openWorktree: WorktreeWording.openNoticeButton
+        case .openResolver: ConflictWording.showKeptChanges
         }
     }
 }

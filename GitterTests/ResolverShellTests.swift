@@ -98,6 +98,22 @@ import Testing
             == "Conflicts from applying a stash or undoing a discard")
     }
 
+    /// Resolve File's tooltip says why it is off on a draft that can't be written — after Keep
+    /// Editing too, where no bar says so any more — never "Write the Result…" (ledger 130).
+    @Test func resolveFilesTooltipGivesTheReasonADraftCantBeWritten() throws {
+        let kept = try Self.draft(taken: 2, detached: .changedOutside)
+        #expect(ResolverShell.resolveFileHelp(kept, blocked: nil)
+            == "This file changed outside Gitter, so this Result can't be written over it. Reload it, or copy the Result, from the \u{22EF} menu.")
+        #expect(ResolverShell.resolveFileHelp(try Self.draft(taken: 2, detached: .resolvedOutside), blocked: nil)
+            == ConflictWording.bar(.resolvedOutside))
+        #expect(ResolverShell.resolveFileHelp(try Self.draft(taken: 2, detached: .operationEnded), blocked: nil)
+            == ConflictWording.bar(.operationEnded))
+        // Attached: what it does, or how many are left; a block in the way wins.
+        #expect(ResolverShell.resolveFileHelp(try Self.draft(taken: 2), blocked: nil) == ConflictWording.resolveHelp(remaining: 0))
+        #expect(ResolverShell.resolveFileHelp(try Self.draft(taken: 1), blocked: nil) == ConflictWording.resolveHelp(remaining: 1))
+        #expect(ResolverShell.resolveFileHelp(kept, blocked: ConflictWording.busy) == ConflictWording.busy)
+    }
+
     @Test func resolveFileIsOffWhileWaiting() throws {
         #expect(!ResolverShell.resolveFileEnabled(nil, blocked: nil))
         #expect(!ResolverShell.resolveFileEnabled(try Self.draft(taken: 0), blocked: nil))

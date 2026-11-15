@@ -176,6 +176,17 @@ enum ConflictWording {
             : "Choose a side for every conflict first (\(remaining) left)"
     }
 
+    /// Resolve File's tooltip on a Result that can't be written: why, and what is left to do —
+    /// also after Keep Editing has hidden the bar that said so.
+    static func notWritableHelp(_ detachment: DraftDetachment) -> String {
+        switch detachment {
+        case .changedOutside:
+            "This file changed outside Gitter, so this Result can't be written over it. Reload it, or copy the Result, from the \u{22EF} menu."
+        case .resolvedOutside: bar(.resolvedOutside)
+        case .operationEnded: bar(.operationEnded)
+        }
+    }
+
     // MARK: - Actions
 
     static func title(_ action: ResolverAction, _ file: ConflictedFile) -> String {
@@ -367,6 +378,19 @@ enum ConflictWording {
     static func operationEndedOutside(_ operation: RepositoryOperation) -> String {
         "The \(operation.noun.lowercased()) ended outside Gitter."
     }
+
+    /// The kept notice in the normal window when a Result with changes can no longer be written
+    /// because something outside Gitter resolved its file or ended its operation while Resolve
+    /// Conflicts was closed (Ruling 49). Its button opens Resolve Conflicts on the first file.
+    static func keptOutside(_ paths: [String], ended: RepositoryOperation?) -> String {
+        let names = StashWording.names(paths)
+        if let ended { return "\(operationEndedOutside(ended)) Your changes to \(names) in Resolve Conflicts are kept." }
+        let it = paths.count == 1 ? "it" : "they"
+        return "Your changes to \(names) in Resolve Conflicts are kept, but \(it) changed outside Gitter."
+    }
+
+    /// The kept notice's button.
+    static let showKeptChanges = "Show Changes"
 
     /// The card where a conflicted file's diff would be: the kind, and how many conflicts when
     /// the file has blocks ("Changed on both sides · 3 conflicts").

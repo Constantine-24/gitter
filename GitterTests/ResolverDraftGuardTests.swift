@@ -60,6 +60,36 @@ import Testing
 
     // MARK: - Discard questions
 
+    /// Discard Changes in the Result's menu asks first when the draft has changes, with the
+    /// drafts' own question; Cancel keeps it, Discard drops it and reads the file again. A
+    /// pristine draft does not ask.
+    @Test(.timeLimit(.minutes(10))) func discardChangesAsksWhenTheDraftHasChanges() async throws {
+        let repo = try Fixture.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        let draft = try #require(await Self.changedDraft(store))
+
+        store.requestDiscardDraft("a.txt")
+        try #require(Self.asked(store) == Self.question(["a.txt"]))
+        #expect(store.resolverDrafts["a.txt"] == draft)
+        store.cancelDiscardDrafts()
+        #expect(store.activeSheet == nil)
+        #expect(store.resolverDrafts["a.txt"] == draft)
+
+        store.requestDiscardDraft("a.txt")
+        store.confirmDiscardDrafts(Self.question(["a.txt"]))
+        await waitUntil("a's draft read again") { store.resolverDrafts["a.txt"]?.hasUserChanges == false }
+        #expect(store.activeSheet == nil)
+
+        // Pristine: nothing asked; it goes and is read again.
+        store.requestDiscardDraft("a.txt")
+        #expect(store.activeSheet == nil)
+        await waitUntilIdle(store)
+        await waitUntil("a's draft") { store.resolverDrafts["a.txt"] != nil }
+        #expect(store.resolverDrafts["a.txt"]?.hasUserChanges == false)
+    }
+
     /// Mark Resolved over a draft with changes asks first, naming the file; Cancel reads, writes
     /// and drops nothing. Discard Changes runs Mark Resolved as ever — the file on disk still has
     /// its markers, so its own question comes — and the draft is kept until the write goes ahead
