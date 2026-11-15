@@ -608,6 +608,47 @@ import Testing
             == ResolverLayout.rows(pristine, using: prebuilt, showBase: false))
     }
 
+    /// Rows built reusing the chunks an edit did not touch (`RowCache`, Ruling 32) are exactly a
+    /// fresh build's, edit after edit: typing in common text and in a conflict (line breaks
+    /// included), a merge across a chunk's edge and its undo, a take, and Show Base toggled.
+    @Test func incrementalRowsEqualAFreshBuild() throws {
+        let pristine = try Self.document(Self.unitsSegments, sides: Self.unitsSides)
+        var sides = ResolverLayout.Sides(Self.unitsSides, document: pristine)
+        var cache = ResolverLayout.RowCache()
+        var document = pristine
+        var steps: [(String, ResolverDocument, Bool)] = [("pristine", document, false)]
+        func step(_ name: String, showBase: Bool = false, _ change: (inout ResolverDocument) -> Void) {
+            change(&document)
+            steps.append((name, document, showBase))
+        }
+        let weight = { (document: ResolverDocument) in (document.resultText as NSString).range(of: "WEIGHT").location }
+        step("type in common text") { $0.replace(NSRange(location: weight($0), length: 0), with: "x") }
+        step("a line break in common text") { $0.replace(NSRange(location: weight($0), length: 0), with: "\n") }
+        step("type into a slot") { $0.replace($0.range(ofChunk: 3), with: "    \"g\": 1.0,") }
+        step("a line break in the conflict") { $0.replace(NSRange(location: NSMaxRange($0.range(ofChunk: 3)) - 1, length: 0), with: "\n") }
+        step("take ours + theirs") { $0.take(.oursThenTheirs, chunk: 1) }
+        step("Show Base", showBase: true) { _ in }
+        step("type with Show Base", showBase: true) { $0.replace(NSRange(location: 0, length: 0), with: "#") }
+        step("Show Base off") { _ in }
+        let beforeMerge = document
+        step("merge across conflict 1") {
+            let start = $0.range(ofChunk: 1).location
+            $0.replace(NSRange(location: start, length: weight($0) - start), with: "")
+        }
+        step("undo the merge") { $0 = beforeMerge }
+        step("take theirs for conflict 3") { $0.take(.theirs, chunk: 5) }
+        step("retype a taken line") { $0.replace(NSRange(location: $0.range(ofChunk: 5).location + 4, length: 6), with: "yield") }
+
+        for (name, document, showBase) in steps {
+            sides = sides.refitted(to: document)
+            let incremental = ResolverLayout.rows(document, using: sides, showBase: showBase, reusing: &cache)
+            let fresh = ResolverLayout.rows(document, sides: Self.unitsSides, showBase: showBase)
+            #expect(incremental == fresh, "\(name)")
+            // Not a fresh build in disguise: after the first, all but the chunks changed are reused.
+            if name != "pristine" { #expect(cache.reused >= 2, "\(name): reused \(cache.reused)") }
+        }
+    }
+
     @Test func crlfLinesHaveNoTerminatorInTheirText() throws {
         let sides = Self.sides(ours: "a\r\nO\r\nz\r\n", base: "a\r\nB\r\nz\r\n", theirs: "a\r\nT\r\nz\r\n")
         var document = try Self.document(

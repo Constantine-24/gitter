@@ -35,6 +35,8 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
     var palette = ResolverPalette.standard
 
     private var sidesCache: (snapshot: ConflictSnapshot, sides: ResolverLayout.Sides)?
+    /// The last build's rows per chunk, for the same draft (Ruling 32).
+    private var rowCache = ResolverLayout.RowCache()
     private var snapshot: ConflictSnapshot?
     private var document: ResolverDocument?
     private var rows: [LayoutRow] = []
@@ -187,6 +189,7 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         document = nil
         snapshot = nil
         sidesCache = nil
+        rowCache = ResolverLayout.RowCache()
         rows = []
         resultMap = nil
         model = ResolverColumnsModel()
@@ -207,9 +210,11 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
             sides = cache.sides.refitted(to: document)
         } else {
             sides = ResolverLayout.Sides(draft.sides, document: document)
+            rowCache = ResolverLayout.RowCache()
         }
         sidesCache = (draft.snapshot, sides)
-        let newRows = ResolverLayout.rows(document, using: sides, showBase: showBase)
+        // Only the chunks an edit changed are laid out again.
+        let newRows = ResolverLayout.rows(document, using: sides, showBase: showBase, reusing: &rowCache)
         let old = reset ? [] : rows
         var widest: CGFloat = reset ? 0 : codeWidth
         var redraw: Set<ResolverColumn> = []

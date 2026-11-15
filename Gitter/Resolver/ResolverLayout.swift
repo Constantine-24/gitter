@@ -129,15 +129,78 @@ enum ResolverLayout {
 
     /// The rows, reusing `sides` (rebuilt here only when it does not fit `document`).
     static func rows(_ document: ResolverDocument, using sides: Sides, showBase: Bool) -> [LayoutRow] {
+        var cache = RowCache()
+        return rows(document, using: sides, showBase: showBase, reusing: &cache)
+    }
+
+    /// Each chunk's rows from the last build, kept to be reused (Ruling 32): a chunk's rows depend
+    /// only on the chunk itself, its spans of the sides' lines, Show Base and its first Result line
+    /// number, so a keystroke rebuilds the chunk it changed and shifts the numbers of the rows
+    /// after it. Hold one per `Sides` stages (a draft); it prunes itself.
+    struct RowCache: Sendable {
+        fileprivate var entries: [Int: Entry] = [:]
+        /// How many chunks the last build reused.
+        fileprivate(set) var reused = 0
+
+        init() {}
+
+        fileprivate struct Entry: Sendable {
+            let chunk: ResolverChunk
+            let spans: Range<Int>, theirsSpan: Range<Int>
+            let showBase: Bool
+            /// The Result number its first new line had, and how many lines it numbered.
+            var firstNumber: Int
+            let lineCount: Int
+            /// Whether its text ended inside a line; nil for empty text, which changes nothing.
+            let endsInsideLine: Bool?
+            var rows: [LayoutRow]
+
+            func matches(_ other: ResolverChunk, ours: Range<Int>, theirs: Range<Int>, showBase: Bool) -> Bool {
+                // Show Base adds rows to conflicts only.
+                spans == ours && theirsSpan == theirs && (other.blocks.isEmpty || self.showBase == showBase)
+                    && chunk.id == other.id
+                    && chunk.state == other.state && chunk.blocks.count == other.blocks.count
+                    && ResolverLayout.sameBytes(chunk.text, other.text)
+                    && ResolverLayout.sameBytes(chunk.commonOriginal, other.commonOriginal)
+            }
+        }
+    }
+
+    /// The rows, reusing `sides` and, for every chunk unchanged since `cache` was filled, its rows
+    /// (renumbered when lines before it came or went). The same rows as a fresh build.
+    static func rows(_ document: ResolverDocument, using sides: Sides, showBase: Bool, reusing cache: inout RowCache)
+        -> [LayoutRow]
+    {
         let chunks = document.chunks
         let sides = sides.fitted(to: document)
         let ours = sides.ours, theirs = sides.theirs
 
         var rows: [LayoutRow] = []
+        var entries: [Int: RowCache.Entry] = [:]
+        entries.reserveCapacity(chunks.count)
+        var reused = 0
         var nextNumber = 1
         // The last chunk's text ended inside a line, which this chunk's first line continues.
         var continues = false
         for (index, chunk) in chunks.enumerated() {
+            let spans = (ours: ours.spans[index], theirs: theirs.spans[index])
+            // A chunk that continues a line, or merged several (its blocks' placement inside its
+            // spans is not in the key), is always built.
+            if !continues, !chunk.isMerged, var entry = cache.entries[chunk.id],
+                entry.matches(chunk, ours: spans.ours, theirs: spans.theirs, showBase: showBase)
+            {
+                if entry.firstNumber != nextNumber {
+                    entry.rows = renumbered(entry.rows, by: nextNumber - entry.firstNumber)
+                    entry.firstNumber = nextNumber
+                }
+                rows += entry.rows
+                nextNumber += entry.lineCount
+                if let inside = entry.endsInsideLine { continues = inside }
+                entries[chunk.id] = entry
+                reused += 1
+                continue
+            }
+            let firstNumber = nextNumber
             var result: [NumberedLine] = []
             for (offset, line) in lines(of: chunk.text).enumerated() {
                 if offset == 0, continues {
@@ -147,25 +210,54 @@ enum ResolverLayout {
                     nextNumber += 1
                 }
             }
-            if !chunk.text.isEmpty { continues = chunk.text.unicodeScalars.last != "\n" }
+            let endsInsideLine: Bool? = chunk.text.isEmpty ? nil : chunk.text.unicodeScalars.last != "\n"
+            if let endsInsideLine { continues = endsInsideLine }
 
-            let spans = (ours: ours.spans[index], theirs: theirs.spans[index])
+            var built: [LayoutRow] = []
             if chunk.blocks.isEmpty {
-                rows += commonRows(chunk, result: result, ours: ours, theirs: theirs, spans: spans)
+                built = commonRows(chunk, result: result, ours: ours, theirs: theirs, spans: spans)
             } else {
                 if showBase {
                     let strip: [String?] = baseStrip(of: chunk) ?? [nil]
                     for line in strip {
-                        rows.append(
+                        built.append(
                             LayoutRow(
                                 ours: filler, result: LayoutCell(lineNumber: nil, text: line, tint: .filler, marks: []),
                                 theirs: filler, chunk: chunk.id, isSlot: false, badge: nil, isBaseStrip: true))
                     }
                 }
-                rows += conflictRows(chunk, result: result, ours: ours, theirs: theirs, spans: spans)
+                built += conflictRows(chunk, result: result, ours: ours, theirs: theirs, spans: spans)
             }
+            rows += built
+            entries[chunk.id] = RowCache.Entry(
+                chunk: chunk, spans: spans.ours, theirsSpan: spans.theirs, showBase: showBase, firstNumber: firstNumber,
+                lineCount: nextNumber - firstNumber, endsInsideLine: endsInsideLine, rows: built)
         }
+        cache.entries = entries
+        cache.reused = reused
         return rows
+    }
+
+    /// `rows` with every Result line number moved by `delta`.
+    private static func renumbered(_ rows: [LayoutRow], by delta: Int) -> [LayoutRow] {
+        rows.map { row in
+            guard let number = row.result.lineNumber else { return row }
+            let cell = row.result
+            return LayoutRow(
+                ours: row.ours, result: LayoutCell(lineNumber: number + delta, text: cell.text, tint: cell.tint, marks: cell.marks),
+                theirs: row.theirs, chunk: row.chunk, isSlot: row.isSlot, badge: row.badge, isBaseStrip: row.isBaseStrip)
+        }
+    }
+
+    /// The same UTF-8 bytes (never `==`, which calls canonically equal text equal), at once when
+    /// both share one storage, as an untouched chunk's text does.
+    fileprivate static func sameBytes(_ a: String?, _ b: String?) -> Bool {
+        guard let a, let b else { return a == nil && b == nil }
+        let shared = a.utf8.withContiguousStorageIfAvailable { x in
+            b.utf8.withContiguousStorageIfAvailable { y in x.count == y.count && x.baseAddress == y.baseAddress }
+        }
+        if shared == .some(.some(true)) { return true }
+        return a.utf8.elementsEqual(b.utf8)
     }
 
     /// The base text of a conflict, one string per line, for the Show Base strip; nil for common

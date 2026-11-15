@@ -48,11 +48,13 @@ enum NotEditable: Hashable, Sendable { case tooLarge, notUTF8 }
 /// calls canonically equivalent text equal.
 struct ResolverDocument: Hashable, Sendable {
     /// Over either limit the Result is read-only (its takes and keys still work). Measured in
-    /// Task 6 on generated files with 50 conflicts, in an optimised build: typing — keystroke,
-    /// store, layout, the columns redrawn — stays under a 16 ms median up to about 5,700 lines
-    /// (counted as here: common text and all three sides of every block) and about 400 KB of
-    /// long lines; 20,000 lines took 56 ms. The limits sit just under those, with a margin.
-    static let editLimitBytes = 400_000, editLimitLines = 5_500
+    /// Task 6 on generated files with 50 conflicts, in an optimised build, after the view has laid
+    /// the whole file out (scrolled through it, or taken its last conflict): typing — keystroke,
+    /// store, layout, the columns redrawn — keeps a median under 16 ms and a worst, a merging
+    /// keystroke's included, under 50 ms at 5,246 lines (counted as here: common text and all three
+    /// sides of every block) and at 375,927 bytes of long lines; 5,450 lines missed (16.2 ms). The
+    /// limits sit at or under the largest sizes measured passing.
+    static let editLimitBytes = 370_000, editLimitLines = 5_200
 
     private(set) var chunks: [ResolverChunk]
     let notEditable: NotEditable?
