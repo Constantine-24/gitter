@@ -170,8 +170,9 @@ struct ResolverSidebar: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { footer(rows).background(ResolverColor.sidebar) }
         // One file clicked: focus mode moves to it. Several: they are the take's selection.
         .onChange(of: selection) { _, new in
-            guard new.count == 1, let path = new.first, path != store.resolverFocus?.path else { return }
-            store.focusResolverFile(path)
+            if let path = ResolverShell.focusAfterSelection(new, focused: store.resolverFocus?.path) {
+                store.focusResolverFile(path)
+            }
         }
         // The focus moved (next conflict into another file, a resolve): the selection follows.
         .onChange(of: store.resolverFocus?.path, initial: true) { _, path in

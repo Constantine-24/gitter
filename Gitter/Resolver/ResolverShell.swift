@@ -155,6 +155,14 @@ enum ResolverShell {
         }
     }
 
+    /// Which file a sidebar selection focuses: one file clicked moves focus mode to it; several
+    /// (⌘- or ⇧-click) are the selection for a take and move nothing; the focused file again,
+    /// nothing.
+    static func focusAfterSelection(_ selection: Set<String>, focused: String?) -> String? {
+        guard selection.count == 1, let path = selection.first, path != focused else { return nil }
+        return path
+    }
+
     // MARK: - Above the columns
 
     /// Whether Keep Editing was pressed for this draft: it is kept per draft snapshot, so a

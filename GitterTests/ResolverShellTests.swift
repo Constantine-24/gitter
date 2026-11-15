@@ -180,6 +180,14 @@ import Testing
         #expect(ConflictWording.noFolder == "\u{2014}")
     }
 
+    /// One row clicked focuses it; a ⌘- or ⇧-click adding a second only selects.
+    @Test func aSingleSelectionMovesTheFocus() {
+        #expect(ResolverShell.focusAfterSelection(["b.txt"], focused: "a.txt") == "b.txt")
+        #expect(ResolverShell.focusAfterSelection(["a.txt"], focused: "a.txt") == nil)
+        #expect(ResolverShell.focusAfterSelection(["a.txt", "b.txt"], focused: "a.txt") == nil)
+        #expect(ResolverShell.focusAfterSelection([], focused: "a.txt") == nil)
+    }
+
     // MARK: - The bars
 
     @Test func theBarsSayWhatHappened() throws {
