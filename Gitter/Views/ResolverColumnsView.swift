@@ -50,11 +50,12 @@ enum ResolverGrid {
 /// this side").
 struct ResolverWholeFileSide: View {
     let content: WholeFileSideContent
+    let side: ConflictSide
 
     var body: some View {
         switch content {
         case .text(let text):
-            ResolverPlainText(text: text)
+            ResolverPlainText(text: text, side: side)
         case .description(let words):
             Text(words)
                 .font(.callout)
@@ -69,9 +70,11 @@ struct ResolverWholeFileSide: View {
 /// A side's whole text, read-only, numbered, in the columns' font and rows.
 private struct ResolverPlainText: NSViewRepresentable {
     let text: String
+    let side: ConflictSide
 
     func makeNSView(context: Context) -> ResolverTextColumn {
-        let column = ResolverTextColumn(column: .ours)
+        // Its side's column: VoiceOver names it so.
+        let column = ResolverTextColumn(column: side == .ours ? .ours : .theirs)
         column.scrollView.hasVerticalScroller = true
         return column
     }

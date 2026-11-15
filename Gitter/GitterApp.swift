@@ -181,7 +181,6 @@ struct RepositoryCommands: Commands {
             // one is added from here (or a branch's menu).
             Button(WorktreeWording.addTitle) { store?.requestAddWorktree(branch: nil) }
                 .disabled(isOff(\.addWorktreeBlockedReason))
-            Divider()
             // Focus mode's keys (spec, "Taking a side"), on its current conflict. Off outside
             // focus mode and while a sheet is up; the takes also while the draft is read-only.
             Section(ConflictWording.resolveMenu) {
@@ -204,7 +203,7 @@ struct RepositoryCommands: Commands {
                     .keyboardShortcut("[", modifiers: .command)
                     .disabled(Self.resolverIsOff(store))
             }
-            Divider()
+            // The section draws its own separators.
             // App-wide. Off also stops an automatic fetch that is running, in every window; on
             // waits for the next tick.
             Toggle(

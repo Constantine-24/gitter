@@ -380,7 +380,7 @@ struct ResolverCentreView: View {
         let blocked = store.conflictActionBlockedReason
         let offered = ResolverOffer.actions(for: document).filter { [.takeOurs, .takeTheirs, .delete, .keep].contains($0) }
         return HStack(spacing: 0) {
-            ResolverWholeFileSide(content: sideContent(file, .ours, reason))
+            ResolverWholeFileSide(content: sideContent(file, .ours, reason), side: .ours)
             ResolverGrid.gutter
             VStack(spacing: 14) {
                 Text(ConflictWording.wholeFile(reason))
@@ -404,7 +404,7 @@ struct ResolverCentreView: View {
             .padding(24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             ResolverGrid.gutter
-            ResolverWholeFileSide(content: sideContent(file, .theirs, reason))
+            ResolverWholeFileSide(content: sideContent(file, .theirs, reason), side: .theirs)
         }
     }
 

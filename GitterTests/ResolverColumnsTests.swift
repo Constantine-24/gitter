@@ -396,6 +396,66 @@ import Testing
         #expect(view.selectedRange() == NSRange(location: try #require(host.resultMap).displayStart(ofRow: slot), length: 0))
     }
 
+    /// The strips' buttons take their own side, the chips theirs (Both: ours first; its menu:
+    /// theirs first), and the overlay lets clicks through to the text except on a chip.
+    @Test(.timeLimit(.minutes(10))) func theTakeButtonsAndChipsTakeTheirSide() async throws {
+        let repo = try ResolverStoreTests.stoppedMerge()
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.columns(repo)
+        defer { cleanup(); window.close() }
+        func buttons(_ gutter: ResolverGutterView) -> [ResolverTakeButton] {
+            gutter.subviews.compactMap { $0 as? ResolverTakeButton }.sorted { $0.frame.minY < $1.frame.minY }
+        }
+        func chips() -> [ResolverChip] {
+            host.result.overlay.subviews.compactMap { $0 as? ResolverChip }.sorted {
+                ($0.frame.minY, $0.frame.minX) < ($1.frame.minY, $1.frame.minX)
+            }
+        }
+        // One button per conflict in each strip, labelled with the conflict and the side.
+        #expect(buttons(host.left).count == 2 && buttons(host.right).count == 2)
+        #expect(buttons(host.left)[0].accessibilityLabel() == "Take Ours for conflict 1 of 2")
+        #expect(buttons(host.right)[1].accessibilityLabel() == "Take Theirs for conflict 2 of 2")
+
+        #expect(buttons(host.left)[0].accessibilityPerformPress())
+        #expect(Self.chunk(1, store)?.state == .taken(.ours))
+        #expect(buttons(host.right)[1].accessibilityPerformPress())
+        #expect(Self.chunk(3, store)?.state == .taken(.theirs))
+
+        // The chips of a waiting slot: ← Ours, Both, Theirs →.
+        store.resolverUndo()
+        Self.refresh(store, host)
+        #expect(Self.chunk(3, store)?.state == .waiting)
+        let slot = chips()
+        #expect(slot.map(\.title) == [ConflictWording.slotOurs, ConflictWording.slotBoth, ConflictWording.slotTheirs])
+        #expect(slot[1].accessibilityLabel() == "Take Both, Ours First for conflict 2 of 2")
+        slot[2].performClick(nil)
+        #expect(Self.chunk(3, store)?.state == .taken(.theirs))
+        store.resolverUndo()
+        Self.refresh(store, host)
+        chips()[1].performClick(nil)
+        #expect(Self.chunk(3, store)?.state == .taken(.oursThenTheirs))
+        store.resolverUndo()
+        Self.refresh(store, host)
+        let both = chips()[1]
+        let theirsFirst = try #require(both.menu?.items.first { $0.title == ConflictWording.bothTheirsFirst })
+        both.menu?.performActionForItem(at: try #require(both.menu?.index(of: theirsFirst)))
+        #expect(Self.chunk(3, store)?.state == .taken(.theirsThenOurs))
+        store.resolverUndo()
+        Self.refresh(store, host)
+        chips()[0].performClick(nil)
+        #expect(Self.chunk(3, store)?.state == .taken(.ours))
+
+        // Clicks go through the overlay to the text, but not past a chip.
+        store.resolverUndo()
+        Self.refresh(store, host)
+        let overlay = host.result.overlay
+        let chip = chips()[0]
+        let onChip = overlay.convert(NSPoint(x: chip.frame.midX, y: chip.frame.midY), to: overlay.superview)
+        #expect(overlay.hitTest(onChip) is ResolverChip)
+        let onText = overlay.convert(NSPoint(x: overlay.bounds.midX, y: overlay.bounds.minY + 12), to: overlay.superview)
+        #expect(overlay.hitTest(onText) == nil)
+    }
+
     /// Escape in the editable Result leaves the text, so the next Escape is Done.
     @Test(.timeLimit(.minutes(10))) func escapeInTheResultLeavesTheText() async throws {
         let repo = try ResolverStoreTests.stoppedMerge()
