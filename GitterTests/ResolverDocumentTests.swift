@@ -388,23 +388,45 @@ import Testing
         #expect(try Self.chunk(1, undone).state == .taken(.ours))
     }
 
-    /// A common chunk that loses its last break before a waiting slot merges on through the
-    /// empty slot to the next line edge: the slot's conflict joins one edited chunk (Ruling 11
-    /// as written).
-    @Test func deletingABreakBeforeAWaitingSlotMergesThroughIt() throws {
+    /// Removing just the line break before a waiting slot is refused (Ruling 14): it would turn
+    /// the conflict into "edited" with neither side chosen. A backspace with the caret in the
+    /// empty slot is that range.
+    @Test func deletingTheBreakBeforeAWaitingSlotIsRefused() throws {
         var document = try Self.document(Self.three)
-        let mid = Self.range(of: "mid\n", in: document)
-        let changed = document.replace(NSRange(location: mid.location + 3, length: 1), with: "")
+        let before = document
+        let slot = document.range(ofChunk: 3).location
+        let changed = document.replace(NSRange(location: slot - 1, length: 1), with: "")
+        #expect(changed == nil)
+        #expect(document == before)
+        #expect(try Self.chunk(3, document).state == .waiting)
+
+        // A CRLF break, whole or its last half.
+        let segments: [ConflictSegment] = [
+            Self.common("a\r\n"), .block(Self.block("o\r\n", "b\r\n", "t\r\n")), Self.common("z\r\n"),
+        ]
+        var crlf = try Self.document(segments)
+        let crlfBefore = crlf
+        let at = crlf.range(ofChunk: 1).location
+        let whole = crlf.replace(NSRange(location: at - 2, length: 2), with: "")
+        let half = crlf.replace(NSRange(location: at - 1, length: 1), with: "")
+        #expect(whole == nil && half == nil)
+        #expect(crlf == crlfBefore)
+    }
+
+    /// More than the break, or typing over it, is an ordinary edit: Ruling 11 merges as before.
+    @Test func deletingMoreThanTheBreakBeforeASlotStillMerges() throws {
+        var document = try Self.document(Self.three)
+        let slot = document.range(ofChunk: 3).location
+        let changed = document.replace(NSRange(location: slot - 2, length: 2), with: "")
         #expect(changed == 2)
         #expect(document.chunks.map(\.id) == [0, 1, 2, 5, 6])
-        let merged = try Self.chunk(2, document)
-        #expect(merged.state == .edited)
-        #expect(merged.text == "midmid2\n")
-        #expect(merged.blocks == [Self.block2])
-        #expect(merged.commonOriginal == "mid\nmid2\n")
-        #expect(document.waitingCount == 2)
-        #expect(document.conflictCount == 3)
+        #expect(try Self.chunk(2, document).text == "mimid2\n")
         #expect(Self.everyChunkEndsAtALineEdge(document))
+
+        var typed = try Self.document(Self.three)
+        let at = typed.range(ofChunk: 3).location
+        #expect(typed.replace(NSRange(location: at - 1, length: 1), with: "!") == 2)
+        #expect(try Self.chunk(2, typed).text == "mid!mid2\n")
     }
 
     /// Half a CRLF is no line edge: the `\r` left behind still merges.
@@ -428,17 +450,18 @@ import Testing
         #expect(try Self.chunk(1, whole).text == "oz\r\n")
     }
 
-    /// Ruling 12 covers waiting slots only: an empty taken conflict typed into runs into the
-    /// line after it, and merges with it.
-    @Test func typingIntoAnEmptyTakenConflictMergesWithTheNext() throws {
+    /// Ruling 15: an empty taken conflict typed into gets the file's line ending too, so it
+    /// never runs into the line after it.
+    @Test func typingIntoAnEmptyTakenConflictAddsTheLineEnding() throws {
         var document = try Self.document([Self.common("a\n"), .block(Self.block("", "b\n", "t\n")), Self.common("z\n")])
         document.take(.ours, chunk: 1)
         #expect(try Self.chunk(1, document).text == "")
         let changed = document.replace(NSRange(location: 2, length: 0), with: "x")
         #expect(changed == 1)
-        #expect(document.chunks.map(\.id) == [0, 1])
-        #expect(try Self.chunk(1, document).text == "xz\n")
+        #expect(document.chunks.map(\.id) == [0, 1, 2])
+        #expect(try Self.chunk(1, document).text == "x\n")
         #expect(try Self.chunk(1, document).state == .edited)
+        #expect(document.resultText == "a\nx\nz\n")
     }
 
     /// The last chunk may end inside a line: the file's own end.

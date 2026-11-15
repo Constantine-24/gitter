@@ -158,6 +158,22 @@ import Testing
         #expect(store.resolverDrafts["a.txt"]?.document == taken)
     }
 
+    /// A backspace with the caret in a waiting slot is refused: nothing changes, and nothing is
+    /// pushed to undo (Ruling 14).
+    @Test(.timeLimit(.minutes(10))) func theBreakBeforeASlotIsKeptWithNoUndoStep() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        let draft = try #require(await Self.openDraft(store))
+        let slot = draft.document.range(ofChunk: 3).location
+        store.resolverReplace(NSRange(location: slot - 1, length: 1), with: "")
+        let after = try #require(store.resolverDrafts["a.txt"])
+        #expect(after.document == draft.document)
+        #expect(!after.history.canUndo)
+        #expect(after.document.waitingCount == 2)
+    }
+
     @Test(.timeLimit(.minutes(10))) func showsBaseIsRemembered() async throws {
         let (store, defaults, cleanup) = makeTestStore()
         defer { cleanup() }

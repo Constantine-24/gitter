@@ -205,9 +205,13 @@ struct ResolverDocument: Hashable, Sendable {
     /// it changed ending inside a line — a backspace at the start of the line after a taken
     /// conflict — merges that chunk with the next, by the same rule, until it ends at a line
     /// edge or is the last; an empty chunk in between (a waiting slot) is merged in too. Undo
-    /// splits it back, like any edit. So that typing into a waiting slot never does that, text
-    /// typed into the slot of a chunk that is not the last gets `lineEnding` after it when it
-    /// does not end in a line break (Ruling 12).
+    /// splits it back, like any edit. Two exceptions keep a conflict from turning "edited" with
+    /// neither side chosen:
+    /// - removing only the line break just before a waiting slot (a backspace with the caret in
+    ///   the slot) is refused, and nothing changes (Ruling 14);
+    /// - text typed into an empty conflict that is not the last chunk — a waiting slot, or a take
+    ///   of an empty side — gets `lineEnding` after it when it does not end in a line break
+    ///   (Rulings 12 and 15).
     ///
     /// Returns the id of the chunk the edit ended in, or nil when nothing was changed.
     @discardableResult
@@ -244,7 +248,7 @@ struct ResolverDocument: Hashable, Sendable {
                 ?? chunks.indices.last(where: { starts[$0] + lengths[$0] == at })
             else { return nil }
             touched = [index]
-            if chunks[index].state == .waiting, index < chunks.count - 1, typed.utf8.last != UInt8(ascii: "\n") {
+            if Self.isEmptySlot(chunks[index]), index < chunks.count - 1, typed.utf8.last != UInt8(ascii: "\n") {
                 typed += lineEnding
             }
         } else {
@@ -259,7 +263,14 @@ struct ResolverDocument: Hashable, Sendable {
 
         let span = chunks[first...last]
         let local = NSRange(location: range.location - starts[first], length: range.length)
-        let text = (span.map(\.text).joined() as NSString).replacingCharacters(in: local, with: typed)
+        let joined = span.map(\.text).joined() as NSString
+        // Only the line break before a waiting slot, removed: refused (Ruling 14).
+        if typed.isEmpty, ["\n", "\r\n"].contains(joined.substring(with: local)),
+            chunks.indices.contains(where: { starts[$0] == end && lengths[$0] == 0 && chunks[$0].state == .waiting })
+        {
+            return nil
+        }
+        let text = joined.replacingCharacters(in: local, with: typed)
         if first == last {
             chunks[first].text = text
             if !chunks[first].blocks.isEmpty { chunks[first].state = .edited }
@@ -272,6 +283,15 @@ struct ResolverDocument: Hashable, Sendable {
             chunks.replaceSubrange(index...(index + 1), with: [Self.merged(pair, text: pair.map(\.text).joined())])
         }
         return chunks[index].id
+    }
+
+    /// An empty conflict that typing fills in place: a waiting slot, or a take of an empty side.
+    private static func isEmptySlot(_ chunk: ResolverChunk) -> Bool {
+        guard chunk.text.isEmpty else { return false }
+        switch chunk.state {
+        case .waiting, .taken: return true
+        case .common, .edited: return false
+        }
     }
 
     /// Chunks an edit merged, holding `text`: the lowest id, the union of their blocks and the

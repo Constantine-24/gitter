@@ -160,8 +160,14 @@ extension RepositoryStore {
     }
 
     /// Whether `snapshot` is still the path's: its stages are the last snapshot's record of it,
-    /// and its file hashes the same now. What is left between this and a write — the index moved
-    /// after the last reload — the write's own check refuses, and the next reload detaches.
+    /// and its file hashes the same now.
+    ///
+    /// This does not catch everything (Ruling 16). The document was read from that same record,
+    /// so the stage half only notices a reload that landed during the reads, and an index change
+    /// between reading the document and reading the sides can slip through. That is accepted, not
+    /// fixed with a second read: such a draft can never be written, because the write checks the
+    /// stages again and refuses with "changed after it was shown", and the reload the change
+    /// sets off detaches the draft as changed outside.
     private func isCurrent(_ snapshot: ConflictSnapshot) -> Bool {
         guard let root else { return false }
         let path = snapshot.file.path
