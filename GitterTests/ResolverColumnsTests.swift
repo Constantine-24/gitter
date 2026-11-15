@@ -593,6 +593,15 @@ import Testing
         }
     }
 
+    /// Lets the run loop turn until the columns have caught up with a long jump (at most 5 s).
+    static func settleLayout(_ host: ResolverColumnsHost) async throws {
+        for _ in 0..<500 where host.layoutPending {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!host.layoutPending)
+        host.layoutSubtreeIfNeeded()
+    }
+
     /// The columns scrolled to near the end of the file, as a user's scroll does.
     static func scrollDeep(_ host: ResolverColumnsHost) {
         let clip = host.result.scrollView.contentView
@@ -634,7 +643,31 @@ import Testing
         let (_, host, window, cleanup) = try await Self.columns(repo, path: "long.txt")
         defer { cleanup(); window.close() }
         #expect(host.result.scrollView.contentView.bounds.minY > 3000)
+        try await Self.settleLayout(host)
         try Self.expectTextOnRows(host, "after the jump")
+    }
+
+    /// A jump further down than one turn's layout budget lays the rows above the view out over
+    /// several turns of the run loop, a budget's worth at a time, never all at once; when the last
+    /// part is done the text is on its rows.
+    @Test(.timeLimit(.minutes(10))) func aLongJumpIsLaidOutOverSeveralTurns() async throws {
+        let repo = try Self.longMerge(twice: true)
+        defer { repo.remove() }
+        let (_, host, window, cleanup) = try await Self.columns(repo, path: "long.txt")
+        defer { cleanup(); window.close() }
+        let view = host.result.textView
+        try await Self.settleLayout(host)
+        let before = view.laidOutRows
+        host.layoutBudget = 50
+        host.catchUpBudget = 50
+        Self.scrollDeep(host)
+        let first = ResolverGeometry.rows(in: host.result.scrollView.contentView.bounds, count: host.model.rows.count).lowerBound
+        #expect(first - before > 150)
+        #expect(view.laidOutRows == before + 50)
+        #expect(host.layoutPending)
+        try await Self.settleLayout(host)
+        #expect(view.laidOutRows >= first)
+        try Self.expectTextOnRows(host, "after the turns")
     }
 
     /// Once the columns are laid out deep down the file, an edit far above the rows in view —
@@ -653,7 +686,9 @@ import Testing
             host.layoutSubtreeIfNeeded()
         }
         let view = host.result.textView
+        try await Self.settleLayout(host)
         Self.scrollDeep(host)
+        try await Self.settleLayout(host)
         try Self.expectTextOnRows(host, "deep")
 
         // Typing three lines near the top (the text view scrolls up to the caret), then back down.
@@ -661,7 +696,9 @@ import Testing
         view.insertText("typed\ntyped\ntyped\n", replacementRange: NSRange(location: NSNotFound, length: 0))
         refresh()
         #expect(store.resolverDrafts["long.txt"]?.hasUserChanges == true)
+        try await Self.settleLayout(host)
         Self.scrollDeep(host)
+        try await Self.settleLayout(host)
         try Self.expectTextOnRows(host, "after typing above")
 
         // An input method's composition, committed near the top, then back down.
@@ -669,7 +706,9 @@ import Testing
         view.setMarkedText("k", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
         view.insertText("\u{304B}\n", replacementRange: NSRange(location: NSNotFound, length: 0))
         refresh()
+        try await Self.settleLayout(host)
         Self.scrollDeep(host)
+        try await Self.settleLayout(host)
         try Self.expectTextOnRows(host, "after an input method's commit above")
 
         // Undo while deep: the rows above change under the view, which does not scroll.
@@ -678,11 +717,13 @@ import Testing
         store.resolverUndo()
         refresh()
         #expect(host.result.scrollView.contentView.bounds.minY == before)
+        try await Self.settleLayout(host)
         try Self.expectTextOnRows(host, "after undo while deep")
 
         // Show Base turned on while deep: base strips appear above the view.
         store.showsBase = true
         refresh()
+        try await Self.settleLayout(host)
         try Self.expectTextOnRows(host, "after Show Base while deep")
     }
 

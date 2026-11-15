@@ -42,6 +42,16 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
     private var rows: [LayoutRow] = []
     private var showBase = false
     private var current: Int?
+    /// The most rows a column lays out at once where the view scrolled or changed
+    /// (`layOutVisibleRows`): about 6 ms for the three columns in an optimised build, so a
+    /// keystroke that scrolls far after an edit far above stays within typing's bar, while an
+    /// ordinary scroll, a few rows a frame, is laid out in the same frame.
+    var layoutBudget = 150
+    /// The most rows a column lays out in each later turn of the run loop while a long jump is
+    /// caught up (`continueLayout`): about 45 ms for the three columns.
+    var catchUpBudget = 1_000
+    /// A long jump is being laid out over the next turns of the run loop (`continueLayout`).
+    private(set) var layoutPending = false
     private var canTake = false
     private var editable = false
     private(set) var resultMap: ResolverEditMap?
@@ -219,6 +229,15 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         // Only the chunks an edit changed are laid out again.
         let newRows = ResolverLayout.rows(document, using: sides, showBase: showBase, reusing: &rowCache)
         let old = reset ? [] : rows
+        if reset {
+            // Another file: it starts at its top, not at the depth the last one was scrolled to
+            // (which would lay the new file out down to there).
+            let clip = result.scrollView.contentView
+            if clip.bounds.origin != .zero {
+                clip.scroll(to: .zero)
+                result.scrollView.reflectScrolledClipView(clip)
+            }
+        }
         var widest: CGFloat = reset ? 0 : codeWidth
         var redraw: Set<ResolverColumn> = []
         for column in columns {
@@ -505,11 +524,33 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         followScroll(origin)
     }
 
-    /// Every column laid out down to the last row in view, so TextKit draws the text on the rows
-    /// (`ResolverTextView.layOut(throughRow:)`).
-    private func layOutVisibleRows() {
-        let last = ResolverGeometry.rows(in: result.scrollView.contentView.bounds, count: rows.count).upperBound
-        for column in columns { column.textView.layOut(throughRow: last) }
+    /// Every column laid out down to the first row in view, so TextKit draws the text on the rows
+    /// (`ResolverTextView.layOut(throughRow:budget:)`). Only the rows above the view: TextKit lays
+    /// out the ones in view itself, after them, so typing in view lays out nothing here. At most
+    /// `layoutBudget` rows a column at once; while more are to come, the next turns of the run
+    /// loop do them, `catchUpBudget` at a time, whatever scrolled or changed meanwhile.
+    private func layOutVisibleRows(budget: Int? = nil) {
+        guard !layoutPending else { return }
+        let first = ResolverGeometry.rows(in: result.scrollView.contentView.bounds, count: rows.count).lowerBound
+        var done = true
+        for column in columns where !column.textView.layOut(throughRow: first, budget: budget ?? layoutBudget) {
+            done = false
+        }
+        guard !done else { return }
+        // A jump far down a long file: the rest on the next turns of the run loop, so no scroll
+        // holds the main actor for long; the text moves onto its rows when the last part is done.
+        layoutPending = true
+        DispatchQueue.main.async { [weak self] in self?.continueLayout() }
+    }
+
+    private func continueLayout() {
+        layoutPending = false
+        layOutVisibleRows(budget: catchUpBudget)
+        guard !layoutPending else { return }
+        for column in columns {
+            column.textView.textLayoutManager?.textViewportLayoutController.layoutViewport()
+            column.textView.needsDisplay = true
+        }
     }
 
     /// The overlays and strips follow the text vertically; the overlays learn the sideways offset.

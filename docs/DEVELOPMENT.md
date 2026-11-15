@@ -534,9 +534,10 @@ Gitter/                   macOS app (SwiftUI)
                               typing, the caret and the slot rule
   Resolver/ResolverColumnsHost.swift  The three columns in AppKit: rendering what changed,
                               typing through the map, the caret, undo to the store, one scroll
-  Resolver/ResolverTextColumn.swift  A column's TextKit 2 text view, laid out down to the rows
-                              in view, and its overlay: line numbers, bars, the outline, the
-                              slot and its chips, the badges
+  Resolver/ResolverTextColumn.swift  A column's TextKit 2 text view, laid out from the top down
+                              to the rows in view (a long jump over several turns of the run
+                              loop), and its overlay: line numbers, bars, the outline, the slot
+                              and its chips, the badges
   Resolver/ResolverGutterView.swift  The strips between the columns: bands and take buttons
   ContinueWording.swift      Every sentence of the operation bar, Continue, Skip and the
                               halted and stale ranges

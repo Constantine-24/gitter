@@ -187,19 +187,24 @@ final class ResolverTextView: NSTextView {
 
     override var textContainerOrigin: NSPoint { NSPoint(x: codeInset, y: ResolverGeometry.top) }
 
-    /// Lays out every row down to `row` that is not laid out yet. TextKit 2 places the lines it
-    /// shows by an estimate of the lines above them it has not laid out, and the estimate is not
-    /// a row's height (a jump 222 rows down drew the text 490 pt high); laid out, each line sits
-    /// on its row, where the numbers, bars and outline are drawn.
-    func layOut(throughRow row: Int) {
+    /// Lays out the rows down to `row` that are not laid out yet, at most `budget` of them; true
+    /// once every row above `row` is. TextKit 2 places the lines it shows by an estimate of the
+    /// lines above them it has not laid out, and the estimate is not a row's height (a jump 222
+    /// rows down drew the text 490 pt high); with the lines above laid out, each line it shows
+    /// sits on its row, where the numbers, bars and outline are drawn.
+    @discardableResult
+    func layOut(throughRow row: Int, budget: Int) -> Bool {
         let row = min(row, starts.count - 1)
-        guard row > laidOutRows, let manager = textLayoutManager, let content = manager.textContentManager,
+        guard row > laidOutRows else { return true }
+        let through = min(row, laidOutRows + max(1, budget))
+        guard let manager = textLayoutManager, let content = manager.textContentManager,
             let from = content.location(content.documentRange.location, offsetBy: starts[laidOutRows]),
-            let to = content.location(content.documentRange.location, offsetBy: starts[row]),
+            let to = content.location(content.documentRange.location, offsetBy: starts[through]),
             let range = NSTextRange(location: from, end: to)
-        else { return }
+        else { return true }
         manager.ensureLayout(for: range)
-        laidOutRows = row
+        laidOutRows = through
+        return through == row
     }
 
     // MARK: Drawing
