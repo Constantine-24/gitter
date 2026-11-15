@@ -387,14 +387,18 @@ import Testing
 
     // MARK: - Outside changes
 
-    @Test(.timeLimit(.minutes(10))) func aDraftSurvivesAnOutsideChangeReadOnly() async throws {
+    /// A file changed in a terminal under a draft (Ruling 17, the spec's Keep Editing): the draft
+    /// stays as it was, `.changedOutside`, and can still be typed in and taken from, with its
+    /// undo; only its write is refused, since it would go over the newer file. Copy Result works,
+    /// and Reload reads the file again.
+    @Test(.timeLimit(.minutes(10))) func aDraftSurvivesAnOutsideChangeAndKeepsEditing() async throws {
         let repo = try Self.stoppedMerge()
         defer { repo.remove() }
         let backend = TestBackend()
         let (store, cleanup) = await openedTestStore(repo, backend: backend)
         defer { cleanup() }
         _ = try #require(await Self.openDraft(store))
-        store.resolverTakeRest(.ours)
+        store.resolverTake(.ours, chunk: 1)
         store.resolverReplace(Self.range(of: "end", in: store), with: "mine")
         let kept = try #require(store.resolverDrafts["a.txt"])
 
@@ -407,20 +411,29 @@ import Testing
         #expect(draft.document == kept.document)
         #expect(store.resolverFocus?.path == "a.txt")
 
-        // Read-only: no write, no take, no typing.
-        store.resolveFocusedFile()
-        store.resolverTake(.theirs, chunk: 1)
+        // Keep Editing: typing, a take and undo still work, and the history is kept.
         store.resolverReplace(NSRange(location: 0, length: 0), with: "x")
+        store.resolverTake(.theirs, chunk: 3)
+        let edited = try #require(store.resolverDrafts["a.txt"])
+        #expect(edited.detached == .changedOutside)
+        #expect(edited.document.resultText == "xtop\nmain x\nmid\ntopic y\nmine\n")
+        store.resolverUndo()
+        #expect(store.resolverDrafts["a.txt"]?.document.resultText == "xtop\nmain x\nmid\nmine\n")
+        store.resolverRedo()
+        #expect(store.resolverDrafts["a.txt"]?.document == edited.document)
+        #expect(store.resolverDrafts["a.txt"]?.document.waitingCount == 0)
+
+        // Never written over the newer file.
+        store.resolveFocusedFile()
         await waitUntilIdle(store)
         #expect(!backend.calls.contains(.resolve) && !backend.calls.contains(.resolveText))
         #expect(store.activeSheet == nil)
-        #expect(store.resolverDrafts["a.txt"]?.document == kept.document)
         #expect(try Self.file(repo, "a.txt") == Data("changed in a terminal\n".utf8))
 
         let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.tests.resolver-\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
         store.copyResult("a.txt", to: pasteboard)
-        #expect(pasteboard.string(forType: .string) == kept.document.resultText)
+        #expect(pasteboard.string(forType: .string) == edited.document.resultText)
 
         // Reload reads the file again: a fresh draft, attached.
         store.reloadDraft("a.txt")
@@ -429,6 +442,28 @@ import Testing
         let reloaded = try #require(store.resolverDrafts["a.txt"])
         #expect(reloaded.detached == nil && !reloaded.hasUserChanges)
         #expect(reloaded.snapshot.worktreeHash == ConflictSnapshot.worktreeHash(of: "a.txt", at: repo.url))
+    }
+
+    /// An index-only change — stage 3 replaced through `git`, the worktree bytes untouched — is
+    /// an outside change too: the stages are compared, not only the file's hash.
+    @Test(.timeLimit(.minutes(10))) func anIndexOnlyChangeDetaches() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        _ = try #require(await Self.openDraft(store))
+        store.resolverTake(.ours)
+        let bytes = try Self.file(repo, "a.txt")
+
+        let blob = try repo.git(input: "top\nanother x\nmid\nanother y\nend\n", "hash-object", "-w", "--stdin")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try repo.git(input: "100644 \(blob) 3\ta.txt\n", "update-index", "--index-info")
+        #expect(try repo.git("ls-files", "-s", "--", "a.txt").contains("\(blob) 3\ta.txt"))
+        await store.refresh()
+        await waitUntilIdle(store)
+
+        #expect(try Self.file(repo, "a.txt") == bytes)
+        #expect(store.resolverDrafts["a.txt"]?.detached == .changedOutside)
     }
 
     @Test(.timeLimit(.minutes(10))) func resolvedOutsideDetaches() async throws {
@@ -445,6 +480,14 @@ import Testing
         #expect(store.resolverDrafts["a.txt"]?.detached == .resolvedOutside)
         #expect(store.resolverDrafts["a.txt"]?.hasUserChanges == true)
         #expect(store.resolverFocus?.path == "a.txt")
+
+        // Resolved outside, the draft is read-only: no typing, no take, no undo.
+        let kept = try #require(store.resolverDrafts["a.txt"]?.document)
+        store.resolverReplace(NSRange(location: 0, length: 0), with: "x")
+        store.resolverTake(.ours, chunk: 3)
+        store.resolverTakeRest(.ours)
+        store.resolverUndo()
+        #expect(store.resolverDrafts["a.txt"]?.document == kept)
     }
 
     @Test(.timeLimit(.minutes(10))) func operationEndedKeepsFocusOnlyWithChanges() async throws {

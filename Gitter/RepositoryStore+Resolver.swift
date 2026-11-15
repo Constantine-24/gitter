@@ -2,9 +2,10 @@ import AppKit
 import Foundation
 import GitCore
 
-/// Why a draft is kept read-only: something outside Gitter changed what it was read from.
+/// Why a draft is kept but never written: something outside Gitter changed what it was read from.
 enum DraftDetachment: Hashable, Sendable {
     /// The file or its index stages are no longer the draft's snapshot (a terminal, an editor).
+    /// Still editable — Keep Editing — but never written over the newer file (Ruling 17).
     case changedOutside
     /// The path is no longer unmerged.
     case resolvedOutside
@@ -24,7 +25,7 @@ enum DraftDetachment: Hashable, Sendable {
 
 /// One file's Result in focus mode: the document, the stages it was read with, the snapshot
 /// every write carries, its undo history, and — when something outside changed the file — why
-/// it is now read-only.
+/// it can no longer be written (and, unless only the file changed, no longer edited).
 struct ResolverDraft: Hashable, Sendable {
     var document: ResolverDocument
     let sides: ConflictSides
@@ -34,6 +35,14 @@ struct ResolverDraft: Hashable, Sendable {
 
     /// Anything taken or typed since it was read (never `==` between documents, Ruling 5).
     var hasUserChanges: Bool { !document.isPristine }
+
+    /// Takes, typing, undo and redo work: attached, or changed outside — the spec's Keep
+    /// Editing (Ruling 17). Resolved outside or left by its operation, the draft is read-only.
+    var isEditable: Bool { detached == nil || detached == .changedOutside }
+
+    /// Resolve File may write it: only while attached. A draft changed outside is never written
+    /// over the newer file.
+    var isWritable: Bool { detached == nil }
 }
 
 /// Focus mode's file, and the conflict (a chunk id of its draft) that keys and takes act on.
@@ -68,7 +77,7 @@ struct TakeForFilesPlan: Hashable, Sendable {
 /// Focus mode (spec, "Conflict resolver"): the conflicted files of the operation, one draft per
 /// file kept in memory until it is written, discarded or left at Done, takes and typing with
 /// undo, the two writes, next and previous across files, several files at once, and drafts
-/// that outlive outside changes read-only.
+/// that outlive outside changes, never written over them.
 ///
 /// The focused file is also the working copy's selected file, so its conflict read
 /// (`loadConflict`, which reads the draft's stages with the document), its failure state and
@@ -108,7 +117,7 @@ extension RepositoryStore {
     }
 
     /// Done: back to the normal window. Drafts with changes are kept for next time; pristine
-    /// ones go, and so do read-only ones (a detached draft lasts until Done).
+    /// ones go, and so do detached ones (a detached draft lasts until Done).
     func closeResolver() {
         guard resolverFocus != nil else { return }
         setResolverFocus(nil)
@@ -178,9 +187,10 @@ extension RepositoryStore {
     // MARK: - Taking and typing
 
     /// Takes `choice` for `chunk`, or (nil) the current conflict — or, with none, the first one
-    /// waiting. Taking again replaces the text; undo brings it back.
+    /// waiting. Taking again replaces the text; undo brings it back. Takes, typing, undo and redo
+    /// work on an editable draft (`ResolverDraft.isEditable`): one changed outside included.
     func resolverTake(_ choice: BlockChoice, chunk: Int? = nil) {
-        guard let path = resolverFocus?.path, var draft = resolverDrafts[path], draft.detached == nil,
+        guard let path = resolverFocus?.path, var draft = resolverDrafts[path], draft.isEditable,
             let id = chunk ?? resolverFocus?.currentChunk
                 ?? draft.document.chunks.first(where: { $0.state == .waiting })?.id
         else { return }
@@ -195,7 +205,7 @@ extension RepositoryStore {
     /// Use Ours (Theirs) for the rest: every waiting conflict of the file; taken and edited ones
     /// stay.
     func resolverTakeRest(_ side: ConflictSide) {
-        guard let path = resolverFocus?.path, var draft = resolverDrafts[path], draft.detached == nil,
+        guard let path = resolverFocus?.path, var draft = resolverDrafts[path], draft.isEditable,
             draft.document.waitingCount > 0
         else { return }
         draft.history.record(draft.document, coalescingTypingIn: nil, at: Date())
@@ -206,7 +216,7 @@ extension RepositoryStore {
     /// Typing in the Result: `range` (UTF-16) replaced with `text`. Keystrokes in one chunk
     /// within a second are one undo step.
     func resolverReplace(_ range: NSRange, with text: String) {
-        guard let path = resolverFocus?.path, var draft = resolverDrafts[path], draft.detached == nil else { return }
+        guard let path = resolverFocus?.path, var draft = resolverDrafts[path], draft.isEditable else { return }
         var document = draft.document
         guard let id = document.replace(range, with: text) else { return }
         draft.history.record(draft.document, coalescingTypingIn: id, at: Date())
@@ -226,7 +236,7 @@ extension RepositoryStore {
     }
 
     private func step(_ move: (inout ResolverHistory, ResolverDocument) -> ResolverDocument?) {
-        guard let path = resolverFocus?.path, var draft = resolverDrafts[path], draft.detached == nil,
+        guard let path = resolverFocus?.path, var draft = resolverDrafts[path], draft.isEditable,
             let document = move(&draft.history, draft.document)
         else { return }
         draft.document = document
@@ -268,9 +278,10 @@ extension RepositoryStore {
     /// Resolve File: the Result, written exactly — through the block choices when it is exactly
     /// what they compose (the byte-exact path, and the only one for a file that is not editable),
     /// else as its text. Leftover markers ask first; bytes git did not write raise the Replace
-    /// sheet. Refused on a read-only draft and while a conflict waits.
+    /// sheet. Refused on any detached draft (`isWritable`), changed outside included, and while a
+    /// conflict waits.
     func resolveFocusedFile() {
-        guard let path = resolverFocus?.path, let draft = resolverDrafts[path], draft.detached == nil,
+        guard let path = resolverFocus?.path, let draft = resolverDrafts[path], draft.isWritable,
             draft.document.waitingCount == 0, conflictActionBlockedReason == nil
         else { return }
         let pending: PendingResolution
@@ -294,7 +305,7 @@ extension RepositoryStore {
         guard case .resolveWithMarkers(let shown, let asked) = activeSheet, shown == snapshot, asked == pending
         else { return }
         activeSheet = nil
-        guard resolverDrafts[snapshot.file.path]?.detached == nil else { return }
+        guard resolverDrafts[snapshot.file.path]?.isWritable ?? true else { return }
         runResolution(pending, snapshot, recordIfEdited: false)
     }
 
@@ -421,8 +432,8 @@ extension RepositoryStore {
 
     // MARK: - Outside changes
 
-    /// After every reload: a draft whose file or stages are not its snapshot's any more is kept
-    /// read-only, `.changedOutside`; one whose path is no longer unmerged `.resolvedOutside`; and
+    /// After every reload: a draft whose file or stages are not its snapshot's any more is kept,
+    /// `.changedOutside` — still editable (Keep Editing), never written; one whose path is no longer unmerged `.resolvedOutside`; and
     /// when the operation focus mode opened under has ended, every draft `.operationEnded` —
     /// pristine ones go, focus mode stays only while a draft has changes, and a kept notice says
     /// so. A draft is never re-attached or dropped with changes in it.

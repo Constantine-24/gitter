@@ -98,7 +98,8 @@ final class RepositoryStore {
     /// failure state and the whole-file writes are the selected file's.
     private(set) var resolverFocus: ResolverFocus?
     /// Each file's Result, in memory until it is written, discarded or left at Done; kept across
-    /// file switches with its undo history, and kept read-only when something outside changes it.
+    /// file switches with its undo history, and kept — never written — when something outside
+    /// changes it.
     private(set) var resolverDrafts: [String: ResolverDraft] = [:]
     /// The files resolved in focus mode since it opened, in order: listed as Resolved until Done.
     private(set) var resolvedThisSession: [String] = []
