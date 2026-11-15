@@ -51,6 +51,22 @@ struct ResolverFocus: Hashable, Sendable {
     var currentChunk: Int?
 }
 
+/// A conflicted file's trailing text in focus mode's sidebar before its draft is read
+/// (Ruling 19): how many conflicts it has, or that it has none to choose between.
+enum ResolverFileSummary: Hashable, Sendable {
+    case conflicts(Int)
+    /// Binary, symlink, mode-only, a deletion, one side only, a merge attribute, unparsable, a
+    /// submodule.
+    case wholeFile
+}
+
+/// A summary and the status record it was read for: a reload re-reads only a file whose record
+/// changed.
+struct ResolverSummary: Hashable, Sendable {
+    let record: ConflictedFile
+    let summary: ResolverFileSummary
+}
+
 /// What Take Ours / Theirs for N Files… will do, read when its sheet opened.
 struct TakeForFilesPlan: Hashable, Sendable {
     /// A selected file that is not taken, and why.
@@ -109,11 +125,13 @@ extension RepositoryStore {
         guard let target = path ?? files.first, files.contains(target) || resolverDrafts[target] != nil else {
             return
         }
-        if resolverFocus == nil {
+        let entering = resolverFocus == nil
+        if entering {
             setResolvedThisSession([])
             if resolverDrafts.isEmpty || resolverOperation == nil { setResolverOperation(operationInProgress) }
         }
         moveFocus(to: target)
+        if entering { refreshResolverSummaries() }
     }
 
     /// Done: back to the normal window. Drafts with changes are kept for next time; pristine
@@ -125,6 +143,9 @@ extension RepositoryStore {
         setResolvedThisSession([])
         setResolverDrafts(resolverDrafts.filter { $0.value.hasUserChanges && $0.value.detached == nil })
         if resolverDrafts.isEmpty { setResolverOperation(nil) }
+        resolverSummaryTask?.cancel()
+        setResolverSummaries([:])
+        setResolverSummariesReading([])
     }
 
     /// Another file in focus mode; its draft, if any, is as it was left.
@@ -430,6 +451,56 @@ extension RepositoryStore {
         Clipboard.copy(draft.document.resultText, to: pasteboard)
     }
 
+    // MARK: - The sidebar's summaries
+
+    /// While focus mode is up, after it opens and after every reload: each conflicted file's
+    /// summary (Ruling 19) — "whole file" straight from its status record where that decides it,
+    /// else from its document, read off the main actor through the backend like every other read.
+    /// A summary is kept while the file's record is the same, so a reload reads only files whose
+    /// record changed; one whose file is no longer conflicted goes. A file with a draft is read
+    /// too, but its row shows the draft's own count. A read that fails leaves the row without a
+    /// count, never a guess.
+    func refreshResolverSummaries() {
+        guard let root, resolverFocus != nil, !isClosed else { return }
+        let files = resolverFiles
+        var summaries = resolverSummaries.filter { entry in files.contains(entry.value.record) }
+        var unread: [ConflictedFile] = []
+        for file in files where summaries[file.path]?.record != file {
+            if let decided = Self.decidedSummary(file) {
+                summaries[file.path] = ResolverSummary(record: file, summary: decided)
+            } else {
+                unread.append(file)
+            }
+        }
+        if summaries != resolverSummaries { setResolverSummaries(summaries) }
+        // A read already under way for these files is left to land.
+        guard !unread.isEmpty, !Set(unread).isSubset(of: resolverSummariesReading) else { return }
+        resolverSummaryTask?.cancel()
+        setResolverSummariesReading(unread)
+        let generation = self.generation
+        resolverSummaryTask = Task { [self] in
+            defer { if self.generation == generation, resolverSummariesReading == unread { setResolverSummariesReading([]) } }
+            for file in unread {
+                // Replaced by a newer read, Done, or another repository: stop reading.
+                guard !Task.isCancelled, self.generation == generation, resolverFocus != nil else { return }
+                guard let document = try? await backend.conflictDocument(for: file, at: root) else { continue }
+                guard !Task.isCancelled, self.generation == generation, resolverFocus != nil else { return }
+                guard resolverFiles.contains(file) else { continue }
+                let summary: ResolverFileSummary = ResolverShell.conflictCount(of: document).map { .conflicts($0) } ?? .wholeFile
+                var next = resolverSummaries
+                next[file.path] = ResolverSummary(record: file, summary: summary)
+                setResolverSummaries(next)
+            }
+        }
+    }
+
+    /// "Whole file" from the status record alone: a submodule, a symlink, a mode-only add, or a
+    /// side with no stage (a deletion, one side only). Anything else needs its document.
+    static func decidedSummary(_ file: ConflictedFile) -> ResolverFileSummary? {
+        let whole = file.isSubmodule || file.isSymlink || file.isModeOnly || file.ours == nil || file.theirs == nil
+        return whole ? .wholeFile : nil
+    }
+
     // MARK: - Outside changes
 
     /// After every reload: a draft whose file or stages are not its snapshot's any more is kept,
@@ -485,7 +556,7 @@ extension RepositoryStore {
     // MARK: - Helpers
 
     /// The ids of the chunks that hold a conflict, in order.
-    static func conflictIDs(_ document: ResolverDocument) -> [Int] {
+    nonisolated static func conflictIDs(_ document: ResolverDocument) -> [Int] {
         document.chunks.filter { !$0.blocks.isEmpty }.map(\.id)
     }
 

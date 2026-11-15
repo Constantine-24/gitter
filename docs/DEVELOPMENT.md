@@ -15,7 +15,7 @@ How Gitter is built, packaged and tested, how the code is laid out, and the debu
 | Discard | Record first (a stash entry built from plumbing in a temporary index), then `git restore` or a reverse `git apply`; untracked items to the Trash | Every discard can be undone, and the copy is in a place git and the user already know |
 | Delete | `git branch -d` first, then `-D` only from the warning its refusal opened, and only if the tip is still the one that warning named | `-d` is git's own authority on "is this merged", and it changes nothing when it refuses |
 | Remotes | git's own transports and credentials; `fetch`, then merge or rebase, instead of `git pull`; an explicit-sha lease on every force; no prune on fetch; one tag at a time, never replaced, the remote delete leased | Nothing to store or ask for; every step of a pull is one Gitter can explain and stop; the lease the automatic fetch cannot arm |
-| Conflicts | Blocks rebuilt from the index stages with `git merge-file`, choices composed in memory and written once; git's own `--continue` / `--skip` with the message file written back, behind readiness checks of Gitter's own | The worktree file can hold anything (rerere, hand edits, marker-like code); git keeps the author, the date and the sequence, and Gitter refuses before git runs where git would lose something silently |
+| Conflicts | Blocks rebuilt from the index stages with `git merge-file`, the Result composed and edited in memory (focus mode) and written once; git's own `--continue` / `--skip` with the message file written back, behind readiness checks of Gitter's own | The worktree file can hold anything (rerere, hand edits, marker-like code); git keeps the author, the date and the sequence, and Gitter refuses before git runs where git would lose something silently |
 | Remotes housekeeping | A dry-run listing on the lane, then a per-ref compare-and-delete on the ids the sheet showed; stranded commits counted once as a union and kept as branches before anything is deleted; URLs read as configured; a failed `remote rename` / `remove` read back, never assumed a no-op | `fetch --prune` deletes whatever the server lacks at that moment; remote-tracking refs have no reflog; `remote -v` shows the rewritten URL; git leaves half-done state under a held lock |
 | History actions | A plan read first (order, left out, may be skipped, replayed, already pushed), shown on a sheet, made again by the run and refused on any difference; full commit ids and `refs/…` names in every vector; tags deleted by compare-and-delete with the receipt kept in the app | A sheet is a promise only if the run checks it; a short name can mean a tag; tags have no reflog |
 | Navigation | Compare reads both tips to ids once and every count, list and diff from those ids (`log --left-only` / `--right-only` over the symmetric range, the changes by `diff-tree` from the merge base); worktree removal behind Gitter's own check, made again in full before git runs, with git's settings forced; worktrees added only on a branch named in full and read back | A branch can move mid-read; a two-dot `log` disagrees with the count under clock skew; `worktree remove` deletes ignored files, hidden edits and nested repositories without asking, and `worktree add` creates or detaches what it guesses |
@@ -114,7 +114,7 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (852 tests in 69 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (1 095 tests in 83 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -125,7 +125,8 @@ when the worktree state's read starts and is written (`WorktreeReadSchedule`), a
 switch refused before anything runs, the no-URL gates, Copy URL's redaction, the banners' height, the commit list's set selection, the deleted tags' receipts in the store, the pull-request link extraction and
 the notices' lifetime, which files a discard is offered for and when its sheet reads git again,
 which refusals Stash and Continue answers, when the toolbar reveals a lane's activity, the
-resolver's choices and previews (the same composition GitCore writes), the resolver's Result
+what the resolver offers for each kind (`ResolverOffer`), focus mode's shell (`ResolverShell`: the card, the toolbar, the
+sidebar's rows, the bars, the centre, Escape) and its palette, the resolver's Result
 (`ResolverDocument`: chunks, takes, spanning edits, typed line endings, the bytes written with
 GitCore's final-newline rule, leftover markers; `ResolverHistory`'s undo steps), and every state of the
 operation bar and the composer's prefill, and the launch guard's decisions (`DebugLaunchGuard`),
@@ -179,7 +180,7 @@ moved before a pop's drop (`StashDropRaceTests`), a reload that fails after a co
 (`InjectedFailureTests`), a window closed during a held commit or push (`HiddenWindowTests`) and
 every request made while a change is held (`RequestsDuringChangeTests`).
 
-`GitCoreTests` has 1 706 tests in 145 suites. Most of them run real `git` against a temporary
+`GitCoreTests` has 1 741 tests in 148 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
 for a server, with a second clone as "the colleague" who pushes in between — including one
 that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
@@ -444,7 +445,7 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
                                 app, with no GitCore dependency: CallUnderTest, StuckCall and
                                 neverCameBack (TimeLimitSupport), TestGitEnvironment.isolated,
                                 waitForExit (ProcessExit, kqueue's NOTE_EXIT)
-  Tests/GitCoreTests/           145 suites; ForceFlagScanner(+Lexing) is the force-flag grep
+  Tests/GitCoreTests/           148 suites; ForceFlagScanner(+Lexing) is the force-flag grep
 
 Gitter/                   macOS app (SwiftUI)
   GitterApp.swift            App entry point, `AppModel` (the window registry), the menus
@@ -474,11 +475,11 @@ Gitter/                   macOS app (SwiftUI)
   RepositoryStore+Stash.swift     Stash, apply, pop and drop; the Pop Stash notice by sha
   RepositoryStore+Discard.swift   The discard sheet's model, the gates, discard and Undo
   RepositoryStore+StashAndContinue.swift  Which refusals a stash answers, and the retry
-  RepositoryStore+Conflicts.swift The resolver: its document, choices, writes, Reopen
+  RepositoryStore+Conflicts.swift The resolver: its document, the whole-file writes, Reopen
   RepositoryStore+Resolver.swift  Focus mode: the focused file, drafts with undo, takes and
                                   typing, Resolve File, next and previous across files,
                                   several files at once, drafts kept read-only after outside
-                                  changes
+                                  changes, the sidebar's counts
   RepositoryStore+Continue.swift  The operation bar, Continue, Skip, Stage All's question,
                                   the composer's prefill
   RepositoryStore+History.swift   The commit set, cherry-pick, revert, rebase onto: plan, sheet,
@@ -513,6 +514,8 @@ Gitter/                   macOS app (SwiftUI)
   ConflictWording.swift      Every sentence of the resolver and its sheets; side labels
   Resolver/ResolverDocument.swift  The resolver's Result, pure: chunks, takes, typing,
                               the bytes written, leftover markers, undo (ResolverHistory)
+  Resolver/ResolverShell.swift  Focus mode's shell decided without a view: the sidebar's
+                              rows, the bars, the centre, Resolve File, Done, Escape
   ContinueWording.swift      Every sentence of the operation bar, Continue, Skip and the
                               halted and stale ranges
   HistoryRows.swift          The commit table's rows, built once per snapshot, with the end
@@ -557,7 +560,9 @@ Gitter/                   macOS app (SwiftUI)
                               DiffLineSelection, Banners, BranchToolbar, BranchNameValidator,
                               BranchSheetHost, RemoteToolbar, TrackingBadge, CompareListView,
                               WorktreesSection,
-                              ConflictResolverView, ConflictBlockView, OperationBar (with the
+                              ConflictCard, ResolverFocusView (focus mode: toolbar, sidebar,
+                              headers, bars, bottom bar, the whole-file centre),
+                              ResolverColumnsView, OperationBar (with the
                               halted bar), KeepBranchList (with RefIDList, the ref and id list
                               both sheets share) and the thirty-five sheets (NewBranch,
                               Rename, Merge, DeleteBranch, Abort, LeaveDetached, Pull, Publish,
@@ -571,7 +576,8 @@ Gitter/                   macOS app (SwiftUI)
 GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app): wording,
                           notices and links, the discard (and its sheet's stale check) and
                           Stash and Continue decisions, the toolbar's activity reveal, the
-                          resolver's choices and its Result (`ResolverDocument`), the
+                          resolver's offers, its Result (`ResolverDocument`) and focus
+                          mode's shell (`ResolverShell`), the
                           operation bar's states and the prefill,
                           the history and tag wording, the commit set and the deleted tags'
                           receipts, remotes housekeeping's wording and menu reasons, the
@@ -721,8 +727,8 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `update:check` / `update:look` / `update:wait` / `update:press:<download\|later\|skip\|page\|close>` / `update:state` | drive the update checker (needs `GITTER_DEBUG_UPDATE_FEED`). `update:check` is Check for Updates…, started or joined and not waited for; a newer release opens the Software Update window, and any other answer raises the app-modal alert that `alert` and `alertbutton:OK` reach. `update:look` is one automatic look, due or not (the toggle still counts), waited for, and then shows the held automatic result if it may show. `update:wait` waits up to 40 s until no check is in flight. `update:press:<b>` presses a window button (`close` is the close button) and logs the version showing after the press (`none` once the window closed). `update:state` logs the window, whether it is key, whether a check runs, the skipped version, the last check and the held automatic result. The scripted opener only logs `UPDATE would open <url>`; no browser starts. `panelsnapshot:<name>` draws the window and `menu:Gitter` lists the two menu items |
 | `activate` | make Gitter the active app (`NSApp.activate()`), as a click on it would, and log whether it is and which window is key |
 | `select:<path>` / `resolver` | select a working-copy file (a conflicted file's unstaged row, a resolved one's staged row) and wait for the resolver's read; `resolver` logs its state: kind, blocks or the whole-file reason, whether the file is what git wrote, the hash, the side names, the actions offered |
-| `blocks:<path>:<O\|T\|B\|b\|.…>` | choose each block in turn — Ours, Theirs, Both (ours first), Both (theirs first), `.` none — and log the composed file and its SHA-256; writes nothing |
-| `resolve` / `take:ours\|theirs:<path>` / `keep:<path>` / `deletefile:<path>` / `markresolved:<path>` | **act**: Resolve File, Take Ours / Theirs, Keep … Version, Delete the File (`delete:` is the branch step), Mark Resolved — each through the resolver's own entry point, which logs the offer first, so a refused one shows |
+| `resolver:open[:<path>]` / `resolver:done` / `resolver:state` | focus mode on that file (or the first with conflicts), as **Resolve Conflicts…** opens it, waiting for its read and the sidebar's counts; Done; or nothing — each logs `focus: …`: the file, "Conflict N of M", what the centre shows, every sidebar row with its trailing text, the footer's line, the bars, whether Resolve File and Abort are on, and the window's number |
+| `take:ours\|theirs:<path>` / `keep:<path>` / `deletefile:<path>` / `markresolved:<path>` | **act**: Take Ours / Theirs, Keep … Version, Delete the File (`delete:` is the branch step), Mark Resolved — each through the resolver's own entry point, which logs the offer first, so a refused one shows |
 | `confirmreplace` / `confirmmarkers` | answer the "changed since the conflict" sheet and the leftover-markers sheet |
 | `reopen:<path>` / `confirmreopen` | open Reopen Conflict… for a resolved file (logs `reopen: not offered` when it is not), and answer it |
 | `noticeshow` / `cancelsheet` | press the sticky notice's **Show Copy**; close the sheet on screen as its Cancel does — `quit` closes a sheet itself now, so this is only for a script that wants the sheet gone before it goes on |

@@ -29,9 +29,9 @@ enum PendingResolution: Hashable, Sendable {
 }
 
 /// Every sentence the resolver puts on screen: the side labels, the kind in words, the row badge,
-/// why a file is whole-file only, the chooser, the buttons and their tooltips, the three sheets
-/// (Replace, Mark Resolved, Reopen), every `ConflictError`, the notices, and Stage All's skip
-/// notice.
+/// why a file is whole-file only, the card and focus mode (toolbar, sidebar, headers, bars,
+/// bottom bar), the buttons and their tooltips, the sheets (Replace, Mark Resolved, Reopen, Take
+/// for N Files), every `ConflictError`, the notices, and Stage All's skip notice.
 ///
 /// Pure: nothing here reads the store, the disk or git. `ConflictWordingTests` pins each one.
 enum ConflictWording {
@@ -87,11 +87,6 @@ enum ConflictWording {
         case .applyingPatches:
             return SideLabels(ours: head, theirs: "the patch")
         }
-    }
-
-    /// "Ours — main": a side's heading in the chooser.
-    static func side(_ side: ConflictSide, _ sides: SideLabels) -> String {
-        "\(side == .ours ? "Ours" : "Theirs") \u{2014} \(sides.label(side))"
     }
 
     // MARK: - The kind
@@ -154,37 +149,11 @@ enum ConflictWording {
         "This is a submodule conflict, which Gitter can't resolve yet. In a terminal, check out the "
         + "commit you want inside the submodule, then stage the submodule here."
 
-    /// The "changed since the conflict" state: the worktree is not what git wrote.
-    static func changedSinceConflict(_ path: String) -> String {
-        "\(name(path)) was changed since git wrote the conflict, so its blocks aren't shown. Take a side "
-            + "\u{2014} Gitter keeps a copy of the file in the Stashes list first \u{2014} or finish it in "
-            + "your editor and use Mark Resolved."
-    }
+    // MARK: - Where focus mode is
 
-    /// The heading over the current file in the "changed since" state.
-    static let currentFile = "The file as it is now"
-
-    // MARK: - The chooser
-
-    /// `index` is 0-based.
+    /// "Conflict 2 of 5" in the toolbar; `index` is 0-based.
     static func position(_ index: Int, of count: Int) -> String { "Conflict \(index + 1) of \(count)" }
 
-    static func chosen(_ count: Int, of total: Int) -> String { "\(count) of \(total) chosen" }
-
-    static func choice(_ choice: BlockChoice) -> String {
-        switch choice {
-        case .ours: "Ours"
-        case .theirs: "Theirs"
-        case .oursThenTheirs: "Both (ours first)"
-        case .theirsThenOurs: "Both (theirs first)"
-        }
-    }
-
-    static let base = "Base (before either side changed it)"
-    static let noBase = "Git kept no base for this conflict."
-    static let preview = "Result"
-    static let previewEmpty = "Choose how to resolve this conflict to see the result."
-    static let emptySide = "(nothing)"
     static let previous = "Previous Conflict"
     static let next = "Next Conflict"
 
@@ -203,7 +172,7 @@ enum ConflictWording {
 
     static func resolveHelp(remaining: Int) -> String {
         remaining == 0
-            ? "Write the chosen blocks to the file and stage it"
+            ? "Write the Result to the file and stage it"
             : "Choose a side for every conflict first (\(remaining) left)"
     }
 
@@ -398,6 +367,151 @@ enum ConflictWording {
     static func operationEndedOutside(_ operation: RepositoryOperation) -> String {
         "The \(operation.noun.lowercased()) ended outside Gitter."
     }
+
+    /// The card where a conflicted file's diff would be: the kind, and how many conflicts when
+    /// the file has blocks ("Changed on both sides · 3 conflicts").
+    static func card(kind: String, count: Int?) -> String {
+        guard let count else { return kind }
+        return "\(kind) \u{00B7} \(count == 1 ? "1 conflict" : "\(count) conflicts")"
+    }
+
+    /// The card's and the operation bar's button.
+    static let resolveConflictsButton = "Resolve Conflicts\u{2026}"
+    static let resolveConflictsHelp = "Resolve the conflicts with both sides and the result side by side"
+
+    static let focusTitle = "Resolve Conflicts"
+
+    /// The line under the title: the operation's own words without their period, or, with no
+    /// operation, where such conflicts come from (Ruling 20).
+    static func focusSubtitle(_ operation: RepositoryOperation?, _ progress: OperationProgress?, branch: String?)
+        -> String
+    {
+        guard let operation else { return "Conflicts from applying a stash or undoing a discard" }
+        guard let sentence = ContinueWording.progress(operation, progress, branch: branch) else {
+            return "\(operation.noun) in progress"
+        }
+        return sentence.hasSuffix(".") ? String(sentence.dropLast()) : sentence
+    }
+
+    static let showBase = "Show Base"
+    static let showBaseHelp = "Show what each conflict looked like before either side changed it"
+    static let done = "Done"
+    static let doneHelp = "Back to the repository. Changes you made stay until you resolve or discard them."
+
+    // The sidebar.
+
+    static let conflictedFiles = "Conflicted Files"
+
+    static func filesResolved(_ resolved: Int, of total: Int) -> String {
+        "\(resolved) of \(total) \(total == 1 ? "file" : "files") resolved"
+    }
+
+    /// The footer once every file is resolved.
+    static func allResolved(withOperation: Bool) -> String {
+        withOperation ? "All files resolved \u{2014} press Done, then Continue" : "All files resolved \u{2014} press Done"
+    }
+
+    /// The footer until then (Ruling 21): `title` is the operation's Continue or Commit.
+    static func comesBack(_ title: String) -> String { "\(title) comes back once every file is resolved." }
+
+    /// A row's trailing text; nothing while its read is still to land.
+    static func sidebarStatus(_ status: ResolverRowStatus) -> String? {
+        switch status {
+        case .pending: nil
+        case .left(let count): "\(count) left"
+        case .wholeFile: "Whole file"
+        case .resolved: "Resolved"
+        case .readOnly: "Read only"
+        }
+    }
+
+    /// A row's folder line for a file at the repository's top.
+    static let noFolder = "\u{2014}"
+
+    /// A row for VoiceOver: the path and its state.
+    static func sidebarRowLabel(_ path: String, _ status: ResolverRowStatus) -> String {
+        sidebarStatus(status).map { "\(path), \($0)" } ?? path
+    }
+
+    // The column headers.
+
+    static func sideTitle(_ side: ConflictSide) -> String { sideName(side) }
+
+    static func useRest(_ side: ConflictSide) -> String { "Use \(sideName(side)) for the rest" }
+
+    static func useRestHelp(_ side: ConflictSide, _ sides: SideLabels) -> String {
+        "Take \(sides.label(side)) for every conflict still waiting in this file"
+    }
+
+    static let resultTitle = "Result"
+
+    /// After the path in the Result's header.
+    static func resultState(editable: Bool) -> String { editable ? "\u{2014} editable" : "\u{2014} read-only" }
+
+    static func resolvedCount(_ resolved: Int, of total: Int) -> String { "\(resolved) of \(total) resolved" }
+
+    /// The Result header's overflow menu, for VoiceOver and its tooltip.
+    static let moreActions = "More Actions"
+    static let copyResult = "Copy Result"
+    static let discardChanges = "Discard Changes"
+    static let reload = "Reload"
+    static let keepEditing = "Keep Editing"
+
+    // The bars above the columns.
+
+    static func bar(_ bar: ResolverBar) -> String {
+        switch bar {
+        case .editedAfterConflict:
+            "This file was edited after the conflict; resolving here replaces those edits. A copy will be kept."
+        case .changedOutside:
+            "This file changed outside Gitter. Reload it to see the new version; your changes will be discarded."
+        // Not "outside": Gitter's own Stage and Abort can end a draft this way too.
+        case .resolvedOutside:
+            "This file is no longer in conflict, so this Result can't be written. Copy it if you need it."
+        case .operationEnded:
+            "The operation this file was part of has ended, so this Result can't be written. Copy it if you need it."
+        case .notEditable(.tooLarge): "This file is too large to edit here"
+        case .notEditable(.notUTF8): "This file isn't UTF-8 text"
+        }
+    }
+
+    // The bottom bar.
+
+    /// "1 conflict left in this file"; nothing once none is.
+    static func conflictsLeft(_ count: Int) -> String? {
+        switch count {
+        case 0: nil
+        case 1: "1 conflict left in this file"
+        default: "\(count) conflicts left in this file"
+        }
+    }
+
+    /// The five key hints, as in the mockup: the keys, then what they do.
+    static let keyHints: [(keys: String, action: String)] = [
+        ("\u{2303}\u{2318}\u{2190}", "Take Ours"), ("\u{2303}\u{2318}\u{2192}", "Take Theirs"),
+        ("\u{2303}\u{2318}\u{2193}", "Both"), ("\u{2318}]", "Next conflict"), ("\u{2318}[", "Previous"),
+    ]
+
+    // The centre.
+
+    /// A side's column for a file with no blocks: what that side has.
+    static func wholeFileSide(_ file: ConflictedFile, _ side: ConflictSide, _ reason: WholeFileReason) -> String {
+        guard let stage = side == .ours ? file.ours : file.theirs else {
+            return reason == .oneSided ? "Not on this side" : "Deleted on this side"
+        }
+        switch stage.mode {
+        case "160000": return "Submodule"
+        case "120000": return "Symbolic link"
+        default: break
+        }
+        switch reason {
+        case .binary: return "Binary file"
+        case .modeOnly: return "Mode \(String(stage.mode.suffix(3)))"
+        default: return "Whole file"
+        }
+    }
+
+    static let allResolvedTitle = "All files resolved"
 
     private static func sideName(_ side: ConflictSide) -> String { side == .ours ? "Ours" : "Theirs" }
 

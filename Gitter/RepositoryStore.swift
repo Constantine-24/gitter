@@ -85,10 +85,6 @@ final class RepositoryStore {
     private(set) var conflictLoadFailure: ConflictLoadFailure?
     /// Where the operation is, read with the document, for the side labels.
     private(set) var conflictProgress: OperationProgress?
-    /// The resolver's block choices, in memory only (nothing is written while the user
-    /// chooses), kept while the document's `ConflictSnapshot` stays the same and dropped when it
-    /// changes.
-    private(set) var resolverChoices = ResolverChoices()
     /// The selected file, when it is a resolved conflict that Reopen Conflict… can bring back
     /// (`GitConflictBackend.canReopen`, read when it is selected).
     private(set) var reopenablePath: String?
@@ -111,6 +107,13 @@ final class RepositoryStore {
     /// A reload ran during one of Gitter's own writes, so the drafts are checked again once the
     /// write is over (`finishMutation`): Gitter's own resolve is not an outside change.
     private(set) var resolverReconcilePending = false
+    /// Focus mode's sidebar summaries, per conflicted path (`refreshResolverSummaries`): kept
+    /// while focus mode is up, dropped at Done.
+    private(set) var resolverSummaries: [String: ResolverSummary] = [:]
+    /// The files whose summaries `resolverSummaryTask` is reading.
+    private(set) var resolverSummariesReading: [ConflictedFile] = []
+    /// The summaries' read, for the tests to wait on.
+    var resolverSummaryTask: Task<Void, Never>?
     /// Show Base, remembered in `defaults` under `resolverShowsBaseKey`.
     var showsBase: Bool {
         didSet { defaults.set(showsBase, forKey: Self.resolverShowsBaseKey) }
@@ -593,6 +596,9 @@ final class RepositoryStore {
         resolverOperation = nil
         resolverLandsOnLast = false
         resolverReconcilePending = false
+        resolverSummaryTask?.cancel()
+        resolverSummaries = [:]
+        resolverSummariesReading = []
         operationStop = nil
         prefilledStopKey = nil
         haltedSequence = nil
@@ -1303,23 +1309,16 @@ final class RepositoryStore {
         rejectedPush = value
     }
 
-    /// The one place the resolver's document is written: the choices follow its snapshot
-    /// (`ResolverChoices.show`), so they can never outlive the conflict they were made for.
+    /// The one place the resolver's document is written.
     /// internal (not private): used by +Conflicts.swift's `loadConflict()`
     func setConflict(_ document: ConflictDocument?, progress: OperationProgress?) {
         conflictDocument = document
         conflictProgress = progress
-        resolverChoices.show(document?.snapshot, blockCount: document.flatMap(ResolverOffer.blocks(of:))?.count ?? 0)
     }
 
     /// internal (not private(set) write): used by +Conflicts.swift's `loadConflict()`
     func setConflictLoadFailure(_ failure: ConflictLoadFailure?) {
         conflictLoadFailure = failure
-    }
-
-    /// internal (not private(set) write): used by +Conflicts.swift's `chooseBlock`
-    func setBlockChoice(_ index: Int, _ choice: BlockChoice) {
-        resolverChoices.choose(index, choice)
     }
 
     /// internal (not private(set) write): used by +Conflicts.swift's `loadConflict()`
@@ -1356,6 +1355,16 @@ final class RepositoryStore {
     /// internal (not private(set) write): used by +Resolver.swift
     func setResolverLandsOnLast(_ value: Bool) {
         resolverLandsOnLast = value
+    }
+
+    /// internal (not private(set) write): used by +Resolver.swift's `refreshResolverSummaries`
+    func setResolverSummaries(_ summaries: [String: ResolverSummary]) {
+        resolverSummaries = summaries
+    }
+
+    /// internal (not private(set) write): used by +Resolver.swift's `refreshResolverSummaries`
+    func setResolverSummariesReading(_ files: [ConflictedFile]) {
+        resolverSummariesReading = files
     }
 
     /// internal (not private(set) write): used by +Resolver.swift's `reconcileResolverDrafts`

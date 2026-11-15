@@ -17,8 +17,8 @@ struct DiffView: View {
     var body: some View {
         if store.selectedFileIsUnmerged {
             // A conflicted file: git describes it with `diff --cc`, which the parser does not
-            // match, and what the user needs is the resolver anyway.
-            ConflictResolverView()
+            // match, and what the user needs is the resolver anyway — the card that opens it.
+            ConflictCard()
         } else {
             VStack(spacing: 0) {
                 if let path = store.reopenablePath, path == store.selectedPath { reopenOffer(path) }
@@ -67,7 +67,7 @@ struct DiffView: View {
         }
     }
 
-    /// A conflicted file never gets here: it has the resolver (`ConflictResolverView`).
+    /// A conflicted file never gets here: it has the resolver's card (`ConflictCard`).
     private var placeholder: some View {
         ContentUnavailableView(
             hasSelection ? "No Changes" : "No File Selected", systemImage: "doc.text.magnifyingglass"

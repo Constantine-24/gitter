@@ -126,6 +126,86 @@ import Testing
         #expect(draft.snapshot.worktreeHash == ConflictSnapshot.worktreeHash(of: "a.txt", at: repo.url))
     }
 
+    // MARK: - The sidebar's summaries (Ruling 19)
+
+    /// The summaries' reads and the focused file's own reads so far.
+    static func documentReads(_ backend: TestBackend) -> Int {
+        backend.calls.count { $0 == .conflictDocument }
+    }
+
+    /// Opens focus mode and waits for the draft, the focused file's read and the summaries.
+    static func openSettled(_ store: RepositoryStore) async throws {
+        _ = try #require(await openDraft(store))
+        await store.conflictTask?.value
+        await store.resolverSummaryTask?.value
+    }
+
+    /// Every row has its trailing text once focus mode is up: a text conflict its blocks, read
+    /// through the document; a deletion "whole file" from its status record, with no read.
+    @Test(.timeLimit(.minutes(10))) func everyRowGetsItsCountAfterOpening() async throws {
+        let repo = try Self.stoppedMerge(deleted: true)
+        defer { repo.remove() }
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        #expect(store.resolverSummaries.isEmpty)
+
+        try await Self.openSettled(store)
+        #expect(store.resolverSummaries.mapValues(\.summary) == ["a.txt": .conflicts(2), "b.txt": .conflicts(2), "c.txt": .wholeFile])
+        #expect(store.resolverSummaries["b.txt"]?.record == store.resolverFiles.first { $0.path == "b.txt" })
+        let rows = ResolverShell.rows(
+            files: store.resolverFiles, resolved: store.resolvedThisSession, drafts: store.resolverDrafts,
+            summaries: store.resolverSummaries.mapValues(\.summary))
+        #expect(rows.map(\.status) == [.left(2), .left(2), .wholeFile])
+        // a.txt and b.txt once each for the summaries, a.txt once more as the focused file; c.txt never.
+        #expect(Self.documentReads(backend) == 3)
+
+        // Done drops them.
+        store.closeResolver()
+        #expect(store.resolverSummaries.isEmpty)
+    }
+
+    /// A reload whose records are the same reads no summary again (the focused file's own read
+    /// comes with every reload, as before); closing and opening again reads them all.
+    @Test(.timeLimit(.minutes(10))) func aReloadWithTheSameRecordsReadsNothingAgain() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        try await Self.openSettled(store)
+        let opened = Self.documentReads(backend)
+
+        await store.refresh()
+        await waitUntilIdle(store)
+        await store.conflictTask?.value
+        await store.resolverSummaryTask?.value
+        #expect(Self.documentReads(backend) - opened <= 1, "only the focused file's own read")
+        #expect(store.resolverSummaries.mapValues(\.summary) == ["a.txt": .conflicts(2), "b.txt": .conflicts(2)])
+
+        // Not vacuous: with the cache dropped, both are read again.
+        let reloaded = Self.documentReads(backend)
+        store.closeResolver()
+        try await Self.openSettled(store)
+        #expect(Self.documentReads(backend) - reloaded >= 2)
+        #expect(store.resolverSummaries.mapValues(\.summary) == ["a.txt": .conflicts(2), "b.txt": .conflicts(2)])
+    }
+
+    /// A file with a draft shows the draft's live waiting count, never the cached summary.
+    @Test(.timeLimit(.minutes(10))) func aDraftsCountWinsOverTheSummary() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        try await Self.openSettled(store)
+        store.resolverTake(.theirs)
+        #expect(store.resolverSummaries["a.txt"]?.summary == .conflicts(2))
+        let rows = ResolverShell.rows(
+            files: store.resolverFiles, resolved: store.resolvedThisSession, drafts: store.resolverDrafts,
+            summaries: store.resolverSummaries.mapValues(\.summary))
+        #expect(rows.map(\.status) == [.left(1), .left(2)])
+    }
+
     // MARK: - Drafts
 
     @Test(.timeLimit(.minutes(10))) func switchingFilesKeepsTheDraft() async throws {

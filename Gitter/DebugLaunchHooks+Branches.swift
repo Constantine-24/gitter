@@ -57,11 +57,11 @@
     ///
     ///   The resolver (`RepositoryStore+Conflicts`, `DebugLaunchHooks+Conflicts`):
     ///
-    ///     select:<path>                blocks:<path>:<O|T|B|b…>     resolve
-    ///     take:ours|theirs:<path>      deletefile:<path>            keep:<path>
-    ///     confirmreplace               markresolved:<path>          confirmmarkers
-    ///     reopen:<path>                confirmreopen                resolver
-    ///     noticeshow                   cancelsheet
+    ///     select:<path>                take:ours|theirs:<path>      deletefile:<path>
+    ///     keep:<path>                  confirmreplace               markresolved:<path>
+    ///     confirmmarkers               reopen:<path>                confirmreopen
+    ///     resolver                     resolver:open[:<path>]       resolver:done
+    ///     resolver:state               noticeshow                   cancelsheet
     ///
     ///   The operation bar and the composer (`RepositoryStore+Continue`,
     ///   `DebugLaunchHooks+Continue`):

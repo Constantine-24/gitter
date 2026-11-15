@@ -1,7 +1,6 @@
 #if DEBUG
 
     import AppKit
-    import CryptoKit
     import Foundation
     import GitCore
     import Synchronization
@@ -12,11 +11,6 @@
     ///   select:<path>           selects the working copy's file (the unstaged row of a conflicted
     ///                           one, the staged row of a resolved one) and waits for the
     ///                           resolver's read; logs `resolver: …`.
-    ///   blocks:<path>:<O|T|B|b…>  selects the file if needed and chooses each block in turn: O
-    ///                           ours, T theirs, B both (ours first), b both (theirs first), `.`
-    ///                           leaves one unchosen. Writes nothing; logs the choices and the
-    ///                           composed file (`ResolverPreview.file`), or `incomplete`.
-    ///   resolve                 Resolve File, for the choices made.
     ///   take:ours|theirs:<path> Take Ours / Take Theirs (or the whole-file kind's own title).
     ///   deletefile:<path>       Delete the File. (`delete:` is the branch step.)
     ///   keep:<path>             Keep Their / Our Version.
@@ -34,6 +28,12 @@
     ///   tryagain                the failed state's Try Again (`loadConflict()`); waits for the
     ///                           document or the failure, and logs `resolver: …`.
     ///   resolver                logs the resolver's state without doing anything.
+    ///   resolver:open[:<path>]  focus mode on that file (or the first with conflicts), as the
+    ///                           card's or the operation bar's Resolve Conflicts… does; waits for
+    ///                           its read (and draft) and the sidebar's summaries, and logs
+    ///                           `focus: …` with the window number `screencapture -l` needs.
+    ///   resolver:done           Done; logs `focus: …`.
+    ///   resolver:state          logs `focus: …` without doing anything.
     ///   noticeshow              the sticky notice's Show Copy, as its button runs it.
     ///   cancelsheet             what a sheet's Cancel does (`activeSheet = nil`): a sheet up
     ///                           keeps `quit` from quitting.
@@ -43,7 +43,7 @@
     extension DebugLaunchHooks {
 
         static let conflictCommands: Set<String> = [
-            "select", "blocks", "resolve", "take", "deletefile", "keep", "confirmreplace", "markresolved",
+            "select", "take", "deletefile", "keep", "confirmreplace", "markresolved",
             "confirmmarkers", "reopen", "confirmreopen", "resolver", "noticeshow", "cancelsheet",
             "conflictreadfails", "tryagain",
         ]
@@ -63,39 +63,6 @@
             switch command {
             case "select":
                 await select(rest, store: store)
-            case "blocks":
-                // The path may hold colons; the choices are after the last one.
-                guard let colon = rest.lastIndex(of: ":") else {
-                    log("blocks: expected <path>:<choices>")
-                    return
-                }
-                let path = String(rest[..<colon])
-                guard await select(path, store: store) else { return }
-                for (index, letter) in rest[rest.index(after: colon)...].enumerated() {
-                    let choice: BlockChoice? =
-                        switch letter {
-                        case "O": .ours
-                        case "T": .theirs
-                        case "B": .oursThenTheirs
-                        case "b": .theirsThenOurs
-                        default: nil
-                        }
-                    if let choice { store.chooseBlock(index, choice) }
-                }
-                let preview: String =
-                    if case .blocks(let segments)? = store.selectedConflict?.presentation,
-                        let data = ResolverPreview.file(segments, store.resolverChoices)
-                    {
-                        "\(data.count) bytes sha256 \(ConflictSnapshotHash.hex(data)) "
-                            + "\(String(decoding: data, as: UTF8.self).debugDescription)"
-                    } else {
-                        "incomplete"
-                    }
-                log("blocks: choices \(store.blockChoices.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }) "
-                    + "remaining: \(store.resolverChoices.remaining) preview: \(preview)")
-            case "resolve":
-                logOffer(.resolveFile, store)
-                store.resolveSelectedFile()
             case "take":
                 let parts = rest.split(separator: ":", maxSplits: 1).map(String.init)
                 guard parts.count == 2, let side: ConflictSide = parts[0] == "ours" ? .ours : parts[0] == "theirs" ? .theirs : nil
@@ -167,7 +134,7 @@
                 await store.conflictTask?.value
                 logResolver(store)
             case "resolver":
-                logResolver(store)
+                await resolverStep(rest, store: store)
             case "cancelsheet":
                 store.activeSheet = nil
             case "noticeshow":
@@ -235,8 +202,7 @@
             let file = document.snapshot.file
             let shown: String =
                 switch document.presentation {
-                case .blocks:
-                    ResolverOffer.blocks(of: document).map { "blocks(\($0.count))" } ?? "changedSinceConflict"
+                case .blocks: "blocks(\(ResolverShell.conflictCount(of: document) ?? 0))"
                 case .wholeFile(let reason): "wholeFile(\(reason))"
                 case .submodule: "submodule"
                 }
@@ -245,8 +211,63 @@
                 + "| \(shown) | matches: \(document.matchesGitsConflict) "
                 + "| hash: \(document.snapshot.worktreeHash?.prefix(12) ?? "nil") "
                 + "| sides: \(sides.ours) / \(sides.theirs) "
-                + "| actions: \(ResolverOffer.actions(for: document).map { ConflictWording.title($0, file) }) "
-                + "| choices: \(store.blockChoices.count)")
+                + "| actions: \(ResolverOffer.actions(for: document).map { ConflictWording.title($0, file) })")
+        }
+
+        /// `resolver`, `resolver:open[:<path>]`, `resolver:done` and `resolver:state`. The path may
+        /// hold colons.
+        private static func resolverStep(_ rest: String, store: RepositoryStore) async {
+            switch rest {
+            case "":
+                logResolver(store)
+            case "done":
+                store.closeResolver()
+                logFocus(store)
+            case "state":
+                logFocus(store)
+            case let open where open == "open" || open.hasPrefix("open:"):
+                let path = open == "open" ? nil : String(open.dropFirst("open:".count))
+                store.openResolver(at: path)
+                guard let focused = store.resolverFocus?.path else {
+                    log("focus: not opened on \(path ?? "the first file") | conflicted: \(store.resolverFiles.map(\.path))")
+                    return
+                }
+                _ = await wait({
+                    store.resolverDrafts[focused] != nil || store.conflictLoadFailure?.path == focused
+                        || (store.selectedConflict.map { ResolverShell.conflictCount(of: $0) == nil } ?? false)
+                }, what: "resolver:open \(focused): its read")
+                await store.resolverSummaryTask?.value
+                logFocus(store)
+            default:
+                log("resolver: expected open[:<path>], done or state, got \(rest)")
+            }
+        }
+
+        /// Focus mode as the shell shows it: the file, its position, the sidebar's rows and
+        /// footer, the bars, Resolve File, and the window's number for a window-only screenshot.
+        static func logFocus(_ store: RepositoryStore) {
+            guard let focus = store.resolverFocus else {
+                log("focus: none | card: \(store.selectedFileIsUnmerged) selected: \(store.selectedPath ?? "nil") "
+                    + "| window: \(AppModel.windows.window(of: store)?.windowNumber ?? 0)")
+                return
+            }
+            let draft = store.focusedDraft
+            let rows = ResolverShell.rows(
+                files: store.resolverFiles, resolved: store.resolvedThisSession, drafts: store.resolverDrafts,
+                summaries: store.resolverSummaries.mapValues(\.summary))
+            let centre = ResolverShell.centre(
+                path: focus.path, draft: draft, document: store.selectedConflict, failure: store.conflictLoadFailure,
+                allResolved: store.resolverAllResolved)
+            let bars = draft.map {
+                ResolverShell.bars($0, matchesGitsConflict: store.selectedConflict?.matchesGitsConflict ?? true, keptEditing: false)
+            } ?? []
+            log("focus: \(focus.path) chunk: \(focus.currentChunk.map(String.init) ?? "nil") "
+                + "| \(ResolverShell.position(draft, current: focus.currentChunk) ?? "no position") | centre: \(centre) "
+                + "| rows: \(rows.map { "\($0.path)=\(ConflictWording.sidebarStatus($0.status) ?? "-")" }) "
+                + "| footer: \(ResolverShell.footerLine(store.operationInProgress, allResolved: store.resolverAllResolved) ?? "-") "
+                + "| bars: \(bars) | resolve file: \(ResolverShell.resolveFileEnabled(draft, blocked: store.conflictActionBlockedReason)) "
+                + "| abort: \(ResolverShell.showsAbort(store.operationInProgress) ? "\(store.abortState)" : "none") "
+                + "| window: \(AppModel.windows.window(of: store)?.windowNumber ?? 0)")
         }
 
         static func describeConflictSheet(_ sheet: BranchSheet?) -> String? {
@@ -265,13 +286,6 @@
                     + "sides: \(sides.ours) / \(sides.theirs), body: \(ConflictWording.reopenBody(path, comesBack, sides)))"
             default: nil
             }
-        }
-    }
-
-    /// SHA-256 for the harness's preview line, so the shell can compare it with `shasum -a 256`.
-    enum ConflictSnapshotHash {
-        static func hex(_ data: Data) -> String {
-            SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         }
     }
 

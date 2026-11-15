@@ -162,30 +162,21 @@ import Testing
             + "resolve it in your editor.")
     }
 
-    @Test func aSubmoduleAndAChangedFileExplainThemselves() {
+    @Test func aSubmoduleExplainsItself() {
         #expect(ConflictWording.submodule
             == "This is a submodule conflict, which Gitter can't resolve yet. In a terminal, check out "
             + "the commit you want inside the submodule, then stage the submodule here.")
-        #expect(ConflictWording.changedSinceConflict("f.txt")
-            == "\"f.txt\" was changed since git wrote the conflict, so its blocks aren't shown. Take a "
-            + "side \u{2014} Gitter keeps a copy of the file in the Stashes list first \u{2014} or finish "
-            + "it in your editor and use Mark Resolved.")
     }
 
-    // MARK: - The chooser
+    // MARK: - Where focus mode is
 
-    @Test func theChooserSaysWhereItIs() {
+    @Test func focusModeSaysWhereItIs() {
         #expect(ConflictWording.position(1, of: 5) == "Conflict 2 of 5")
-        #expect(ConflictWording.chosen(3, of: 5) == "3 of 5 chosen")
-        #expect(ConflictWording.choice(.ours) == "Ours")
-        #expect(ConflictWording.choice(.theirs) == "Theirs")
-        #expect(ConflictWording.choice(.oursThenTheirs) == "Both (ours first)")
-        #expect(ConflictWording.choice(.theirsThenOurs) == "Both (theirs first)")
-        #expect(ConflictWording.resolveHelp(remaining: 0) == "Write the chosen blocks to the file and stage it")
+        #expect(ConflictWording.previous == "Previous Conflict")
+        #expect(ConflictWording.next == "Next Conflict")
+        #expect(ConflictWording.resolveHelp(remaining: 0) == "Write the Result to the file and stage it")
         #expect(ConflictWording.resolveHelp(remaining: 2) == "Choose a side for every conflict first (2 left)")
         #expect(ConflictWording.resolveHelp(remaining: 1) == "Choose a side for every conflict first (1 left)")
-        #expect(ConflictWording.side(.ours, Self.sides) == "Ours \u{2014} main")
-        #expect(ConflictWording.side(.theirs, Self.sides) == "Theirs \u{2014} feature")
     }
 
     @Test func everyActionHasItsTitle() {
@@ -216,7 +207,7 @@ import Testing
             == "Keep the file as main has it, and stage it")
         #expect(ConflictWording.help(.openInEditor, text, Self.sides) == "Open the file in its default app")
         #expect(ConflictWording.help(.markResolved, text, Self.sides) == "Stage the file as it is now")
-        #expect(ConflictWording.help(.resolveFile, text, Self.sides) == "Write the chosen blocks to the file and stage it")
+        #expect(ConflictWording.help(.resolveFile, text, Self.sides) == "Write the Result to the file and stage it")
     }
 
     // MARK: - Sheets
