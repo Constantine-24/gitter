@@ -516,6 +516,25 @@ import Testing
         #expect(overlay.hitTest(onText) == nil)
     }
 
+    /// Focus mode fills the columns before their first layout, while the strips are still zero
+    /// wide: the take buttons are placed again once the strips have their width, centred in them
+    /// rather than half outside their left edge until the next take.
+    @Test(.timeLimit(.minutes(10))) func theTakeButtonsSitInTheMiddleOfTheirStrips() async throws {
+        let repo = try ResolverStoreTests.stoppedMerge()
+        defer { repo.remove() }
+        let (_, host, window, cleanup) = try await Self.columns(repo)
+        defer { cleanup(); window.close() }
+        for gutter in [host.left, host.right] {
+            #expect(gutter.bounds.width == ResolverGrid.gutterWidth)
+            let buttons = gutter.subviews.compactMap { $0 as? ResolverTakeButton }
+            #expect(buttons.count == 2)
+            for button in buttons {
+                #expect(abs(button.frame.midX - gutter.bounds.midX) < 0.5, "\(gutter.side) button at \(button.frame)")
+                #expect(gutter.bounds.contains(button.frame))
+            }
+        }
+    }
+
     /// A merge whose `b.txt` has one conflict two rows tall in the Result's slot (Theirs has two
     /// lines), between "top" and "end".
     static func twoRowMerge() throws -> ScratchRepo {

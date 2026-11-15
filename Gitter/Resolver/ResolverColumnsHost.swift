@@ -100,6 +100,9 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         sizeTextViews()
         followScroll(result.scrollView.contentView.bounds.origin)
         result.overlay.layoutChips()
+        // The strips may have been filled before they had a width (focus mode opening): their
+        // buttons are centred on the width they have now.
+        for strip in [left, right] { strip.layoutButtons() }
     }
 
     /// Every text view as tall as the rows and as wide as the widest line of the three.
