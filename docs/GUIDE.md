@@ -482,11 +482,12 @@ beside Theirs (←), click a choice in the waiting box, or use the keys:
 | Escape | Done; while you are typing in the Result, the first Escape leaves the text and the second is Done |
 
 **Both** in the waiting box takes ours first; ⌥-click it, or right-click it, for theirs first.
-The bar at the bottom shows the first five keys, and the takes and Next and Previous Conflict
-are in the Repository menu too. **Use Ours for the rest** and **Use Theirs for the rest**, above
-each side, take that side for every conflict still waiting in the file; the ones you took or
-edited stay as they are. A conflict can be taken again: the new choice replaces the old one, and
-⌘Z brings the old one back, with no question.
+The bar at the bottom shows the keys for Ours, Theirs, both with ours first, and the next and
+previous conflict, and the Repository menu lists the four takes and Next and Previous Conflict.
+**Use Ours for the rest** and **Use Theirs for the rest**, above each side, take that side for
+every conflict still waiting in the file; the ones you took or edited stay as they are. A
+conflict can be taken again: the new choice replaces the old one, and ⌘Z brings the old one back,
+with no question.
 
 **Typing in the Result.** Click into the Result and edit it like any text: anywhere, not only in
 the conflicts. Typing into a waiting box replaces it with what you type, and a change anywhere is
