@@ -861,10 +861,22 @@ files into the Trash, every discard recorded first and undoable; offers Stash an
 when a switch, merge or pull is refused over local changes; and keeps a pushed branch's
 pull-request link on screen until it is used.
 
-Resolves conflicts in the app (milestone A2) — block by block, by whole file, or in your editor
-and then Mark Resolved, with Reopen Conflict… while the operation lasts — and continues a
-stopped rebase, cherry-pick or revert with the stopped commit's message, skips a commit with
-its changes recorded first, and commits a merge or squash with git's prepared message.
+Resolves conflicts in the app (milestone A2) — by whole file, or in your editor and then Mark
+Resolved, with Reopen Conflict… while the operation lasts — and continues a stopped rebase,
+cherry-pick or revert with the stopped commit's message, skips a commit with its changes
+recorded first, and commits a merge or squash with git's prepared message.
+
+Resolves conflicts in Resolve Conflicts, a focus mode that takes the window: Ours, an editable
+Result and Theirs in three columns aligned row for row, with word-level marks; takes by button or
+key, typing in place, undo and redo across both, Show Base, and Resolve File, byte-exact for
+pure takes and keeping line endings; binary files, deletions and symlinks as whole files; and
+every change kept until Gitter asks, before its own actions, a window's close or a quit, would
+drop it, and kept read-only with Copy Result when the file changes outside Gitter. Files over
+5,200 lines or 370 KB open with a read-only Result; takes still work.
+
+Says when a newer release is out: a daily HTTPS check of the repository's latest GitHub release,
+on by default and switched off under the Gitter menu, with Check for Updates… to ask at any time
+and a window that links to the download.
 
 Cherry-picks and reverts one or several selected commits as one git sequence and rebases the
 current branch onto a commit or a branch (milestone B1), each behind a sheet the run checks
