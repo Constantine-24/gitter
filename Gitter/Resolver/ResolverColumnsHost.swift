@@ -528,6 +528,18 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
             return true
         }
 
+        /// Backspace at the start of the line after the current conflict, through the text
+        /// view's own `deleteBackward`: an edit across the conflict's edge, which joins the line
+        /// to the conflict's last line.
+        func debugBackspaceAfterCurrent() -> Bool {
+            guard editable, let current, let range = model.chunkRows[current], let map = resultMap else { return false }
+            let display = map.displayStart(ofRow: range.upperBound)
+            guard display <= (result.textView.textStorage?.length ?? 0) else { return false }
+            result.textView.setSelectedRange(NSRange(location: display, length: 0))
+            result.textView.deleteBackward(nil)
+            return true
+        }
+
         /// The columns as drawn, for the harness's log: rows, the selection, the scroll offset and
         /// whether each column's text is its rows.
         func debugDescribe() -> String {

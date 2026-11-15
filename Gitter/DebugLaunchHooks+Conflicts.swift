@@ -279,6 +279,17 @@
                 }
                 if !host.debugType(text) { log("resolver:type: the Result is read-only") }
                 await settleFocus(store)
+            case "backspace":
+                _ = await wait({
+                    ResolverColumnsHost.debugLatest?.path == store.resolverFocus?.path
+                        && ResolverColumnsHost.debugLatest?.window != nil
+                }, what: "resolver:backspace: the columns")
+                guard let host = ResolverColumnsHost.debugLatest, host.path == store.resolverFocus?.path else {
+                    log("resolver:backspace: no columns on screen")
+                    return
+                }
+                if !host.debugBackspaceAfterCurrent() { log("resolver:backspace: refused (read-only, or no conflict)") }
+                await settleFocus(store)
             case let open where open == "open" || open.hasPrefix("open:"):
                 let path = open == "open" ? nil : String(open.dropFirst("open:".count))
                 store.openResolver(at: path)
