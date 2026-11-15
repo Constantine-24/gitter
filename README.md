@@ -21,9 +21,10 @@ hooks and commit signing all work exactly as they do in the terminal.
 - **Remotes.** Fetch, pull (merge or rebase) and push from the toolbar, with git's own progress
   and a Stop button. Ahead/behind counts show on every branch, and a quiet background fetch keeps
   them current. A force push is always leased on the exact commit you were shown.
-- **Conflicts.** Resolve them in the app, block by block, with ours beside theirs and the result
-  shown before anything is written. Then continue, skip or abort the merge, rebase, cherry-pick or
-  revert.
+- **Conflicts.** Resolve them in the app, with ours, the Result and theirs side by side and each
+  side's changes marked down to the word. Take a side with a click or a key, or type straight into
+  the Result; nothing is written until you resolve the file. Then continue, skip or abort the
+  merge, rebase, cherry-pick or revert.
 - **History actions.** Cherry-pick or revert several commits as one sequence, or rebase onto a
   commit or a branch. Each one opens a sheet that lists exactly what will run.
 - **Stash and discard.** Stash everything or only selected files. Discard a file, a hunk or a line,

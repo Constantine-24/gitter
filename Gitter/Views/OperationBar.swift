@@ -2,8 +2,9 @@ import GitCore
 import SwiftUI
 
 /// The strip above the working-copy file list while an operation is in progress: where it
-/// stopped and what to do next (`ContinueWording.bar`), **Skip This Commit…** and **Continue**
-/// for a rebase, cherry-pick or revert, and the abort button for all six.
+/// stopped and what to do next (`ContinueWording.bar`), **Resolve Conflicts…** while a file is
+/// conflicted, **Skip This Commit…** and **Continue** for a rebase, cherry-pick or revert, and
+/// the abort button for all six.
 ///
 /// The sentence has its own row, never cut (also its tooltip), and the buttons a row of their own
 /// under it: beside three buttons a long branch name or subject was cut mid-word at the default
@@ -48,6 +49,12 @@ struct OperationBar: View {
                     .textSelection(.enabled)
             }
             HStack(spacing: 8) {
+                // Focus mode on the first file with conflicts, while any file is conflicted.
+                if !store.resolverFiles.isEmpty {
+                    Button(ConflictWording.resolveConflictsButton) { store.openResolver() }
+                        .font(.callout)
+                        .help(ConflictWording.resolveConflictsHelp)
+                }
                 Spacer(minLength: 0)
                 if OperationBarState.isContinuable(operation) {
                     let skip = store.skipState

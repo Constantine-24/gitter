@@ -188,7 +188,8 @@ extension RepositoryStore {
         }
         let url = URL(fileURLWithPath: worktree.path)
         guard let registry else {
-            open(url)
+            // This window's repository is replaced: its drafts with changes are asked about first.
+            openInPlace(url)
             return .useFront(self)
         }
         return registry.open(url, kind: .worktreeHere, front: self)

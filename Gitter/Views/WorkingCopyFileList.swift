@@ -59,14 +59,20 @@ struct WorkingCopyFileList: View {
         // blocked file says why in the banner — a key has no tooltip.
         .onDeleteCommand { discardSelected() }
         // The row's discard; `primaryAction` is the list's own double-click (and Return)
-        // handler, rather than a tap gesture racing the selection.
+        // handler, rather than a tap gesture racing the selection: it stages or unstages, and
+        // opens focus mode on a conflicted file.
         .contextMenu(forSelectionType: String.self) { keys in
             rowMenu(keys)
         } primaryAction: { keys in
             guard let key = keys.first, let row = RowKey.parse(key) else { return }
             let files = row.staged ? store.stagedFiles : store.unstagedFiles
             guard let file = files.first(where: { $0.path == row.path }) else { return }
-            toggle(file, staged: row.staged)
+            // A conflicted file opens focus mode on it; its + button and Space still stage it
+            // (Mark Resolved).
+            switch ResolverShell.primaryAction(for: file) {
+            case .openResolver: store.openResolver(at: file.path)
+            case .toggle: toggle(file, staged: row.staged)
+            }
         }
     }
 

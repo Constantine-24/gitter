@@ -13,7 +13,7 @@ import AppKit
 ///
 /// | on the lane | what quitting does |
 /// |---|---|
-/// | nothing | quits at once |
+/// | nothing | quits at once — once the drafts question below, if any, is answered |
 /// | fetch, automatic fetch, pull (its fetch) | stops it and quits when the lane frees — at most `readStopBound` (the runner's escalation ends git within about two grace periods) |
 /// | push, publish, force push, delete on a remote | asks: **Wait** (default) lets it finish — stopping every read on any lane — then quits, unless a lane that had a write has ended since the quit was asked with a banner, a sheet or a notice with a warning in it, which is then left on screen and the quit called off; and unless it is still running after `waitBound`, when the quit is called off with a banner saying so; **Stop and Quit** stops it and quits when the lane frees; **Don't Quit** calls the quit off |
 ///
@@ -37,6 +37,12 @@ import AppKit
 /// (`frontWindowToAsk`), and a hidden store's failure under Wait is told by its own hidden ending's
 /// alert, not a second time by the call-off — whether that alert is answered before or after Wait
 /// (`callingOff`, `hasWindow`).
+///
+/// **Drafts first** (Task 7): before any of this, drafts with changes in any window are asked
+/// about once, counted across every window (`changedDraftCount`): Cancel calls the quit off,
+/// Discard and Quit lets the lanes decide as in the table, on the same held reply and against
+/// the lanes as they were at the quit; nothing drops the drafts but the quit itself, so a
+/// call-off after it keeps them.
 ///
 /// **Not covered:** a SIGTERM (`kill`, a logout that force-quits) never reaches
 /// `applicationShouldTerminate`, and git is left running as before; and a mutation that is not
@@ -89,16 +95,114 @@ enum QuitGuard {
         return lanes.contains { $0 != nil } ? .stopReads : .now
     }
 
+    /// What the quit puts on screen and how it answers AppKit: the live ones in the app; a test
+    /// records the questions and the replies instead (Task 7), so no alert is raised and no
+    /// reply of true ever reaches the test host.
+    struct Environment {
+        /// Raises `alert` — as a sheet on `window` (or on the sheet it already has), or app-modal
+        /// for nil, from the run loop so that every other window's work goes on under it (C3) —
+        /// and hands `answer` the button pressed.
+        var present: @MainActor (_ alert: NSAlert, _ window: NSWindow?,
+            _ answer: @escaping @MainActor (NSApplication.ModalResponse) -> Void) -> Void
+        /// The reply to a `.terminateLater`.
+        var reply: @MainActor (Bool) -> Void
+
+        static let live = Environment(
+            present: { alert, window, answer in
+                if let window {
+                    alert.beginSheetModal(for: window.attachedSheet ?? window, completionHandler: answer)
+                } else {
+                    ModalAlert.raise(alert, then: answer)
+                }
+            },
+            reply: { NSApp.reply(toApplicationShouldTerminate: $0) })
+    }
+
+    static var environment = Environment.live
+
+    /// How many conflicted files have drafts with changes across `stores` — read-only ones too,
+    /// which quitting loses as well — counting only stores whose window is still open (a closed
+    /// window asked before it closed, Task 7).
+    static func changedDraftCount(_ stores: [RepositoryStore]) -> Int {
+        stores.filter { !$0.isClosed }.reduce(0) { $0 + $1.changedDraftPaths.count }
+    }
+
+    /// What every store's lane was when the quit was asked (⌘Q), before any question: the drafts
+    /// question's answer is compared against it, so "since the quit was asked" stays true however
+    /// long that question was up (fix round 1, I3).
+    struct AskedLanes: Equatable {
+        /// Per store, whether its lane ran a write.
+        let writes: [Bool]
+        /// Per store, `laneMessagesToRead`.
+        let messages: [Int]
+
+        @MainActor init(_ stores: [RepositoryStore]) {
+            writes = stores.map { $0.remoteActivity?.isWrite == true }
+            messages = stores.map(\.laneMessagesToRead)
+        }
+
+        /// What the call-off compares: the count for a store that had a write, nil for every other.
+        var countsForWrites: [Int?] { zip(writes, messages).map { $0 ? $1 : nil } }
+    }
+
+    /// Set once the drafts question is answered Discard and Quit, until the quit ends: the drafts
+    /// die with the process, so nothing drops them before the quit is certain — a call-off (Don't
+    /// Quit, Wait called off) keeps every one (fix round 1, I2).
+    private(set) static var draftsAccepted = false
+
+    /// Whether a quit under way has the user's Discard and Quit for every draft: a hidden window
+    /// whose work ends meanwhile closes without asking again (`WindowRegistry`).
+    static var quitTakesTheDrafts: Bool { draftsAccepted && QuitFlow.isUnderWay }
+
     /// The answer to `applicationShouldTerminate`, over every store a quit takes with it
     /// (`AppModel.quitStores()`). Every path that answers false tells `QuitFlow` the quit has
     /// ended (`quitEnded`) and ends the terminating of every store it began.
+    ///
+    /// Drafts with changes in any window are asked about first, once, counted across every window
+    /// (Task 7): `.terminateLater`, and the reply waits on the answer — a logout waits on it as on
+    /// an unsaved document. Cancel calls the quit off; Discard and Quit goes on to the lanes as
+    /// below, on the same held reply, against the lanes as they were when the quit was asked; the
+    /// drafts are dropped by nothing but the quit itself.
     static func shouldTerminate(_ stores: [RepositoryStore]) -> NSApplication.TerminateReply {
+        draftsAccepted = false
+        let asked = AskedLanes(stores)
+        let drafts = changedDraftCount(stores)
+        guard drafts == 0 else {
+            log("quit: \(drafts) conflicted file(s) with changes, asking")
+            askAboutDrafts(drafts, stores: stores, asked: asked)
+            return .terminateLater
+        }
+        return decideLanes(stores, askedAtQuit: nil)
+    }
+
+    /// The lanes' part of the quit (the table above). `askedAtQuit`: the reply is already
+    /// `.terminateLater` — after the drafts question — so quitting now is a reply of true too,
+    /// and the lanes are judged against what they were at the quit: a write running then that has
+    /// ended since with something to read calls the quit off, its banner left on screen, as
+    /// Wait's call-off does; a write running then is counted as asked about.
+    @discardableResult
+    private static func decideLanes(_ stores: [RepositoryStore], askedAtQuit: AskedLanes?) -> NSApplication.TerminateReply {
+        if let askedAtQuit,
+            let calling = callingOff(
+                stores, before: askedAtQuit.countsForWrites, hasWindow: { hasWindow($0, in: AppModel.windows) })
+        {
+            log(
+                "quit: called off, a write running at the quit ended with something to read: "
+                    + (calling.store.lastLaneMessageToRead ?? "?"))
+            callOff()
+            if let text = calling.windowlessAlert { tell(text) }
+            return .terminateCancel
+        }
         let lanes = stores.map(\.remoteActivity)
         switch decision(lanes) {
         case .now:
             log("quit: the lane is free, quitting now")
-            // No reply to AppKit: `.terminateNow` is the answer.
-            wentAhead(reply: { _ in })
+            if askedAtQuit != nil {
+                quit()
+            } else {
+                // No reply to AppKit: `.terminateNow` is the answer.
+                wentAhead(reply: { _ in })
+            }
             return .terminateNow
         case .stopReads:
             let kinds = lanes.compactMap { $0.map { "\($0.kind)" } }
@@ -113,11 +217,38 @@ enum QuitGuard {
         case .ask(let index):
             guard let activity = lanes[index] else { preconditionFailure("asked about a free lane") }
             log("quit: \(activity.kind) is a write, asking")
-            // Before the alert: whatever any lane ends with from here on is unread.
+            let now = AskedLanes(stores)
+            // Before the alert — or, after the drafts question, at the quit: whatever any lane ends
+            // with from then on is unread.
+            let writes = askedAtQuit.map { zip($0.writes, now.writes).map { $0 || $1 } } ?? now.writes
             ask(
-                about: activity, of: stores[index], stores: stores,
-                writesAsked: lanes.map { $0?.isWrite == true }, messagesBefore: stores.map(\.laneMessagesToRead))
+                about: activity, of: stores[index], stores: stores, writesAsked: writes,
+                messagesBefore: (askedAtQuit ?? now).messages)
             return .terminateLater
+        }
+    }
+
+    /// The drafts question (`ConflictWording.closeQuestion`, Cancel / Discard and Quit): on the
+    /// window of the first store with changed drafts when it is on screen, app-modal otherwise.
+    /// Answered in its completion, synchronously — while the quit is held no `Task` may run.
+    private static func askAboutDrafts(_ count: Int, stores: [RepositoryStore], asked: AskedLanes) {
+        let alert = HiddenWindowEnvironment.makeCloseQuestion(count, discard: ConflictWording.discardAndQuit)
+        let window = stores.first { !$0.isClosed && !$0.changedDraftPaths.isEmpty }
+            .flatMap { AppModel.windows.window(of: $0) }
+            .flatMap { $0.isVisible ? $0 : nil }
+        let eventLog = stores.first?.eventLog ?? .none
+        environment.present(alert, window) { response in
+            let discard = response == .alertSecondButtonReturn
+            eventLog.write(
+                "quit drafts question: \(discard ? ConflictWording.discardAndQuit : ConflictWording.cancel)")
+            guard discard else {
+                log("quit: Cancel, the drafts are kept")
+                callOff()
+                return
+            }
+            log("quit: Discard and Quit")
+            draftsAccepted = true
+            decideLanes(stores, askedAtQuit: asked)
         }
     }
 
@@ -189,11 +320,7 @@ enum QuitGuard {
         // has), like every other question Gitter asks — a hidden one brought to the front first;
         // app-modal when there is no such window, or it is not on screen (minimized), raised from
         // the run loop so that every other window's work goes on under it (C3).
-        if let window = frontWindowToAsk(about: writing, in: AppModel.windows) {
-            alert.beginSheetModal(for: window.attachedSheet ?? window, completionHandler: answer)
-        } else {
-            ModalAlert.raise(alert, then: answer)
-        }
+        environment.present(alert, frontWindowToAsk(about: writing, in: AppModel.windows), answer)
     }
 
     /// The window the quit's question about `writing`'s write goes on as a sheet, or nil for an
@@ -357,7 +484,7 @@ enum QuitGuard {
         alert.messageText = RemoteWording.quitCalledOffTitle
         alert.informativeText = text
         alert.addButton(withTitle: "OK")
-        ModalAlert.raise(alert, then: { _ in })
+        environment.present(alert, nil, { _ in })
     }
 
     /// The quit goes ahead: from here on a window's close is part of it, and leaves the
@@ -384,6 +511,8 @@ enum QuitGuard {
     /// `QuitFlow`, so that the next ⌘Q starts afresh, and the window registry, whose closes count
     /// again.
     static func calledOff(reply: (Bool) -> Void) {
+        // The drafts the user agreed to lose with the quit are kept: it is not happening.
+        draftsAccepted = false
         AppModel.windows.endAppTermination()
         QuitFlow.answerHeldQuitEvents(quitting: false)
         reply(false)
@@ -393,7 +522,7 @@ enum QuitGuard {
     /// The live reply to a `.terminateLater`; the tests pass their own to `wentAhead` and
     /// `calledOff`.
     private static func replyToAppKit(_ quitting: Bool) {
-        NSApp.reply(toApplicationShouldTerminate: quitting)
+        environment.reply(quitting)
     }
 
     /// A `QUIT <time> …` line on stderr, DEBUG only. Internal: `QuitFlow` writes its lines here too.

@@ -32,6 +32,26 @@ import Testing
 
     // MARK: - A conflict that cannot be read (B4 item 4)
 
+    /// A whole-file kind's side column (Ruling 23): its text when it is text; else what it is,
+    /// with a binary file's size in the system's file units; with no read, the short description.
+    @Test func wholeFileSidesSayWhatEachSideHas() {
+        let text = Self.file(.bothModified)
+        #expect(ConflictWording.wholeFileSideContent(text, .ours, .mergeAttribute("union"), content: Data("a\nb\n".utf8)) == .text("a\nb\n"))
+        let size = ByteCountFormatter.string(fromByteCount: 2_800_000, countStyle: .file)
+        #expect(
+            ConflictWording.wholeFileSideContent(text, .theirs, .binary, content: Data(count: 2_800_000))
+                == .description("Binary file, \(size)"))
+        // Text with a NUL, or not UTF-8, is binary too.
+        #expect(ConflictWording.wholeFileSideContent(text, .ours, .unparsable, content: Data([0x61, 0, 0x62])) == .description("Binary file, 3 bytes"))
+        #expect(ConflictWording.wholeFileSideContent(text, .ours, .unparsable, content: Data([0xFF, 0xFE])) == .description("Binary file, 2 bytes"))
+        let link = Self.file(.bothModified, ours: Self.stage("120000"), theirs: Self.stage("120000"))
+        #expect(ConflictWording.wholeFileSideContent(link, .ours, .symlink, content: Data("../target".utf8)) == .description("Symlink to ../target"))
+        let deleted = Self.file(.deletedByThem, theirs: nil)
+        #expect(ConflictWording.wholeFileSideContent(deleted, .theirs, .deletion, content: nil) == .description("Deleted on this side"))
+        // The read not landed or failed: the short description.
+        #expect(ConflictWording.wholeFileSideContent(text, .ours, .binary, content: nil) == .description("Binary file"))
+    }
+
     @Test func theFailedReadSaysWhatCanStillBeDone() {
         #expect(ConflictWording.loadFailed("git went away")
             == "Gitter couldn't read this conflict: git went away. You can still open the file in its editor, "
@@ -162,30 +182,21 @@ import Testing
             + "resolve it in your editor.")
     }
 
-    @Test func aSubmoduleAndAChangedFileExplainThemselves() {
+    @Test func aSubmoduleExplainsItself() {
         #expect(ConflictWording.submodule
             == "This is a submodule conflict, which Gitter can't resolve yet. In a terminal, check out "
             + "the commit you want inside the submodule, then stage the submodule here.")
-        #expect(ConflictWording.changedSinceConflict("f.txt")
-            == "\"f.txt\" was changed since git wrote the conflict, so its blocks aren't shown. Take a "
-            + "side \u{2014} Gitter keeps a copy of the file in the Stashes list first \u{2014} or finish "
-            + "it in your editor and use Mark Resolved.")
     }
 
-    // MARK: - The chooser
+    // MARK: - Where focus mode is
 
-    @Test func theChooserSaysWhereItIs() {
+    @Test func focusModeSaysWhereItIs() {
         #expect(ConflictWording.position(1, of: 5) == "Conflict 2 of 5")
-        #expect(ConflictWording.chosen(3, of: 5) == "3 of 5 chosen")
-        #expect(ConflictWording.choice(.ours) == "Ours")
-        #expect(ConflictWording.choice(.theirs) == "Theirs")
-        #expect(ConflictWording.choice(.oursThenTheirs) == "Both (ours first)")
-        #expect(ConflictWording.choice(.theirsThenOurs) == "Both (theirs first)")
-        #expect(ConflictWording.resolveHelp(remaining: 0) == "Write the chosen blocks to the file and stage it")
+        #expect(ConflictWording.previous == "Previous Conflict")
+        #expect(ConflictWording.next == "Next Conflict")
+        #expect(ConflictWording.resolveHelp(remaining: 0) == "Write the Result to the file and stage it")
         #expect(ConflictWording.resolveHelp(remaining: 2) == "Choose a side for every conflict first (2 left)")
         #expect(ConflictWording.resolveHelp(remaining: 1) == "Choose a side for every conflict first (1 left)")
-        #expect(ConflictWording.side(.ours, Self.sides) == "Ours \u{2014} main")
-        #expect(ConflictWording.side(.theirs, Self.sides) == "Theirs \u{2014} feature")
     }
 
     @Test func everyActionHasItsTitle() {
@@ -216,7 +227,7 @@ import Testing
             == "Keep the file as main has it, and stage it")
         #expect(ConflictWording.help(.openInEditor, text, Self.sides) == "Open the file in its default app")
         #expect(ConflictWording.help(.markResolved, text, Self.sides) == "Stage the file as it is now")
-        #expect(ConflictWording.help(.resolveFile, text, Self.sides) == "Write the chosen blocks to the file and stage it")
+        #expect(ConflictWording.help(.resolveFile, text, Self.sides) == "Write the Result to the file and stage it")
     }
 
     // MARK: - Sheets
@@ -413,5 +424,107 @@ import Testing
         #expect(!RepositoryStore.onlyWaitingForTheOperation([(receipt, waiting), (receipt, back)]))
         #expect(!RepositoryStore.onlyWaitingForTheOperation([(receipt, other)]))
         #expect(!RepositoryStore.onlyWaitingForTheOperation([]))
+    }
+
+    // MARK: - Focus mode
+
+    @Test func theOperationEndingOutsideIsNamed() {
+        #expect(ConflictWording.operationEndedOutside(.merge) == "The merge ended outside Gitter.")
+        #expect(ConflictWording.operationEndedOutside(.rebase) == "The rebase ended outside Gitter.")
+        #expect(ConflictWording.operationEndedOutside(.cherryPick) == "The cherry-pick ended outside Gitter.")
+        #expect(ConflictWording.operationEndedOutside(.revert) == "The revert ended outside Gitter.")
+        #expect(ConflictWording.operationEndedOutside(.squash) == "The squash ended outside Gitter.")
+        #expect(ConflictWording.operationEndedOutside(.applyingPatches)
+            == "The patch application ended outside Gitter.")
+    }
+
+    /// The Result's own write: the same Replace sheet and notice as Resolve File.
+    @Test func theResultsWriteReadsAsResolveFile() {
+        let text = Self.file(.bothModified)
+        #expect(ConflictWording.replaceThen(.text(Data("x\n".utf8)), text, Self.sides)
+            == "Then the Result is written to the file, and it is staged.")
+        #expect(ConflictWording.replaceButton(.text(Data()), text) == "Resolve File")
+        #expect(ConflictWording.done(.text(Data()), ConflictReceipt(path: "f.txt", recorded: nil), Self.sides)
+            == "Resolved \"f.txt\".")
+    }
+
+    @Test func takeForFilesSaysWhatIsCopiedAndSkipped() {
+        func snapshot(_ path: String) -> ConflictSnapshot {
+            ConflictSnapshot(
+                file: ConflictedFile(path: path, kind: .bothModified, base: Self.stage(), ours: Self.stage(), theirs: Self.stage()),
+                worktreeHash: "h")
+        }
+        let plan = TakeForFilesPlan(
+            side: .theirs, files: [snapshot("a.txt"), snapshot("b.txt")], copies: ["b.txt"],
+            skipped: [.init(path: "c.txt", reason: .noSide), .init(path: "lib", reason: .submodule)])
+        #expect(ConflictWording.takeForFilesMenuItem(.theirs, count: 3) == "Take Theirs for 3 Files\u{2026}")
+        #expect(ConflictWording.takeForFilesMenuItem(.ours, count: 1) == "Take Ours for 1 File\u{2026}")
+        #expect(ConflictWording.takeForFilesTitle(plan) == "Take Theirs for 2 Files?")
+        #expect(ConflictWording.takeForFiles(plan, Self.sides) == [
+            "\"a.txt\" and \"b.txt\" are each replaced by the whole file from feature, and staged.",
+            "\"b.txt\" was changed since git wrote the conflict. Gitter keeps a copy in the Stashes list first, "
+                + "as \"Replaced by Gitter: b.txt\".",
+            "Skipped: \"c.txt\", which feature deleted.",
+            "Skipped: \"lib\", a submodule, which Gitter can't resolve.",
+        ])
+        #expect(ConflictWording.takeForFilesButton(plan) == "Take Theirs for 2 Files")
+
+        let two = TakeForFilesPlan(
+            side: .ours, files: [snapshot("a.txt"), snapshot("b.txt")], copies: ["a.txt", "b.txt"], skipped: [])
+        #expect(ConflictWording.takeForFiles(two, Self.sides) == [
+            "\"a.txt\" and \"b.txt\" are each replaced by the whole file from main, and staged.",
+            "\"a.txt\" and \"b.txt\" were changed since git wrote the conflict. Gitter keeps a copy of each in "
+                + "the Stashes list first, as \"Replaced by Gitter: <file>\".",
+        ])
+        let one = TakeForFilesPlan(side: .ours, files: [snapshot("a.txt")], copies: [], skipped: [])
+        #expect(ConflictWording.takeForFilesTitle(one) == "Take Ours for 1 File?")
+        #expect(ConflictWording.takeForFiles(one, Self.sides) == [
+            "\"a.txt\" is replaced by the whole file from main, and staged."
+        ])
+
+        let receipts = [
+            ConflictReceipt(path: "a.txt", recorded: nil), ConflictReceipt(path: "b.txt", recorded: Self.record),
+        ]
+        #expect(ConflictWording.tookForFiles(plan, receipts, Self.sides)
+            == "Resolved \"a.txt\" and \"b.txt\" with the whole file from feature. The edited file is in the "
+            + "Stashes list as \"Replaced by Gitter: f.txt\". Skipped \"c.txt\" and \"lib\".")
+        #expect(ConflictWording.tookForFiles(one, [ConflictReceipt(path: "a.txt", recorded: nil)], Self.sides)
+            == "Resolved \"a.txt\" with the whole file from main.")
+    }
+
+    /// Task 7: the questions before a draft is dropped — the spec's sentences, the singular for
+    /// one file, and the Abort sheet's line.
+    @Test func theDraftQuestionsAreTheSpecs() {
+        #expect(ConflictWording.discardQuestion("src/a.txt") == "Discard your changes to \"src/a.txt\"?")
+        #expect(ConflictWording.discardQuestion(files: ["a.txt"]) == "Discard your changes to \"a.txt\"?")
+        #expect(
+            ConflictWording.discardQuestion(files: ["a.txt", "b.txt", "c.txt"])
+                == "Discard your changes to \"a.txt\", \"b.txt\" and \"c.txt\"?")
+        #expect(
+            ConflictWording.closeQuestion(4) == "You have changes in 4 conflicted files that aren't saved. Close anyway?")
+        #expect(ConflictWording.closeQuestion(1) == "You have changes in 1 conflicted file that isn't saved. Close anyway?")
+        #expect(ConflictWording.discardChanges == "Discard Changes")
+        #expect(ConflictWording.discardAndClose == "Discard and Close")
+        #expect(ConflictWording.discardAndQuit == "Discard and Quit")
+        let doneOne = DraftQuestion(paths: ["a.txt"], purpose: .done)
+        #expect(ConflictWording.draftQuestionTitle(doneOne) == "Discard your changes to \"a.txt\"?")
+        #expect(ConflictWording.draftQuestionButton(doneOne) == "Discard Changes")
+        let actionTwo = DraftQuestion(paths: ["a.txt", "b.txt"], purpose: .action)
+        #expect(ConflictWording.draftQuestionButton(actionTwo) == "Discard Changes")
+        #expect(
+            ConflictWording.abortDrafts(["a.txt", "b.txt"])
+                == "Your changes to \"a.txt\" and \"b.txt\" in Resolve Conflicts are discarded too.")
+    }
+
+    /// The kept notice when Results with changes are made read-only outside Gitter while Resolve
+    /// Conflicts is closed (Ruling 49): one file or several, resolved or the operation ended.
+    @Test func theKeptNoticeNamesTheFiles() {
+        #expect(ConflictWording.keptOutside(["a.txt"], ended: nil)
+            == "Your changes to \"a.txt\" in Resolve Conflicts are kept, but it changed outside Gitter.")
+        #expect(ConflictWording.keptOutside(["a.txt", "b.txt"], ended: nil)
+            == "Your changes to \"a.txt\" and \"b.txt\" in Resolve Conflicts are kept, but they changed outside Gitter.")
+        #expect(ConflictWording.keptOutside(["a.txt"], ended: .rebase)
+            == "The rebase ended outside Gitter. Your changes to \"a.txt\" in Resolve Conflicts are kept.")
+        #expect(ConflictWording.showKeptChanges == "Show Changes")
     }
 }

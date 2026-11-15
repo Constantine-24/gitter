@@ -2,51 +2,12 @@ import AppKit
 import Foundation
 import GitCore
 
-/// The resolver's block choices: in memory only, for the `ConflictSnapshot` they were made
-/// against. A different snapshot — other stages, other worktree bytes, another file, none —
-/// drops them, so a choice can never be applied to a conflict it was not made for.
-struct ResolverChoices: Equatable {
-    private(set) var snapshot: ConflictSnapshot?
-    private(set) var blockCount = 0
-    /// Keyed by block index, 0-based.
-    private(set) var choices: [Int: BlockChoice] = [:]
-
-    /// The document now on screen, and how many blocks it shows (0 when it shows none).
-    mutating func show(_ snapshot: ConflictSnapshot?, blockCount: Int) {
-        let count = snapshot == nil ? 0 : blockCount
-        if snapshot != self.snapshot || count != self.blockCount { choices = [:] }
-        self.snapshot = snapshot
-        self.blockCount = count
-    }
-
-    /// Ignored for a block that is not shown.
-    mutating func choose(_ index: Int, _ choice: BlockChoice) {
-        guard snapshot != nil, (0..<blockCount).contains(index) else { return }
-        choices[index] = choice
-    }
-
-    /// One choice per block in order — what Resolve File writes — or nil while any is missing.
-    var ordered: [BlockChoice]? {
-        guard blockCount > 0 else { return nil }
-        let list = (0..<blockCount).compactMap { choices[$0] }
-        return list.count == blockCount ? list : nil
-    }
-
-    var remaining: Int { blockCount - choices.count }
-}
-
-/// What the resolver offers for a document (spec, "App"; Ruling 12).
+/// What the resolver offers for a document (spec, "App"; Ruling 12): the whole-file writes, and
+/// the actions on the file as it is. Resolve File is focus mode's, on the file's draft.
 enum ResolverOffer {
-    /// The blocks the chooser shows: a `.blocks` document that is still what git wrote. In the
-    /// "changed since the conflict" state there is no chooser.
-    static func blocks(of document: ConflictDocument) -> [ConflictBlock]? {
-        guard document.matchesGitsConflict, case .blocks(let segments) = document.presentation else { return nil }
-        return segments.compactMap { if case .block(let block) = $0 { block } else { nil } }
-    }
-
-    /// The buttons, in order. Resolve File only with the chooser; Delete only for a deletion
-    /// (DU, UD, DD) and Keep only for DU/UD (Ruling 12); a one-sided add keeps its one side; Open
-    /// in Editor and Mark Resolved only with a file on disk; a submodule gets nothing.
+    /// The buttons, in order. Delete only for a deletion (DU, UD, DD) and Keep only for DU/UD
+    /// (Ruling 12); a one-sided add keeps its one side; Open in Editor and Mark Resolved only with
+    /// a file on disk; a submodule gets nothing.
     static func actions(for document: ConflictDocument) -> [ResolverAction] {
         let file = document.snapshot.file
         var actions: [ResolverAction] = []
@@ -54,7 +15,6 @@ enum ResolverOffer {
         case .submodule:
             return []
         case .blocks:
-            if blocks(of: document) != nil { actions.append(.resolveFile) }
             actions += [.takeOurs, .takeTheirs]
         case .wholeFile:
             switch file.kind {
@@ -70,36 +30,15 @@ enum ResolverOffer {
     }
 }
 
-/// What the chooser previews: GitCore's own composition (`ConflictBlock.composed`,
-/// `ConflictSegment.composed`), the bytes Resolve File writes.
-enum ResolverPreview {
-    static func block(_ block: ConflictBlock, _ choice: BlockChoice?) -> Data? {
-        choice.map(block.composed)
-    }
-
-    /// The whole file, once every block has a choice.
-    static func file(_ segments: [ConflictSegment], _ choices: ResolverChoices) -> Data? {
-        choices.ordered.flatMap { ConflictSegment.composed(segments, choices: $0) }
-    }
-
-    /// Bytes as the chooser shows them: UTF-8 (anything else replaced), line endings as plain
-    /// line breaks, without the last one; `emptySide` for nothing at all.
-    static func text(_ data: Data) -> String {
-        guard !data.isEmpty else { return ConflictWording.emptySide }
-        var text = String(decoding: data, as: UTF8.self).replacingOccurrences(of: "\r\n", with: "\n")
-        if text.hasSuffix("\n") { text.removeLast() }
-        return text
-    }
-}
-
 /// A conflicted file whose read failed: its path and git's words (B4 item 4).
 struct ConflictLoadFailure: Equatable {
     let path: String
     let message: String
 }
 
-/// The resolver: reading the selected conflict, the in-memory block choices, and the writes —
-/// Resolve File, Take Ours/Theirs, Delete, Keep, Mark Resolved, Reopen Conflict.
+/// The resolver: reading the selected conflict (and, in focus mode, its draft), and the writes —
+/// Take Ours/Theirs, Delete, Keep, Mark Resolved, Reopen Conflict, and the one every write runs
+/// through (`runResolution`), Resolve File's included (`RepositoryStore+Resolver`).
 ///
 /// Nothing is written while the user chooses. Every write hands GitCore the `ConflictSnapshot`
 /// the resolver showed, and GitCore refuses (`.changedSinceShown`) when the stages or the file
@@ -109,8 +48,6 @@ struct ConflictLoadFailure: Equatable {
 extension RepositoryStore {
 
     // MARK: - State
-
-    var blockChoices: [Int: BlockChoice] { resolverChoices.choices }
 
     /// The document for the working copy's selected file, while that file is unmerged and its
     /// read has landed — never a document about another path, or about a conflict since resolved.
@@ -136,8 +73,8 @@ extension RepositoryStore {
 
     /// Reads the selected file's conflict — or, for a resolved file during an operation, whether
     /// it can be reopened. Called with every diff load (a selection, a side, a snapshot). The
-    /// last document stays on screen while the same path is read again, and the choices stay
-    /// with it while its snapshot is the same.
+    /// last document stays on screen while the same path is read again; focus mode's draft is
+    /// opened from the read, and never replaced by a later one.
     // internal (not private): used by +Detail.swift's `loadDiff()`
     func loadConflict() {
         conflictTask?.cancel()
@@ -170,6 +107,26 @@ extension RepositoryStore {
                     else { return }
                     setConflict(document, progress: progress)
                     setConflictLoadFailure(nil)
+                    // Focus mode's draft: the stages for its columns, read with the document
+                    // (a failure is this read's failed state, below).
+                    if resolverFocus?.path == path, resolverDrafts[path] == nil, case .blocks = document.presentation {
+                        let sides = try await backend.conflictSides(document.snapshot, at: root)
+                        guard !Task.isCancelled, self.generation == generation, selectedPath == path,
+                            selection == .workingCopy
+                        else { return }
+                        openDraft(document, sides: sides)
+                    }
+                    // A whole-file kind's side columns show its stages (Ruling 23); a failed read
+                    // leaves them their short descriptions, never the failed state.
+                    if resolverFocus?.path == path, case .wholeFile = document.presentation,
+                        resolverWholeFileSides?.file != conflicted
+                    {
+                        let sides = try? await backend.conflictSides(document.snapshot, at: root)
+                        guard !Task.isCancelled, self.generation == generation, selectedPath == path,
+                            selection == .workingCopy
+                        else { return }
+                        setResolverWholeFileSides(sides.map { ResolverWholeFileSides(file: conflicted, sides: $0) })
+                    }
                 } catch {
                     guard !Task.isCancelled, self.generation == generation, selectedPath == path,
                         selection == .workingCopy
@@ -200,22 +157,7 @@ extension RepositoryStore {
         }
     }
 
-    // MARK: - Choosing
-
-    func chooseBlock(_ index: Int, _ choice: BlockChoice) {
-        guard selectedConflict != nil else { return }
-        setBlockChoice(index, choice)
-    }
-
     // MARK: - Writes
-
-    /// Resolve File: the chosen blocks, one per block, written and staged.
-    func resolveSelectedFile() {
-        guard let document = selectedConflict, resolverChoices.snapshot == document.snapshot,
-            let choices = resolverChoices.ordered
-        else { return }
-        resolve(.blocks(choices), in: document)
-    }
 
     func takeSide(_ side: ConflictSide) {
         guard let document = selectedConflict else { return }
@@ -232,19 +174,22 @@ extension RepositoryStore {
         resolve(.keep, in: document)
     }
 
-    /// The action the resolver offered for this document, or nothing: the buttons are the
-    /// offer, and the debug hooks call straight in.
+    /// The whole-file write the resolver offered for this document, or nothing: the buttons are
+    /// the offer, and the debug hooks call straight in. Resolve File is not one of these. A draft
+    /// of the file with changes is asked about first (`confirmDiscardingDrafts`, Task 7).
     private func resolve(_ pending: PendingResolution, in document: ConflictDocument) {
         guard conflictActionBlockedReason == nil else { return }
-        let action: ResolverAction =
+        let action: ResolverAction? =
             switch pending {
-            case .blocks: .resolveFile
+            case .blocks, .text: nil
             case .take(let side): side == .ours ? .takeOurs : .takeTheirs
             case .delete: .delete
             case .keep: .keep
             }
-        guard ResolverOffer.actions(for: document).contains(action) else { return }
-        runResolution(pending, document.snapshot, recordIfEdited: false)
+        guard let action, ResolverOffer.actions(for: document).contains(action) else { return }
+        confirmDiscardingDrafts(for: [document.snapshot.file.path]) { [self] in
+            runResolution(pending, document.snapshot, recordIfEdited: false)
+        }
     }
 
     /// The Replace sheet's destructive button, **only** as the answer to the sheet that asked
@@ -258,7 +203,8 @@ extension RepositoryStore {
 
     /// Runs one resolving write. Without `recordIfEdited`, bytes git did not write make GitCore
     /// refuse before anything is written, and the Replace sheet asks instead.
-    private func runResolution(_ pending: PendingResolution, _ snapshot: ConflictSnapshot, recordIfEdited: Bool) {
+    // internal (not private): used by +Resolver.swift's `resolveFocusedFile`
+    func runResolution(_ pending: PendingResolution, _ snapshot: ConflictSnapshot, recordIfEdited: Bool) {
         let sides = conflictSides
         mutate(result: { backend, root -> ConflictReceipt? in
             do {
@@ -273,6 +219,7 @@ extension RepositoryStore {
                 return
             }
             announce(ConflictWording.done(pending, receipt, sides), recorded: receipt.recorded)
+            resolverDidResolve([receipt.path])
         })
     }
 
@@ -283,6 +230,8 @@ extension RepositoryStore {
         switch pending {
         case .blocks(let choices):
             try await backend.resolve(snapshot, choices: choices, recordIfEdited: recordIfEdited, at: root)
+        case .text(let bytes):
+            try await backend.resolve(snapshot, text: bytes, recordIfEdited: recordIfEdited, at: root)
         case .take(let side):
             try await backend.take(side, snapshot, recordIfEdited: recordIfEdited, at: root)
         case .delete:
@@ -303,21 +252,27 @@ extension RepositoryStore {
 
     // MARK: - Mark Resolved
 
-    /// Mark Resolved: stages the file as it is, after counting the markers left in it.
+    /// Mark Resolved: stages the file as it is, after counting the markers left in it — and,
+    /// first, asking about a draft of it with changes (Task 7).
     func markSelectedResolved() {
         guard let document = selectedConflict, conflictActionBlockedReason == nil,
             ResolverOffer.actions(for: document).contains(.markResolved)
         else { return }
-        markResolved(document.snapshot, allowingMarkers: false)
+        confirmDiscardingDrafts(for: [document.snapshot.file.path]) { [self] in
+            markResolved(document.snapshot, allowingMarkers: false)
+        }
     }
 
-    /// The row's stage button on an unmerged file: the same Mark Resolved, so `git add` never
-    /// takes leftover markers unasked (M 10). The snapshot is the stages the row shows and the
-    /// file as it is at the click.
+    /// The row's stage button on an unmerged file (Space, the + button): the same Mark Resolved,
+    /// so `git add` never takes leftover markers unasked (M 10), and a draft with changes is asked
+    /// about first (Task 7). The snapshot is the stages the row shows and the file as it is at
+    /// the click.
     func markResolved(_ file: ConflictedFile) {
         guard let root, conflictActionBlockedReason == nil else { return }
         let snapshot = ConflictSnapshot(file: file, worktreeHash: ConflictSnapshot.worktreeHash(of: file.path, at: root))
-        markResolved(snapshot, allowingMarkers: false)
+        confirmDiscardingDrafts(for: [file.path]) { [self] in
+            markResolved(snapshot, allowingMarkers: false)
+        }
     }
 
     /// The Mark Resolved sheet's destructive button, only as the answer to the sheet about
@@ -341,6 +296,7 @@ extension RepositoryStore {
         }, onSuccess: { [self] markers in
             guard let markers else {
                 showNotice(ConflictWording.marked(path))
+                resolverDidResolve([path])
                 return
             }
             if activeSheet == nil { activeSheet = .markResolved(snapshot, markers: markers) }

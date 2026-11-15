@@ -105,6 +105,49 @@ extension ConflictBlock {
         case .theirsThenOurs: theirs + ours
         }
     }
+
+    /// The side whose bytes end `composed(choice)`, skipping an empty one; nil when neither
+    /// side has bytes. Its stage is the one `addedFinalTerminator` needs.
+    public func lastSideWritten(_ choice: BlockChoice) -> ConflictSide? {
+        let order: [ConflictSide]
+        switch choice {
+        case .ours: order = [.ours]
+        case .theirs: order = [.theirs]
+        case .oursThenTheirs: order = [.theirs, .ours]
+        case .theirsThenOurs: order = [.ours, .theirs]
+        }
+        return order.first { !bytes(of: $0).isEmpty }
+    }
+
+    /// For a block that ends the file: how many bytes at the end of `composed(choice)` merge-file
+    /// added, which a write drops so the file ends as the last side written ends in its stage
+    /// (Ruling 9). `stage` is that side's stage (`lastSideWritten(choice)`) in worktree form.
+    ///
+    /// merge-file ends every side of a block with a line terminator, so a stage whose last line
+    /// has none looks as if it had one. None is added when the stage ends in `\n`; else 1 when
+    /// the stage ends with the side less its last `\n`, 2 when it ends with the side less a final
+    /// `\r\n`. merge-file adds `\r\n` only in a file whose lines are CRLF, and a lone `\n`
+    /// otherwise — after a last line ending in `\r` too (fix round 2, measured) — so the stage
+    /// decides, never the bytes alone. Anything else: none. Pure; the one rule both
+    /// `GitConflictBackend.resolve(_:choices:recordIfEdited:at:)` and the app's Result use.
+    public func addedFinalTerminator(_ choice: BlockChoice, stage: Data) -> Int {
+        guard let last = lastSideWritten(choice) else { return 0 }
+        let side = bytes(of: last)
+        func stageEnds(with tail: Data) -> Bool {
+            stage.count >= tail.count && stage.suffix(tail.count).elementsEqual(tail)
+        }
+        guard stage.last != UInt8(ascii: "\n"), side.last == UInt8(ascii: "\n") else { return 0 }
+        if stageEnds(with: side.dropLast(1)) { return 1 }
+        if side.dropLast().last == UInt8(ascii: "\r"), stageEnds(with: side.dropLast(2)) { return 2 }
+        return 0
+    }
+
+    private func bytes(of side: ConflictSide) -> Data {
+        switch side {
+        case .ours: ours
+        case .theirs: theirs
+        }
+    }
 }
 
 /// A stretch of a conflicted file: text both sides agree on, or a block.
@@ -115,7 +158,8 @@ public enum ConflictSegment: Sendable, Hashable {
     /// The file `choices` compose to — common text as it is, each block replaced by its choice —
     /// or nil unless there is exactly one choice per block. `resolve` writes exactly this, except
     /// in a block that ends the file, where it also drops the line terminator merge-file gave a
-    /// side whose stage has none (Ruling 9): that needs the stage itself, which this does not read.
+    /// side whose stage has none (Ruling 9, `ConflictBlock.addedFinalTerminator`): that needs the
+    /// stage itself, which this does not read.
     public static func composed(_ segments: [ConflictSegment], choices: [BlockChoice]) -> Data? {
         let blocks = segments.count { if case .block = $0 { true } else { false } }
         guard choices.count == blocks else { return nil }
@@ -141,6 +185,28 @@ public struct ConflictSnapshot: Sendable, Hashable {
     public init(file: ConflictedFile, worktreeHash: String?) {
         self.file = file
         self.worktreeHash = worktreeHash
+    }
+}
+
+/// The three versions of a conflicted path as the resolver's columns show them: each stage in
+/// worktree form (`cat-file --filters --path`, so end-of-line conversion and smudge filters
+/// applied, as the parse rebuild's text is), nil where the path has no such stage — no base
+/// for an add/add, no ours or theirs for a deletion. See `GitConflictBackend.conflictSides`.
+public struct ConflictSides: Sendable, Hashable {
+    /// Stage 2.
+    public let ours: Data?
+    /// Stage 1.
+    public let base: Data?
+    /// Stage 3.
+    public let theirs: Data?
+    /// The path's `conflict-marker-size` attribute (7 when unset or not a positive number).
+    public let markerSize: Int
+
+    public init(ours: Data?, base: Data?, theirs: Data?, markerSize: Int) {
+        self.ours = ours
+        self.base = base
+        self.theirs = theirs
+        self.markerSize = markerSize
     }
 }
 

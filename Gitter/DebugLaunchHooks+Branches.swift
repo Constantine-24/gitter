@@ -57,11 +57,11 @@
     ///
     ///   The resolver (`RepositoryStore+Conflicts`, `DebugLaunchHooks+Conflicts`):
     ///
-    ///     select:<path>                blocks:<path>:<O|T|B|b…>     resolve
-    ///     take:ours|theirs:<path>      deletefile:<path>            keep:<path>
-    ///     confirmreplace               markresolved:<path>          confirmmarkers
-    ///     reopen:<path>                confirmreopen                resolver
-    ///     noticeshow                   cancelsheet
+    ///     select:<path>                take:ours|theirs:<path>      deletefile:<path>
+    ///     keep:<path>                  confirmreplace               markresolved:<path>
+    ///     confirmmarkers               reopen:<path>                confirmreopen
+    ///     resolver                     resolver:open[:<path>]       resolver:done
+    ///     resolver:state               noticeshow                   cancelsheet
     ///
     ///   The operation bar and the composer (`RepositoryStore+Continue`,
     ///   `DebugLaunchHooks+Continue`):
@@ -882,7 +882,7 @@
                 "discard(\(model.requests.map(describe)), title: \(model.title), "
                     + "rows: \(model.rows.map { "\($0.name): \($0.loses)\($0.preview.isEmpty ? "" : " \($0.preview)")" }), "
                     + "destination: \(model.destination), button: \(model.confirmTitle))"
-            case .replaceHandEdited, .markResolved, .reopen:
+            case .replaceHandEdited, .markResolved, .reopen, .resolveWithMarkers, .takeForFiles, .discardDrafts:
                 describeConflictSheet(sheet) ?? "?"
             case .continueEmpty, .continueOthers, .skip, .stageAll:
                 describeContinueSheet(sheet) ?? "?"

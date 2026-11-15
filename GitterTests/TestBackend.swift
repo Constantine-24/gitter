@@ -7,7 +7,7 @@ import Testing
 // `Testing.Tag` is in scope here too, so GitCore's is written `GitCore.Tag` (B1.3).
 @testable import GitCore
 
-/// The store's backend for a test: all 104 requirements of the twelve protocols forwarded to a
+/// The store's backend for a test: all 106 requirements of the twelve protocols forwarded to a
 /// real `CLIGitBackend` on the test's scratch repository, with any one call open to the test
 /// (E3 Task 3, spec Design §2). A test can, around a call:
 /// - `hook` it: run code before or after every such call, and throw to make the call throw;
@@ -38,11 +38,12 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
     GitStashBackend, GitConflictBackend, GitOperationBackend, GitHistoryBackend, GitTagBackend,
     GitRemoteAdminBackend, GitCompareBackend, GitWorktreeBackend, Sendable
 {
-    /// One case per protocol requirement (104); the raw value is the method's `#function`
+    /// One case per protocol requirement (106); the raw value is the method's `#function`
     /// spelling. The overloads' cases carry what tells them apart: `stageAllExpecting`,
     /// `discardExpectationTracked` / `discardExpectationUntracked`, `commitByID` (`GitBackend`'s
-    /// one-commit read, beside `GitWorkingCopyBackend`'s `commit`), and `rebaseOnto`
-    /// (`GitRemoteBackend`) / `rebaseWithPlan` (`GitHistoryBackend`).
+    /// one-commit read, beside `GitWorkingCopyBackend`'s `commit`), `rebaseOnto`
+    /// (`GitRemoteBackend`) / `rebaseWithPlan` (`GitHistoryBackend`), and `resolveText` (the
+    /// resolver's Result, beside `resolve`'s block choices).
     enum Call: String, CaseIterable, Sendable {
         // GitBackend
         case snapshot = "snapshot(at:historyDepth:)"
@@ -103,7 +104,9 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
 
         // GitConflictBackend
         case conflictDocument = "conflictDocument(for:at:)"
+        case conflictSides = "conflictSides(_:at:)"
         case resolve = "resolve(_:choices:recordIfEdited:at:)"
+        case resolveText = "resolve(_:text:recordIfEdited:at:)"
         case take = "take(_:_:recordIfEdited:at:)"
         case delete = "delete(_:recordIfEdited:at:)"
         case keep = "keep(_:recordIfEdited:at:)"
@@ -194,6 +197,8 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
         var lastParked = 0
         var pop: (@Sendable (Stash, URL, CLIGitBackend) async throws -> StashApplyOutcome)?
         var historyRow: (@Sendable (String, URL, CLIGitBackend) async throws -> Int?)?
+        /// Errors for the next `conflictDocument(for:at:)` of a path, first in first out.
+        var documentFailures: [String: [any Error & Sendable]] = [:]
     }
 
     private let state = Mutex(State())
@@ -226,6 +231,13 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
     /// Makes the next `call` throw `error` without running git.
     func fail(_ call: Call, with error: any Error & Sendable) {
         state.withLock { $0.failures[call, default: []].append(error) }
+    }
+
+    /// Makes the next `conflictDocument(for:at:)` of `path` throw `error` without running git;
+    /// other paths read as usual. `fail(.conflictDocument…)` takes whichever read comes first, and
+    /// focus mode's summaries and the focused file's own read run side by side.
+    func failConflictDocument(of path: String, with error: any Error & Sendable) {
+        state.withLock { $0.documentFailures[path, default: []].append(error) }
     }
 
     /// Replaces `pop(_:at:)`: `body` gets the stash, the root and the real backend, whose
@@ -495,11 +507,28 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
     // MARK: - GitConflictBackend
 
     func conflictDocument(for file: ConflictedFile, at root: URL) async throws -> ConflictDocument {
-        try await around(.conflictDocument) { try await real.conflictDocument(for: file, at: root) }
+        try await around(.conflictDocument) {
+            let failure = state.withLock { state -> (any Error & Sendable)? in
+                guard var pending = state.documentFailures[file.path], !pending.isEmpty else { return nil }
+                let first = pending.removeFirst()
+                state.documentFailures[file.path] = pending
+                return first
+            }
+            if let failure { throw failure }
+            return try await real.conflictDocument(for: file, at: root)
+        }
+    }
+    func conflictSides(_ snapshot: ConflictSnapshot, at root: URL) async throws -> ConflictSides {
+        try await around(.conflictSides) { try await real.conflictSides(snapshot, at: root) }
     }
     func resolve(_ snapshot: ConflictSnapshot, choices: [BlockChoice], recordIfEdited: Bool, at root: URL) async throws -> ConflictReceipt {
         try await around(.resolve) {
             try await real.resolve(snapshot, choices: choices, recordIfEdited: recordIfEdited, at: root)
+        }
+    }
+    func resolve(_ snapshot: ConflictSnapshot, text: Data, recordIfEdited: Bool, at root: URL) async throws -> ConflictReceipt {
+        try await around(.resolveText) {
+            try await real.resolve(snapshot, text: text, recordIfEdited: recordIfEdited, at: root)
         }
     }
     func take(_ side: ConflictSide, _ snapshot: ConflictSnapshot, recordIfEdited: Bool, at root: URL) async throws -> ConflictReceipt {

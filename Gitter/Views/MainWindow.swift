@@ -2,7 +2,8 @@ import SwiftUI
 
 /// The browser: the refs in the sidebar, and beside them the commits and the detail, split under
 /// one toolbar strip — with the banners and a loading indicator on top, and whatever sheet the
-/// store has asked for.
+/// store has asked for. While focus mode is up (`resolverFocus`), `ResolverFocusView` takes the
+/// browser's place, under the same banners and sheets.
 ///
 /// Two columns, not three (window polish Task 2): on macOS 26 and later each column of a
 /// `NavigationSplitView` gets its own part of the toolbar and its divider runs up through the
@@ -29,80 +30,25 @@ struct MainWindow: View {
             if store.root == nil {
                 emptyState
             } else {
-                NavigationSplitView(columnVisibility: $columnVisibility) {
-                    SidebarView()
-                        // The filter (B3): its text is the store's (Ruling 2), cleared by `open()`.
-                        .searchable(text: $store.sidebarFilter, placement: .sidebar, prompt: SidebarFilter.prompt)
-                        .searchFocused($filterFocused)
-                        // Outermost, or the split never reads it: under `.searchable` even a
-                        // `min: 300` changed nothing, and the sidebar opened at 144 pt and could be
-                        // dragged below 200 (measured, Task 2 review I1).
-                        .navigationSplitViewColumnWidth(min: 200, ideal: 240)
-                } detail: {
-                    // The two hairlines are the toolbar strip's lower edge and the sidebar's, and
-                    // what keeps the split off both: a split view touching an edge of the column
-                    // is laid out under the toolbar or the sidebar, its divider then running up
-                    // through the title (measured; padding by 0, a `GeometryReader`'s inset and
-                    // `.safeAreaPadding` all left it there), and the sidebar's width then counted
-                    // twice in the window's minimum (measured with a 144 pt sidebar: 969 pt
-                    // without the hairline, 826 with it; with the 240 pt sidebar it is 922). With
-                    // the sidebar hidden there is nothing to keep off, and the leading one would
-                    // sit at the window's edge: it goes.
-                    VStack(spacing: 0) {
-                        Divider()
-                        HStack(spacing: 0) {
-                            if columnVisibility != .detailOnly {
-                                Divider()
-                            }
-                            commitsAndDetail
-                        }
-                    }
-                    // Both panes as one, under the banners: a notice or an error never covers the
-                    // Working Copy row or the operation bar's Skip, Continue and Abort (fix round
-                    // 1, I5), and the divider between them stays one straight line.
-                    .padding(.top, bannerHeight)
-                    .animation(.default, value: bannerHeight)
-                }
-                .toolbar {
-                    ToolbarItem(placement: .navigation) {
-                        BranchMenu()
-                    }
-                    ToolbarItem(placement: .navigation) {
-                        NewBranchButton()
-                    }
-                    ToolbarItem(placement: .navigation) {
-                        // Always there, and only hidden while idle: an item that comes and goes
-                        // resizes its glass group on every reload, and a toolbar item resizing
-                        // during another one's resize animation is what sent AppKit's layout
-                        // into the loop it throws for (see `ActivityReveal`). Its space is kept,
-                        // so the title no longer jumps either.
-                        ProgressView()
-                            .controlSize(.small)
-                            .opacity(store.isLoading ? 1 : 0)
-                            .accessibilityHidden(!store.isLoading)
-                    }
-                    // Trailing, apart from the branch items: these talk to the remotes, the
-                    // ones on the left only to this repository.
-                    ToolbarItem(placement: .primaryAction) {
-                        RemoteToolbarItem(action: .fetch)
-                    }
-                    ToolbarItem(placement: .primaryAction) {
-                        RemoteToolbarItem(action: .pull)
-                    }
-                    ToolbarItem(placement: .primaryAction) {
-                        RemoteToolbarItem(action: .push)
+                // Focus mode in place of the browser while it is up (spec, "Conflict resolver"):
+                // its own sidebar, toolbar and title; the sheets, banners and menus stay the
+                // window's.
+                Group {
+                    if store.resolverFocus != nil {
+                        ResolverFocusView(bannerHeight: bannerHeight)
+                    } else {
+                        browser
                     }
                 }
                 // On the branch that has a repository, like the toolbar items: every sheet
                 // asks a question about a repository, and `open()` already clears `activeSheet`
                 // when one is closed or replaced. Scoping it here means a sheet cannot outlive
                 // the repository it belongs to even if something sets one without a `root`.
+                // Over focus mode as well: Abort…, Replace, the markers question, Take for N Files.
                 .sheet(item: $store.activeSheet) { sheet in
                     BranchSheetHost(sheet: sheet)
                 }
                 .focusedSceneValue(\.focusSidebarFilter, SidebarFilterFocus { filterFocused = true })
-                // "wt-feat (worktree of main)" for a linked worktree, the folder otherwise (B3).
-                .navigationTitle(store.windowTitle)
             }
         }
         .overlay(alignment: .top) {
@@ -137,6 +83,77 @@ struct MainWindow: View {
         // The window content's width, for the toolbar's running item (B4 fix 7): its progress
         // line is drawn only in a window wide enough for it (`RemoteActivityItem`).
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { store.setWindowWidth($0) }
+    }
+
+    /// The refs, the commits and the detail under one toolbar strip.
+    private var browser: some View {
+        @Bindable var store = store
+        return NavigationSplitView(columnVisibility: $columnVisibility) {
+            SidebarView()
+                // The filter (B3): its text is the store's (Ruling 2), cleared by `open()`.
+                .searchable(text: $store.sidebarFilter, placement: .sidebar, prompt: SidebarFilter.prompt)
+                .searchFocused($filterFocused)
+                // Outermost, or the split never reads it: under `.searchable` even a
+                // `min: 300` changed nothing, and the sidebar opened at 144 pt and could be
+                // dragged below 200 (measured, Task 2 review I1).
+                .navigationSplitViewColumnWidth(min: 200, ideal: 240)
+        } detail: {
+            // The two hairlines are the toolbar strip's lower edge and the sidebar's, and
+            // what keeps the split off both: a split view touching an edge of the column
+            // is laid out under the toolbar or the sidebar, its divider then running up
+            // through the title (measured; padding by 0, a `GeometryReader`'s inset and
+            // `.safeAreaPadding` all left it there), and the sidebar's width then counted
+            // twice in the window's minimum (measured with a 144 pt sidebar: 969 pt
+            // without the hairline, 826 with it; with the 240 pt sidebar it is 922). With
+            // the sidebar hidden there is nothing to keep off, and the leading one would
+            // sit at the window's edge: it goes.
+            VStack(spacing: 0) {
+                Divider()
+                HStack(spacing: 0) {
+                    if columnVisibility != .detailOnly {
+                        Divider()
+                    }
+                    commitsAndDetail
+                }
+            }
+            // Both panes as one, under the banners: a notice or an error never covers the
+            // Working Copy row or the operation bar's Skip, Continue and Abort (fix round
+            // 1, I5), and the divider between them stays one straight line.
+            .padding(.top, bannerHeight)
+            .animation(.default, value: bannerHeight)
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                BranchMenu()
+            }
+            ToolbarItem(placement: .navigation) {
+                NewBranchButton()
+            }
+            ToolbarItem(placement: .navigation) {
+                // Always there, and only hidden while idle: an item that comes and goes
+                // resizes its glass group on every reload, and a toolbar item resizing
+                // during another one's resize animation is what sent AppKit's layout
+                // into the loop it throws for (see `ActivityReveal`). Its space is kept,
+                // so the title no longer jumps either.
+                ProgressView()
+                    .controlSize(.small)
+                    .opacity(store.isLoading ? 1 : 0)
+                    .accessibilityHidden(!store.isLoading)
+            }
+            // Trailing, apart from the branch items: these talk to the remotes, the
+            // ones on the left only to this repository.
+            ToolbarItem(placement: .primaryAction) {
+                RemoteToolbarItem(action: .fetch)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                RemoteToolbarItem(action: .pull)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                RemoteToolbarItem(action: .push)
+            }
+        }
+        // "wt-feat (worktree of main)" for a linked worktree, the folder otherwise (B3).
+        .navigationTitle(store.windowTitle)
     }
 
     /// "Pull" and "Force Push…" beside the banner of a push the server refused for having

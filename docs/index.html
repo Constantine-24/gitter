@@ -217,8 +217,9 @@
         <p>Run them from the toolbar, with git's own progress line and a Stop button. Ahead/behind counts show
           on every branch, and a quiet background fetch keeps them current.</p></div>
       <div class="card"><div class="glyph">⚑</div><h3>Resolve conflicts in the app</h3>
-        <p>Each conflict appears as blocks, with ours beside theirs and the result shown before anything is
-          written. Then continue, skip or abort the merge, rebase, cherry-pick or revert.</p></div>
+        <p>See ours, the Result and theirs side by side, with each side's changes marked down to the word.
+          Take a side with a click or a key, or type straight into the Result. Then continue, skip or abort
+          the merge, rebase, cherry-pick or revert.</p></div>
       <div class="card"><div class="glyph">↺</div><h3>Cherry-pick, revert, rebase</h3>
         <p>Select several commits and cherry-pick or revert them as one sequence, or rebase onto a commit or
           a branch. Each action shows a sheet that lists exactly what will run.</p></div>
@@ -274,7 +275,7 @@
     <div class="gallery">
       <figure><img loading="lazy" src="screenshots/main.png" alt="Line-level staging in dark mode"><figcaption>Staging single lines, in dark mode.</figcaption></figure>
       <figure><img loading="lazy" src="screenshots/remotes.png" alt="The toolbar with Fetch, Pull and Push and their counts"><figcaption>Fetch, Pull and Push, with ahead/behind counts.</figcaption></figure>
-      <figure><img loading="lazy" src="screenshots/conflict.png" alt="A conflict shown as ours beside theirs"><figcaption>A conflict, block by block, with the result shown below.</figcaption></figure>
+      <figure><img loading="lazy" src="screenshots/conflict.png" alt="Ours, the Result and theirs side by side, with one conflict waiting for a choice"><figcaption>Resolving a file: ours, the Result and theirs, row for row.</figcaption></figure>
       <figure><img loading="lazy" src="screenshots/operation-bar.png" alt="The operation bar during a stopped rebase"><figcaption>Continue, skip or abort a stopped rebase.</figcaption></figure>
       <figure><img loading="lazy" src="screenshots/cherry-pick.png" alt="The cherry-pick sheet listing three commits"><figcaption>Cherry-picking three commits, oldest first.</figcaption></figure>
       <figure><img loading="lazy" src="screenshots/discard.png" alt="The discard sheet naming two lines"><figcaption>Discarding two lines. The sheet says where their copy goes.</figcaption></figure>
@@ -403,8 +404,14 @@ open Gitter.xcodeproj      # then press Run</code></pre>
           <ul>
             <li>When a merge, rebase, cherry-pick or revert stops on a conflict, the operation bar says where it
               stopped, for example "stopped at commit 1 of 3".</li>
-            <li>Select a conflicted file to see each conflict as a block, ours beside theirs. For each block choose
-              <b>Ours</b>, <b>Theirs</b> or <b>Both</b>, and check the result before writing the file.</li>
+            <li>Select a conflicted file and choose <b>Resolve Conflicts…</b>. The window shows the conflicted files,
+              and ours, the Result and theirs side by side, with each side's changes marked.</li>
+            <li>For each conflict take <b>Ours</b>, <b>Theirs</b> or <b>Both</b> with a click or a key
+              (<kbd>⌃⌘←</kbd>, <kbd>⌃⌘→</kbd>, <kbd>⌃⌘↓</kbd>; <kbd>⌘]</kbd> for the next one), or type straight
+              into the Result. <kbd>⌘Z</kbd> undoes either. Nothing is written until <b>Resolve File</b>.</li>
+            <li>Your changes are kept while you switch files, and Gitter asks before it would throw any of them
+              away: closing the window, quitting, or an action that writes over the file. A very large file opens
+              with a read-only Result, and taking sides still works.</li>
             <li>A binary file, a symlink or a deleted file gets a whole-file choice instead. You can also resolve
               in your own editor and then choose <b>Mark Resolved</b>.</li>
             <li>Then choose <b>Continue</b> with the stopped commit's message in the composer,

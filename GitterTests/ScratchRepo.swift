@@ -124,6 +124,21 @@ struct ScratchRepo {
         try git("reset", "--hard", "-q")
     }
 
+    /// Runs `git` with `input` on its standard input (`update-index --index-info`), written to a
+    /// file beside the repository as `fastImport`'s stream is; throws `Failure` when git exits
+    /// non-zero.
+    @discardableResult
+    func git(input: String, _ args: String...) throws -> String {
+        let file = directory.appending(path: ".input-\(UUID().uuidString)")
+        try input.write(to: file, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let result = try run(args, input: file)
+        guard result.status == 0 else {
+            throw Failure(arguments: args, status: result.status, output: result.output, errors: result.errors)
+        }
+        return result.output
+    }
+
     /// A bare repository beside this one, inside the same temporary directory.
     func makeBareRemote(named name: String = "origin") throws -> URL {
         let bare = directory.appending(path: "\(name).git")

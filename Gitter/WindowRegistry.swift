@@ -190,7 +190,9 @@ final class WindowRegistry {
         let route = route(url, kind: kind, front: front)
         switch route {
         case .front(let store): show(store)
-        case .useFront(let store): store.open(url)
+        case .useFront(let store):
+            // This window's repository is replaced: its drafts with changes are asked about first.
+            store.openInPlace(url)
         case .refused(let store):
             if let refusal = RepositoryStore.notARepository(url) { store.showStickyError(refusal) }
         case .newWindow(let value):
@@ -281,6 +283,14 @@ final class WindowRegistry {
             hide: { [weak self, weak window] in
                 guard let self, let window, let store = self.store(in: window) else { return }
                 self.hide(store)
+            },
+            askFirst: { [weak self, weak window] close in
+                guard let self, let window, let store = self.store(in: window) else { return false }
+                return self.askAboutDrafts(of: store, on: window) { discard in
+                    guard discard else { return }
+                    store.dropDrafts(Array(store.resolverDrafts.keys))
+                    close()
+                }
             })
         proxies[id] = (WeakWindow(window: window), proxy)
         window.delegate = proxy
@@ -432,7 +442,7 @@ final class WindowRegistry {
             repository: store.root?.lastPathComponent, atHide: at.reading, now: HiddenReading(store))
         switch ending {
         case .close:
-            closeForReal(store)
+            closeHiddenForReal(store)
         case .alert(let text):
             // Told here: a held quit's call-off says it no second time (`QuitGuard.hasWindow`).
             // (A local change's ending — a failure, a stop, the staged revert — never moves
@@ -449,10 +459,54 @@ final class WindowRegistry {
                     // Shown again while the alert was up (or hidden again since): it is on screen,
                     // or watched by its newer hide.
                     guard store.isHidden, self.hidden[ObjectIdentifier(store)] == nil else { return }
-                    self.closeForReal(store)
+                    self.closeHiddenForReal(store)
                 }
             }
         }
+    }
+
+    /// The final close of hidden `store`'s window — its work ended with nothing to read, or its
+    /// alert's Close: asked about first when the store holds drafts with changes (Task 7), as an
+    /// app-modal question, the window being out of sight. Discard and Close closes it for real;
+    /// Cancel brings it back, since nothing watches a hidden window any more and it would never
+    /// come back by itself. Nothing for a store shown again, or hidden again, while it was asked.
+    private func closeHiddenForReal(_ store: RepositoryStore) {
+        // Under a held quit whose drafts question was answered Discard and Quit, the drafts go
+        // with the quit: not asked about again (fix round 1, I2).
+        if QuitGuard.quitTakesTheDrafts {
+            closeForReal(store)
+            return
+        }
+        let key = ObjectIdentifier(store)
+        let asked = askAboutDrafts(of: store, on: nil) { [weak self, weak store] discard in
+            guard let self, let store, store.isHidden, self.hidden[key] == nil else { return }
+            if discard {
+                store.dropDrafts(Array(store.resolverDrafts.keys))
+                self.closeForReal(store)
+            } else {
+                self.show(store)
+            }
+        }
+        if !asked { closeForReal(store) }
+    }
+
+    /// Asks before `store`'s window closes while it holds drafts with changes
+    /// (`HiddenWindowEnvironment.askToClose`, the count of this window's only), telling the event
+    /// log the answer; `answer` gets true for Discard and Close — not for a store closed
+    /// meanwhile. False, asking nothing, with no such draft.
+    private func askAboutDrafts(
+        of store: RepositoryStore, on window: NSWindow?, answer: @escaping @MainActor (_ discard: Bool) -> Void
+    ) -> Bool {
+        let count = store.changedDraftPaths.count
+        guard count > 0 else { return false }
+        let eventLog = store.eventLog
+        hiddenWindows.askToClose(window, count) { [weak store] discard in
+            let button = discard ? ConflictWording.discardAndClose : ConflictWording.cancel
+            eventLog.write("alert \"\(ConflictWording.closeQuestion(count))\" → \(button)")
+            guard let store, !store.isClosed else { return }
+            answer(discard)
+        }
+        return true
     }
 
     /// Closes hidden `store`'s window for real (`HiddenWindowEnvironment.realClose`: ordered in
@@ -728,6 +782,11 @@ struct HiddenWindowEnvironment {
     /// The app-modal alert for a hidden window's ending, its text the informative text; `answer`
     /// gets the button pressed.
     var alert: @MainActor (_ text: String, _ answer: @escaping @MainActor (Choice) -> Void) -> Void
+    /// The question before a window holding `count` drafts with changes closes (Task 7):
+    /// `ConflictWording.closeQuestion`, Cancel / Discard and Close — a sheet on `window` when it
+    /// is on screen, app-modal otherwise (a hidden window's final close). `answer` gets true for
+    /// Discard and Close.
+    var askToClose: @MainActor (_ window: NSWindow?, _ count: Int, _ answer: @escaping @MainActor (Bool) -> Void) -> Void
 
     static let live = HiddenWindowEnvironment(
         orderOut: { $0.orderOut(nil) },
@@ -756,7 +815,38 @@ struct HiddenWindowEnvironment {
             ModalAlert.raise(alert) { response in
                 answer(response == .alertFirstButtonReturn ? .show : .close)
             }
+        },
+        askToClose: { window, count, answer in
+            let alert = makeCloseQuestion(count)
+            let reply: @MainActor (NSApplication.ModalResponse) -> Void = { answer($0 == .alertSecondButtonReturn) }
+            if let window, window.isVisible {
+                alert.beginSheetModal(for: window.attachedSheet ?? window, completionHandler: reply)
+            } else {
+                // A hidden window's final close, Gitter likely in the background: as the hidden
+                // ending's alert, the Dock is asked for attention and the alert raised from the
+                // run loop (C3).
+                if !NSApp.isActive { NSApp.requestUserAttention(.criticalRequest) }
+                ModalAlert.raise(alert, then: reply)
+            }
         })
+
+    /// The close question, built and not raised (internal for tests): a warning titled
+    /// `ConflictWording.closeQuestion(count)`, with Cancel first — the default, Return — then
+    /// Discard and Close, destructive.
+    @MainActor static func makeCloseQuestion(_ count: Int, discard: String = ConflictWording.discardAndClose) -> NSAlert {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = ConflictWording.closeQuestion(count)
+        // AppKit does not give a first button titled Cancel Return (measured: the test of this
+        // builder failed on it), so it is set: the safe answer is the default. Measured in the
+        // harness, the first such alert a process shows still reads no key on its Cancel as it is
+        // up (laying it out first, or making it the window's default button cell, changed
+        // nothing), and every later one reads Return — what Return does on that first one is on
+        // the user's checklist.
+        alert.addButton(withTitle: ConflictWording.cancel).keyEquivalent = "\r"
+        alert.addButton(withTitle: discard).hasDestructiveAction = true
+        return alert
+    }
 
     /// The hidden ending's alert, built and not raised (internal for tests): a warning titled
     /// `RemoteWording.closedWindowFailedTitle` over `text`, with Show first — the default, which

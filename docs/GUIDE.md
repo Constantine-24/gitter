@@ -13,11 +13,13 @@ Everything Gitter does, and how it keeps your work safe. The short version is in
   tracking branch; check out a commit or a tag (detached HEAD)
 - Merge, choosing each time between fast-forward if possible, always a merge commit, and
   squash — the last choice is remembered
-- **Resolve conflicts** in the app: each conflict as blocks, ours beside theirs (the base on
-  request), with Ours, Theirs, Both (ours first) or Both (theirs first) per block and the result
-  shown before anything is written; whole-file choices for what git cannot draw blocks for
-  (binary files, symlinks, a mode change, deletions); Open in Editor and **Mark Resolved**; and
-  **Reopen Conflict…** while the operation is still going (see "Conflicts" below)
+- **Resolve conflicts** in the app, in **Resolve Conflicts**, which fills the window: the
+  conflicted files in a sidebar, and three columns side by side — ours, the **Result** and
+  theirs — with what each side changed marked down to the word. Take a side for each conflict
+  with a click or a key, or type straight into the Result; nothing is written until **Resolve
+  File**. Whole-file choices for what git cannot draw conflicts for (binary files, symlinks, a
+  mode change, deletions); Open in Editor and **Mark Resolved**; and **Reopen Conflict…** while
+  the operation is still going (see "Conflicts" below)
 - **Continue** a stopped rebase, cherry-pick or revert from the operation bar ("Rebasing feature
   onto 5e248b9: stopped at commit 1 of 3 …"), with the stopped commit's message in the composer
   to keep or edit, or **Skip This Commit…**; commit a merge or a squash with git's prepared
@@ -114,10 +116,11 @@ Everything Gitter does, and how it keeps your work safe. The short version is in
   quits (or stays open if it failed or has a warning, so you can read it, or if it is still
   running after ten minutes), **Stop and Quit**, or **Don't Quit**
 
-The pictures below, and the compare and worktree ones further down, were taken before the window
-became two columns (2026-10-11): what each shows is current, but around it the window is the old
-one, three columns with the commit list's divider running up through the toolbar. The picture at
-the top is the window as it is now; the rest still show the older layout.
+Most of the pictures below, and the compare and worktree ones further down, were taken before the
+window became two columns (2026-10-11): what each shows is current, but around it the window is the
+old one, three columns with the commit list's divider running up through the toolbar. The picture
+at the top is the window as it is now, and so is the conflict picture, which shows Resolve
+Conflicts without its toolbar and sidebar; the rest still show the older layout.
 
 ![The remote toolbar: Fetch, "Pull ↓2" and "Push ↑2", with "main ↑2 ↓2" on the branch button](screenshots/remotes.png)
 
@@ -127,7 +130,7 @@ the top is the window as it is now; the rest still show the older layout.
 
 ![Discarding two selected lines: the sheet names them and where their copy goes](screenshots/discard.png)
 
-![A conflicted file during a merge: conflict 1 of 3, ours and theirs side by side, "Both (ours first)" chosen and its result below, Resolve File waiting for the other two](screenshots/conflict.png)
+![Resolve Conflicts on a file during a merge: ours, the Result and theirs side by side, row for row; the first conflict taken from both sides, the second waiting with ← Ours, Both and Theirs →, the third typed by hand and labelled "Edited by you", and Resolve File waiting for the one left](screenshots/conflict.png)
 
 ![A rebase stopped at commit 1 of 3 with its conflict resolved: the operation bar with Skip This Commit…, Continue Rebase and Abort Rebase…, the stopped commit's message in the composer, and Reopen Conflict… above the resolved file's diff](screenshots/operation-bar.png)
 
@@ -203,7 +206,7 @@ not fail, it crashes the app, so every call is also checked before git starts. (
 passes its paths as arguments, `add -- <paths>` in batches of at most 1 000; only the writes of a
 selection use the pathspec file.)
 
-Sixteen actions can lose something without being asked for by name, and each is behind a
+Seventeen actions can lose something without being asked for by name, and each is behind a
 confirmation that says what goes and what stays:
 
 | action | how it is confirmed |
@@ -218,15 +221,17 @@ confirmation that says what goes and what stays:
 | **Drop a stash** | a sheet names the stash's message, its files and its full sha, with a live warning if the list moves while it is up; the drop is refused unless the entry at that position is still that sha. The notice afterwards prints the `git stash apply <sha>` that brings it back until git's cleanup removes it |
 | **Skip a commit** of a stopped rebase, cherry-pick or revert | a sheet names the commit and every file that goes back to how HEAD has it, resolved or not; Gitter first files their current contents in the Stashes list as `Skipped by Gitter: <sha> <subject>`, and skips only when every change in the working copy belongs to that commit — git's own `rebase --skip` resets every tracked file, your unrelated edits included |
 | **Leave a commit out of a rebase** — Continue when the resolution leaves the stopped commit with no changes | "Leave d183fcd out of the rebase?": git would drop it without a word. When other files are staged the sheet says the opposite happens — the commit is kept, holding only them, under its own title and author |
-| **Replace a hand-edited conflicted file** — Resolve File, Take Ours or Theirs, Delete or Keep on a file edited since git wrote the conflict | the sheet says the file changed since git wrote the conflict; the edited file is filed as `Replaced by Gitter: <file>` before anything is written |
+| **Replace a hand-edited conflicted file** — Resolve File, Take Ours or Theirs (for one file or several), Delete or Keep on a file edited since git wrote the conflict | the sheet says which file changed since git wrote the conflict; the edited file is filed as `Replaced by Gitter: <file>` before anything is written |
 | **Prune a remote** | Gitter asks the server which of the remote's branches it no longer has (a dry run that deletes nothing), then a sheet lists each remote-tracking branch with **its full id**, the commits that would be on no branch, tag or other remote afterwards — **counted once for all of them** — and a ticked "Keep … as <name>" for each ref that alone holds some. On Prune it counts again and refuses if more would be stranded, creates the kept branches first, then deletes each ref **only while it still holds the id the sheet showed** (`update-ref -d` with that id); one that moved is left alone and named. The notice lists every deleted ref with its id — a remote-tracking ref has no reflog to find it by |
 | **Clean Up Gone Branches** | a sheet lists the local branches whose upstream is gone, each "merged" or "N commits only here"; merged ones are ticked, an unmerged one carries the unmerged-branch warning when ticked, and a branch checked out in a worktree cannot be ticked. Each is deleted only at the tip the sheet showed, after a recount; the notice lists every tip with `git branch <name> <id>` |
 | **Remove a remote** | a sheet lists every remote-tracking ref git will delete with its full id, the commits that would be stranded (keepable, as for a prune), the branches that will have no upstream and the ones whose push silently goes to another remote. On Remove it reads all of that again and refuses on any difference; the notice is the only record of the deleted refs, each with its id and the `git update-ref` that brings it back |
 | **Remove a worktree** (and **Remove All Missing…**) | Gitter checks first, off the main thread, everything git's own `worktree remove` would delete without asking — ignored files and folders (listed, with the count), assume-unchanged and skip-worktree edits, a repository nested anywhere in it, untracked files hidden by `status.showUntrackedFiles=no`, an operation in progress, refs that live only in that worktree (`refs/worktree/…`, a bisect's) and the commits only they hold — and refuses on any of them, or on changes, a lock or an unreadable folder, with the reason in place of the button. A detached worktree's own commits are listed with a ticked "Keep … as" branch. On Remove it makes the whole check again and refuses if anything differs — every ignored entry, not just their number — creates the kept branches, then runs git with those settings forced back. "The branch <b> stays" is said, and a half-done removal is read back and worded |
 | **Reopen a resolved conflict** | the sheet says what comes back — conflict markers; for a binary file ours' version, with no markers; for a mode conflict ours' mode — and the resolution is filed as `Reopened by Gitter: <file>` first |
+| **Drop what you changed in Resolve Conflicts** — by Mark Resolved, a whole-file take, Delete or Keep, the file row's stage button or Space, a take for several files, Skip This Commit…, Abort, opening a worktree or another repository in the window, closing the window or quitting | "Discard your changes to "README.md"?" names the files; the Abort sheet names them too; closing a window or quitting says how many files ("You have changes in 2 conflicted files that aren't saved. Close anyway?"). Cancel keeps them, and so does an action that is then cancelled at a later sheet, refused or fails |
 
-Three more confirmations stand before a commit rather than a loss: **Mark Resolved** when git
-still finds conflict markers in the file, **Continue** when files that are not part of the
+Four more confirmations stand before a commit rather than a loss: **Mark Resolved** when git
+still finds conflict markers in the file, **Resolve File** when the Result still holds marker
+lines you did not take from a side, **Continue** when files that are not part of the
 stopped commit are staged (git commits everything staged into it, under that commit's title),
 and **Stage All** during an operation when it would add files outside it — named from the very
 list Stage All stages, untracked files included even when `status.showUntrackedFiles=no` hides
@@ -245,7 +250,7 @@ choose; the old tip stays in `ORIG_HEAD` and the reflog. A rebase that stops on 
 lands in the operation bar: resolve there and Continue, Skip the commit, or Abort, which puts
 everything back.
 
-Amending is the one more — sixteen confirmed actions, plus amend — and the one with no
+Amending is the one more — seventeen confirmed actions, plus amend — and the one with no
 confirmation sheet: it rewrites HEAD and leaves
 the commit it replaces reachable from no branch, tag or remote. What stands in for the sheet
 is that nothing else asks for it — you tick the Amend toggle yourself and the commit button
@@ -423,36 +428,161 @@ says why.
 
 ### Conflicts: resolve, continue, skip
 
-**The chooser.** Select a conflicted file — its row shows git's letters, `UU`, `DU` and so on,
-with the kind in words as the tooltip — and the resolver takes the diff's place. Its blocks are
-rebuilt from the three versions git keeps in the index (`git merge-file`), never parsed out of
-the file, so a line of your code that looks like a marker stays code. Each block shows ours
-beside theirs, the base behind a disclosure, and four choices: **Ours**, **Theirs**, **Both
-(ours first)**, **Both (theirs first)**, with the result under it. Nothing is written while you
-choose; **Resolve File**, once every block has a choice, writes the file in the form git would
-have — line endings, filters, the executable bit, a missing final newline — and stages it. The
-sides are named: in a merge the branch you are on and the one merged; in a rebase **upstream**
-is ours and **your commit** theirs (git's own sides, the other way round from what the words
-suggest); in a cherry-pick or revert the commit being applied or undone.
+**Opening Resolve Conflicts.** Select a conflicted file — its row shows git's letters, `UU`,
+`DU` and so on, with the kind in words as the tooltip — and a card takes the diff's place: the
+file's name, what each side did, how many conflicts it has, and **Resolve Conflicts…**. That
+button, Return or a double-click on the row opens Resolve Conflicts on the file. So does
+**Resolve Conflicts…** in the operation bar, there while any file is conflicted, which opens it
+on the first file with conflicts. Selecting a file never takes over the window by itself:
+arrowing through the list only shows the card.
 
-**Whole files.** Where git draws no blocks — a binary file, a symlink, a mode change, a merge
-driver of yours, a file one side deleted — the resolver says why and offers that kind's own
-choices: **Take Ours** / **Take Theirs**, or for a deletion **Delete the File** and **Keep Their
-Version** (we deleted it, they changed it) or **Keep Our Version** (the other way round). A side that has no version is not offered (git would delete the file and say
-nothing). A submodule conflict is shown and explained, not resolved here.
+**What it shows.** Resolve Conflicts fills the window:
 
-**A conflict Gitter cannot read.** If reading a conflicted file's versions fails, the resolver
-says so instead of spinning: "Gitter couldn't read this conflict: <git's words>. You can still
-open the file in its editor, or mark it resolved as it is.", with **Open in Editor**, **Mark
-Resolved** (its usual check and sheet; not for a file both sides deleted) and **Try Again**,
-which reads it again. A read that works, or selecting another file, ends it.
+- **The toolbar.** The operation's sentence ("Merging feature/metric-units into main"),
+  **Show Base**, the previous and next buttons around "Conflict 2 of 3", **Abort Merge…** (or
+  Abort Rebase…, Abort Cherry-Pick…, Abort Revert…, with the same sheet as the operation bar's)
+  and **Done**. Conflicts left by applying a stash or by Undo Discard have no operation to
+  abort: the sentence says where they came from, and there is no Abort.
+- **The sidebar.** The conflicted files, each with an orange dot while it waits and a green one
+  once resolved, and "2 left", "Whole file", "Read only" or "Resolved" beside it. A resolved file stays
+  listed until Done, and the footer counts them: "1 of 3 files resolved".
+- **Three columns** that scroll together, row for row: **Ours**, the **Result** and **Theirs**.
+  Each has its own line numbers, and grey rows where it has fewer lines than the others.
 
-**Your own edits.** **Open in Editor** opens the file; resolve it there, then **Mark Resolved**
-stages it as it is — and asks first when git still finds conflict markers in it, as do the
-row's stage button, Space and a double-click. A file you edited since git wrote the conflict
-shows as "changed since the conflict", without the chooser, and any choice that would replace
-it asks first and files it in the Stashes list. Every write checks that the file and its index
-entries are still what was on screen; if not, nothing is written and the banner says so.
+Ours and Theirs are git's two versions, read-only. They are read from the three versions git
+keeps in the index (`git merge-file`), never parsed out of the file, so a line of your code that
+looks like a marker stays code. A line that a side changed has that side's colour, blue for Ours
+and purple for Theirs, and the words that changed are marked more strongly. The sides are named:
+in a merge the branch you are on and the one merged; in a rebase **upstream** is ours and **your
+commit** theirs (git's own sides, the other way round from what the words suggest); in a
+cherry-pick or revert the commit being applied or undone.
+
+The Result is the whole file as git's merge puts it together. A line only one side changed has
+that side's colour and a "From Ours" or "From Theirs" label. Each conflict shows where it stands:
+
+- **waiting:** a dashed orange box reading "Choose a side, or type here", with **← Ours**,
+  **Both** and **Theirs →**;
+- **taken:** the lines you chose, with a green bar and a label: "Ours", "Theirs", "Ours +
+  Theirs" or "Theirs + Ours";
+- **edited:** anything you typed, labelled "Edited by you".
+
+The conflict you are on is outlined in orange across all three columns.
+
+**Taking a side.** Click the arrow on a conflict's first row, in the strip beside Ours (→) or
+beside Theirs (←), click a choice in the waiting box, or use the keys:
+
+| keys | what they do |
+|---|---|
+| ⌃⌘← | take Ours |
+| ⌃⌘→ | take Theirs |
+| ⌃⌘↓ | take both, ours first |
+| ⌃⌥⌘↓ | take both, theirs first |
+| ⌘] and ⌘[ | the next and the previous conflict; past a file's last conflict, ⌘] goes on to the next file with conflicts |
+| ⌘Z and ⇧⌘Z | undo and redo, for choices and typing alike |
+| Escape | Done; while you are typing in the Result, the first Escape leaves the text and the second is Done |
+
+**Both** in the waiting box takes ours first; ⌥-click it, or right-click it, for theirs first.
+The bar at the bottom shows the keys for Ours, Theirs, both with ours first, and the next and
+previous conflict, and the Repository menu lists the four takes and Next and Previous Conflict.
+**Use Ours for the rest** and **Use Theirs for the rest**, above each side, take that side for
+every conflict still waiting in the file; the ones you took or edited stay as they are. A
+conflict can be taken again: the new choice replaces the old one, and ⌘Z brings the old one back,
+with no question.
+
+**Typing in the Result.** Click into the Result and edit it like any text: anywhere, not only in
+the conflicts. Typing into a waiting box replaces it with what you type, and a change anywhere is
+labelled "Edited by you". An edit that runs across the edge of a conflict joins the two parts it
+touches into one edited part. A line you type gets the file's own line ending, CRLF or LF,
+whichever most of its lines use.
+
+**Show Base** puts each conflict's base — what it was before either side changed it — in a grey
+strip above it, or "No base: both sides added this". It stays on or off until you change it.
+
+**Resolve File.** Nothing is written while you choose or type. **Resolve File**, at the bottom
+right, is on once no conflict in the file is waiting; until then the bar says how many are left
+("2 conflicts left in this file"). It writes exactly what the Result shows, in the form git would
+have — line endings, filters, the executable bit, a missing final newline — and stages it, then
+moves on to the next file with conflicts. If the Result still holds conflict-marker lines that
+you did not take from a side, it asks first, before anything is written.
+
+**Done.** Once every file is resolved, the sidebar's footer says "All files resolved — press
+Done, then Continue". **Done** (or Escape) takes you back to the repository: history, the file
+list, the commit message and the operation bar with Continue (Commit, for a merge). A file still
+in conflict shows the card again. With no operation, the footer says "All files resolved — press
+Done".
+
+**Whole files.** Where git draws no conflicts inside the file — a binary file, a symlink, a mode
+change, a merge driver of yours, a file one side deleted — the Result column says why and offers
+that kind's own choices as large buttons: **Take Ours** / **Take Theirs**, or for a deletion
+**Delete the File** and **Keep Their Version** (we deleted it, they changed it) or **Keep Our
+Version** (the other way round). Ours and Theirs show their side's text when it is text, and
+otherwise what it is: "Binary file, 2 KB", "Symlink to …", "Deleted on this side". A side that
+has no version is not offered (git would delete the file and say nothing). A submodule conflict
+is shown and explained, not resolved here.
+
+**Several files at once.** Select files in the sidebar with ⌘-click or ⇧-click, then choose
+**Take Ours for 3 Files…** or **Take Theirs for 3 Files…** from their right-click menu or the
+footer. A sheet lists the files, the ones that get a copy first (below), and any file skipped
+because it has no such side, such as a deleted one.
+
+**Large files.** A file too large to edit here quickly, or one that isn't UTF-8 text, opens with
+a read-only Result and a line under its header saying so: "This file is too large to edit here"
+or "This file isn't UTF-8 text". Taking sides, with the buttons and the keys, and Resolve File
+still work; only typing is off.
+
+**A conflict Gitter cannot read.** If reading a conflicted file's versions fails, the Result
+column says so instead of spinning: "Gitter couldn't read this conflict: <git's words>. You can
+still open the file in its editor, or mark it resolved as it is.", with **Open in Editor**,
+**Mark Resolved** (its usual check and sheet; not for a file both sides deleted) and **Try
+Again**, which reads it again. A read that works, or selecting another file, ends it.
+
+**Your work is kept until you resolve it.** What you do in the Result stays in memory, not in the
+file, until Resolve File. Switch to another file and back, or press Done and come back, and it is
+as you left it, with its undo, for as long as the window is open. Gitter drops it only when the
+file is resolved, when you choose **Discard Changes** or **Reload** in the Result's ⋯ menu or
+Reload on its bar, when you abort, or when you answer yes to one of these questions:
+
+- **"Discard your changes to "README.md"?"**, with Cancel and **Discard Changes**, when you
+  choose Discard Changes in the Result's ⋯ menu, and before Gitter writes over a file whose
+  Result you changed: Mark Resolved, a whole-file take, Delete or Keep, the file row's stage
+  button or Space, Take Ours or Theirs for several files, Skip This Commit…, and opening a
+  worktree or another repository in this window. Your changes go only if the write then happens:
+  Cancel on a later sheet, or a write that is refused or fails, keeps them.
+- **Reload…** in the ⋯ menu asks first too, with the bar's own sentence, when you changed the
+  Result. The bar's Reload does not ask: its sentence already says your changes will be
+  discarded.
+- **The Abort sheet** names the files with changes ("Your changes to "README.md" in Resolve
+  Conflicts are discarded too."), and they go only once the abort has worked.
+- **Closing a window** with changes asks first: "You have changes in 2 conflicted files that
+  aren't saved. Close anyway?", with Cancel and **Discard and Close**. So does the Close in the
+  alert about a hidden window whose work has ended.
+- **Quitting** asks once, counting the changes in every window, with Cancel and **Discard and
+  Quit**, before the question about a push that is still running. Cancel keeps every window and
+  every change. After Discard and Quit the changes go only when Gitter really quits: Don't Quit
+  at the push question keeps them.
+
+**When something changes outside Gitter.** If the file is resolved, or its operation ends, in a
+terminal or another app, your Result stays, read-only, with a bar saying why and **Copy Result**,
+until Done or Discard Changes; Done asks before dropping a Result you changed. If Resolve
+Conflicts is closed when that happens, a notice in the window says your changes are kept (for
+example "Your changes to "README.md" in Resolve Conflicts are kept, but it changed outside
+Gitter."), and its
+**Show Changes** opens Resolve Conflicts on that file, where the sidebar lists it as Read only.
+If the file or git's versions of it change while you have changes, a bar says "This file changed
+outside Gitter. Reload it to see the new version; your changes will be discarded.", with
+**Reload**, **Keep Editing** and Copy Result, and Resolve File refuses to write over the newer
+file. If the operation ends outside Gitter while Resolve Conflicts is open, a notice says so ("The
+merge ended outside Gitter.") and Resolve Conflicts closes, unless it still holds a Result you
+changed, which stays on screen read-only as above.
+
+**Your own editor.** In the Result's ⋯ menu, **Open in Editor** opens the file; resolve it
+there, then **Mark Resolved** stages it as it is on disk — and asks first when git still finds
+conflict markers in it, as do the file row's stage button and Space. A file you edited since git
+wrote the conflict opens in Resolve Conflicts from git's conflict, not your edited file, with a
+bar: "This file was edited after the conflict; resolving here replaces those edits. A copy will
+be kept." Resolve File, a take, Delete or Keep then asks first and files the edited file in the
+Stashes list. Every write checks that the file and its index entries are still what was on
+screen; if not, nothing is written and the banner says so.
 
 **Reopen Conflict…** (in a resolved file's staged-row menu, and above its diff) brings the
 conflict back while the operation is still in progress: the markers again — or, as the sheet
@@ -481,7 +611,7 @@ branch and stay only in git's reflog for a while.
 
 | entry | made by | holds |
 |---|---|---|
-| `Replaced by Gitter: <file>` | Resolve File, Take, Delete or Keep over a file edited since the conflict | the edited file |
+| `Replaced by Gitter: <file>` | Resolve File, a take (for one file or several), Delete or Keep over a file edited since the conflict | the edited file |
 | `Reopened by Gitter: <file>` | Reopen Conflict… | the resolution, staged and on disk |
 | `Skipped by Gitter: <sha> <subject>` | Skip This Commit… | the skipped commit's files as they were, half-resolved ones included |
 | `Discarded by Gitter: …` | a discard during the operation | as in "Stash and discard" above |
@@ -789,6 +919,13 @@ Gitter then asks the Dock for your attention, and Show becomes the default (Retu
 in front — while it is in the background AppKit gives the alert no default button. A Dock reopen
 with only hidden windows opens one empty window, since to you the hidden one is closed.
 
+**Changes not yet resolved.** Closing a window whose Resolve Conflicts holds changes you have not
+resolved asks first: "You have changes in 2 conflicted files that aren't saved. Close anyway?",
+with Cancel and **Discard and Close**. So does the Close in the alert about a hidden window whose
+work has ended. Quitting asks once, counting every window's changes, with Cancel and **Discard and
+Quit**, before the question about a running push; Cancel calls the quit off as Don't Quit does,
+and every window stays with its changes (see "Conflicts" above).
+
 **Quit with a sheet up.** ⌘Q, the Dock's Quit and a logout's quit all go through one path: every
 window's sheet is closed (what was typed in it is lost), Gitter waits until AppKit shows none —
 AppKit refuses to quit while a sheet is attached — and then quits through the same question as
@@ -800,6 +937,7 @@ fails or has something to say calls the quit off and Gitter stays open to show i
 window's alert says it, once). If a sheet has not closed after 2 seconds the quit is dropped with a
 beep (`quit: a sheet did not close`), and a second ⌘Q during a quit is ignored. **The quit Apple
 Event** (the Dock's Quit, a logout, a shutdown) is answered only once Gitter has decided: a quit
-called off — Don't Quit, a Wait that ends in a call-off, a sheet that would not close — answers it
+called off — Don't Quit, Cancel at the question about unresolved changes, a Wait that ends in a
+call-off, a sheet that would not close — answers it
 cancelled (`userCanceledErr`, −128), so a logout learns that Gitter stopped it, and a quit that
 goes ahead answers 0 before Gitter exits.

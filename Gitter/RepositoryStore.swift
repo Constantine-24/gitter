@@ -85,13 +85,48 @@ final class RepositoryStore {
     private(set) var conflictLoadFailure: ConflictLoadFailure?
     /// Where the operation is, read with the document, for the side labels.
     private(set) var conflictProgress: OperationProgress?
-    /// The resolver's block choices, in memory only (nothing is written while the user
-    /// chooses), kept while the document's `ConflictSnapshot` stays the same and dropped when it
-    /// changes.
-    private(set) var resolverChoices = ResolverChoices()
     /// The selected file, when it is a resolved conflict that Reopen Conflict… can bring back
     /// (`GitConflictBackend.canReopen`, read when it is selected).
     private(set) var reopenablePath: String?
+
+    /// Focus mode's file and current conflict (`RepositoryStore+Resolver`); nil = the normal
+    /// window. The file is also the working copy's selected file, so the conflict read, its
+    /// failure state and the whole-file writes are the selected file's.
+    private(set) var resolverFocus: ResolverFocus?
+    /// Each file's Result, in memory until it is written, discarded or left at Done; kept across
+    /// file switches with its undo history, and kept — never written — when something outside
+    /// changes it.
+    private(set) var resolverDrafts: [String: ResolverDraft] = [:]
+    /// Focus mode's whole-file kind on screen: its stages as read with its document, for the side
+    /// columns (Ruling 23). Nil until read, after a failed read, and for another file.
+    private(set) var resolverWholeFileSides: ResolverWholeFileSides?
+    /// The files resolved in focus mode since it opened, in order: listed as Resolved until Done.
+    private(set) var resolvedThisSession: [String] = []
+    /// The operation focus mode opened under, while it or a draft lasts: its end is noticed once.
+    private(set) var resolverOperation: RepositoryOperation?
+    /// The operation that ended while focus mode kept drafts from it, until Done: what the
+    /// subtitle names (Ruling 24).
+    private(set) var resolverEndedOperation: RepositoryOperation?
+    /// A move into another file whose draft is still to be read lands on its last conflict
+    /// (Previous Conflict) instead of its first.
+    private(set) var resolverLandsOnLast = false
+    /// A reload ran during one of Gitter's own writes, so the drafts are checked again once the
+    /// write is over (`finishMutation`): Gitter's own resolve is not an outside change.
+    private(set) var resolverReconcilePending = false
+    /// Focus mode's sidebar summaries, per conflicted path (`refreshResolverSummaries`): kept
+    /// while focus mode is up, dropped at Done.
+    private(set) var resolverSummaries: [String: ResolverSummary] = [:]
+    /// The files whose summaries `resolverSummaryTask` is reading.
+    private(set) var resolverSummariesReading: [ConflictedFile] = []
+    /// The summaries' read (the harness waits on it).
+    var resolverSummaryTask: Task<Void, Never>?
+    /// A summaries' read is under way: `waitUntilIdle` waits it out, as it does the other reads.
+    var isReadingResolverSummaries: Bool { !resolverSummariesReading.isEmpty }
+    /// Show Base, remembered in `defaults` under `resolverShowsBaseKey`.
+    var showsBase: Bool {
+        didSet { defaults.set(showsBase, forKey: Self.resolverShowsBaseKey) }
+    }
+    static let resolverShowsBaseKey = "resolverShowsBase"
 
     /// Where the rebase, cherry-pick, revert, merge, squash or `git am` in progress stopped, and
     /// whether Continue and Skip would run (`RepositoryStore+Continue`): read with every snapshot
@@ -132,6 +167,13 @@ final class RepositoryStore {
             if isClosed, activeSheet != nil { activeSheet = nil }
         }
     }
+
+    /// What the draft question on screen (`BranchSheet.discardDrafts`) runs on Discard
+    /// (`RepositoryStore+DraftGuard`); kept beside the sheet, since a closure is not `Hashable`,
+    /// and run only as the answer to that very question — a sheet closed any other way (Cancel,
+    /// a quit closing every sheet, `close()`) runs nothing.
+    // internal (not private(set) write): used by +DraftGuard.swift
+    @ObservationIgnored var pendingDraftDiscard: PendingDraftDiscard?
 
     /// Set once by `close()`, when the store's window has closed (E2 Task 3), and never cleared: a
     /// closed window's view tree lives on (M3.2), so nothing may act for its store again — `open()`,
@@ -481,6 +523,7 @@ final class RepositoryStore {
         self.trasher = trasher
         self.defaults = defaults
         self.eventLog = eventLog
+        showsBase = defaults.bool(forKey: Self.resolverShowsBaseKey)
         autoFetchScheduler = AutoFetchScheduler.fromEnvironment(defaults: defaults)
         #if DEBUG
             Self.storesBuilt += 1
@@ -561,6 +604,18 @@ final class RepositoryStore {
         setConflict(nil, progress: nil)
         setConflictLoadFailure(nil)
         reopenablePath = nil
+        // Focus mode and its drafts are this repository's (asking first is the caller's).
+        resolverFocus = nil
+        resolverDrafts = [:]
+        resolverWholeFileSides = nil
+        resolvedThisSession = []
+        resolverOperation = nil
+        resolverEndedOperation = nil
+        resolverLandsOnLast = false
+        resolverReconcilePending = false
+        resolverSummaryTask?.cancel()
+        resolverSummaries = [:]
+        resolverSummariesReading = []
         operationStop = nil
         prefilledStopKey = nil
         haltedSequence = nil
@@ -971,6 +1026,10 @@ final class RepositoryStore {
             errorIsSticky = false
         }
         isMutating = false
+        if resolverReconcilePending {
+            resolverReconcilePending = false
+            reconcileResolverDrafts(afterGitterWrite: true)
+        }
     }
 
     // MARK: - Network lane bookkeeping
@@ -1267,13 +1326,11 @@ final class RepositoryStore {
         rejectedPush = value
     }
 
-    /// The one place the resolver's document is written: the choices follow its snapshot
-    /// (`ResolverChoices.show`), so they can never outlive the conflict they were made for.
+    /// The one place the resolver's document is written.
     /// internal (not private): used by +Conflicts.swift's `loadConflict()`
     func setConflict(_ document: ConflictDocument?, progress: OperationProgress?) {
         conflictDocument = document
         conflictProgress = progress
-        resolverChoices.show(document?.snapshot, blockCount: document.flatMap(ResolverOffer.blocks(of:))?.count ?? 0)
     }
 
     /// internal (not private(set) write): used by +Conflicts.swift's `loadConflict()`
@@ -1281,14 +1338,65 @@ final class RepositoryStore {
         conflictLoadFailure = failure
     }
 
-    /// internal (not private(set) write): used by +Conflicts.swift's `chooseBlock`
-    func setBlockChoice(_ index: Int, _ choice: BlockChoice) {
-        resolverChoices.choose(index, choice)
+    /// internal (not private(set) write): used by +Conflicts.swift's `loadConflict()`
+    func setResolverWholeFileSides(_ sides: ResolverWholeFileSides?) {
+        resolverWholeFileSides = sides
     }
 
     /// internal (not private(set) write): used by +Conflicts.swift's `loadConflict()`
     func setReopenablePath(_ path: String?) {
         reopenablePath = path
+    }
+
+    /// internal (not private(set) write): used by +Resolver.swift
+    func setResolverFocus(_ focus: ResolverFocus?) {
+        resolverFocus = focus
+    }
+
+    /// One file's draft, or (nil) none. internal (not private(set) write): used by
+    /// +Resolver.swift and +Conflicts.swift's `loadConflict()`
+    func setResolverDraft(_ path: String, _ draft: ResolverDraft?) {
+        resolverDrafts[path] = draft
+    }
+
+    /// internal (not private(set) write): used by +Resolver.swift
+    func setResolverDrafts(_ drafts: [String: ResolverDraft]) {
+        resolverDrafts = drafts
+    }
+
+    /// internal (not private(set) write): used by +Resolver.swift
+    func setResolvedThisSession(_ paths: [String]) {
+        resolvedThisSession = paths
+    }
+
+    /// internal (not private(set) write): used by +Resolver.swift
+    func setResolverOperation(_ operation: RepositoryOperation?) {
+        resolverOperation = operation
+    }
+
+    /// internal (not private(set) write): used by +Resolver.swift
+    func setResolverEndedOperation(_ operation: RepositoryOperation?) {
+        resolverEndedOperation = operation
+    }
+
+    /// internal (not private(set) write): used by +Resolver.swift
+    func setResolverLandsOnLast(_ value: Bool) {
+        resolverLandsOnLast = value
+    }
+
+    /// internal (not private(set) write): used by +Resolver.swift's `refreshResolverSummaries`
+    func setResolverSummaries(_ summaries: [String: ResolverSummary]) {
+        resolverSummaries = summaries
+    }
+
+    /// internal (not private(set) write): used by +Resolver.swift's `refreshResolverSummaries`
+    func setResolverSummariesReading(_ files: [ConflictedFile]) {
+        resolverSummariesReading = files
+    }
+
+    /// internal (not private(set) write): used by +Resolver.swift's `reconcileResolverDrafts`
+    func setResolverReconcilePending(_ value: Bool) {
+        resolverReconcilePending = value
     }
 
     /// internal (not private(set) write): used by +Refresh.swift's `loadSnapshot()`, right after

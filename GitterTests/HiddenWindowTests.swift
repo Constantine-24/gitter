@@ -16,6 +16,10 @@ import Testing
     private(set) var alerts: [String] = []
     /// The last alert's answer: what its Show or Close does.
     private(set) var answer: (@MainActor (HiddenWindowEnvironment.Choice) -> Void)?
+    /// Every close question about drafts (Task 7): the window it went on (nil: app-modal) and the
+    /// count it asked about; and the last one's answer, true for Discard and Close.
+    private(set) var closeQuestions: [(window: NSWindow?, count: Int)] = []
+    private(set) var closeAnswer: (@MainActor (Bool) -> Void)?
 
     var environment: HiddenWindowEnvironment {
         HiddenWindowEnvironment(
@@ -25,6 +29,10 @@ import Testing
             alert: { text, answer in
                 self.alerts.append(text)
                 self.answer = answer
+            },
+            askToClose: { window, count, answer in
+                self.closeQuestions.append((window, count))
+                self.closeAnswer = answer
             })
     }
 }

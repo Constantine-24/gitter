@@ -69,6 +69,15 @@ struct AbortSheet: View {
 
             fileList
 
+            // Focus mode's drafts with changes go with the abort (Task 7): this sheet is their
+            // question.
+            let drafts = store.changedDraftPaths
+            if !drafts.isEmpty {
+                Text(ConflictWording.abortDrafts(drafts))
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             if let staleReason {
                 Text(staleReason)
                     .font(.caption)

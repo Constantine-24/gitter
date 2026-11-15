@@ -627,14 +627,21 @@ extension RepositoryStore {
 
     /// The Skip sheet's destructive button, only as the answer to the sheet about this commit.
     /// GitCore refuses if the operation stopped elsewhere since, files the paths, then skips.
+    /// Every file of the stop goes back, so every draft with changes is asked about first (Task
+    /// 7) — after the sheet, so that a Discard is never followed by a Cancel that skipped nothing.
     func confirmSkip(stoppedAt sha: String) {
         guard case .skip(let operation, let current, _) = activeSheet, current.sha == sha else { return }
         activeSheet = nil
-        mutate(result: { backend, root in
-            try await backend.skip(operation, stoppedAt: sha, at: root)
-        }, onSuccess: { [self] result in
-            finishSkip(operation, current, result)
-        })
+        confirmDiscardingDrafts(for: Array(resolverDrafts.keys)) { [self] in
+            mutate(result: { backend, root in
+                try await backend.skip(operation, stoppedAt: sha, at: root)
+            }, onSuccess: { [self] result in
+                // The stop's drafts go once the skip went ahead (Ruling 39), before the reload's
+                // check could keep them under an "outside" label; a failed skip keeps them.
+                if case .failed = result.outcome {} else { dropDrafts(Array(resolverDrafts.keys)) }
+                finishSkip(operation, current, result)
+            })
+        }
     }
 
     private func finishSkip(_ operation: RepositoryOperation, _ current: CommitRef, _ result: SkipOutcome) {

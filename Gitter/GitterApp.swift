@@ -181,7 +181,29 @@ struct RepositoryCommands: Commands {
             // one is added from here (or a branch's menu).
             Button(WorktreeWording.addTitle) { store?.requestAddWorktree(branch: nil) }
                 .disabled(isOff(\.addWorktreeBlockedReason))
-            Divider()
+            // Focus mode's keys (spec, "Taking a side"), on its current conflict. Off outside
+            // focus mode and while a sheet is up; the takes also while the draft is read-only.
+            Section(ConflictWording.resolveMenu) {
+                Button(ConflictWording.takeOursMenuItem) { store?.resolverTake(.ours) }
+                    .keyboardShortcut(.leftArrow, modifiers: [.control, .command])
+                    .disabled(Self.resolverTakeIsOff(store))
+                Button(ConflictWording.takeTheirsMenuItem) { store?.resolverTake(.theirs) }
+                    .keyboardShortcut(.rightArrow, modifiers: [.control, .command])
+                    .disabled(Self.resolverTakeIsOff(store))
+                Button(ConflictWording.takeBothMenuItem) { store?.resolverTake(.oursThenTheirs) }
+                    .keyboardShortcut(.downArrow, modifiers: [.control, .command])
+                    .disabled(Self.resolverTakeIsOff(store))
+                Button(ConflictWording.takeBothTheirsFirstMenuItem) { store?.resolverTake(.theirsThenOurs) }
+                    .keyboardShortcut(.downArrow, modifiers: [.control, .option, .command])
+                    .disabled(Self.resolverTakeIsOff(store))
+                Button(ConflictWording.next) { store?.resolverNextConflict() }
+                    .keyboardShortcut("]", modifiers: .command)
+                    .disabled(Self.resolverIsOff(store))
+                Button(ConflictWording.previous) { store?.resolverPreviousConflict() }
+                    .keyboardShortcut("[", modifiers: .command)
+                    .disabled(Self.resolverIsOff(store))
+            }
+            // The section draws its own separators.
             // App-wide. Off also stops an automatic fetch that is running, in every window; on
             // waits for the next tick.
             Toggle(
@@ -206,6 +228,18 @@ struct RepositoryCommands: Commands {
     static func isOff(_ store: RepositoryStore?, _ reason: (RepositoryStore) -> String?) -> Bool {
         guard let store else { return true }
         return store.activeSheet != nil || reason(store) != nil
+    }
+
+    /// Whether focus mode's Next and Previous Conflict are off: outside focus mode, or while the
+    /// front window's sheet is up.
+    static func resolverIsOff(_ store: RepositoryStore?) -> Bool {
+        store?.resolverFocus == nil || store?.activeSheet != nil
+    }
+
+    /// Whether focus mode's takes are off: as Next and Previous, and without an editable draft
+    /// on screen.
+    static func resolverTakeIsOff(_ store: RepositoryStore?) -> Bool {
+        resolverIsOff(store) || !(store?.focusedDraft?.isEditable ?? false)
     }
 
     /// Whether Refresh is off: with no window open, no repository in the front window, or while

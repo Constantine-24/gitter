@@ -3,12 +3,15 @@ import SwiftUI
 
 /// Mark Resolved found conflict markers still in the file (`ConflictError.leftoverMarkers`) and
 /// staged nothing. Confirming stages the file with them (`markResolved(allowingMarkers:)`).
+/// With `pending`, the same question before focus mode's Resolve File writes the Result
+/// (`BranchSheet.resolveWithMarkers`): confirming runs that write.
 ///
 /// No count on screen: `leftoverMarkers` can over-count a content line that is exactly an
 /// opening marker. Cancel holds `.defaultAction`, Escape closes, the confirming button has no
 /// shortcut.
 struct MarkResolvedSheet: View {
     let snapshot: ConflictSnapshot
+    var pending: PendingResolution? = nil
 
     @Environment(RepositoryStore.self) private var store
 
@@ -32,7 +35,9 @@ struct MarkResolvedSheet: View {
 
             HStack {
                 Spacer()
-                let act: @MainActor () -> Void = { store.confirmMarkResolved(snapshot) }
+                let act: @MainActor () -> Void = {
+                    if let pending { store.confirmResolveWithMarkers(snapshot, pending) } else { store.confirmMarkResolved(snapshot) }
+                }
                 Button(ConflictWording.markResolvedButton, role: .destructive, action: act)
                     .harnessButton(ConflictWording.markResolvedButton, action: act)
                     .foregroundStyle(.red)

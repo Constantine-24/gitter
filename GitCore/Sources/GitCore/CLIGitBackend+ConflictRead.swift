@@ -92,6 +92,20 @@ extension CLIGitBackend: GitConflictBackend {
         return document(.blocks(segments), matches: matches)
     }
 
+    public func conflictSides(_ snapshot: ConflictSnapshot, at root: URL) async throws -> ConflictSides {
+        let file = snapshot.file
+        // The snapshot says which stages exist: `cat-file` of a missing one fails, and that
+        // failure is not turned into nil — a stage that vanished is the write's to refuse.
+        func side(_ n: Int, _ stage: ConflictStage?) async throws -> Data? {
+            guard stage != nil else { return nil }
+            return try await stageText(n, of: file.path, at: root)
+        }
+        return ConflictSides(
+            ours: try await side(2, file.ours), base: try await side(1, file.base),
+            theirs: try await side(3, file.theirs),
+            markerSize: try await conflictAttributes(of: file.path, at: root).markerSize)
+    }
+
     // MARK: - Classification
 
     /// Why a path can only be taken whole, from its record alone; nil when it may have blocks.
