@@ -698,6 +698,77 @@ import Testing
         try Self.expectTextOnRows(host, "after the turns")
     }
 
+    /// A merge with two long files: `long.txt` as `longMerge(twice: true)` has it, and `top.txt`,
+    /// its one conflict on its second row and 600 lines after it.
+    static func twoLongFiles() throws -> ScratchRepo {
+        let repo = try ScratchRepo()
+        let above = (1...300).map { "line \($0)" }.joined(separator: "\n") + "\n"
+        let below = (301...600).map { "line \($0)" }.joined(separator: "\n") + "\n"
+        func write(_ side: String) throws {
+            try repo.write("long.txt", above + "\(side) x\n" + below + "\(side) y\nend\n")
+            try repo.write("top.txt", "first\n\(side) z\n" + above + below)
+        }
+        try write("base")
+        try repo.git("add", ".")
+        try repo.git("commit", "-m", "base")
+        try repo.git("switch", "-c", "topic")
+        try write("topic")
+        try repo.git("commit", "-qam", "topic")
+        try repo.git("switch", "-q", "main")
+        try write("main")
+        try repo.git("commit", "-qam", "main")
+        try repo.gitExpectingFailure("merge", "topic")
+        return repo
+    }
+
+    /// Another file shown while a long jump in the last one is still being laid out starts at its
+    /// top, where its first conflict is: not where the last file's jump aimed.
+    @Test(.timeLimit(.minutes(10))) func aFileSwitchDuringACatchUpKeepsTheNewFileAtItsTop() async throws {
+        let repo = try Self.twoLongFiles()
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.columns(repo, path: "long.txt")
+        defer { cleanup(); window.close() }
+        try await Self.settleLayout(host)
+        _ = try #require(await ResolverStoreTests.openDraft(store, "top.txt"))
+        let long = try #require(store.resolverDrafts["long.txt"]), top = try #require(store.resolverDrafts["top.txt"])
+        let second = long.document.chunks.last { !$0.blocks.isEmpty }?.id
+        host.update(store: store, path: "long.txt", draft: long, current: second, showBase: false, labels: store.conflictSides)
+        #expect(host.layoutPending)
+        #expect(host.result.scrollView.contentView.bounds.minY > 5000)
+        let first = top.document.chunks.first { !$0.blocks.isEmpty }?.id
+        host.update(store: store, path: "top.txt", draft: top, current: first, showBase: false, labels: store.conflictSides)
+        try await Self.settleLayout(host)
+        #expect(host.result.scrollView.contentView.bounds.minY == 0)
+        try Self.expectTextOnRows(host, "top.txt after the switch")
+    }
+
+    /// A scroll of the user's own while a long jump is still being laid out — a wheel, a trackpad,
+    /// the scroller, all of which AppKit announces as a live scroll — is where the view stays:
+    /// the jump's aim is not put back over it.
+    @Test(.timeLimit(.minutes(10))) func aUserScrollDuringACatchUpIsNotUndone() async throws {
+        let repo = try Self.longMerge(twice: true)
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.columns(repo, path: "long.txt")
+        defer { cleanup(); window.close() }
+        try await Self.settleLayout(host)
+        store.resolverNextConflict()
+        host.update(
+            store: store, path: "long.txt", draft: store.resolverDrafts["long.txt"],
+            current: store.resolverFocus?.currentChunk, showBase: store.showsBase, labels: store.conflictSides)
+        #expect(host.layoutPending)
+        let scroll = host.result.scrollView, clip = scroll.contentView
+        let aimed = clip.bounds.minY
+        // Back up 200 rows, into the lines laid out before the jump.
+        let mine = aimed - 4000
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        clip.scroll(to: NSPoint(x: 0, y: mine))
+        scroll.reflectScrolledClipView(clip)
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+        try await Self.settleLayout(host)
+        #expect(abs(clip.bounds.minY - mine) < 100, "the user scrolled to \(mine), the jump aimed at \(aimed); the view is at \(clip.bounds.minY)")
+        try Self.expectTextOnRows(host, "after the user's scroll")
+    }
+
     /// Once the columns are laid out deep down the file, an edit far above the rows in view —
     /// typing, an input method's commit, an undo, Show Base turned on — changes the rows above
     /// them, so what was laid out from there on must be laid out again: the text stays on its

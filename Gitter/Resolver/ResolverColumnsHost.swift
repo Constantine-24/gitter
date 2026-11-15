@@ -55,6 +55,8 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
     /// Where `scrollToRows` aimed the view while the lines above it are still being laid out:
     /// TextKit keeps the lines it shows in place while they are, which moves the view by its
     /// estimate's error (seen 443 pt past a conflict 198 rows down), so the view goes back there.
+    /// Forgotten by the next aim, another file, and any scroll of the user's own (a live scroll:
+    /// a wheel, a trackpad, the scroller), which the view is left at.
     private var jumpOrigin: CGFloat?
     private var canTake = false
     private var editable = false
@@ -83,6 +85,9 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
             NotificationCenter.default.addObserver(
                 self, selector: #selector(clipChanged(_:)), name: NSView.boundsDidChangeNotification,
                 object: column.scrollView.contentView)
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(userScrolls(_:)), name: NSScrollView.willStartLiveScrollNotification,
+                object: column.scrollView)
         }
         addSubview(left)
         addSubview(right)
@@ -214,6 +219,7 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
             column.textView.textStorage?.setAttributedString(NSAttributedString())
             column.textView.starts = [0]
         }
+        jumpOrigin = nil
         pushModel(redraw: [.ours, .result, .theirs], layout: true)
     }
 
@@ -234,6 +240,7 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         let newRows = ResolverLayout.rows(document, using: sides, showBase: showBase, reusing: &rowCache)
         let old = reset ? [] : rows
         if reset {
+            jumpOrigin = nil
             // Another file: it starts at its top, not at the depth the last one was scrolled to
             // (which would lay the new file out down to there).
             let clip = result.scrollView.contentView
@@ -419,6 +426,7 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
 
     /// Brings rows into view, a third of the way down, unless they are already in view.
     private func scrollToRows(_ range: Range<Int>) {
+        jumpOrigin = nil
         let clip = result.scrollView.contentView
         let visible = clip.bounds
         let top = ResolverGeometry.y(ofRow: range.lowerBound), bottom = ResolverGeometry.y(ofRow: range.upperBound)
@@ -513,6 +521,11 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
     }
 
     // MARK: - Scrolling as one
+
+    /// The user scrolls: a jump's aim is no longer where the view should go back to.
+    @objc private func userScrolls(_ notification: Notification) {
+        jumpOrigin = nil
+    }
 
     @objc private func clipChanged(_ notification: Notification) {
         guard !syncing, let clip = notification.object as? NSClipView else { return }
