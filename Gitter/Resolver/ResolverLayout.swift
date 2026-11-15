@@ -73,9 +73,15 @@ enum ResolverLayout {
     /// redo across such an edit: rebuild then. Build it from the draft's own `ConflictSides`;
     /// other stages need a new one. A `Sides` that does not fit is rebuilt by `rows` rather than
     /// misused, at the full cost.
+    ///
+    /// **Refitting** (`refitted(to:)`, Ruling 28): each stage's lines and its whole-stage tints and
+    /// marks against stage 1 depend on the stage alone, and are kept; a refit redoes only what the
+    /// chunks decide — where each block sits, the chunks' spans, and the blocks' own tints against
+    /// their bases.
     struct Sides: Sendable {
         fileprivate let ours: Column, theirs: Column
-        private let stages: ConflictSides
+        private let oursStage: Stage?, theirsStage: Stage?
+        private let base: [Line]?
         private let shape: [Shape]
 
         private struct Shape: Hashable, Sendable {
@@ -84,21 +90,32 @@ enum ResolverLayout {
         }
 
         init(_ sides: ConflictSides, document: ResolverDocument) {
-            let chunks = document.chunks
             let base = sides.base.map { ResolverLayout.lines(of: $0) }
-            ours = Column(stage: sides.ours, side: .ours, chunks: chunks, base: base)
-            theirs = Column(stage: sides.theirs, side: .theirs, chunks: chunks, base: base)
-            stages = sides
+            let oursStage = sides.ours.map { Stage($0, side: .ours, base: base) }
+            let theirsStage = sides.theirs.map { Stage($0, side: .theirs, base: base) }
+            self.init(ours: oursStage, theirs: theirsStage, base: base, document: document)
+        }
+
+        private init(ours oursStage: Stage?, theirs theirsStage: Stage?, base: [Line]?, document: ResolverDocument) {
+            let chunks = document.chunks
+            ours = Column(stage: oursStage, side: .ours, chunks: chunks, base: base)
+            theirs = Column(stage: theirsStage, side: .theirs, chunks: chunks, base: base)
+            self.oursStage = oursStage
+            self.theirsStage = theirsStage
+            self.base = base
             shape = Self.shape(of: document)
         }
 
         /// The document's chunks are still the ones these columns were placed for.
         func fits(_ document: ResolverDocument) -> Bool { Self.shape(of: document) == shape }
 
-        /// Itself while it fits `document`, else one built for it from the same stages.
-        fileprivate func fitted(to document: ResolverDocument) -> Sides {
-            fits(document) ? self : Sides(stages, document: document)
+        /// Itself while it fits `document`; else placed again for its chunks, keeping the stages'
+        /// lines, tints and marks (the costly part, whole-stage diffs against the base).
+        func refitted(to document: ResolverDocument) -> Sides {
+            fits(document) ? self : Sides(ours: oursStage, theirs: theirsStage, base: base, document: document)
         }
+
+        fileprivate func fitted(to document: ResolverDocument) -> Sides { refitted(to: document) }
 
         private static func shape(of document: ResolverDocument) -> [Shape] {
             document.chunks.map { Shape(id: $0.id, blocks: $0.blocks.count) }
@@ -328,7 +345,7 @@ enum ResolverLayout {
 
     // MARK: - Line diffs
 
-    private enum Pair {
+    fileprivate enum Pair {
         case matched(Int, Int), paired(Int, Int), old(Int), new(Int)
     }
 
@@ -399,6 +416,28 @@ enum ResolverLayout {
 
     // MARK: - A side's column
 
+    /// One side's stage on its own: its lines, and each line's tint and marks against stage 1
+    /// (none without it). Depends on no chunk.
+    fileprivate struct Stage: Sendable {
+        let lines: [Line]
+        let tints: [RowTint]
+        let marks: [[Range<Int>]]
+
+        init(_ stage: Data, side: ConflictSide, base: [Line]?) {
+            let lines = ResolverLayout.lines(of: stage)
+            var tints = [RowTint](repeating: .none, count: lines.count)
+            var marks = [[Range<Int>]](repeating: [], count: lines.count)
+            if let base {
+                Column.tint(
+                    ResolverLayout.pairs(base.map(\.key), lines.map(\.key)), old: base, lines: lines, offset: 0,
+                    changed: side == .ours ? .oursChanged : .theirsChanged, tints: &tints, marks: &marks)
+            }
+            self.lines = lines
+            self.tints = tints
+            self.marks = marks
+        }
+    }
+
     /// One side's stage: its lines, each line's tint and marks, and each chunk's span of lines.
     fileprivate struct Column {
         let lines: [Line]
@@ -407,11 +446,11 @@ enum ResolverLayout {
         /// Per chunk, in `chunks` order; they tile `lines`.
         let spans: [Range<Int>]
 
-        init(stage: Data?, side: ConflictSide, chunks: [ResolverChunk], base: [Line]?) {
+        init(stage: Stage?, side: ConflictSide, chunks: [ResolverChunk], base: [Line]?) {
             func sideOf(_ block: ConflictBlock) -> Data { side == .ours ? block.ours : block.theirs }
             // A stage that is missing (never for a blocks presentation) is rebuilt from the chunks.
             let lines =
-                stage.map { ResolverLayout.lines(of: $0) }
+                stage?.lines
                 ?? chunks.flatMap { chunk in
                     ResolverLayout.lines(of: chunk.commonOriginal ?? "")
                         + chunk.blocks.flatMap { ResolverLayout.lines(of: sideOf($0)) }
@@ -459,38 +498,55 @@ enum ResolverLayout {
                 previousEnd = end
             }
 
-            // Tints: against stage 1 everywhere, then each block's lines against the block's base.
-            var tints = [RowTint](repeating: .none, count: lines.count)
-            var marks = [[Range<Int>]](repeating: [], count: lines.count)
+            // Tints: against stage 1 everywhere (the stage's own, kept across refits), then each
+            // block's lines against the block's base.
             let changed: RowTint = side == .ours ? .oursChanged : .theirsChanged
-            func tint(_ pairs: [Pair], old: [Line], offset: Int) {
-                for pair in pairs {
-                    switch pair {
-                    case .matched(_, let n):
-                        tints[offset + n] = .none
-                        marks[offset + n] = []
-                    case .paired(let o, let n):
-                        tints[offset + n] = changed
-                        marks[offset + n] = ResolverLayout.lineMarks(old: old[o].text, new: lines[offset + n].text)
-                    case .new(let n):
-                        tints[offset + n] = changed
-                        marks[offset + n] = ResolverLayout.wholeLine(lines[offset + n].text)
-                    case .old:
-                        break
-                    }
+            var tints: [RowTint], marks: [[Range<Int>]]
+            if let stage {
+                (tints, marks) = (stage.tints, stage.marks)
+            } else {
+                tints = [RowTint](repeating: .none, count: lines.count)
+                marks = [[Range<Int>]](repeating: [], count: lines.count)
+                if let base {
+                    Self.tint(
+                        ResolverLayout.pairs(base.map(\.key), keys), old: base, lines: lines, offset: 0, changed: changed,
+                        tints: &tints, marks: &marks)
                 }
             }
-            if let base { tint(ResolverLayout.pairs(base.map(\.key), keys), old: base, offset: 0) }
             for (q, block) in blocks.enumerated() {
                 let start = min(starts[q], keys.count), end = min(blockEnd(q), keys.count)
                 let base = block.base ?? []
-                tint(ResolverLayout.pairs(base.map(\.key), Array(keys[start..<end])), old: base, offset: start)
+                Self.tint(
+                    ResolverLayout.pairs(base.map(\.key), Array(keys[start..<end])), old: base, lines: lines,
+                    offset: start, changed: changed, tints: &tints, marks: &marks)
             }
 
             self.lines = lines
             self.tints = tints
             self.marks = marks
             self.spans = spans
+        }
+
+        /// Tints and marks the lines `pairs` says changed, from `offset` on.
+        static func tint(
+            _ pairs: [Pair], old: [Line], lines: [Line], offset: Int, changed: RowTint, tints: inout [RowTint],
+            marks: inout [[Range<Int>]]
+        ) {
+            for pair in pairs {
+                switch pair {
+                case .matched(_, let n):
+                    tints[offset + n] = .none
+                    marks[offset + n] = []
+                case .paired(let o, let n):
+                    tints[offset + n] = changed
+                    marks[offset + n] = ResolverLayout.lineMarks(old: old[o].text, new: lines[offset + n].text)
+                case .new(let n):
+                    tints[offset + n] = changed
+                    marks[offset + n] = ResolverLayout.wholeLine(lines[offset + n].text)
+                case .old:
+                    break
+                }
+            }
         }
 
         func cell(_ index: Int) -> LayoutCell {

@@ -580,6 +580,34 @@ import Testing
         #expect(ResolverLayout.Sides(Self.unitsSides, document: document).fits(document))
     }
 
+    /// A `Sides` refitted after chunks merge (and split again, by undo) keeps the stages' tints
+    /// and marks and redoes only the placement: its rows are a fresh build's (Ruling 28).
+    @Test func aRefittedSidesGivesTheSameRowsAsAFreshOne() throws {
+        let pristine = try Self.mockup()
+        let prebuilt = ResolverLayout.Sides(Self.unitsSides, document: pristine)
+        var merged = pristine
+        let start = merged.range(ofChunk: 1).location
+        let end = (merged.resultText as NSString).range(of: "WEIGHT").location
+        merged.replace(NSRange(location: start, length: end - start), with: "")
+        #expect(!prebuilt.fits(merged))
+        let refitted = prebuilt.refitted(to: merged)
+        #expect(refitted.fits(merged))
+        for showBase in [false, true] {
+            #expect(
+                ResolverLayout.rows(merged, using: refitted, showBase: showBase)
+                    == ResolverLayout.rows(merged, sides: Self.unitsSides, showBase: showBase))
+        }
+        // Back to the unmerged chunks (an undo): refitted again, the same as fresh.
+        let back = refitted.refitted(to: pristine)
+        #expect(back.fits(pristine))
+        #expect(
+            ResolverLayout.rows(pristine, using: back, showBase: false)
+                == ResolverLayout.rows(pristine, sides: Self.unitsSides, showBase: false))
+        // Still fitting: itself.
+        #expect(ResolverLayout.rows(pristine, using: prebuilt.refitted(to: pristine), showBase: false)
+            == ResolverLayout.rows(pristine, using: prebuilt, showBase: false))
+    }
+
     @Test func crlfLinesHaveNoTerminatorInTheirText() throws {
         let sides = Self.sides(ours: "a\r\nO\r\nz\r\n", base: "a\r\nB\r\nz\r\n", theirs: "a\r\nT\r\nz\r\n")
         var document = try Self.document(

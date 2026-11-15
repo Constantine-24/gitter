@@ -114,7 +114,7 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (1 130 tests in 85 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (1 138 tests in 85 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -574,7 +574,7 @@ Gitter/                   macOS app (SwiftUI)
                               ConflictCard, ResolverFocusView (focus mode: toolbar, sidebar,
                               headers, bars, bottom bar, the whole-file centre),
                               ResolverColumnsView (the columns, the whole-file sides),
-                              EscapeMonitor, OperationBar (with the
+                              ResolverKeyMonitor (Escape, ⌘Z and ⇧⌘Z in focus mode), OperationBar (with the
                               halted bar), KeepBranchList (with RefIDList, the ref and id list
                               both sheets share) and the thirty-five sheets (NewBranch,
                               Rename, Merge, DeleteBranch, Abort, LeaveDetached, Pull, Publish,

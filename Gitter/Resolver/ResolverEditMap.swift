@@ -32,6 +32,8 @@ struct ResolverEditMap: Sendable {
     private let rows: [Row]
     /// Each row's first offset in the shown text; the shown text's length last.
     private let starts: [Int]
+    /// The document's length, in UTF-16.
+    private let documentLength: Int
 
     init(rows layout: [LayoutRow], document: ResolverDocument) {
         // Where each of the document's lines starts, and its length without its break.
@@ -81,6 +83,7 @@ struct ResolverEditMap: Sendable {
         starts.append(shown)
         self.rows = rows
         self.starts = starts
+        documentLength = total
     }
 
     var rowCount: Int { rows.count }
@@ -118,7 +121,8 @@ struct ResolverEditMap: Sendable {
     /// start of the document's next line, which is also a slot's offset. A deletion that maps to
     /// nothing because it only spans rows the document lacks — a backspace at the start of a line
     /// below fillers (`deleting`) — deletes the line break before them, as it would with none
-    /// shown; text typed over such a range is inserted there instead.
+    /// shown (a one-character deletion: a Cut of rows the document lacks takes nothing); text
+    /// typed over such a range is inserted there instead.
     func edit(for range: NSRange, deleting: Bool = false) -> Edit? {
         guard !rows.isEmpty, range.location >= 0, NSMaxRange(range) <= starts[rows.count] else { return nil }
         let first = row(at: range.location)
@@ -138,7 +142,7 @@ struct ResolverEditMap: Sendable {
         }
         // Nothing of the document's between the ends: the break before the line the range ends at.
         let last = row(at: NSMaxRange(range))
-        guard deleting, NSMaxRange(range) == starts[last], case .text(let start, _) = rows[last],
+        guard deleting, range.length == 1, NSMaxRange(range) == starts[last], case .text(let start, _) = rows[last],
             let previous = rows[..<last].lastIndex(where: { if case .text = $0 { true } else { false } }),
             case .text(let before, let length) = rows[previous]
         else { return Edit(range: NSRange(location: low, length: 0), intoEmptyChunk: isSlot(row: first)) }
@@ -148,8 +152,10 @@ struct ResolverEditMap: Sendable {
 
     /// Where a caret moving from `old` to `display` rests: on a line as it is; on a filler or Show
     /// Base row, on in the direction it moved — the next line's start or the slot going down, the
-    /// previous line's end going up; on a slot, its first row, or past it when it was already in it.
-    func caret(_ display: Int, from old: Int) -> Int {
+    /// previous line's end going up; on a slot, its first row — or, moved by a key (`byKey`) from
+    /// the slot down into its lower rows, past it, so arrowing down leaves a slot. A click anywhere
+    /// in a slot is at the slot.
+    func caret(_ display: Int, from old: Int, byKey: Bool) -> Int {
         guard !rows.isEmpty else { return display }
         let target = row(at: display), was = row(at: old)
         let down = display >= old
@@ -158,7 +164,7 @@ struct ResolverEditMap: Sendable {
             return display
         case .slot:
             let run = slotRun(target)
-            if run.contains(was), target != run.lowerBound {
+            if byKey, run.contains(was), target != run.lowerBound {
                 // Already at the slot: going down leaves it.
                 return down ? (landing(from: run.upperBound, down: true) ?? starts[run.lowerBound]) : starts[run.lowerBound]
             }
@@ -190,8 +196,18 @@ struct ResolverEditMap: Sendable {
         return nil
     }
 
-    /// The document offset of a shown offset.
+    /// The document's range for a shown range, each end mapped as `edit(for:)` maps it: what Copy
+    /// and Cut take — the document's own text, never a filler, a slot's rows or Show Base's text.
+    func documentRange(for range: NSRange) -> NSRange {
+        guard !rows.isEmpty, range.location >= 0, range.location != NSNotFound else { return NSRange(location: 0, length: 0) }
+        let end = min(NSMaxRange(range), starts[rows.count])
+        let low = position(min(range.location, end)), high = position(end)
+        return NSRange(location: low, length: max(0, high - low))
+    }
+
+    /// The document offset of a shown offset; the shown text's very end is the document's.
     private func position(_ display: Int) -> Int {
+        if display >= starts[rows.count] { return documentLength }
         let index = row(at: display)
         switch rows[index] {
         case .text(let start, let length): return start + min(display - starts[index], length)

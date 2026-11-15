@@ -240,6 +240,66 @@ import Testing
         #expect(map.displayOffset(forDocument: 7, atSlot: false) == map.displayStart(ofRow: 2))
     }
 
+    /// Keys move a caret over rows the document lacks in the direction they go, and out of a slot
+    /// downwards from its first row; a click anywhere in a slot lands at its first row (I3).
+    @Test func theCaretRestsOnLinesAndAtTheSlotsFirstRow() throws {
+        var document = try ResolverLayoutTests.mockup()
+        document.take(.ours, chunk: 1)  // conflict 1: one Result line over two of Theirs, a filler
+        let (map, rows) = Self.map(document, showBase: true)
+        let start = { map.displayStart(ofRow: $0) }
+        let slot = try #require(rows.indices.first { rows[$0].isSlot })
+        #expect(rows[slot + 1].isSlot)  // conflict 2's slot is two rows
+        let after = slot + 2
+        #expect(rows[after].result.text == "}")
+
+        // A click on either slot row, from anywhere: the slot's first row.
+        for from in [start(slot), start(slot + 1), start(0), start(after)] {
+            #expect(map.caret(start(slot + 1), from: from, byKey: false) == start(slot))
+            #expect(map.caret(start(slot), from: from, byKey: false) == start(slot))
+        }
+        // Keys: down from the slot's first row leaves it for the line after; down into it from
+        // above lands on its first row; up from the line after lands on its first row.
+        #expect(map.caret(start(slot + 1), from: start(slot), byKey: true) == start(after))
+        #expect(map.caret(start(slot + 1), from: start(slot - 1), byKey: true) == start(slot))
+        #expect(map.caret(start(slot + 1), from: start(after), byKey: true) == start(slot))
+
+        // The filler under conflict 1's Result line: down to the next line, up to the line's end.
+        let filler = try #require(rows.indices.first { rows[$0].result == ResolverLayoutTests.filler && !rows[$0].isBaseStrip })
+        let above = filler - 1, below = filler + 1
+        let aboveLength = try #require(rows[above].result.text).utf16.count
+        #expect(map.caret(start(filler), from: start(above), byKey: true) == start(below))
+        #expect(map.caret(start(filler), from: start(below), byKey: true) == start(above) + aboveLength)
+        // A Show Base row: down to the conflict's first line.
+        let strip = try #require(rows.indices.first { rows[$0].isBaseStrip && rows[$0].chunk == 5 })
+        #expect(map.caret(start(strip), from: start(strip - 1), byKey: true) == start(strip + 1))
+        // A line is a line, by key or click.
+        #expect(map.caret(start(above) + 2, from: 0, byKey: false) == start(above) + 2)
+    }
+
+    /// What Copy and Cut take: the document's own text for the shown selection — no filler or slot
+    /// lines, no Show Base text, CRLF as it is (I5).
+    @Test func aSelectionCopiesTheDocumentsText() throws {
+        let sides = ResolverLayoutTests.sides(
+            ours: "a\r\nO\r\nz\r\nw\r\n", base: "a\r\nB\r\nz\r\nC\r\nw\r\n", theirs: "a\r\nT\r\nT2\r\nz\r\nU\r\nU2\r\nw\r\n")
+        var document = try ResolverLayoutTests.document(
+            [ResolverLayoutTests.common("a\r\n"), ResolverLayoutTests.block("O\r\n", "B\r\n", "T\r\nT2\r\n"),
+             ResolverLayoutTests.common("z\r\n"), ResolverLayoutTests.block("", "C\r\n", "U\r\nU2\r\n"),
+             ResolverLayoutTests.common("w\r\n")], sides: sides)
+        document.take(.ours, chunk: 1)  // "O" over a filler
+        let rows = ResolverLayout.rows(document, sides: sides, showBase: true)
+        #expect(rows.contains { $0.isBaseStrip } && rows.contains { $0.isSlot })
+        #expect(rows.contains { $0.result == ResolverLayoutTests.filler && !$0.isBaseStrip })
+        let map = ResolverEditMap(rows: rows, document: document)
+        let all = NSRange(location: 0, length: map.displayStart(ofRow: rows.count))
+        #expect(map.documentRange(for: all) == NSRange(location: 0, length: document.resultText.utf16.count))
+        #expect((document.resultText as NSString).substring(with: map.documentRange(for: all)) == "a\r\nO\r\nz\r\nw\r\n")
+        // From inside "O" to inside "w": the bytes between, whatever is shown between.
+        let o = try #require(rows.firstIndex { $0.result.text == "O" })
+        let w = try #require(rows.firstIndex { $0.result.text == "w" })
+        let part = map.documentRange(for: NSRange(location: map.displayStart(ofRow: o) + 1, length: map.displayStart(ofRow: w) - map.displayStart(ofRow: o)))
+        #expect((document.resultText as NSString).substring(with: part) == "\r\nz\r\nw")
+    }
+
     @Test func typedTextIsCountedInTheFilesLineEnding() {
         #expect(ResolverEditMap.typedLength("a\nb", lineEnding: "\r\n") == 4)
         #expect(ResolverEditMap.typedLength("a\r\nb\rc", lineEnding: "\n") == 5)
@@ -454,6 +514,160 @@ import Testing
         #expect(overlay.hitTest(onChip) is ResolverChip)
         let onText = overlay.convert(NSPoint(x: overlay.bounds.midX, y: overlay.bounds.minY + 12), to: overlay.superview)
         #expect(overlay.hitTest(onText) == nil)
+    }
+
+    /// A merge whose `b.txt` has one conflict two rows tall in the Result's slot (Theirs has two
+    /// lines), between "top" and "end".
+    static func twoRowMerge() throws -> ScratchRepo {
+        let repo = try ScratchRepo()
+        try repo.write("b.txt", "top\nx\nend\n")
+        try repo.git("add", ".")
+        try repo.git("commit", "-m", "base")
+        try repo.git("switch", "-c", "topic")
+        try repo.write("b.txt", "top\ntopic x\ntopic y\nend\n")
+        try repo.git("commit", "-qam", "topic")
+        try repo.git("switch", "-q", "main")
+        try repo.write("b.txt", "top\nmain x\nend\n")
+        try repo.git("commit", "-qam", "main")
+        try repo.gitExpectingFailure("merge", "topic")
+        return repo
+    }
+
+    static func columns(_ repo: ScratchRepo, path: String) async throws
+        -> (store: RepositoryStore, host: ResolverColumnsHost, window: NSWindow, cleanup: () -> Void)
+    {
+        let (store, cleanup) = await openedTestStore(repo)
+        _ = try #require(await ResolverStoreTests.openDraft(store, path))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = ResolverColumnsHost()
+        host.frame = window.contentView?.bounds ?? .zero
+        window.contentView?.addSubview(host)
+        let focus = store.resolverFocus
+        host.update(
+            store: store, path: path, draft: store.resolverDrafts[path], current: focus?.currentChunk,
+            showBase: store.showsBase, labels: store.conflictSides)
+        host.layoutSubtreeIfNeeded()
+        return (store, host, window, cleanup)
+    }
+
+    /// A click on the slot's lower row (the caret already at the slot, where it starts) stays in
+    /// the slot, and typing goes into the conflict (I3).
+    @Test(.timeLimit(.minutes(10))) func aClickOnASlotsLowerRowStaysInTheSlot() async throws {
+        let repo = try Self.twoRowMerge()
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.columns(repo, path: "b.txt")
+        defer { cleanup(); window.close() }
+        let view = host.result.textView
+        let map = try #require(host.resultMap)
+        let slot = try #require(host.model.firstRow[1])
+        #expect(host.model.rows[slot].isSlot && host.model.rows[slot + 1].isSlot)
+        #expect(view.selectedRange() == NSRange(location: map.displayStart(ofRow: slot), length: 0))
+        // No key event is current: the selection change is a click's.
+        view.setSelectedRange(NSRange(location: map.displayStart(ofRow: slot + 1), length: 0))
+        #expect(view.selectedRange() == NSRange(location: map.displayStart(ofRow: slot), length: 0))
+        view.insertText("q", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let chunks = try #require(store.resolverDrafts["b.txt"]).document.chunks
+        #expect(chunks.first { $0.id == 1 }?.state == .edited)
+        #expect(chunks.first { $0.id == 1 }?.text == "q\n")
+        #expect(chunks.first { $0.id == 2 }?.text == "end\n")
+    }
+
+    /// An input method that cancels its composition (empty marked text) hands the text back to the
+    /// store: a Backspace after it reaches the store, and the shown text is the model's (I4).
+    @Test(.timeLimit(.minutes(10))) func aCancelledCompositionLeavesTheStoreInCharge() async throws {
+        let repo = try ResolverStoreTests.stoppedMerge()
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.columns(repo)
+        defer { cleanup(); window.close() }
+        let view = host.result.textView
+        let start = try Self.rowStart("mid", host)
+        view.setSelectedRange(NSRange(location: start + 2, length: 0))
+        view.setMarkedText("\u{B4}", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        view.setMarkedText("", selectedRange: NSRange(location: 0, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(!view.hasMarkedText())
+        #expect(view.compositionStart == nil)
+        #expect(store.resolverDrafts["a.txt"]?.hasUserChanges == false)
+        view.deleteBackward(nil)
+        #expect(Self.chunk(2, store)?.text == "md\n")
+        view.insertText("i", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(Self.chunk(2, store)?.text == "mid\n")
+        // The shown text is a fresh build of the rows.
+        let fresh = ResolverAttributes.text(for: host.model.rows, column: .result, palette: .standard)
+        #expect(view.string == fresh.string)
+    }
+
+    /// Copy and Cut put the document's text for the selection on the pasteboard — never a filler,
+    /// a slot's blank rows or Show Base's text (I5).
+    @Test(.timeLimit(.minutes(10))) func copyTakesTheDocumentsTextNotTheShownOne() async throws {
+        let repo = try Self.twoRowMerge()
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.columns(repo, path: "b.txt")
+        defer { cleanup(); window.close() }
+        store.showsBase = true
+        defer { store.showsBase = false }
+        let refresh = {
+            let focus = store.resolverFocus
+            host.update(
+                store: store, path: "b.txt", draft: store.resolverDrafts["b.txt"], current: focus?.currentChunk,
+                showBase: store.showsBase, labels: store.conflictSides)
+        }
+        refresh()
+        let view = host.result.textView
+        let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.tests.copy-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        #expect(view.writablePasteboardTypes == [.string])
+
+        // Waiting: the slot's rows and the strip are shown, the document has neither.
+        view.setSelectedRange(NSRange(location: 0, length: (view.string as NSString).length))
+        #expect(view.writeSelection(to: pasteboard, types: [.string]))
+        #expect(pasteboard.string(forType: .string) == "top\nend\n")
+
+        // Taken Ours: one line over Theirs' two, a Result filler below it.
+        store.resolverTake(.ours, chunk: 1)
+        refresh()
+        #expect(host.model.rows.contains { $0.result == ResolverLayoutTests.filler && !$0.isBaseStrip })
+        view.setSelectedRange(NSRange(location: 0, length: (view.string as NSString).length))
+        #expect(view.writeSelection(to: pasteboard, types: [.string]))
+        #expect(pasteboard.string(forType: .string) == "top\nmain x\nend\n")
+        #expect(pasteboard.string(forType: .string) == store.resolverDrafts["b.txt"]?.document.resultText)
+    }
+
+    /// ⌘Z with the sidebar's list holding the keys reaches the store through focus mode's key
+    /// monitor; in a sheet's text field it is the field's (I2).
+    @Test(.timeLimit(.minutes(10))) func undoKeysReachTheStoreWhereverTheKeysAre() async throws {
+        let repo = try ResolverStoreTests.stoppedMerge()
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.columns(repo)
+        defer { cleanup(); window.close() }
+        let monitor = ResolverKeyMonitor.MonitorView(
+            done: {}, undo: { store.resolverUndo() }, redo: { store.resolverRedo() })
+        window.contentView?.addSubview(monitor)
+        let list = NSTableView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
+        window.contentView?.addSubview(list)
+        func key(_ characters: String, _ flags: NSEvent.ModifierFlags) throws -> NSEvent {
+            try #require(
+                NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: window.windowNumber,
+                    context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false,
+                    keyCode: 6))
+        }
+        store.resolverTake(.ours, chunk: 1)
+        #expect(window.makeFirstResponder(list))
+        #expect(monitor.handle(try key("z", .command)))
+        #expect(Self.chunk(1, store)?.state == .waiting)
+        #expect(monitor.handle(try key("Z", [.command, .shift])))
+        #expect(Self.chunk(1, store)?.state == .taken(.ours))
+        // The Result too.
+        #expect(window.makeFirstResponder(host.result.textView))
+        #expect(monitor.handle(try key("z", .command)))
+        #expect(Self.chunk(1, store)?.state == .waiting)
+        // A text field being edited keeps its own undo.
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 100, height: 20))
+        window.contentView?.addSubview(field)
+        #expect(window.makeFirstResponder(field))
+        #expect(!monitor.handle(try key("z", .command)))
     }
 
     /// Escape in the editable Result leaves the text, so the next Escape is Done.

@@ -231,6 +231,20 @@ final class ResolverTextView: NSTextView {
             compositionStart = self.selectedRange
         }
         super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacement)
+        // Marked text emptied: the input method cancelled the composition (the last marked
+        // character deleted, Escape in its candidates). Nothing reaches the store, and the text is
+        // the store's again.
+        if !committing, !hasMarkedText(), let start = compositionStart { endComposition(start, host: host) }
+    }
+
+    /// A composition that ended with nothing committed: the row as the model has it, the caret
+    /// where the composition started.
+    private func endComposition(_ start: NSRange, host: ResolverColumnsHost) {
+        compositionStart = nil
+        host.restoreRow(host.resultMap?.row(at: start.location) ?? 0, in: self)
+        if start.location <= (textStorage?.length ?? 0) {
+            setSelectedRange(NSRange(location: start.location, length: 0))
+        }
     }
 
     override func insertText(_ string: Any, replacementRange: NSRange) {
@@ -244,6 +258,7 @@ final class ResolverTextView: NSTextView {
     override func unmarkText() {
         guard !committing, let start = compositionStart, let host, hasMarkedText() else {
             super.unmarkText()
+            if !committing, !hasMarkedText(), let start = compositionStart, let host { endComposition(start, host: host) }
             return
         }
         let marked = (string as NSString).substring(with: markedRange())
@@ -263,7 +278,28 @@ final class ResolverTextView: NSTextView {
         if !text.isEmpty { host.typed(NSRange(location: start.location, length: 0), text) }
     }
 
-    /// Escape leaves the text, so the next one is Done (`EscapeMonitor`).
+    // MARK: Copy and Cut, the document's text
+
+    /// The Result copies the document's text, so a Cut and Paste writes back exactly what was
+    /// there: no filler or slot rows, no Show Base text, no stand-in symbols, CRLF as in the file.
+    override var writablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        column == .result && host != nil ? [.string] : super.writablePasteboardTypes
+    }
+
+    override func writeSelection(to pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        guard column == .result, let host else { return super.writeSelection(to: pboard, type: type) }
+        guard type == .string, let text = host.documentText(for: selectedRanges.map(\.rangeValue)) else { return false }
+        return pboard.setString(text, forType: .string)
+    }
+
+    override func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        guard column == .result, host != nil else { return super.writeSelection(to: pboard, types: types) }
+        guard types.contains(.string) else { return false }
+        pboard.declareTypes([.string], owner: nil)
+        return writeSelection(to: pboard, type: .string)
+    }
+
+    /// Escape leaves the text, so the next one is Done (`ResolverKeyMonitor`).
     override func cancelOperation(_ sender: Any?) {
         if isEditable, let host { window?.makeFirstResponder(host) } else { super.cancelOperation(sender) }
     }

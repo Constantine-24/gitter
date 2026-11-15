@@ -32,8 +32,11 @@ struct ResolverFocusView: View {
         .toolbar { toolbar }
         .navigationTitle(ConflictWording.focusTitle)
         .navigationSubtitle(subtitle)
-        // Escape is Done whenever no text is being edited (`ResolverShell.escapeIsDone`).
-        .background(EscapeMonitor { store.closeResolver() })
+        // Escape is Done whenever no text is being edited; ⌘Z and ⇧⌘Z are the store's wherever
+        // the keys are (`ResolverKeyMonitor`).
+        .background(
+            ResolverKeyMonitor(
+                done: { store.closeResolver() }, undo: { store.resolverUndo() }, redo: { store.resolverRedo() }))
     }
 
     private var subtitle: String {

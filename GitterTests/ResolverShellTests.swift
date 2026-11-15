@@ -343,6 +343,31 @@ import Testing
         #expect(!ResolverShell.escapeIsDone(isEscape: false, modified: false, ownWindow: true, sheetUp: false, editingText: false))
     }
 
+    /// ⌘Z and ⇧⌘Z are the store's in focus mode's own window, wherever the keys are — the
+    /// sidebar, a column — except in a text field being edited (a sheet's, a search field's) and
+    /// under a sheet (I2).
+    @Test func undoKeysAreTheStoresInFocusMode() {
+        func key(_ key: String, shift: Bool = false, other: Bool = false, own: Bool = true, sheet: Bool = false, field: Bool = false)
+            -> ResolverUndoKey?
+        {
+            ResolverShell.undoKey(
+                key: key, command: true, shift: shift, otherModifiers: other, ownWindow: own, sheetUp: sheet,
+                editingOtherText: field)
+        }
+        #expect(key("z") == .undo)
+        #expect(key("z", shift: true) == .redo)
+        #expect(key("Z", shift: true) == .redo)
+        #expect(key("z", other: true) == nil)
+        #expect(key("z", own: false) == nil)
+        #expect(key("z", sheet: true) == nil)
+        #expect(key("z", field: true) == nil)
+        #expect(key("x") == nil)
+        #expect(
+            ResolverShell.undoKey(
+                key: "z", command: false, shift: false, otherModifiers: false, ownWindow: true, sheetUp: false,
+                editingOtherText: false) == nil)
+    }
+
     // MARK: - The palette
 
     /// The spec's "Look": each `Resolver/<Role>` colour, light and dark (the chrome's light values

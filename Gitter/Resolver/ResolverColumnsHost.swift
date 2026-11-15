@@ -201,12 +201,14 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
     private func render(_ draft: ResolverDraft, showBase: Bool, current: Int?, reset: Bool) {
         let document = draft.document
         let sides: ResolverLayout.Sides
-        if let cache = sidesCache, cache.snapshot == draft.snapshot, cache.sides.fits(document) {
-            sides = cache.sides
+        if let cache = sidesCache, cache.snapshot == draft.snapshot {
+            // Chunks merged or split (an edit across an edge, its undo): placed again, keeping
+            // the stages' tints (Ruling 28).
+            sides = cache.sides.refitted(to: document)
         } else {
             sides = ResolverLayout.Sides(draft.sides, document: document)
-            sidesCache = (draft.snapshot, sides)
         }
+        sidesCache = (draft.snapshot, sides)
         let newRows = ResolverLayout.rows(document, using: sides, showBase: showBase)
         let old = reset ? [] : rows
         var widest: CGFloat = reset ? 0 : codeWidth
@@ -414,6 +416,13 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         result.textView.scrollRangeToVisible(NSRange(location: display, length: 0))
     }
 
+    /// The document's text for shown ranges, in order: what Copy and Cut put on the pasteboard.
+    func documentText(for ranges: [NSRange]) -> String? {
+        guard let map = resultMap, let document else { return nil }
+        let text = document.resultText as NSString
+        return ranges.map { text.substring(with: map.documentRange(for: $0)) }.joined()
+    }
+
     /// Puts a row's paragraph back as the model has it (after an input method's composition).
     func restoreRow(_ row: Int, in view: ResolverTextView) {
         guard let storage = view.textStorage, rows.indices.contains(row), view.starts.count == rows.count + 1 else { return }
@@ -447,7 +456,9 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         _ textView: NSTextView, willChangeSelectionFromCharacterRange old: NSRange, toCharacterRange new: NSRange
     ) -> NSRange {
         guard new.length == 0, let map = resultMap, !textView.hasMarkedText() else { return new }
-        return NSRange(location: map.caret(new.location, from: old.location), length: 0)
+        // Only a key leaves a slot by moving down into its lower rows; a click there stays at it.
+        let byKey = NSApp.currentEvent?.type == .keyDown
+        return NSRange(location: map.caret(new.location, from: old.location, byKey: byKey), length: 0)
     }
 
     // MARK: - Undo and redo

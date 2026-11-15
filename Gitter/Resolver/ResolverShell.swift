@@ -73,6 +73,9 @@ enum ResolverFocusMove: Hashable, Sendable {
     case allResolved
 }
 
+/// ⌘Z or ⇧⌘Z in focus mode (`ResolverShell.undoKey`).
+enum ResolverUndoKey: Hashable, Sendable { case undo, redo }
+
 /// What Return and a double-click do to a working-copy row.
 enum RowPrimaryAction: Hashable, Sendable {
     /// A conflicted file: focus mode on it.
@@ -272,5 +275,16 @@ enum ResolverShell {
     /// being edited (the Result's text view, a field editor): there it is the text's.
     static func escapeIsDone(isEscape: Bool, modified: Bool, ownWindow: Bool, sheetUp: Bool, editingText: Bool) -> Bool {
         isEscape && !modified && ownWindow && !sheetUp && !editingText
+    }
+
+    /// ⌘Z (undo) and ⇧⌘Z (redo) are the store's in focus mode's own window with no sheet up,
+    /// wherever the keys are, but in a text field being edited other than the Result (a sheet's,
+    /// a search field's), whose undo is its own.
+    static func undoKey(
+        key: String, command: Bool, shift: Bool, otherModifiers: Bool, ownWindow: Bool, sheetUp: Bool,
+        editingOtherText: Bool
+    ) -> ResolverUndoKey? {
+        guard key.lowercased() == "z", command, !otherModifiers, ownWindow, !sheetUp, !editingOtherText else { return nil }
+        return shift ? .redo : .undo
     }
 }
