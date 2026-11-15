@@ -170,6 +170,15 @@ extension RepositoryStore {
                     else { return }
                     setConflict(document, progress: progress)
                     setConflictLoadFailure(nil)
+                    // Focus mode's draft: the stages for its columns, read with the document
+                    // (a failure is this read's failed state, below).
+                    if resolverFocus?.path == path, resolverDrafts[path] == nil, case .blocks = document.presentation {
+                        let sides = try await backend.conflictSides(document.snapshot, at: root)
+                        guard !Task.isCancelled, self.generation == generation, selectedPath == path,
+                            selection == .workingCopy
+                        else { return }
+                        openDraft(document, sides: sides)
+                    }
                 } catch {
                     guard !Task.isCancelled, self.generation == generation, selectedPath == path,
                         selection == .workingCopy
@@ -238,7 +247,7 @@ extension RepositoryStore {
         guard conflictActionBlockedReason == nil else { return }
         let action: ResolverAction =
             switch pending {
-            case .blocks: .resolveFile
+            case .blocks, .text: .resolveFile
             case .take(let side): side == .ours ? .takeOurs : .takeTheirs
             case .delete: .delete
             case .keep: .keep
@@ -258,7 +267,8 @@ extension RepositoryStore {
 
     /// Runs one resolving write. Without `recordIfEdited`, bytes git did not write make GitCore
     /// refuse before anything is written, and the Replace sheet asks instead.
-    private func runResolution(_ pending: PendingResolution, _ snapshot: ConflictSnapshot, recordIfEdited: Bool) {
+    // internal (not private): used by +Resolver.swift's `resolveFocusedFile`
+    func runResolution(_ pending: PendingResolution, _ snapshot: ConflictSnapshot, recordIfEdited: Bool) {
         let sides = conflictSides
         mutate(result: { backend, root -> ConflictReceipt? in
             do {
@@ -273,6 +283,7 @@ extension RepositoryStore {
                 return
             }
             announce(ConflictWording.done(pending, receipt, sides), recorded: receipt.recorded)
+            resolverDidResolve([receipt.path])
         })
     }
 
@@ -283,6 +294,8 @@ extension RepositoryStore {
         switch pending {
         case .blocks(let choices):
             try await backend.resolve(snapshot, choices: choices, recordIfEdited: recordIfEdited, at: root)
+        case .text(let bytes):
+            try await backend.resolve(snapshot, text: bytes, recordIfEdited: recordIfEdited, at: root)
         case .take(let side):
             try await backend.take(side, snapshot, recordIfEdited: recordIfEdited, at: root)
         case .delete:
@@ -341,6 +354,7 @@ extension RepositoryStore {
         }, onSuccess: { [self] markers in
             guard let markers else {
                 showNotice(ConflictWording.marked(path))
+                resolverDidResolve([path])
                 return
             }
             if activeSheet == nil { activeSheet = .markResolved(snapshot, markers: markers) }

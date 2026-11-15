@@ -4,14 +4,16 @@ import SwiftUI
 /// which question is on screen.
 ///
 /// The switch is exhaustive on purpose: every question the store can ask has a view here, and
-/// eighteen of the thirty-seven are confirmations for actions that can replace or lose work —
-/// fifteen here (Drop Stash…, Discard…, replacing a hand-edited conflict, Reopen Conflict…, Skip
+/// nineteen of the thirty-nine are confirmations for actions that can replace or lose work —
+/// sixteen here (Drop Stash…, Discard…, replacing a hand-edited conflict, Take Ours / Theirs for N
+/// Files…, Reopen Conflict…, Skip
 /// This Commit…, Rebase onto…, Delete Tag…, Prune <remote>…, Clean Up Gone Branches…, Remove
 /// Remote…, Remove Worktree… and Remove All Missing… among them; the worktree check's progress
 /// state is the same sheet), three on the server (Delete from <remote>… for a tag the third). New
 /// Tag…, Set Upstream…, Add Remote…, Edit URL…, Rename Remote…, Compare Branches… and Add
 /// Worktree… are forms, like New Branch. Cherry-Pick / Revert N Commits…
-/// only adds commits, and still asks: it says which, in which order. Mark Resolved with markers left loses nothing, and
+/// only adds commits, and still asks: it says which, in which order. Mark Resolved with markers left (and Resolve File
+/// with markers typed in the Result, which shares its sheet) loses nothing, and
 /// still asks; so do Continue over an empty result or other staged files, and Stage All during
 /// an operation, which decide what a commit holds.
 struct BranchSheetHost: View {
@@ -60,6 +62,10 @@ struct BranchSheetHost: View {
             ReplaceHandEditedSheet(snapshot: snapshot, pending: pending)
         case .markResolved(let snapshot, _):
             MarkResolvedSheet(snapshot: snapshot)
+        case .resolveWithMarkers(let snapshot, let pending):
+            MarkResolvedSheet(snapshot: snapshot, pending: pending)
+        case .takeForFiles(let plan):
+            TakeForFilesSheet(plan: plan)
         case .reopen(let path, _, let comesBack, let sides):
             ReopenConflictSheet(path: path, comesBack: comesBack, sides: sides)
         case .continueEmpty, .continueOthers:

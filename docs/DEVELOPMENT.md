@@ -475,6 +475,10 @@ Gitter/                   macOS app (SwiftUI)
   RepositoryStore+Discard.swift   The discard sheet's model, the gates, discard and Undo
   RepositoryStore+StashAndContinue.swift  Which refusals a stash answers, and the retry
   RepositoryStore+Conflicts.swift The resolver: its document, choices, writes, Reopen
+  RepositoryStore+Resolver.swift  Focus mode: the focused file, drafts with undo, takes and
+                                  typing, Resolve File, next and previous across files,
+                                  several files at once, drafts kept read-only after outside
+                                  changes
   RepositoryStore+Continue.swift  The operation bar, Continue, Skip, Stage All's question,
                                   the composer's prefill
   RepositoryStore+History.swift   The commit set, cherry-pick, revert, rebase onto: plan, sheet,
@@ -555,10 +559,10 @@ Gitter/                   macOS app (SwiftUI)
                               WorktreesSection,
                               ConflictResolverView, ConflictBlockView, OperationBar (with the
                               halted bar), KeepBranchList (with RefIDList, the ref and id list
-                              both sheets share) and the thirty-four sheets (NewBranch,
+                              both sheets share) and the thirty-five sheets (NewBranch,
                               Rename, Merge, DeleteBranch, Abort, LeaveDetached, Pull, Publish,
                               ForcePush, DeleteRemoteBranch, Stash, DropStash, Discard,
-                              ReplaceHandEdited, MarkResolved, ReopenConflict, ContinueEmpty,
+                              ReplaceHandEdited, MarkResolved, TakeForFiles, ReopenConflict, ContinueEmpty,
                               Skip, StageAll, HistoryAction, RebaseOnto, NewTag, DeleteTag,
                               DeleteRemoteTag, Prune, GoneBranches, Upstream, AddRemote,
                               EditRemoteURL, RenameRemote, RemoveRemote, CompareBranches,

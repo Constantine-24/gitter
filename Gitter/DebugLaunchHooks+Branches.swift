@@ -882,7 +882,7 @@
                 "discard(\(model.requests.map(describe)), title: \(model.title), "
                     + "rows: \(model.rows.map { "\($0.name): \($0.loses)\($0.preview.isEmpty ? "" : " \($0.preview)")" }), "
                     + "destination: \(model.destination), button: \(model.confirmTitle))"
-            case .replaceHandEdited, .markResolved, .reopen:
+            case .replaceHandEdited, .markResolved, .reopen, .resolveWithMarkers, .takeForFiles:
                 describeConflictSheet(sheet) ?? "?"
             case .continueEmpty, .continueOthers, .skip, .stageAll:
                 describeContinueSheet(sheet) ?? "?"

@@ -255,6 +255,11 @@
                 "replaceHandEdited(\(snapshot.file.path), \(pending), hash: \(snapshot.worktreeHash?.prefix(12) ?? "nil"))"
             case .markResolved(let snapshot, let markers)?:
                 "markResolved(\(snapshot.file.path), markers: \(markers))"
+            case .resolveWithMarkers(let snapshot, let pending)?:
+                "resolveWithMarkers(\(snapshot.file.path), \(pending))"
+            case .takeForFiles(let plan)?:
+                "takeForFiles(\(plan.side), files: \(plan.files.map(\.file.path)), copies: \(plan.copies), "
+                    + "skipped: \(plan.skipped.map { "\($0.path) (\($0.reason))" }))"
             case .reopen(let path, let hash, let comesBack, let sides)?:
                 "reopen(\(path), hash: \(hash?.prefix(12) ?? "nil"), comesBack: \(comesBack), "
                     + "sides: \(sides.ours) / \(sides.theirs), body: \(ConflictWording.reopenBody(path, comesBack, sides)))"

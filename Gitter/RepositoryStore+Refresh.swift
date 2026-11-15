@@ -161,6 +161,9 @@ extension RepositoryStore {
             scheduleWorktreeStateRead()
             setOperationStop(stop, halted: halted)
             syncDraftWithOperation()
+            // Focus mode's drafts against the stages and files now: one changed, resolved or left
+            // by its operation outside Gitter is kept read-only (`RepositoryStore+Resolver`).
+            reconcileResolverDrafts()
             // A mutation's own failure outranks the reload it provokes. git writes inside
             // `.git` before it fails — a rejected commit has already written COMMIT_EDITMSG —
             // so the watcher fires and this successful snapshot would otherwise erase the

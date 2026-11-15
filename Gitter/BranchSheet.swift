@@ -55,6 +55,14 @@ enum BranchSheet: Identifiable, Hashable {
     /// Mark Resolved found conflict markers left (`ConflictError.leftoverMarkers`). The count
     /// can be high (a content line that is exactly a marker), so the sheet does not show it.
     case markResolved(ConflictSnapshot, markers: Int)
+    /// Resolve File in focus mode found conflict markers the user left in the Result (counted in
+    /// memory, `ResolverDocument.leftoverMarkerLines`) and wrote nothing: the snapshot the draft
+    /// was read at and the write it asked for, which `confirmResolveWithMarkers` runs as it is.
+    /// The Mark Resolved sheet's wording.
+    case resolveWithMarkers(ConflictSnapshot, PendingResolution)
+    /// Take Ours / Theirs for N Files…: the files as they were read when the sheet opened, which
+    /// of them get a copy first, and which are skipped (`confirmTakeForFiles` takes them as they are).
+    case takeForFiles(TakeForFilesPlan)
     /// Reopen Conflict… on a resolved file: `hash` is the file's worktree hash when the sheet
     /// opened (nil = no file), which `confirmReopen` hands to GitCore as what it must still be;
     /// `comesBack` is what `restore --merge` will write (`GitConflictBackend.reopenedFile`) and

@@ -414,4 +414,70 @@ import Testing
         #expect(!RepositoryStore.onlyWaitingForTheOperation([(receipt, other)]))
         #expect(!RepositoryStore.onlyWaitingForTheOperation([]))
     }
+
+    // MARK: - Focus mode
+
+    @Test func theOperationEndingOutsideIsNamed() {
+        #expect(ConflictWording.operationEndedOutside(.merge) == "The merge ended outside Gitter.")
+        #expect(ConflictWording.operationEndedOutside(.rebase) == "The rebase ended outside Gitter.")
+        #expect(ConflictWording.operationEndedOutside(.cherryPick) == "The cherry-pick ended outside Gitter.")
+        #expect(ConflictWording.operationEndedOutside(.revert) == "The revert ended outside Gitter.")
+        #expect(ConflictWording.operationEndedOutside(.squash) == "The squash ended outside Gitter.")
+        #expect(ConflictWording.operationEndedOutside(.applyingPatches)
+            == "The patch application ended outside Gitter.")
+    }
+
+    /// The Result's own write: the same Replace sheet and notice as Resolve File.
+    @Test func theResultsWriteReadsAsResolveFile() {
+        let text = Self.file(.bothModified)
+        #expect(ConflictWording.replaceThen(.text(Data("x\n".utf8)), text, Self.sides)
+            == "Then the Result is written to the file, and it is staged.")
+        #expect(ConflictWording.replaceButton(.text(Data()), text) == "Resolve File")
+        #expect(ConflictWording.done(.text(Data()), ConflictReceipt(path: "f.txt", recorded: nil), Self.sides)
+            == "Resolved \"f.txt\".")
+    }
+
+    @Test func takeForFilesSaysWhatIsCopiedAndSkipped() {
+        func snapshot(_ path: String) -> ConflictSnapshot {
+            ConflictSnapshot(
+                file: ConflictedFile(path: path, kind: .bothModified, base: Self.stage(), ours: Self.stage(), theirs: Self.stage()),
+                worktreeHash: "h")
+        }
+        let plan = TakeForFilesPlan(
+            side: .theirs, files: [snapshot("a.txt"), snapshot("b.txt")], copies: ["b.txt"],
+            skipped: [.init(path: "c.txt", reason: .noSide), .init(path: "lib", reason: .submodule)])
+        #expect(ConflictWording.takeForFilesMenuItem(.theirs, count: 3) == "Take Theirs for 3 Files\u{2026}")
+        #expect(ConflictWording.takeForFilesMenuItem(.ours, count: 1) == "Take Ours for 1 File\u{2026}")
+        #expect(ConflictWording.takeForFilesTitle(plan) == "Take Theirs for 2 Files?")
+        #expect(ConflictWording.takeForFiles(plan, Self.sides) == [
+            "\"a.txt\" and \"b.txt\" are each replaced by the whole file from feature, and staged.",
+            "\"b.txt\" was changed since git wrote the conflict. Gitter keeps a copy in the Stashes list first, "
+                + "as \"Replaced by Gitter: b.txt\".",
+            "Skipped: \"c.txt\", which feature deleted.",
+            "Skipped: \"lib\", a submodule, which Gitter can't resolve.",
+        ])
+        #expect(ConflictWording.takeForFilesButton(plan) == "Take Theirs for 2 Files")
+
+        let two = TakeForFilesPlan(
+            side: .ours, files: [snapshot("a.txt"), snapshot("b.txt")], copies: ["a.txt", "b.txt"], skipped: [])
+        #expect(ConflictWording.takeForFiles(two, Self.sides) == [
+            "\"a.txt\" and \"b.txt\" are each replaced by the whole file from main, and staged.",
+            "\"a.txt\" and \"b.txt\" were changed since git wrote the conflict. Gitter keeps a copy of each in "
+                + "the Stashes list first, as \"Replaced by Gitter: <file>\".",
+        ])
+        let one = TakeForFilesPlan(side: .ours, files: [snapshot("a.txt")], copies: [], skipped: [])
+        #expect(ConflictWording.takeForFilesTitle(one) == "Take Ours for 1 File?")
+        #expect(ConflictWording.takeForFiles(one, Self.sides) == [
+            "\"a.txt\" is replaced by the whole file from main, and staged."
+        ])
+
+        let receipts = [
+            ConflictReceipt(path: "a.txt", recorded: nil), ConflictReceipt(path: "b.txt", recorded: Self.record),
+        ]
+        #expect(ConflictWording.tookForFiles(plan, receipts, Self.sides)
+            == "Resolved \"a.txt\" and \"b.txt\" with the whole file from feature. The edited file is in the "
+            + "Stashes list as \"Replaced by Gitter: f.txt\". Skipped \"c.txt\" and \"lib\".")
+        #expect(ConflictWording.tookForFiles(one, [ConflictReceipt(path: "a.txt", recorded: nil)], Self.sides)
+            == "Resolved \"a.txt\" with the whole file from main.")
+    }
 }

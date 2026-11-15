@@ -21,6 +21,8 @@ enum ResolverAction: Hashable, Sendable {
 /// `recordIfEdited`.
 enum PendingResolution: Hashable, Sendable {
     case blocks([BlockChoice])
+    /// Focus mode's Result, as the worktree-form bytes `resolve(_:text:…)` writes.
+    case text(Data)
     case take(ConflictSide)
     case delete
     case keep
@@ -254,6 +256,7 @@ enum ConflictWording {
     static func replaceThen(_ pending: PendingResolution, _ file: ConflictedFile, _ sides: SideLabels) -> String {
         switch pending {
         case .blocks: "Then the chosen blocks are written to the file, and it is staged."
+        case .text: "Then the Result is written to the file, and it is staged."
         case .take(let side): "Then the whole file is taken from \(sides.label(side)), and it is staged."
         case .delete: "Then the file is deleted, and the deletion is staged."
         case .keep:
@@ -265,7 +268,7 @@ enum ConflictWording {
     /// The sheet's destructive button: the action it confirms.
     static func replaceButton(_ pending: PendingResolution, _ file: ConflictedFile) -> String {
         switch pending {
-        case .blocks: title(.resolveFile, file)
+        case .blocks, .text: title(.resolveFile, file)
         case .take(let side): title(side == .ours ? .takeOurs : .takeTheirs, file)
         case .delete: title(.delete, file)
         case .keep: title(.keep, file)
@@ -367,7 +370,7 @@ enum ConflictWording {
         let path = name(receipt.path)
         let text: String
         switch pending {
-        case .blocks: text = "Resolved \(path)."
+        case .blocks, .text: text = "Resolved \(path)."
         case .take(let side): text = "Resolved \(path) with the whole file from \(sides.label(side))."
         case .delete: text = "Resolved \(path) by deleting it."
         case .keep: text = "Resolved \(path) by keeping the file."
@@ -387,6 +390,76 @@ enum ConflictWording {
     /// Why the resolver's buttons are off while a sheet or another change is up.
     static let blockedBySheet = StashWording.blockedBySheet
     static let busy = StashWording.busy
+
+    // MARK: - Focus mode
+
+    /// The kept notice when the operation ends while focus mode is up, outside Gitter (a
+    /// terminal, another window).
+    static func operationEndedOutside(_ operation: RepositoryOperation) -> String {
+        "The \(operation.noun.lowercased()) ended outside Gitter."
+    }
+
+    private static func sideName(_ side: ConflictSide) -> String { side == .ours ? "Ours" : "Theirs" }
+
+    private static func files(_ count: Int) -> String { count == 1 ? "1 File" : "\(count) Files" }
+
+    /// The sidebar's menu item and footer button for a selection of `count` files.
+    static func takeForFilesMenuItem(_ side: ConflictSide, count: Int) -> String {
+        "Take \(sideName(side)) for \(files(count))\u{2026}"
+    }
+
+    static func takeForFilesTitle(_ plan: TakeForFilesPlan) -> String {
+        "Take \(sideName(plan.side)) for \(files(plan.files.count))?"
+    }
+
+    /// The sheet's lines: what is taken from where, which files get a copy first (edited since
+    /// git wrote the conflict), and each file skipped with why.
+    static func takeForFiles(_ plan: TakeForFilesPlan, _ sides: SideLabels) -> [String] {
+        let from = sides.label(plan.side)
+        var lines: [String] = []
+        let taken = plan.files.map(\.file.path)
+        if !taken.isEmpty {
+            lines.append(
+                taken.count == 1
+                    ? "\(name(taken[0])) is replaced by the whole file from \(from), and staged."
+                    : "\(StashWording.names(taken)) are each replaced by the whole file from \(from), and staged.")
+        }
+        if plan.copies.count == 1 {
+            lines.append(
+                "\(name(plan.copies[0])) was changed since git wrote the conflict. Gitter keeps a copy in the "
+                    + "Stashes list first, as \"Replaced by Gitter: \(plan.copies[0])\".")
+        } else if plan.copies.count > 1 {
+            lines.append(
+                "\(StashWording.names(plan.copies)) were changed since git wrote the conflict. Gitter keeps a copy "
+                    + "of each in the Stashes list first, as \"Replaced by Gitter: <file>\".")
+        }
+        for skipped in plan.skipped {
+            switch skipped.reason {
+            case .noSide: lines.append("Skipped: \(name(skipped.path)), which \(from) deleted.")
+            case .submodule: lines.append("Skipped: \(name(skipped.path)), a submodule, which Gitter can't resolve.")
+            }
+        }
+        return lines
+    }
+
+    static func takeForFilesButton(_ plan: TakeForFilesPlan) -> String {
+        "Take \(sideName(plan.side)) for \(files(plan.files.count))"
+    }
+
+    /// The notice after the files were taken: those resolved, the copy filed (or how many), and
+    /// the files skipped.
+    static func tookForFiles(_ plan: TakeForFilesPlan, _ receipts: [ConflictReceipt], _ sides: SideLabels) -> String {
+        var text =
+            "Resolved \(StashWording.names(receipts.map(\.path))) with the whole file from \(sides.label(plan.side))."
+        let recorded = receipts.compactMap(\.recorded)
+        if recorded.count == 1 {
+            text += " The edited file is in the Stashes list as \"\(recorded[0].message)\"."
+        } else if recorded.count > 1 {
+            text += " The \(recorded.count) edited files are in the Stashes list."
+        }
+        if !plan.skipped.isEmpty { text += " Skipped \(StashWording.names(plan.skipped.map(\.path)))." }
+        return text
+    }
 
     // MARK: - Stage All
 

@@ -266,7 +266,7 @@ struct ResolverDocument: Hashable, Sendable {
         } else {
             chunks.replaceSubrange(first...last, with: [Self.merged(span, text: text)])
         }
-        var index = first
+        let index = first
         while index < chunks.count - 1, !endsAtALineEdge(index) {
             let pair = chunks[index...(index + 1)]
             chunks.replaceSubrange(index...(index + 1), with: [Self.merged(pair, text: pair.map(\.text).joined())])
