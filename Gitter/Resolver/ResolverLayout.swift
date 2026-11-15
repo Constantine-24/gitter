@@ -83,6 +83,9 @@ enum ResolverLayout {
         private let oursStage: Stage?, theirsStage: Stage?
         private let base: [Line]?
         private let shape: [Shape]
+        /// Which stages these are: kept by a refit, new with every `init(_:document:)`. A row cache
+        /// filled for other stages is not reused (`RowCache`).
+        fileprivate let stagesID: UUID
 
         private struct Shape: Hashable, Sendable {
             let id: Int
@@ -93,16 +96,19 @@ enum ResolverLayout {
             let base = sides.base.map { ResolverLayout.lines(of: $0) }
             let oursStage = sides.ours.map { Stage($0, side: .ours, base: base) }
             let theirsStage = sides.theirs.map { Stage($0, side: .theirs, base: base) }
-            self.init(ours: oursStage, theirs: theirsStage, base: base, document: document)
+            self.init(ours: oursStage, theirs: theirsStage, base: base, document: document, stagesID: UUID())
         }
 
-        private init(ours oursStage: Stage?, theirs theirsStage: Stage?, base: [Line]?, document: ResolverDocument) {
+        private init(
+            ours oursStage: Stage?, theirs theirsStage: Stage?, base: [Line]?, document: ResolverDocument, stagesID: UUID
+        ) {
             let chunks = document.chunks
             ours = Column(stage: oursStage, side: .ours, chunks: chunks, base: base)
             theirs = Column(stage: theirsStage, side: .theirs, chunks: chunks, base: base)
             self.oursStage = oursStage
             self.theirsStage = theirsStage
             self.base = base
+            self.stagesID = stagesID
             shape = Self.shape(of: document)
         }
 
@@ -112,7 +118,8 @@ enum ResolverLayout {
         /// Itself while it fits `document`; else placed again for its chunks, keeping the stages'
         /// lines, tints and marks (the costly part, whole-stage diffs against the base).
         func refitted(to document: ResolverDocument) -> Sides {
-            fits(document) ? self : Sides(ours: oursStage, theirs: theirsStage, base: base, document: document)
+            fits(document)
+                ? self : Sides(ours: oursStage, theirs: theirsStage, base: base, document: document, stagesID: stagesID)
         }
 
         fileprivate func fitted(to document: ResolverDocument) -> Sides { refitted(to: document) }
@@ -133,12 +140,20 @@ enum ResolverLayout {
         return rows(document, using: sides, showBase: showBase, reusing: &cache)
     }
 
-    /// Each chunk's rows from the last build, kept to be reused (Ruling 32): a chunk's rows depend
-    /// only on the chunk itself, its spans of the sides' lines, Show Base and its first Result line
-    /// number, so a keystroke rebuilds the chunk it changed and shifts the numbers of the rows
-    /// after it. Hold one per `Sides` stages (a draft); it prunes itself.
+    /// Each chunk's rows from the last build, kept to be reused (Ruling 32). A chunk's rows depend
+    /// only on:
+    /// - the chunk itself (its id, state, text, git's text, its blocks);
+    /// - its spans of the sides' lines, and the stages those lines are from (`Sides`' stages; a
+    ///   refit keeps them);
+    /// - Show Base, for a conflict;
+    /// - whether its first line continues the chunk before (that chunk's text ending inside a
+    ///   line), which numbers that line with the line before;
+    /// - its first Result line number, applied by renumbering.
+    /// Every one of these but the last is the key; a keystroke rebuilds the chunk it changed and
+    /// shifts the numbers of the rows after it. It prunes itself to the chunks of the last build.
     struct RowCache: Sendable {
         fileprivate var entries: [Int: Entry] = [:]
+        fileprivate var stagesID: UUID?
         /// How many chunks the last build reused.
         fileprivate(set) var reused = 0
 
@@ -148,6 +163,8 @@ enum ResolverLayout {
             let chunk: ResolverChunk
             let spans: Range<Int>, theirsSpan: Range<Int>
             let showBase: Bool
+            /// Its first line continued the chunk before when these rows were built.
+            let continuing: Bool
             /// The Result number its first new line had, and how many lines it numbered.
             var firstNumber: Int
             let lineCount: Int
@@ -155,9 +172,12 @@ enum ResolverLayout {
             let endsInsideLine: Bool?
             var rows: [LayoutRow]
 
-            func matches(_ other: ResolverChunk, ours: Range<Int>, theirs: Range<Int>, showBase: Bool) -> Bool {
+            func matches(_ other: ResolverChunk, ours: Range<Int>, theirs: Range<Int>, showBase: Bool, continuing: Bool)
+                -> Bool
+            {
                 // Show Base adds rows to conflicts only.
                 spans == ours && theirsSpan == theirs && (other.blocks.isEmpty || self.showBase == showBase)
+                    && self.continuing == continuing
                     && chunk.id == other.id
                     && chunk.state == other.state && chunk.blocks.count == other.blocks.count
                     && ResolverLayout.sameBytes(chunk.text, other.text)
@@ -179,15 +199,17 @@ enum ResolverLayout {
         var entries: [Int: RowCache.Entry] = [:]
         entries.reserveCapacity(chunks.count)
         var reused = 0
+        // Rows built from other stages are never reused.
+        if cache.stagesID != sides.stagesID { cache.entries = [:] }
         var nextNumber = 1
         // The last chunk's text ended inside a line, which this chunk's first line continues.
         var continues = false
         for (index, chunk) in chunks.enumerated() {
             let spans = (ours: ours.spans[index], theirs: theirs.spans[index])
-            // A chunk that continues a line, or merged several (its blocks' placement inside its
-            // spans is not in the key), is always built.
-            if !continues, !chunk.isMerged, var entry = cache.entries[chunk.id],
-                entry.matches(chunk, ours: spans.ours, theirs: spans.theirs, showBase: showBase)
+            // A chunk that merged several (its blocks' placement inside its spans is not in the
+            // key) is always built.
+            if !chunk.isMerged, var entry = cache.entries[chunk.id],
+                entry.matches(chunk, ours: spans.ours, theirs: spans.theirs, showBase: showBase, continuing: continues)
             {
                 if entry.firstNumber != nextNumber {
                     entry.rows = renumbered(entry.rows, by: nextNumber - entry.firstNumber)
@@ -201,6 +223,7 @@ enum ResolverLayout {
                 continue
             }
             let firstNumber = nextNumber
+            let continuing = continues
             var result: [NumberedLine] = []
             for (offset, line) in lines(of: chunk.text).enumerated() {
                 if offset == 0, continues {
@@ -230,10 +253,12 @@ enum ResolverLayout {
             }
             rows += built
             entries[chunk.id] = RowCache.Entry(
-                chunk: chunk, spans: spans.ours, theirsSpan: spans.theirs, showBase: showBase, firstNumber: firstNumber,
+                chunk: chunk, spans: spans.ours, theirsSpan: spans.theirs, showBase: showBase, continuing: continuing,
+                firstNumber: firstNumber,
                 lineCount: nextNumber - firstNumber, endsInsideLine: endsInsideLine, rows: built)
         }
         cache.entries = entries
+        cache.stagesID = sides.stagesID
         cache.reused = reused
         return rows
     }

@@ -649,6 +649,42 @@ import Testing
         }
     }
 
+    /// A chunk's rows built while its first line continued the chunk before (that chunk's text
+    /// ending inside a line) are never reused once it no longer does, nor the other way round,
+    /// though its own bytes are the same. Unreachable by typing (Rulings 11 and 12 keep every
+    /// chunk but the last ending at a line edge, and merge-file starts every block on a line), so
+    /// the document is parsed from segments with a common text that ends inside a line.
+    @Test func reusedRowsFollowWhetherTheChunkBeforeEndsInsideALine() throws {
+        let sides = Self.sides(ours: "topo1\nmid\nend\n", base: "topb1\nmid\nend\n", theirs: "topt1\nmid\nend\n")
+        let continuing = try Self.document(
+            [Self.common("top"), Self.block("o1\n", "b1\n", "t1\n"), Self.common("mid\nend\n")], sides: sides)
+        var document = continuing
+        var cached = ResolverLayout.Sides(sides, document: document)
+        var cache = ResolverLayout.RowCache()
+        var steps: [(String, ResolverDocument)] = [("the conflict continues \"top\"", document)]
+        document.take(.ours, chunk: 1)
+        steps.append(("taken, still continuing", document))
+        let taken = document
+        // A line break typed at the end of "top" (inside chunk 0 only): chunk 1's bytes stay the same.
+        document.replace(NSRange(location: 2, length: 1), with: "p\n")
+        #expect(document.chunks.first { $0.id == 1 }?.text == taken.chunks.first { $0.id == 1 }?.text)
+        steps.append(("the line break typed", document))
+        let broken = document
+        // Undo and redo between the two.
+        steps.append(("undo", taken))
+        steps.append(("redo", broken))
+        // Backspace over that break: the chunks before and after merge (Ruling 11).
+        document.replace(NSRange(location: 3, length: 1), with: "")
+        steps.append(("the break deleted", document))
+        steps.append(("undo the deletion", broken))
+        for (name, document) in steps {
+            cached = cached.refitted(to: document)
+            let incremental = ResolverLayout.rows(document, using: cached, showBase: false, reusing: &cache)
+            let fresh = ResolverLayout.rows(document, sides: sides, showBase: false)
+            #expect(incremental == fresh, "\(name)")
+        }
+    }
+
     @Test func crlfLinesHaveNoTerminatorInTheirText() throws {
         let sides = Self.sides(ours: "a\r\nO\r\nz\r\n", base: "a\r\nB\r\nz\r\n", theirs: "a\r\nT\r\nz\r\n")
         var document = try Self.document(
