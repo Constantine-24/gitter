@@ -117,17 +117,81 @@ import Testing
     }
 
     @Test func doneIsDefaultWhenAllResolved() {
-        #expect(ResolverShell.doneIsDefault(allResolved: true))
-        #expect(!ResolverShell.doneIsDefault(allResolved: false))
+        #expect(ResolverShell.doneIsDefault(allResolved: true, ended: false))
+        #expect(!ResolverShell.doneIsDefault(allResolved: false, ended: false))
         // The footer: progress until then (Ruling 21), the spec's line once every file is.
         #expect(ConflictWording.filesResolved(1, of: 4) == "1 of 4 files resolved")
-        #expect(ResolverShell.footerLine(.merge, allResolved: false)
+        #expect(ResolverShell.footerLine(.merge, allResolved: false, ended: false)
             == "Commit Merge comes back once every file is resolved.")
-        #expect(ResolverShell.footerLine(.rebase, allResolved: false)
+        #expect(ResolverShell.footerLine(.rebase, allResolved: false, ended: false)
             == "Continue Rebase comes back once every file is resolved.")
-        #expect(ResolverShell.footerLine(nil, allResolved: false) == nil)
-        #expect(ResolverShell.footerLine(.merge, allResolved: true) == "All files resolved \u{2014} press Done, then Continue")
-        #expect(ResolverShell.footerLine(nil, allResolved: true) == "All files resolved \u{2014} press Done")
+        #expect(ResolverShell.footerLine(nil, allResolved: false, ended: false) == nil)
+        #expect(ResolverShell.footerLine(.merge, allResolved: true, ended: false) == "All files resolved \u{2014} press Done, then Continue")
+        #expect(ResolverShell.footerLine(nil, allResolved: true, ended: false) == "All files resolved \u{2014} press Done")
+    }
+
+    /// The operation ended (outside Gitter, or by its own Abort) while drafts were kept
+    /// (Ruling 24): the subtitle says which operation ended until Done, neither footer line shows,
+    /// read-only rows are left out of the progress, and Done is the default.
+    @Test func anEndedOperationSaysSoUntilDone() throws {
+        let ended = try Self.draft(detached: .operationEnded)
+        let attached = try Self.draft()
+        #expect(ResolverShell.endedOperation(["a.txt": ended, "b.txt": attached], remembered: .merge) == .merge)
+        #expect(ResolverShell.endedOperation(["b.txt": attached], remembered: .merge) == nil)
+        #expect(ResolverShell.endedOperation(["a.txt": ended], remembered: nil) == nil)
+
+        let merge = OperationProgress(operation: .merge, mergedName: "topic")
+        #expect(ResolverShell.subtitle(nil, nil, branch: "main", ended: .merge) == "The merge ended outside Gitter.")
+        #expect(ResolverShell.subtitle(nil, nil, branch: "main", ended: .rebase) == "The rebase ended outside Gitter.")
+        #expect(ResolverShell.subtitle(.merge, merge, branch: "main", ended: nil) == "Merging topic into main")
+        #expect(ResolverShell.subtitle(nil, nil, branch: "main", ended: nil)
+            == "Conflicts from applying a stash or undoing a discard")
+
+        #expect(ResolverShell.footerLine(nil, allResolved: true, ended: true) == nil)
+        #expect(ResolverShell.footerLine(.merge, allResolved: false, ended: true) == nil)
+        #expect(ResolverShell.doneIsDefault(allResolved: true, ended: true))
+        #expect(ResolverShell.doneIsDefault(allResolved: false, ended: true))
+
+        func row(_ path: String, _ status: ResolverRowStatus) -> ResolverRow {
+            ResolverRow(path: path, status: status, isConflicted: false)
+        }
+        let progress = ResolverShell.progress([row("a", .readOnly), row("b", .resolved), row("c", .left(1))])
+        #expect(progress.resolved == 1 && progress.total == 2)
+        #expect(ResolverShell.progress([row("a", .readOnly)]).total == 0)
+    }
+
+    /// Done's tooltip is true for both kinds of draft it meets (Ruling 25).
+    @Test func doneSaysWhatItKeeps() {
+        #expect(ConflictWording.doneHelp
+            == "Back to the repository. Your changes are kept until you resolve or discard them, except in a "
+            + "file that was resolved or whose operation ended, whose changes are dropped.")
+    }
+
+    /// Reload is offered only for a draft changed outside, and asks first when the draft has
+    /// changes (Ruling 26).
+    @Test func reloadIsOfferedOnlyForAChangeOutside() throws {
+        #expect(ResolverShell.offersReload(try Self.draft(detached: .changedOutside)))
+        #expect(!ResolverShell.offersReload(try Self.draft(detached: .resolvedOutside)))
+        #expect(!ResolverShell.offersReload(try Self.draft(detached: .operationEnded)))
+        #expect(!ResolverShell.offersReload(try Self.draft()))
+        #expect(ResolverShell.reloadAsks(try Self.draft(taken: 1, detached: .changedOutside)))
+        #expect(!ResolverShell.reloadAsks(try Self.draft(detached: .changedOutside)))
+
+        #expect(ConflictWording.reloadMenuItem == "Reload\u{2026}")
+        #expect(ConflictWording.reloadQuestion == ConflictWording.bar(.changedOutside))
+        #expect(ConflictWording.reload == "Reload")
+        #expect(ConflictWording.cancel == "Cancel")
+    }
+
+    /// A focused path with neither a conflict nor a draft (its draft discarded or dropped) moves
+    /// on: to the next file with conflicts in git's order, wrapping round, else the all-resolved
+    /// state. It never waits for a read that will not come.
+    @Test func aFocusWithNothingLeftMovesOn() {
+        #expect(ResolverShell.focusAfterLosing("a.txt", files: ["a.txt", "b.txt"], drafts: []) == .stay)
+        #expect(ResolverShell.focusAfterLosing("a.txt", files: ["b.txt"], drafts: ["a.txt"]) == .stay)
+        #expect(ResolverShell.focusAfterLosing("b.txt", files: ["a.txt", "c.txt"], drafts: []) == .moveTo("c.txt"))
+        #expect(ResolverShell.focusAfterLosing("c.txt", files: ["a.txt", "b.txt"], drafts: []) == .moveTo("a.txt"))
+        #expect(ResolverShell.focusAfterLosing("a.txt", files: [], drafts: ["z.txt"]) == .allResolved)
     }
 
     /// "Conflict N of M" counts the focused file's conflicts; none without a draft.

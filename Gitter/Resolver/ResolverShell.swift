@@ -62,6 +62,17 @@ enum ResolverCentre: Hashable, Sendable {
     case loading
 }
 
+/// Where focus mode's focus goes from a path that has lost its conflict and its draft
+/// (`ResolverShell.focusAfterLosing`).
+enum ResolverFocusMove: Hashable, Sendable {
+    /// The path still has a conflict record or a draft.
+    case stay
+    /// The next file with conflicts.
+    case moveTo(String)
+    /// No file has conflicts any more.
+    case allResolved
+}
+
 /// What Return and a double-click do to a working-copy row.
 enum RowPrimaryAction: Hashable, Sendable {
     /// A conflicted file: focus mode on it.
@@ -99,9 +110,27 @@ enum ResolverShell {
         return draft.isWritable && draft.document.waitingCount == 0
     }
 
-    /// Done is the default button once every file is resolved: what is left is Continue, in the
-    /// normal window.
-    static func doneIsDefault(allResolved: Bool) -> Bool { allResolved }
+    /// Done is the default button once every file is resolved — what is left is Continue, in the
+    /// normal window — and once the operation has ended (Ruling 24).
+    static func doneIsDefault(allResolved: Bool, ended: Bool) -> Bool { allResolved || ended }
+
+    /// The operation that ended while focus mode kept drafts from it: the one remembered, while a
+    /// draft is still `.operationEnded` (Ruling 24).
+    static func endedOperation(_ drafts: [String: ResolverDraft], remembered: RepositoryOperation?)
+        -> RepositoryOperation?
+    {
+        guard let remembered, drafts.values.contains(where: { $0.detached == .operationEnded }) else { return nil }
+        return remembered
+    }
+
+    /// The line under the title: that the operation ended (Ruling 24), else the operation's own
+    /// words, else where conflicts with no operation come from (Ruling 20).
+    static func subtitle(
+        _ operation: RepositoryOperation?, _ progress: OperationProgress?, branch: String?, ended: RepositoryOperation?
+    ) -> String {
+        if let ended { return ConflictWording.operationEndedOutside(ended) }
+        return ConflictWording.focusSubtitle(operation, progress, branch: branch)
+    }
 
     /// "Conflict N of M" in the focused file, nil without a draft or a current conflict.
     static func position(_ draft: ResolverDraft?, current: Int?) -> String? {
@@ -113,8 +142,10 @@ enum ResolverShell {
 
     /// The sidebar footer's line: until every file is resolved, that the operation's Continue
     /// comes back then (Ruling 21; none for `git am`, which Gitter does not continue, nor with no
-    /// operation); after, the spec's all-resolved line.
-    static func footerLine(_ operation: RepositoryOperation?, allResolved: Bool) -> String? {
+    /// operation); after, the spec's all-resolved line; none once the operation has ended.
+    static func footerLine(_ operation: RepositoryOperation?, allResolved: Bool, ended: Bool) -> String? {
+        // The operation ended: neither line is true any more (Ruling 24).
+        if ended { return nil }
         if allResolved { return ConflictWording.allResolved(withOperation: operation != nil) }
         guard let operation, operation != .applyingPatches else { return nil }
         return ConflictWording.comesBack(operation.commitButtonTitle)
@@ -163,7 +194,34 @@ enum ResolverShell {
         return path
     }
 
+    /// "K of N files resolved": a read-only row (resolved outside, or its operation ended) is
+    /// neither to do nor resolved here, so it counts in neither (Ruling 24).
+    static func progress(_ rows: [ResolverRow]) -> (resolved: Int, total: Int) {
+        let counted = rows.filter { $0.status != .readOnly }
+        return (counted.count { $0.status == .resolved }, counted.count)
+    }
+
+    /// Where the focus goes from `path` when it has neither a conflict record nor a draft (its
+    /// draft discarded, or dropped as read-only): the next file with conflicts in git's order,
+    /// wrapping round, else the all-resolved state — never a read that will not come (Ruling 26).
+    static func focusAfterLosing(_ path: String, files: [String], drafts: Set<String>) -> ResolverFocusMove {
+        if files.contains(path) || drafts.contains(path) { return .stay }
+        let sorted = files.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
+        guard let next = sorted.first(where: { path.utf8.lexicographicallyPrecedes($0.utf8) }) ?? sorted.first else {
+            return .allResolved
+        }
+        return .moveTo(next)
+    }
+
     // MARK: - Above the columns
+
+    /// The Result menu's Reload…: only for a draft changed outside, the one state with something
+    /// newer to read (Ruling 26).
+    static func offersReload(_ draft: ResolverDraft) -> Bool { draft.detached == .changedOutside }
+
+    /// Reload asks first when it would discard what the user took or typed.
+    static func reloadAsks(_ draft: ResolverDraft) -> Bool { draft.hasUserChanges }
+
 
     /// Whether Keep Editing was pressed for this draft: it is kept per draft snapshot, so a
     /// draft read again is a new one (Ruling 18).

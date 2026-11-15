@@ -396,7 +396,9 @@ enum ConflictWording {
     static let showBase = "Show Base"
     static let showBaseHelp = "Show what each conflict looked like before either side changed it"
     static let done = "Done"
-    static let doneHelp = "Back to the repository. Changes you made stay until you resolve or discard them."
+    static let doneHelp =
+        "Back to the repository. Your changes are kept until you resolve or discard them, except in a "
+        + "file that was resolved or whose operation ended, whose changes are dropped."
 
     // The sidebar.
 
@@ -455,6 +457,11 @@ enum ConflictWording {
     static let copyResult = "Copy Result"
     static let discardChanges = "Discard Changes"
     static let reload = "Reload"
+    /// The Result menu's Reload, which asks first when there are changes (Ruling 26).
+    static let reloadMenuItem = "Reload\u{2026}"
+    /// Its question: the changed-outside bar's own sentence.
+    static let reloadQuestion = bar(.changedOutside)
+    static let cancel = "Cancel"
     static let keepEditing = "Keep Editing"
 
     // The bars above the columns.

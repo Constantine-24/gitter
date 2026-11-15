@@ -39,7 +39,7 @@ struct ResolverFocusView: View {
     private var subtitle: String {
         let operation = store.operationInProgress
         let progress = store.operationStop?.operation == operation ? store.operationStop?.progress : nil
-        return ConflictWording.focusSubtitle(operation, progress, branch: store.currentBranch)
+        return ResolverShell.subtitle(operation, progress, branch: store.currentBranch, ended: store.resolverEndedShown)
     }
 
     /// Every item is always there; only its content changes. An item that comes and goes resizes
@@ -62,7 +62,8 @@ struct ResolverFocusView: View {
             abort
         }
         ToolbarItem(placement: .primaryAction) {
-            let isDefault = ResolverShell.doneIsDefault(allResolved: store.resolverAllResolved)
+            let isDefault = ResolverShell.doneIsDefault(
+                allResolved: store.resolverAllResolved, ended: store.resolverEndedShown != nil)
             // The default button is drawn as one, and takes Return.
             Button(ConflictWording.done) { store.closeResolver() }
                 .keyboardShortcut(isDefault ? .defaultAction : nil)
@@ -200,8 +201,10 @@ struct ResolverSidebar: View {
     }
 
     private func footer(_ rows: [ResolverRow]) -> some View {
-        let resolved = rows.count { $0.status == .resolved }
+        // Read-only rows count in neither (Ruling 24).
+        let (resolved, total) = ResolverShell.progress(rows)
         let allResolved = store.resolverAllResolved
+        let ended = store.resolverEndedShown != nil
         let files = takeable(selection, rows: rows)
         return VStack(alignment: .leading, spacing: 6) {
             if selection.count > 1, !files.isEmpty {
@@ -214,14 +217,14 @@ struct ResolverSidebar: View {
                 }
                 Divider().padding(.vertical, 2)
             }
-            Text(ConflictWording.filesResolved(resolved, of: rows.count))
+            Text(ConflictWording.filesResolved(resolved, of: total))
                 .font(.callout)
                 .foregroundStyle(ResolverColor.text)
-            ProgressView(value: Double(resolved), total: Double(max(rows.count, 1)))
+            ProgressView(value: Double(resolved), total: Double(max(total, 1)))
                 .progressViewStyle(.linear)
                 .tint(ResolverColor.resolved)
-                .accessibilityLabel(ConflictWording.filesResolved(resolved, of: rows.count))
-            if let line = ResolverShell.footerLine(store.operationInProgress, allResolved: allResolved) {
+                .accessibilityLabel(ConflictWording.filesResolved(resolved, of: total))
+            if let line = ResolverShell.footerLine(store.operationInProgress, allResolved: allResolved, ended: ended) {
                 Text(line)
                     .font(.caption)
                     .foregroundStyle(allResolved ? ResolverColor.badgeGreen : ResolverColor.secondaryText)
@@ -376,8 +379,12 @@ struct ResolverCentreView: View {
                     .accessibilityHidden(true)
                 Text(ConflictWording.allResolvedTitle)
                     .font(.title3.weight(.semibold))
-                Text(ConflictWording.allResolved(withOperation: store.operationInProgress != nil))
-                    .foregroundStyle(ResolverColor.secondaryText)
+                if let line = ResolverShell.footerLine(
+                    store.operationInProgress, allResolved: true, ended: store.resolverEndedShown != nil)
+                {
+                    Text(line)
+                        .foregroundStyle(ResolverColor.secondaryText)
+                }
             }
         case .loading:
             ProgressView()
@@ -480,6 +487,8 @@ struct ResolverHeaders: View {
     @Binding var keptEditing: [String: ConflictSnapshot]
 
     @Environment(RepositoryStore.self) private var store
+    /// Reload… asks first for a draft with changes.
+    @State private var confirmingReload = false
 
     var body: some View {
         let draft = store.resolverDrafts[path]
@@ -556,7 +565,8 @@ struct ResolverHeaders: View {
     }
 
     /// Mark Resolved (today's flow) and Open in Editor, as the read offers them; Copy Result and
-    /// Discard Changes on a draft; Reload on a detached one.
+    /// Discard Changes on a draft; Reload… on one changed outside, asking first when it has
+    /// changes (Ruling 26).
     private func overflow(_ draft: ResolverDraft?) -> some View {
         let offered = store.selectedConflict.map(ResolverOffer.actions(for:)) ?? []
         let blocked = store.conflictActionBlockedReason
@@ -573,10 +583,13 @@ struct ResolverHeaders: View {
                 Button(ConflictWording.copyResult) { store.copyResult(path) }
                 Button(ConflictWording.discardChanges) { store.discardDraft(path) }
                     .disabled(!draft.hasUserChanges && draft.detached == nil)
-                if draft.detached != nil {
-                    Button(ConflictWording.reload) {
-                        keptEditing[path] = nil
-                        store.reloadDraft(path)
+                if ResolverShell.offersReload(draft) {
+                    Button(ConflictWording.reloadMenuItem) {
+                        if ResolverShell.reloadAsks(draft) {
+                            confirmingReload = true
+                        } else {
+                            reload()
+                        }
                     }
                 }
             }
@@ -588,6 +601,16 @@ struct ResolverHeaders: View {
         .fixedSize()
         .help(ConflictWording.moreActions)
         .accessibilityLabel(ConflictWording.moreActions)
+        .alert(ConflictWording.reloadQuestion, isPresented: $confirmingReload) {
+            Button(ConflictWording.reload, role: .destructive) { reload() }
+            Button(ConflictWording.cancel, role: .cancel) {}
+        }
+    }
+
+    /// The file read again; Keep Editing's hidden bar goes with the draft.
+    private func reload() {
+        keptEditing[path] = nil
+        store.reloadDraft(path)
     }
 }
 

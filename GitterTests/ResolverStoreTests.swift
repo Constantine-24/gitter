@@ -640,6 +640,67 @@ import Testing
         #expect((other.stickyNotice ?? other.notice)?.text == "The merge ended outside Gitter.")
     }
 
+    /// Which operation ended is remembered while its drafts are kept, for the subtitle, and
+    /// forgotten at Done (Ruling 24).
+    @Test(.timeLimit(.minutes(10))) func theEndedOperationIsRememberedUntilDone() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        #expect(store.resolverEndedOperation == nil)
+        _ = try #require(await Self.openDraft(store))
+        store.resolverTake(.ours)
+        #expect(store.resolverEndedOperation == nil)
+
+        try repo.git("merge", "--abort")
+        await store.refresh()
+        await waitUntilIdle(store)
+        #expect(store.resolverEndedOperation == .merge)
+        #expect(ResolverShell.endedOperation(store.resolverDrafts, remembered: store.resolverEndedOperation) == .merge)
+        #expect(ResolverShell.subtitle(
+            store.operationInProgress, nil, branch: store.currentBranch,
+            ended: ResolverShell.endedOperation(store.resolverDrafts, remembered: store.resolverEndedOperation))
+            == "The merge ended outside Gitter.")
+
+        store.closeResolver()
+        #expect(store.resolverEndedOperation == nil)
+    }
+
+    /// Discard Changes on a draft whose file was resolved outside leaves a path with no
+    /// conflict and no draft: the focus moves to the next file with conflicts (Ruling 26) rather
+    /// than waiting for a read that never comes.
+    @Test(.timeLimit(.minutes(10))) func discardingAResolvedOutsideDraftMovesTheFocusOn() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        _ = try #require(await Self.openDraft(store))
+        store.resolverTake(.theirs)
+        try repo.git("add", "a.txt")
+        await store.refresh()
+        await waitUntilIdle(store)
+        #expect(store.resolverDrafts["a.txt"]?.detached == .resolvedOutside)
+        #expect(store.resolverFocus?.path == "a.txt")
+
+        store.discardDraft("a.txt")
+        #expect(store.resolverFocus?.path == "b.txt")
+        await waitUntil("b's draft") { store.resolverDrafts["b.txt"] != nil }
+        #expect(ResolverShell.centre(
+            path: "b.txt", draft: store.focusedDraft, document: store.selectedConflict,
+            failure: store.conflictLoadFailure, allResolved: store.resolverAllResolved) == .columns)
+
+        // The last one too: resolved outside, discarded, and the all-resolved state, not a spinner.
+        store.resolverTake(.ours)
+        try repo.git("add", "b.txt")
+        await store.refresh()
+        await waitUntilIdle(store)
+        store.discardDraft("b.txt")
+        #expect(store.resolverAllResolved)
+        #expect(ResolverShell.centre(
+            path: store.resolverFocus?.path, draft: store.focusedDraft, document: store.selectedConflict,
+            failure: store.conflictLoadFailure, allResolved: store.resolverAllResolved) == .allResolved)
+    }
+
     /// Gitter's own Abort ends the operation too, but not "outside Gitter": its reload is checked
     /// once the write is over, and says nothing of the kind.
     @Test(.timeLimit(.minutes(10))) func gittersOwnAbortIsNotAnOutsideEnd() async throws {
@@ -663,6 +724,37 @@ import Testing
     }
 
     // MARK: - Done
+
+    /// Done keeps an edited draft changed outside — it is still edited (Keep Editing), and opens
+    /// again with its bar — and drops an edited one whose file was resolved outside (Ruling 25).
+    @Test(.timeLimit(.minutes(10))) func doneKeepsAnEditedChangedOutsideDraftOnly() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        _ = try #require(await Self.openDraft(store))
+        store.resolverTake(.ours)
+        store.focusResolverFile("b.txt")
+        await waitUntil("b's draft") { store.resolverDrafts["b.txt"] != nil }
+        store.resolverTake(.theirs)
+
+        try repo.write("a.txt", "changed in a terminal\n")
+        try repo.git("add", "b.txt")
+        await store.refresh()
+        await waitUntilIdle(store)
+        #expect(store.resolverDrafts["a.txt"]?.detached == .changedOutside)
+        #expect(store.resolverDrafts["b.txt"]?.detached == .resolvedOutside)
+
+        store.closeResolver()
+        #expect(store.resolverDrafts.keys.sorted() == ["a.txt"])
+        #expect(store.resolverDrafts["a.txt"]?.detached == .changedOutside)
+        #expect(store.resolverDrafts["a.txt"]?.hasUserChanges == true)
+
+        store.openResolver(at: "a.txt")
+        #expect(store.focusedDraft?.detached == .changedOutside)
+        #expect(ResolverShell.bars(try #require(store.focusedDraft), matchesGitsConflict: false, keptEditing: false)
+            == [.changedOutside])
+    }
 
     @Test(.timeLimit(.minutes(10))) func doneDropsPristineDraftsAndKeepsChangedOnes() async throws {
         let repo = try Self.stoppedMerge()

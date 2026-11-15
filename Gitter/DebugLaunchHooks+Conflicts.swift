@@ -264,7 +264,7 @@
             log("focus: \(focus.path) chunk: \(focus.currentChunk.map(String.init) ?? "nil") "
                 + "| \(ResolverShell.position(draft, current: focus.currentChunk) ?? "no position") | centre: \(centre) "
                 + "| rows: \(rows.map { "\($0.path)=\(ConflictWording.sidebarStatus($0.status) ?? "-")" }) "
-                + "| footer: \(ResolverShell.footerLine(store.operationInProgress, allResolved: store.resolverAllResolved) ?? "-") "
+                + "| footer: \(ResolverShell.footerLine(store.operationInProgress, allResolved: store.resolverAllResolved, ended: store.resolverEndedShown != nil) ?? "-") "
                 + "| bars: \(bars) | resolve file: \(ResolverShell.resolveFileEnabled(draft, blocked: store.conflictActionBlockedReason)) "
                 + "| abort: \(ResolverShell.showsAbort(store.operationInProgress) ? "\(store.abortState)" : "none") "
                 + "| window: \(AppModel.windows.window(of: store)?.windowNumber ?? 0)")

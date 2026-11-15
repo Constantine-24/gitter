@@ -101,6 +101,9 @@ final class RepositoryStore {
     private(set) var resolvedThisSession: [String] = []
     /// The operation focus mode opened under, while it or a draft lasts: its end is noticed once.
     private(set) var resolverOperation: RepositoryOperation?
+    /// The operation that ended while focus mode kept drafts from it, until Done: what the
+    /// subtitle names (Ruling 24).
+    private(set) var resolverEndedOperation: RepositoryOperation?
     /// A move into another file whose draft is still to be read lands on its last conflict
     /// (Previous Conflict) instead of its first.
     private(set) var resolverLandsOnLast = false
@@ -596,6 +599,7 @@ final class RepositoryStore {
         resolverDrafts = [:]
         resolvedThisSession = []
         resolverOperation = nil
+        resolverEndedOperation = nil
         resolverLandsOnLast = false
         resolverReconcilePending = false
         resolverSummaryTask?.cancel()
@@ -1352,6 +1356,11 @@ final class RepositoryStore {
     /// internal (not private(set) write): used by +Resolver.swift
     func setResolverOperation(_ operation: RepositoryOperation?) {
         resolverOperation = operation
+    }
+
+    /// internal (not private(set) write): used by +Resolver.swift
+    func setResolverEndedOperation(_ operation: RepositoryOperation?) {
+        resolverEndedOperation = operation
     }
 
     /// internal (not private(set) write): used by +Resolver.swift

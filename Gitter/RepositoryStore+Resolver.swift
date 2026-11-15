@@ -112,6 +112,12 @@ extension RepositoryStore {
     /// Focus mode is up and no file is conflicted any more: the all-resolved footer.
     var resolverAllResolved: Bool { resolverFocus != nil && resolverFiles.isEmpty }
 
+    /// The operation that ended, while a draft from it is kept (`ResolverShell.endedOperation`):
+    /// what the subtitle names, and why neither footer line shows (Ruling 24).
+    var resolverEndedShown: RepositoryOperation? {
+        ResolverShell.endedOperation(resolverDrafts, remembered: resolverEndedOperation)
+    }
+
     /// The draft of the focused file, once it is read.
     var focusedDraft: ResolverDraft? { resolverFocus.flatMap { resolverDrafts[$0.path] } }
 
@@ -134,14 +140,17 @@ extension RepositoryStore {
         if entering { refreshResolverSummaries() }
     }
 
-    /// Done: back to the normal window. Drafts with changes are kept for next time; pristine
-    /// ones go, and so do detached ones (a detached draft lasts until Done).
+    /// Done: back to the normal window. Drafts with changes are kept for next time — attached
+    /// ones, and ones changed outside, which are still edited (Keep Editing; Ruling 25); pristine
+    /// ones go, and so do read-only ones, resolved outside or left by their operation (a
+    /// read-only draft lasts until Done).
     func closeResolver() {
         guard resolverFocus != nil else { return }
         setResolverFocus(nil)
         setResolverLandsOnLast(false)
         setResolvedThisSession([])
-        setResolverDrafts(resolverDrafts.filter { $0.value.hasUserChanges && $0.value.detached == nil })
+        setResolverEndedOperation(nil)
+        setResolverDrafts(resolverDrafts.filter { $0.value.hasUserChanges && $0.value.isEditable })
         if resolverDrafts.isEmpty { setResolverOperation(nil) }
         resolverSummaryTask?.cancel()
         setResolverSummaries([:])
@@ -430,13 +439,32 @@ extension RepositoryStore {
 
     // MARK: - Drafts
 
-    /// Discard Changes: the draft goes; the focused file is read again from git's conflict.
+    /// Discard Changes: the draft goes; the focused file is read again from git's conflict — or,
+    /// when it has no conflict left (it was resolved outside), the focus moves on (Ruling 26).
     func discardDraft(_ path: String) {
         setResolverDraft(path, nil)
-        if resolverFocus?.path == path {
-            setResolverFocus(ResolverFocus(path: path, currentChunk: nil))
-            loadConflict()
+        guard resolverFocus?.path == path, !settleResolverFocus() else { return }
+        setResolverFocus(ResolverFocus(path: path, currentChunk: nil))
+        loadConflict()
+    }
+
+    /// A focused path with neither a conflict record nor a draft moves on
+    /// (`ResolverShell.focusAfterLosing`): to the next file with conflicts, else the all-resolved
+    /// state. Whether it moved.
+    @discardableResult
+    private func settleResolverFocus() -> Bool {
+        guard let focus = resolverFocus else { return false }
+        switch ResolverShell.focusAfterLosing(
+            focus.path, files: resolverFiles.map(\.path), drafts: Set(resolverDrafts.keys))
+        {
+        case .stay:
+            return false
+        case .moveTo(let next):
+            moveFocus(to: next)
+        case .allResolved:
+            if focus.currentChunk != nil { setResolverFocus(ResolverFocus(path: focus.path, currentChunk: nil)) }
         }
+        return true
     }
 
     /// Reload, on a draft something outside changed: the file as it is now, read again.
@@ -542,9 +570,15 @@ extension RepositoryStore {
             }
         }
         setResolverDrafts(drafts)
-        guard ended, let operation = resolverOperation else { return }
+        guard ended, let operation = resolverOperation else {
+            // A draft dropped above may leave the focus on a path with nothing to show.
+            if resolverFocus != nil { settleResolverFocus() }
+            return
+        }
         setResolverOperation(nil)
         guard let focus = resolverFocus else { return }
+        // Named in the subtitle while its drafts are kept, until Done (Ruling 24).
+        setResolverEndedOperation(operation)
         if let kept = drafts.keys.sorted().first {
             if drafts[focus.path] == nil { setResolverFocus(ResolverFocus(path: kept, currentChunk: nil)) }
         } else {
