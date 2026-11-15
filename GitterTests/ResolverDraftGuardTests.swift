@@ -292,6 +292,27 @@ import Testing
         #expect(store.resolverDrafts.isEmpty)
     }
 
+    /// An open in this window that `open` would refuse (here a folder that is not a repository)
+    /// asks nothing and drops nothing: the refusal is the banner, the drafts stay.
+    @Test(.timeLimit(.minutes(10))) func anOpenThatWouldBeRefusedAsksNothingAndKeepsTheDrafts() async throws {
+        let repo = try Fixture.stoppedMerge()
+        defer { repo.remove() }
+        let folder = FileManager.default.temporaryDirectory.appending(path: "not-a-repo-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let test = TestRegistry()
+        defer { test.remove() }
+        let store = await test.opened(repo)
+        let draft = try #require(await Self.changedDraft(store))
+
+        #expect(test.registry.open(folder, kind: .worktreeHere, front: store) == .useFront(store))
+        #expect(Self.asked(store) == nil)
+        #expect(store.activeSheet == nil)
+        #expect(store.lastError == RepositoryStore.notARepository(folder))
+        #expect(store.root.map(RepositoryWindow.init(url:)) == RepositoryWindow(url: repo.url))
+        #expect(store.resolverDrafts["a.txt"] == draft)
+    }
+
     // MARK: - Done (Ruling 36)
 
     /// Done asks before it drops an edited read-only draft: one names its file (Discard

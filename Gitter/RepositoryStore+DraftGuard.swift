@@ -61,6 +61,19 @@ extension RepositoryStore {
         ask(DraftQuestion(paths: changed, purpose: .action), drops: drops, then: action)
     }
 
+    /// Opens `url` in this window in place of its repository (Open Worktree, an open routed to
+    /// this window, a value set on it): its drafts with changes are asked about first — unless
+    /// `open` would refuse (a closed window, git missing, a write on the lane, not a repository),
+    /// which then says why in the banner with nothing asked and nothing dropped.
+    func openInPlace(_ url: URL) {
+        let refuses = isClosed || gitMissing || remoteActivity?.isWrite == true || Self.notARepository(url) != nil
+        guard !refuses else {
+            open(url)
+            return
+        }
+        confirmDiscardingDrafts(for: Array(resolverDrafts.keys)) { [weak self] in self?.open(url) }
+    }
+
     /// Done (the toolbar's, Escape's, the harness's): asks first when it would drop read-only
     /// drafts — resolved outside, or left by their operation — that have changes; one names its
     /// file, several are counted with Discard and Close (Ruling 36). Pristine ones go silently,

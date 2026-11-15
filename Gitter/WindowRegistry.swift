@@ -192,7 +192,7 @@ final class WindowRegistry {
         case .front(let store): show(store)
         case .useFront(let store):
             // This window's repository is replaced: its drafts with changes are asked about first.
-            store.confirmDiscardingDrafts(for: Array(store.resolverDrafts.keys)) { [weak store] in store?.open(url) }
+            store.openInPlace(url)
         case .refused(let store):
             if let refusal = RepositoryStore.notARepository(url) { store.showStickyError(refusal) }
         case .newWindow(let value):

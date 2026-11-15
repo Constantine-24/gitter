@@ -82,7 +82,8 @@ struct RepositoryWindowView: View {
     private func follow(_ wanted: RepositoryWindow?) {
         guard let wanted else { return }
         guard store.root.map(RepositoryWindow.init(url:)) != wanted else { return }
-        store.open(URL(fileURLWithPath: wanted.path))
+        // In place of what it shows: drafts with changes are asked about first (Task 7).
+        store.openInPlace(URL(fileURLWithPath: wanted.path))
         let shown = store.root.map(RepositoryWindow.init(url:))
         if shown != wanted { value = shown }
     }
