@@ -52,6 +52,10 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
     var catchUpBudget = 1_000
     /// A long jump is being laid out over the next turns of the run loop (`continueLayout`).
     private(set) var layoutPending = false
+    /// Where `scrollToRows` aimed the view while the lines above it are still being laid out:
+    /// TextKit keeps the lines it shows in place while they are, which moves the view by its
+    /// estimate's error (seen 443 pt past a conflict 198 rows down), so the view goes back there.
+    private var jumpOrigin: CGFloat?
     private var canTake = false
     private var editable = false
     private(set) var resultMap: ResolverEditMap?
@@ -424,6 +428,7 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         let y = top < visible.minY || bottom > visible.maxY ? min(max(0, top - visible.height / 3), maxY) : visible.minY
         clip.scroll(to: NSPoint(x: 0, y: y))
         result.scrollView.reflectScrolledClipView(clip)
+        jumpOrigin = layoutPending ? y : nil
     }
 
     // MARK: - Typing
@@ -550,6 +555,14 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         for column in columns {
             column.textView.textLayoutManager?.textViewportLayoutController.layoutViewport()
             column.textView.needsDisplay = true
+        }
+        if let y = jumpOrigin {
+            jumpOrigin = nil
+            let clip = result.scrollView.contentView
+            if clip.bounds.minY != y {
+                clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
+                result.scrollView.reflectScrolledClipView(clip)
+            }
         }
     }
 

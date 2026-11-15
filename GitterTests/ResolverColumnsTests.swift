@@ -596,10 +596,13 @@ import Testing
     /// Lets the run loop turn until the columns have caught up with a long jump (at most 5 s).
     static func settleLayout(_ host: ResolverColumnsHost) async throws {
         for _ in 0..<500 where host.layoutPending {
+            // As on screen, each turn is drawn.
+            host.window?.displayIfNeeded()
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(!host.layoutPending)
         host.layoutSubtreeIfNeeded()
+        host.window?.displayIfNeeded()
     }
 
     /// The columns scrolled to near the end of the file, as a user's scroll does.
@@ -645,6 +648,31 @@ import Testing
         #expect(host.result.scrollView.contentView.bounds.minY > 3000)
         try await Self.settleLayout(host)
         try Self.expectTextOnRows(host, "after the jump")
+    }
+
+    /// While the lines above a long jump are laid out, TextKit keeps the lines it shows where it
+    /// first drew them, which moves the view by its estimate's error (443 pt in the real app);
+    /// once they are laid out the view is where the jump aimed it: the next conflict a third of
+    /// the way down, on screen.
+    @Test(.timeLimit(.minutes(10))) func aLongJumpEndsWhereItAimed() async throws {
+        let repo = try Self.longMerge(twice: true)
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.columns(repo, path: "long.txt")
+        defer { cleanup(); window.close() }
+        try await Self.settleLayout(host)
+        let clip = host.result.scrollView.contentView
+        store.resolverNextConflict()
+        host.update(
+            store: store, path: "long.txt", draft: store.resolverDrafts["long.txt"],
+            current: store.resolverFocus?.currentChunk, showBase: store.showsBase, labels: store.conflictSides)
+        #expect(host.layoutPending)
+        let conflict = try #require(host.model.chunkRows[store.resolverFocus?.currentChunk ?? -1])
+        let top = ResolverGeometry.y(ofRow: conflict.lowerBound)
+        let aimed = min(max(0, top - clip.bounds.height / 3), host.result.textView.frame.height - clip.bounds.height)
+        try await Self.settleLayout(host)
+        try Self.expectTextOnRows(host, "after the jump to the next conflict")
+        #expect(clip.bounds.minY == aimed)
+        #expect(clip.bounds.minY <= top && ResolverGeometry.y(ofRow: conflict.upperBound) <= clip.bounds.maxY)
     }
 
     /// A jump further down than one turn's layout budget lays the rows above the view out over
