@@ -126,6 +126,62 @@ import Testing
         #expect(draft.snapshot.worktreeHash == ConflictSnapshot.worktreeHash(of: "a.txt", at: repo.url))
     }
 
+    // MARK: - Whole-file side columns (Ruling 23)
+
+    /// A merge stopped with `logo.bin` binary on both sides.
+    static func binaryMerge() throws -> ScratchRepo {
+        let repo = try ScratchRepo()
+        try repo.write("logo.bin", "base\u{0}")
+        try repo.git("add", ".")
+        try repo.git("commit", "-m", "base")
+        try repo.git("switch", "-c", "topic")
+        try repo.write("logo.bin", "topic side\u{0}")
+        try repo.git("commit", "-qam", "topic")
+        try repo.git("switch", "-q", "main")
+        try repo.write("logo.bin", "main\u{0}")
+        try repo.git("commit", "-qam", "main")
+        try repo.gitExpectingFailure("merge", "topic")
+        return repo
+    }
+
+    /// Focus mode on a whole-file kind reads its stages for the side columns, with the document.
+    @Test(.timeLimit(.minutes(10))) func aWholeFileKindReadsItsSidesForTheColumns() async throws {
+        let repo = try Self.binaryMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        store.openResolver(at: "logo.bin")
+        await waitUntil("the sides") { store.resolverWholeFileSides != nil }
+        let read = try #require(store.resolverWholeFileSides)
+        #expect(read.file.path == "logo.bin")
+        #expect(read.sides.ours == Data("main\u{0}".utf8) && read.sides.theirs == Data("topic side\u{0}".utf8))
+        #expect(store.resolverDrafts["logo.bin"] == nil)
+        let file = try #require(store.resolverFiles.first)
+        #expect(
+            ConflictWording.wholeFileSideContent(file, .theirs, .binary, content: read.sides.theirs)
+                == .description("Binary file, 11 bytes"))
+    }
+
+    /// A failed read of the stages leaves the side columns their short descriptions: the
+    /// whole-file choices stay, never the failed state.
+    @Test(.timeLimit(.minutes(10))) func aFailedSidesReadLeavesTheShortDescriptions() async throws {
+        let repo = try Self.binaryMerge()
+        defer { repo.remove() }
+        let backend = TestBackend()
+        backend.fail(.conflictSides, with: GitError.commandFailed(exitCode: 128, stderr: "boom"))
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        store.openResolver(at: "logo.bin")
+        await waitUntil("the stages' read") { backend.calls.contains(.conflictSides) }
+        await store.conflictTask?.value
+        #expect(store.resolverWholeFileSides == nil)
+        #expect(store.conflictLoadFailure == nil)
+        let centre = ResolverShell.centre(
+            path: "logo.bin", draft: nil, document: store.selectedConflict, failure: store.conflictLoadFailure,
+            allResolved: false)
+        #expect(centre == .wholeFile(.binary))
+    }
+
     // MARK: - The sidebar's summaries (Ruling 19)
 
     /// The summaries' reads and the focused file's own reads so far.

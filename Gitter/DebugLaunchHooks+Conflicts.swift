@@ -33,7 +33,18 @@
     ///                           its read (and draft) and the sidebar's summaries, and logs
     ///                           `focus: …` with the window number `screencapture -l` needs.
     ///   resolver:done           Done; logs `focus: …`.
-    ///   resolver:state          logs `focus: …` without doing anything.
+    ///   resolver:state          logs `focus: …` without doing anything, with the focused draft's
+    ///                           waiting count, flags and detachment, and its Result's chunks.
+    ///   resolver:take:<ours|theirs|both|bothTheirsFirst>  takes that side for the current
+    ///                           conflict, as its key does; logs `focus: …`.
+    ///   resolver:type:<text>    types into the Result at the current conflict through the text
+    ///                           view's own path (`insertText`, the caret rule, the store); `\n`
+    ///                           in the text is a line break. Logs `focus: …`.
+    ///   resolver:next, resolver:previous  ⌘] and ⌘[.
+    ///   resolver:undo, resolver:redo      ⌘Z and ⇧⌘Z, as the columns send them to the store.
+    ///   resolver:resolve        Resolve File; waits for the write, logs `focus: …`.
+    ///   resolver:showbase:on|off  the toolbar's Show Base (remembered in the defaults, which the
+    ///                           launch guard puts back).
     ///   noticeshow              the sticky notice's Show Copy, as its button runs it.
     ///   cancelsheet             what a sheet's Cancel does (`activeSheet = nil`): a sheet up
     ///                           keeps `quit` from quitting.
@@ -225,6 +236,47 @@
                 logFocus(store)
             case "state":
                 logFocus(store)
+            case "next":
+                store.resolverNextConflict()
+                await settleFocus(store)
+            case "previous":
+                store.resolverPreviousConflict()
+                await settleFocus(store)
+            case "undo":
+                store.resolverUndo()
+                await settleFocus(store)
+            case "redo":
+                store.resolverRedo()
+                await settleFocus(store)
+            case "showbase:on", "showbase:off":
+                store.showsBase = rest == "showbase:on"
+                await settleFocus(store)
+            case "resolve":
+                store.resolveFocusedFile()
+                _ = await wait({ !store.isMutating && store.activeSheet == nil }, what: "resolver:resolve: the write")
+                await settleFocus(store)
+            case let take where take.hasPrefix("take:"):
+                let choices: [String: BlockChoice] = [
+                    "ours": .ours, "theirs": .theirs, "both": .oursThenTheirs, "bothTheirsFirst": .theirsThenOurs,
+                ]
+                guard let choice = choices[String(take.dropFirst("take:".count))] else {
+                    log("resolver: expected take:ours|theirs|both|bothTheirsFirst, got \(take)")
+                    return
+                }
+                store.resolverTake(choice)
+                await settleFocus(store)
+            case let type where type.hasPrefix("type:"):
+                let text = String(type.dropFirst("type:".count)).replacingOccurrences(of: "\\n", with: "\n")
+                _ = await wait({
+                    ResolverColumnsHost.debugLatest?.path == store.resolverFocus?.path
+                        && ResolverColumnsHost.debugLatest?.window != nil
+                }, what: "resolver:type: the columns")
+                guard let host = ResolverColumnsHost.debugLatest, host.path == store.resolverFocus?.path else {
+                    log("resolver:type: no columns on screen")
+                    return
+                }
+                if !host.debugType(text) { log("resolver:type: the Result is read-only") }
+                await settleFocus(store)
             case let open where open == "open" || open.hasPrefix("open:"):
                 let path = open == "open" ? nil : String(open.dropFirst("open:".count))
                 store.openResolver(at: path)
@@ -241,6 +293,12 @@
             default:
                 log("resolver: expected open[:<path>], done or state, got \(rest)")
             }
+        }
+
+        /// Lets SwiftUI and the columns catch up with the store, then logs `focus: …`.
+        private static func settleFocus(_ store: RepositoryStore) async {
+            try? await Task.sleep(for: .milliseconds(300))
+            logFocus(store)
         }
 
         /// Focus mode as the shell shows it: the file, its position, the sidebar's rows and
@@ -268,6 +326,26 @@
                 + "| bars: \(bars) | resolve file: \(ResolverShell.resolveFileEnabled(draft, blocked: store.conflictActionBlockedReason)) "
                 + "| abort: \(ResolverShell.showsAbort(store.operationInProgress) ? "\(store.abortState)" : "none") "
                 + "| window: \(AppModel.windows.window(of: store)?.windowNumber ?? 0)")
+            guard let draft else { return }
+            let document = draft.document
+            let chunks = document.chunks.map { chunk -> String in
+                let state: String =
+                    switch chunk.state {
+                    case .common: "common"
+                    case .waiting: "waiting"
+                    case .taken(let choice): "taken(\(choice))"
+                    case .edited: "edited"
+                    }
+                return "\(chunk.id)=\(state)\(chunk.isMerged ? "+merged" : "")"
+            }
+            log("draft: \(focus.path) waiting: \(document.waitingCount) of \(document.conflictCount) "
+                + "| changes: \(draft.hasUserChanges) editable: \(draft.isEditable) writable: \(draft.isWritable) "
+                + "| detached: \(draft.detached.map { "\($0)" } ?? "nil") | notEditable: \(document.notEditable.map { "\($0)" } ?? "nil") "
+                + "| undo: \(draft.history.canUndo) redo: \(draft.history.canRedo) | chunks: \(chunks) "
+                + "| result: \(String(reflecting: document.resultText))")
+            if let host = ResolverColumnsHost.debugLatest, host.path == focus.path {
+                log("columns: \(host.debugDescribe())")
+            }
         }
 
         static func describeConflictSheet(_ sheet: BranchSheet?) -> String? {

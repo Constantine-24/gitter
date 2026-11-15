@@ -32,6 +32,26 @@ import Testing
 
     // MARK: - A conflict that cannot be read (B4 item 4)
 
+    /// A whole-file kind's side column (Ruling 23): its text when it is text; else what it is,
+    /// with a binary file's size in the system's file units; with no read, the short description.
+    @Test func wholeFileSidesSayWhatEachSideHas() {
+        let text = Self.file(.bothModified)
+        #expect(ConflictWording.wholeFileSideContent(text, .ours, .mergeAttribute("union"), content: Data("a\nb\n".utf8)) == .text("a\nb\n"))
+        let size = ByteCountFormatter.string(fromByteCount: 2_800_000, countStyle: .file)
+        #expect(
+            ConflictWording.wholeFileSideContent(text, .theirs, .binary, content: Data(count: 2_800_000))
+                == .description("Binary file, \(size)"))
+        // Text with a NUL, or not UTF-8, is binary too.
+        #expect(ConflictWording.wholeFileSideContent(text, .ours, .unparsable, content: Data([0x61, 0, 0x62])) == .description("Binary file, 3 bytes"))
+        #expect(ConflictWording.wholeFileSideContent(text, .ours, .unparsable, content: Data([0xFF, 0xFE])) == .description("Binary file, 2 bytes"))
+        let link = Self.file(.bothModified, ours: Self.stage("120000"), theirs: Self.stage("120000"))
+        #expect(ConflictWording.wholeFileSideContent(link, .ours, .symlink, content: Data("../target".utf8)) == .description("Symlink to ../target"))
+        let deleted = Self.file(.deletedByThem, theirs: nil)
+        #expect(ConflictWording.wholeFileSideContent(deleted, .theirs, .deletion, content: nil) == .description("Deleted on this side"))
+        // The read not landed or failed: the short description.
+        #expect(ConflictWording.wholeFileSideContent(text, .ours, .binary, content: nil) == .description("Binary file"))
+    }
+
     @Test func theFailedReadSaysWhatCanStillBeDone() {
         #expect(ConflictWording.loadFailed("git went away")
             == "Gitter couldn't read this conflict: git went away. You can still open the file in its editor, "

@@ -224,6 +224,26 @@ import Testing
         #expect(document.waitingCount == 2)
     }
 
+    /// The Result's caret rule (Task 6): a waiting slot and the start of the line after it share
+    /// one offset. A caret the view places at the slot types into the conflict; one on the next
+    /// line (`intoEmptyChunk: false`) types into that line, and the conflict stays waiting.
+    @Test func aCaretAfterASlotTypesIntoTheNextLineUnlessAtTheSlot() throws {
+        let fresh = try Self.document(Self.three)
+        let at = fresh.range(ofChunk: 3).location
+        #expect(at == fresh.range(ofChunk: 4).location)
+
+        var onTheNextLine = fresh
+        #expect(onTheNextLine.replace(NSRange(location: at, length: 0), with: "q", intoEmptyChunk: false) == 4)
+        #expect(try Self.chunk(3, onTheNextLine).state == .waiting)
+        #expect(try Self.chunk(4, onTheNextLine).text == "qmid2\n")
+        #expect(try Self.chunk(4, onTheNextLine).state == .common)
+
+        var atTheSlot = fresh
+        #expect(atTheSlot.replace(NSRange(location: at, length: 0), with: "q", intoEmptyChunk: true) == 3)
+        #expect(try Self.chunk(3, atTheSlot).text == "q\n")
+        #expect(try Self.chunk(3, atTheSlot).state == .edited)
+    }
+
     @Test func untouchedBytesSurviveAnEdit() throws {
         let segments: [ConflictSegment] = [
             Self.common("one\r\ntwo middle three\r\n"), .block(Self.block("o\r\n", "b\r\n", "t\r\n")),

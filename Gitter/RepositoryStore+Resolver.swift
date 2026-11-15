@@ -51,6 +51,13 @@ struct ResolverFocus: Hashable, Sendable {
     var currentChunk: Int?
 }
 
+/// A whole-file kind's stages, read for focus mode's side columns (Ruling 23), and the record
+/// they were read for.
+struct ResolverWholeFileSides: Hashable, Sendable {
+    let file: ConflictedFile
+    let sides: ConflictSides
+}
+
 /// A conflicted file's trailing text in focus mode's sidebar before its draft is read
 /// (Ruling 19): how many conflicts it has, or that it has none to choose between.
 enum ResolverFileSummary: Hashable, Sendable {
@@ -244,11 +251,12 @@ extension RepositoryStore {
     }
 
     /// Typing in the Result: `range` (UTF-16) replaced with `text`. Keystrokes in one chunk
-    /// within a second are one undo step.
-    func resolverReplace(_ range: NSRange, with text: String) {
+    /// within a second are one undo step. `intoEmptyChunk` is the view's caret rule
+    /// (`ResolverDocument.replace`): false for a caret on the line after an empty conflict.
+    func resolverReplace(_ range: NSRange, with text: String, intoEmptyChunk: Bool = true) {
         guard let path = resolverFocus?.path, var draft = resolverDrafts[path], draft.isEditable else { return }
         var document = draft.document
-        guard let id = document.replace(range, with: text) else { return }
+        guard let id = document.replace(range, with: text, intoEmptyChunk: intoEmptyChunk) else { return }
         draft.history.record(draft.document, coalescingTypingIn: id, at: Date())
         draft.document = document
         setResolverDraft(path, draft)

@@ -97,6 +97,9 @@ final class RepositoryStore {
     /// file switches with its undo history, and kept — never written — when something outside
     /// changes it.
     private(set) var resolverDrafts: [String: ResolverDraft] = [:]
+    /// Focus mode's whole-file kind on screen: its stages as read with its document, for the side
+    /// columns (Ruling 23). Nil until read, after a failed read, and for another file.
+    private(set) var resolverWholeFileSides: ResolverWholeFileSides?
     /// The files resolved in focus mode since it opened, in order: listed as Resolved until Done.
     private(set) var resolvedThisSession: [String] = []
     /// The operation focus mode opened under, while it or a draft lasts: its end is noticed once.
@@ -597,6 +600,7 @@ final class RepositoryStore {
         // Focus mode and its drafts are this repository's (asking first is the caller's).
         resolverFocus = nil
         resolverDrafts = [:]
+        resolverWholeFileSides = nil
         resolvedThisSession = []
         resolverOperation = nil
         resolverEndedOperation = nil
@@ -1325,6 +1329,11 @@ final class RepositoryStore {
     /// internal (not private(set) write): used by +Conflicts.swift's `loadConflict()`
     func setConflictLoadFailure(_ failure: ConflictLoadFailure?) {
         conflictLoadFailure = failure
+    }
+
+    /// internal (not private(set) write): used by +Conflicts.swift's `loadConflict()`
+    func setResolverWholeFileSides(_ sides: ResolverWholeFileSides?) {
+        resolverWholeFileSides = sides
     }
 
     /// internal (not private(set) write): used by +Conflicts.swift's `loadConflict()`

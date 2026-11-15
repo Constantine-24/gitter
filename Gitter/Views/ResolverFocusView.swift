@@ -109,36 +109,6 @@ struct ResolverFocusView: View {
     }
 }
 
-/// The resolver's palette (spec, "Look"): asset-catalog colours with light and dark values.
-enum ResolverColor {
-    static let ours = Color("Resolver/Ours")
-    static let theirs = Color("Resolver/Theirs")
-    static let resolved = Color("Resolver/Resolved")
-    static let accent = Color("Resolver/Accent")
-    static let window = Color("Resolver/Window")
-    static let bar = Color("Resolver/Bar")
-    static let sidebar = Color("Resolver/Sidebar")
-    static let header = Color("Resolver/Header")
-    static let separator = Color("Resolver/Separator")
-    static let waitingSlot = Color("Resolver/WaitingSlot")
-    static let selectedFile = Color("Resolver/SelectedFile")
-    static let text = Color("Resolver/Text")
-    static let secondaryText = Color("Resolver/SecondaryText")
-    static let badgeGreen = Color("Resolver/BadgeGreen")
-    static let badgeOrange = Color("Resolver/BadgeOrange")
-    static let link = Color("Resolver/Link")
-}
-
-/// The columns' grid, shared by the headers and the columns: three equal columns with a strip
-/// between each two.
-enum ResolverGrid {
-    static let gutterWidth: CGFloat = 24
-
-    static var gutter: some View {
-        ResolverColor.sidebar.frame(width: gutterWidth)
-    }
-}
-
 // MARK: - The sidebar
 
 /// The conflicted files (`ResolverShell.rows`): a status dot, the name and folder, the trailing
@@ -410,7 +380,7 @@ struct ResolverCentreView: View {
         let blocked = store.conflictActionBlockedReason
         let offered = ResolverOffer.actions(for: document).filter { [.takeOurs, .takeTheirs, .delete, .keep].contains($0) }
         return HStack(spacing: 0) {
-            sideDescription(ConflictWording.wholeFileSide(file, .ours, reason))
+            ResolverWholeFileSide(content: sideContent(file, .ours, reason))
             ResolverGrid.gutter
             VStack(spacing: 14) {
                 Text(ConflictWording.wholeFile(reason))
@@ -434,15 +404,16 @@ struct ResolverCentreView: View {
             .padding(24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             ResolverGrid.gutter
-            sideDescription(ConflictWording.wholeFileSide(file, .theirs, reason))
+            ResolverWholeFileSide(content: sideContent(file, .theirs, reason))
         }
     }
 
-    private func sideDescription(_ text: String) -> some View {
-        Text(text)
-            .font(.callout)
-            .foregroundStyle(ResolverColor.secondaryText)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    /// What a side's column shows: its stage as read for this file (Ruling 23), else the short
+    /// description while the read is still to land or when it failed.
+    private func sideContent(_ file: ConflictedFile, _ side: ConflictSide, _ reason: WholeFileReason) -> WholeFileSideContent {
+        let read = store.resolverWholeFileSides.flatMap { $0.file == file ? $0.sides : nil }
+        return ConflictWording.wholeFileSideContent(
+            file, side, reason, content: read.flatMap { side == .ours ? $0.ours : $0.theirs })
     }
 
     private func perform(_ action: ResolverAction) {
@@ -658,61 +629,5 @@ struct ResolverBottomBar: View {
         .padding(.horizontal, 16)
         .frame(height: 46)
         .background(ResolverColor.bar)
-    }
-}
-
-// MARK: - Escape
-
-/// Escape as Done (`ResolverShell.escapeIsDone`): a local key monitor while this view is in a
-/// window, which lets the key through to a text view being edited (the Result, a field editor),
-/// to a sheet and to other windows.
-private struct EscapeMonitor: NSViewRepresentable {
-    let done: @MainActor () -> Void
-
-    func makeNSView(context: Context) -> MonitorView {
-        MonitorView(done: done)
-    }
-
-    func updateNSView(_ view: MonitorView, context: Context) {
-        view.done = done
-    }
-
-    final class MonitorView: NSView {
-        var done: @MainActor () -> Void
-        private var monitor: Any?
-
-        init(done: @escaping @MainActor () -> Void) {
-            self.done = done
-            super.init(frame: .zero)
-        }
-
-        @available(*, unavailable)
-        required init?(coder: NSCoder) { nil }
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            if let monitor { NSEvent.removeMonitor(monitor) }
-            monitor = nil
-            guard window != nil else { return }
-            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                // Local monitors run on the main thread.
-                let handled = MainActor.assumeIsolated { () -> Bool in
-                    guard let self, let window = self.window else { return false }
-                    let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
-                    let isDone = ResolverShell.escapeIsDone(
-                        isEscape: event.keyCode == 53, modified: !modifiers.isEmpty, ownWindow: event.window === window,
-                        sheetUp: window.attachedSheet != nil, editingText: window.firstResponder is NSText)
-                    if isDone { self.done() }
-                    return isDone
-                }
-                return handled ? nil : event
-            }
-        }
-
-        override func removeFromSuperview() {
-            if let monitor { NSEvent.removeMonitor(monitor) }
-            monitor = nil
-            super.removeFromSuperview()
-        }
     }
 }

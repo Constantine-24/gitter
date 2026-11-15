@@ -520,6 +520,96 @@ enum ConflictWording {
 
     static let allResolvedTitle = "All files resolved"
 
+    /// A whole-file side's column: the side's text when it is text, else what it is — "Binary
+    /// file, 2.8 MB", "Symlink to …", "Deleted on this side" (Ruling 23). `content` is the stage
+    /// as read (nil when the read failed or the side has none); without it, the short description.
+    static func wholeFileSideContent(
+        _ file: ConflictedFile, _ side: ConflictSide, _ reason: WholeFileReason, content: Data?
+    ) -> WholeFileSideContent {
+        guard let stage = side == .ours ? file.ours : file.theirs, stage.mode != "160000", let content else {
+            return .description(wholeFileSide(file, side, reason))
+        }
+        if stage.mode == "120000" {
+            let target = String(decoding: content, as: UTF8.self)
+            return .description("Symlink to \(target)")
+        }
+        if reason != .binary, !content.contains(0), let text = String(validating: content, as: UTF8.self) {
+            return .text(text)
+        }
+        let size = ByteCountFormatter.string(fromByteCount: Int64(content.count), countStyle: .file)
+        return .description("Binary file, \(size)")
+    }
+
+    // The columns.
+
+    /// The Show Base row of a conflict whose base is empty.
+    static let noBaseStrip = "No base: both sides added this"
+    /// A column's text view for VoiceOver.
+    static func columnLabel(_ column: ResolverColumn) -> String {
+        switch column {
+        case .ours: "Ours"
+        case .result: "Result"
+        case .theirs: "Theirs"
+        }
+    }
+
+    /// The waiting slot's words.
+    static let slotPrompt = "Choose a side, or type here"
+    static let slotOurs = "\u{2190} Ours"
+    static let slotBoth = "Both"
+    static let slotTheirs = "Theirs \u{2192}"
+    static let bothOursFirst = "Both, Ours First"
+    static let bothTheirsFirst = "Both, Theirs First"
+
+    /// A take button, chip or menu item for VoiceOver: the conflict and the side.
+    static func takeLabel(_ choice: BlockChoice, conflict index: Int, of count: Int) -> String {
+        let what: String
+        switch choice {
+        case .ours: what = "Take Ours"
+        case .theirs: what = "Take Theirs"
+        case .oursThenTheirs: what = "Take Both, Ours First"
+        case .theirsThenOurs: what = "Take Both, Theirs First"
+        }
+        return "\(what) for \(position(index, of: count).lowercasedFirst)"
+    }
+
+    /// A take button's tooltip: the side's label.
+    static func takeHelp(_ side: ConflictSide, _ sides: SideLabels) -> String {
+        "Take \(sides.label(side)) for this conflict"
+    }
+
+    /// A badge's words.
+    static func badge(_ badge: ResultBadge) -> String {
+        switch badge {
+        case .ours: "Ours"
+        case .theirs: "Theirs"
+        case .oursThenTheirs: "Ours + Theirs"
+        case .theirsThenOurs: "Theirs + Ours"
+        case .editedByYou: "Edited by you"
+        case .fromOurs: "From Ours"
+        case .fromTheirs: "From Theirs"
+        }
+    }
+
+    /// A badge for VoiceOver, with the conflict it marks when it marks one.
+    static func badgeLabel(_ badge: ResultBadge, conflict index: Int?, of count: Int) -> String {
+        guard let index else { return self.badge(badge) }
+        return "\(position(index, of: count)): \(self.badge(badge))"
+    }
+
+    /// The slot for VoiceOver.
+    static func slotLabel(conflict index: Int, of count: Int) -> String {
+        "\(position(index, of: count)), waiting: \(slotPrompt)"
+    }
+
+    /// The Repository menu's Resolve items.
+    static let resolveMenu = "Resolve"
+    static let takeOursMenuItem = "Take Ours"
+    static let takeTheirsMenuItem = "Take Theirs"
+    static let takeBothMenuItem = "Take Both, Ours First"
+    static let takeBothTheirsFirstMenuItem = "Take Both, Theirs First"
+
+
     private static func sideName(_ side: ConflictSide) -> String { side == .ours ? "Ours" : "Theirs" }
 
     private static func files(_ count: Int) -> String { count == 1 ? "1 File" : "\(count) Files" }
@@ -590,4 +680,15 @@ enum ConflictWording {
             ? "1 conflicted file was left out — resolve it first"
             : "\(count) conflicted files were left out — resolve them first"
     }
+}
+
+/// A whole-file side's column (`ConflictWording.wholeFileSideContent`).
+enum WholeFileSideContent: Hashable, Sendable {
+    case text(String)
+    case description(String)
+}
+
+extension String {
+    /// The first character lowercased: "Conflict 2 of 3" inside a sentence.
+    fileprivate var lowercasedFirst: String { prefix(1).lowercased() + dropFirst() }
 }

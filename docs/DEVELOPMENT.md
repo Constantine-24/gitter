@@ -114,7 +114,7 @@ Or both test targets — `GitCoreTests` and the app's `GitterTests` — through 
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
 ```
 
-`GitterTests` (1 106 tests in 83 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (1 129 tests in 85 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -516,6 +516,17 @@ Gitter/                   macOS app (SwiftUI)
                               the bytes written, leftover markers, undo (ResolverHistory)
   Resolver/ResolverShell.swift  Focus mode's shell decided without a view: the sidebar's
                               rows, the bars, the centre, Resolve File, Done, Escape
+  Resolver/ResolverPalette.swift  The resolver's colours, one asset-catalog name per role,
+                              for SwiftUI (ResolverColor) and AppKit (ResolverPalette)
+  Resolver/ResolverAttributes.swift  The columns' text from the rows, pure: one paragraph
+                              a row, fillers and the slot empty, tints and word marks as attributes
+  Resolver/ResolverEditMap.swift  The Result's shown text mapped to the document, pure:
+                              typing, the caret and the slot rule
+  Resolver/ResolverColumnsHost.swift  The three columns in AppKit: rendering what changed,
+                              typing through the map, the caret, undo to the store, one scroll
+  Resolver/ResolverTextColumn.swift  A column's TextKit 2 text view and its overlay: line
+                              numbers, bars, the outline, the slot and its chips, the badges
+  Resolver/ResolverGutterView.swift  The strips between the columns: bands and take buttons
   ContinueWording.swift      Every sentence of the operation bar, Continue, Skip and the
                               halted and stale ranges
   HistoryRows.swift          The commit table's rows, built once per snapshot, with the end
@@ -562,7 +573,8 @@ Gitter/                   macOS app (SwiftUI)
                               WorktreesSection,
                               ConflictCard, ResolverFocusView (focus mode: toolbar, sidebar,
                               headers, bars, bottom bar, the whole-file centre),
-                              ResolverColumnsView, OperationBar (with the
+                              ResolverColumnsView (the columns, the whole-file sides),
+                              EscapeMonitor, OperationBar (with the
                               halted bar), KeepBranchList (with RefIDList, the ref and id list
                               both sheets share) and the thirty-five sheets (NewBranch,
                               Rename, Merge, DeleteBranch, Abort, LeaveDetached, Pull, Publish,
@@ -728,6 +740,10 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `activate` | make Gitter the active app (`NSApp.activate()`), as a click on it would, and log whether it is and which window is key |
 | `select:<path>` / `resolver` | select a working-copy file (a conflicted file's unstaged row, a resolved one's staged row) and wait for the resolver's read; `resolver` logs its state: kind, blocks or the whole-file reason, whether the file is what git wrote, the hash, the side names, the actions offered |
 | `resolver:open[:<path>]` / `resolver:done` / `resolver:state` | focus mode on that file (or the first with conflicts), as **Resolve Conflicts…** opens it, waiting for its read and the sidebar's counts; Done; or nothing — each logs `focus: …`: the file, "Conflict N of M", what the centre shows, every sidebar row with its trailing text, the footer's line, the bars, whether Resolve File and Abort are on, and the window's number |
+| `resolver:take:<ours\|theirs\|both\|bothTheirsFirst>` / `resolver:next` / `resolver:previous` / `resolver:undo` / `resolver:redo` | the current conflict's take, ⌘] and ⌘[, ⌘Z and ⇧⌘Z, as the keys do; each logs `focus: …`, and `draft: …` with the waiting count, the draft's flags and detachment, its chunks and its Result, and `columns: …` with the rows, whether every column is one paragraph per row, the caret and the scroll offset (`resolver:state` logs those too) |
+| `resolver:type:<text>` | types into the Result at the current conflict through the text view's own path (`insertText`, the caret rule, the store); `\n` is a line break |
+| `resolver:resolve` | Resolve File, waiting for its write |
+| `resolver:showbase:on\|off` | the toolbar's Show Base |
 | `take:ours\|theirs:<path>` / `keep:<path>` / `deletefile:<path>` / `markresolved:<path>` | **act**: Take Ours / Theirs, Keep … Version, Delete the File (`delete:` is the branch step), Mark Resolved — each through the resolver's own entry point, which logs the offer first, so a refused one shows |
 | `confirmreplace` / `confirmmarkers` | answer the "changed since the conflict" sheet and the leftover-markers sheet |
 | `reopen:<path>` / `confirmreopen` | open Reopen Conflict… for a resolved file (logs `reopen: not offered` when it is not), and answer it |

@@ -47,8 +47,12 @@ enum NotEditable: Hashable, Sendable { case tooLarge, notUTF8 }
 /// UTF-16 units), and every "unchanged" is a comparison of UTF-8 bytes, never `String ==`, which
 /// calls canonically equivalent text equal.
 struct ResolverDocument: Hashable, Sendable {
-    /// Over either limit the Result is read-only. Provisional, until measured on large files.
-    static let editLimitBytes = 2_000_000, editLimitLines = 20_000
+    /// Over either limit the Result is read-only (its takes and keys still work). Measured in
+    /// Task 6 on generated files with 50 conflicts, in an optimised build: typing — keystroke,
+    /// store, layout, the columns redrawn — stays under a 16 ms median up to about 5,700 lines
+    /// (counted as here: common text and all three sides of every block) and about 400 KB of
+    /// long lines; 20,000 lines took 56 ms. The limits sit just under those, with a margin.
+    static let editLimitBytes = 400_000, editLimitLines = 5_500
 
     private(set) var chunks: [ResolverChunk]
     let notEditable: NotEditable?
@@ -191,7 +195,9 @@ struct ResolverDocument: Hashable, Sendable {
     /// Which chunks it touches:
     /// - an empty range (a caret): the empty conflict chunk there, so typing into a waiting slot
     ///   reaches it; else the chunk the caret is inside or at the start of; at the very end, the
-    ///   last chunk;
+    ///   last chunk. An empty chunk shares its offset with the start of the line after it, so the
+    ///   view says which one the caret is at: `intoEmptyChunk: false` is a caret on that next line
+    ///   (the Result's caret rule, `ResolverEditMap`), which skips the empty chunk;
     /// - a non-empty range: every chunk it overlaps, and the empty ones strictly inside it. An
     ///   empty chunk at the range's edge is not touched, so replacing the line before a waiting
     ///   slot leaves the slot waiting.
@@ -215,7 +221,7 @@ struct ResolverDocument: Hashable, Sendable {
     ///
     /// Returns the id of the chunk the edit ended in, or nil when nothing was changed.
     @discardableResult
-    mutating func replace(_ range: NSRange, with typed: String) -> Int? {
+    mutating func replace(_ range: NSRange, with typed: String, intoEmptyChunk: Bool = true) -> Int? {
         guard notEditable == nil, range.location != NSNotFound, range.location >= 0, range.length >= 0 else { return nil }
         var starts: [Int] = []
         var total = 0
@@ -244,8 +250,9 @@ struct ResolverDocument: Hashable, Sendable {
             let at = range.location
             let empty = chunks.indices.filter { starts[$0] == at && lengths[$0] == 0 }
             let inside = chunks.indices.first { starts[$0] <= at && at < starts[$0] + lengths[$0] }
-            guard let index = empty.first(where: { !chunks[$0].blocks.isEmpty }) ?? inside ?? empty.first
-                ?? chunks.indices.last(where: { starts[$0] + lengths[$0] == at })
+            let emptyConflict = intoEmptyChunk ? empty.first(where: { !chunks[$0].blocks.isEmpty }) : nil
+            guard let index = emptyConflict ?? inside ?? empty.first(where: { _ in intoEmptyChunk })
+                ?? chunks.indices.last(where: { starts[$0] + lengths[$0] == at && (intoEmptyChunk || lengths[$0] > 0) })
             else { return nil }
             touched = [index]
             if Self.isEmptySlot(chunks[index]), index < chunks.count - 1, typed.utf8.last != UInt8(ascii: "\n") {

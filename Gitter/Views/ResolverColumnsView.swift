@@ -1,47 +1,102 @@
+import AppKit
+import GitCore
 import SwiftUI
 
-/// Focus mode's three columns for the draft of `path`: Ours | Result | Theirs, on the grid the
-/// column headers use (`ResolverGrid`).
-///
-/// A placeholder until the columns are drawn: each column shows its text as it is, unaligned,
-/// read-only, with no tints or take buttons. The shell around it (headers, bars, bottom bar) is
-/// final.
+/// Focus mode's three columns for the draft of `path`: Ours | Result | Theirs, aligned row for row
+/// and scrolled as one, on the grid the column headers use (`ResolverGrid`). The drawing, typing,
+/// takes and keys are `ResolverColumnsHost`'s; this hands it the store's state.
 struct ResolverColumnsView: View {
     let path: String
 
     @Environment(RepositoryStore.self) private var store
 
     var body: some View {
-        let draft = store.resolverDrafts[path]
-        ScrollView(.vertical) {
-            HStack(alignment: .top, spacing: 0) {
-                column(draft.flatMap { $0.sides.ours }.map { String(decoding: $0, as: UTF8.self) })
-                ResolverGrid.gutter
-                column(draft?.document.resultText)
-                ResolverGrid.gutter
-                column(draft.flatMap { $0.sides.theirs }.map { String(decoding: $0, as: UTF8.self) })
-            }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-        // The strips run the whole height, below the text too.
-        .background {
-            HStack(spacing: 0) {
-                Color("Resolver/Window")
-                ResolverGrid.gutter
-                Color("Resolver/Window")
-                ResolverGrid.gutter
-                Color("Resolver/Window")
-            }
+        let focus = store.resolverFocus
+        ResolverColumnsRepresentable(
+            store: store, path: path, draft: store.resolverDrafts[path],
+            current: focus?.path == path ? focus?.currentChunk : nil, showsBase: store.showsBase,
+            labels: store.conflictSides)
+    }
+}
+
+/// `ResolverColumnsHost` in SwiftUI.
+private struct ResolverColumnsRepresentable: NSViewRepresentable {
+    let store: RepositoryStore
+    let path: String
+    let draft: ResolverDraft?
+    let current: Int?
+    let showsBase: Bool
+    let labels: SideLabels
+
+    func makeNSView(context: Context) -> ResolverColumnsHost { ResolverColumnsHost() }
+
+    func updateNSView(_ host: ResolverColumnsHost, context: Context) {
+        host.update(store: store, path: path, draft: draft, current: current, showBase: showsBase, labels: labels)
+    }
+}
+
+/// The columns' grid, shared by the headers and the columns: three equal columns with a strip
+/// between each two.
+enum ResolverGrid {
+    static let gutterWidth: CGFloat = 24
+
+    static var gutter: some View {
+        ResolverColor.sidebar.frame(width: gutterWidth)
+    }
+}
+
+/// A whole-file kind's side column (Ruling 23): the side's text when it is text, read-only and
+/// numbered; else a centred description ("Binary file, 2.8 MB", "Symlink to …", "Deleted on
+/// this side").
+struct ResolverWholeFileSide: View {
+    let content: WholeFileSideContent
+
+    var body: some View {
+        switch content {
+        case .text(let text):
+            ResolverPlainText(text: text)
+        case .description(let words):
+            Text(words)
+                .font(.callout)
+                .foregroundStyle(ResolverColor.secondaryText)
+                .multilineTextAlignment(.center)
+                .padding(16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
+}
 
-    private func column(_ text: String?) -> some View {
-        Text(text ?? "")
-            .font(.system(.callout, design: .monospaced))
-            .foregroundStyle(Color("Resolver/Text"))
-            .textSelection(.enabled)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+/// A side's whole text, read-only, numbered, in the columns' font and rows.
+private struct ResolverPlainText: NSViewRepresentable {
+    let text: String
+
+    func makeNSView(context: Context) -> ResolverTextColumn {
+        let column = ResolverTextColumn(column: .ours)
+        column.scrollView.hasVerticalScroller = true
+        return column
+    }
+
+    func updateNSView(_ column: ResolverTextColumn, context: Context) {
+        let lines = ResolverLayout.lines(of: text)
+        let rows = lines.enumerated().map { index, line in
+            let cell = LayoutCell(lineNumber: index + 1, text: line.text, tint: .none, marks: [])
+            return LayoutRow(ours: cell, result: cell, theirs: cell, chunk: 0, isSlot: false, badge: nil)
+        }
+        guard column.overlay.model.rows != rows else { return }
+        let view = column.textView
+        view.textStorage?.setAttributedString(ResolverAttributes.text(for: rows, column: .ours, palette: .standard))
+        var starts = [0]
+        for line in lines { starts.append((starts.last ?? 0) + ResolverAttributes.shown(line.text).utf16.count + 1) }
+        view.starts = starts
+        let numberWidth = ResolverGeometry.numberWidth(lines: rows.count)
+        view.codeInset = numberWidth + ResolverGeometry.codeGap
+        let digit = ("0" as NSString).size(withAttributes: [.font: ResolverAttributes.codeFont]).width
+        let widest = CGFloat(lines.map { $0.text.utf16.count }.max() ?? 0) * digit
+        view.setFrameSize(NSSize(width: max(400, view.codeInset + widest + 40), height: ResolverGeometry.y(ofRow: rows.count + 1)))
+        column.overlay.numberWidth = numberWidth
+        var model = ResolverColumnsModel()
+        model.rows = rows
+        column.overlay.model = model
+        column.overlay.needsDisplay = true
     }
 }

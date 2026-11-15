@@ -27,7 +27,7 @@ struct ConflictCard: View {
         return VStack(spacing: 12) {
             Image(systemName: "arrow.triangle.merge")
                 .font(.system(size: 32))
-                .foregroundStyle(Color("Resolver/Accent"))
+                .foregroundStyle(ResolverColor.accent)
                 .accessibilityHidden(true)
             Text((file.path as NSString).lastPathComponent)
                 .font(.title3.weight(.semibold))

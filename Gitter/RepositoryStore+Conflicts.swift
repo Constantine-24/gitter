@@ -116,6 +116,17 @@ extension RepositoryStore {
                         else { return }
                         openDraft(document, sides: sides)
                     }
+                    // A whole-file kind's side columns show its stages (Ruling 23); a failed read
+                    // leaves them their short descriptions, never the failed state.
+                    if resolverFocus?.path == path, case .wholeFile = document.presentation,
+                        resolverWholeFileSides?.file != conflicted
+                    {
+                        let sides = try? await backend.conflictSides(document.snapshot, at: root)
+                        guard !Task.isCancelled, self.generation == generation, selectedPath == path,
+                            selection == .workingCopy
+                        else { return }
+                        setResolverWholeFileSides(sides.map { ResolverWholeFileSides(file: conflicted, sides: $0) })
+                    }
                 } catch {
                     guard !Task.isCancelled, self.generation == generation, selectedPath == path,
                         selection == .workingCopy
