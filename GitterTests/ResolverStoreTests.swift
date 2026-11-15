@@ -133,11 +133,12 @@ import Testing
         backend.calls.count { $0 == .conflictDocument }
     }
 
-    /// Opens focus mode and waits for the draft, the focused file's read and the summaries.
+    /// Opens focus mode and waits for the draft, then for the store to go idle — the focused
+    /// file's read and the summaries' included.
     static func openSettled(_ store: RepositoryStore) async throws {
         _ = try #require(await openDraft(store))
         await store.conflictTask?.value
-        await store.resolverSummaryTask?.value
+        await waitUntilIdle(store)
     }
 
     /// Every row has its trailing text once focus mode is up: a text conflict its blocks, read
@@ -179,7 +180,6 @@ import Testing
         await store.refresh()
         await waitUntilIdle(store)
         await store.conflictTask?.value
-        await store.resolverSummaryTask?.value
         #expect(Self.documentReads(backend) - opened <= 1, "only the focused file's own read")
         #expect(store.resolverSummaries.mapValues(\.summary) == ["a.txt": .conflicts(2), "b.txt": .conflicts(2)])
 
@@ -190,6 +190,46 @@ import Testing
         #expect(Self.documentReads(backend) - reloaded >= 2)
         #expect(store.resolverSummaries.mapValues(\.summary) == ["a.txt": .conflicts(2), "b.txt": .conflicts(2)])
     }
+
+    /// `waitUntilIdle` waits for the summaries' read like any other read: with every document
+    /// read slowed, the draft lands while b.txt's summary is still being read, and the wait still
+    /// ends with both summaries in.
+    @Test(.timeLimit(.minutes(10))) func waitUntilIdleWaitsForTheSummaryRead() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let backend = TestBackend()
+        backend.hook(.conflictDocument, .after) { try await Task.sleep(for: .milliseconds(800)) }
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        _ = try #require(await Self.openDraft(store))
+        await waitUntilIdle(store)
+        #expect(!store.isReadingResolverSummaries)
+        #expect(store.resolverSummaries.mapValues(\.summary) == ["a.txt": .conflicts(2), "b.txt": .conflicts(2)])
+    }
+
+    /// A summary whose read fails leaves its row without text — never a guessed number — and is
+    /// read again on the next reload.
+    @Test(.timeLimit(.minutes(10))) func aFailedSummaryReadShowsNoTextAndIsRetried() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let backend = TestBackend()
+        backend.failConflictDocument(of: "b.txt", with: SummaryReadFailed())
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        try await Self.openSettled(store)
+        #expect(store.resolverSummaries["b.txt"] == nil)
+        let rows = ResolverShell.rows(
+            files: store.resolverFiles, resolved: store.resolvedThisSession, drafts: store.resolverDrafts,
+            summaries: store.resolverSummaries.mapValues(\.summary))
+        #expect(rows.map(\.status) == [.left(2), .pending])
+        #expect(rows.map { ConflictWording.sidebarStatus($0.status) } == ["2 left", nil])
+
+        await store.refresh()
+        await waitUntilIdle(store)
+        #expect(store.resolverSummaries["b.txt"]?.summary == .conflicts(2))
+    }
+
+    struct SummaryReadFailed: Error {}
 
     /// A file with a draft shows the draft's live waiting count, never the cached summary.
     @Test(.timeLimit(.minutes(10))) func aDraftsCountWinsOverTheSummary() async throws {

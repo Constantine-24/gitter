@@ -112,8 +112,10 @@ final class RepositoryStore {
     private(set) var resolverSummaries: [String: ResolverSummary] = [:]
     /// The files whose summaries `resolverSummaryTask` is reading.
     private(set) var resolverSummariesReading: [ConflictedFile] = []
-    /// The summaries' read, for the tests to wait on.
+    /// The summaries' read (the harness waits on it).
     var resolverSummaryTask: Task<Void, Never>?
+    /// A summaries' read is under way: `waitUntilIdle` waits it out, as it does the other reads.
+    var isReadingResolverSummaries: Bool { !resolverSummariesReading.isEmpty }
     /// Show Base, remembered in `defaults` under `resolverShowsBaseKey`.
     var showsBase: Bool {
         didSet { defaults.set(showsBase, forKey: Self.resolverShowsBaseKey) }

@@ -171,17 +171,18 @@ enum ResolverShell {
         kept == draft.snapshot
     }
 
-    /// The bars over the focused draft, top to bottom: the file was edited after the conflict;
-    /// what happened outside (changed — unless Keep Editing hid it —, resolved, ended); and why
-    /// the Result can't be typed into.
+    /// The bars over the focused draft, top to bottom: one bar for the draft's state, then why
+    /// the Result can't be typed into (a separate kind). The state's bar is the detachment's when
+    /// the draft is detached — changed outside (unless Keep Editing hid it), resolved, ended — and
+    /// never "edited after the conflict" as well; attached, it is "edited after the conflict" when
+    /// the file is not what git wrote.
     static func bars(_ draft: ResolverDraft, matchesGitsConflict: Bool, keptEditing: Bool) -> [ResolverBar] {
         var bars: [ResolverBar] = []
-        if !matchesGitsConflict { bars.append(.editedAfterConflict) }
         switch draft.detached {
         case .changedOutside?: if !keptEditing { bars.append(.changedOutside) }
         case .resolvedOutside?: bars.append(.resolvedOutside)
         case .operationEnded?: bars.append(.operationEnded)
-        case nil: break
+        case nil: if !matchesGitsConflict { bars.append(.editedAfterConflict) }
         }
         if let reason = draft.document.notEditable { bars.append(.notEditable(reason)) }
         return bars

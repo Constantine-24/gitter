@@ -197,6 +197,8 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
         var lastParked = 0
         var pop: (@Sendable (Stash, URL, CLIGitBackend) async throws -> StashApplyOutcome)?
         var historyRow: (@Sendable (String, URL, CLIGitBackend) async throws -> Int?)?
+        /// Errors for the next `conflictDocument(for:at:)` of a path, first in first out.
+        var documentFailures: [String: [any Error & Sendable]] = [:]
     }
 
     private let state = Mutex(State())
@@ -229,6 +231,13 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
     /// Makes the next `call` throw `error` without running git.
     func fail(_ call: Call, with error: any Error & Sendable) {
         state.withLock { $0.failures[call, default: []].append(error) }
+    }
+
+    /// Makes the next `conflictDocument(for:at:)` of `path` throw `error` without running git;
+    /// other paths read as usual. `fail(.conflictDocument…)` takes whichever read comes first, and
+    /// focus mode's summaries and the focused file's own read run side by side.
+    func failConflictDocument(of path: String, with error: any Error & Sendable) {
+        state.withLock { $0.documentFailures[path, default: []].append(error) }
     }
 
     /// Replaces `pop(_:at:)`: `body` gets the stash, the root and the real backend, whose
@@ -498,7 +507,16 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
     // MARK: - GitConflictBackend
 
     func conflictDocument(for file: ConflictedFile, at root: URL) async throws -> ConflictDocument {
-        try await around(.conflictDocument) { try await real.conflictDocument(for: file, at: root) }
+        try await around(.conflictDocument) {
+            let failure = state.withLock { state -> (any Error & Sendable)? in
+                guard var pending = state.documentFailures[file.path], !pending.isEmpty else { return nil }
+                let first = pending.removeFirst()
+                state.documentFailures[file.path] = pending
+                return first
+            }
+            if let failure { throw failure }
+            return try await real.conflictDocument(for: file, at: root)
+        }
     }
     func conflictSides(_ snapshot: ConflictSnapshot, at root: URL) async throws -> ConflictSides {
         try await around(.conflictSides) { try await real.conflictSides(snapshot, at: root) }

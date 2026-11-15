@@ -6,7 +6,8 @@ import Testing
 @testable import Gitter
 
 /// Returns once `store` has nothing in flight: no mutation, no network lane, no worktree read, no
-/// queued reload, no load-more (`isLoadingOlderCommits`) and no reveal (`revealTask`, H1 Task 2:
+/// focus-mode summaries' read (`isReadingResolverSummaries`), no queued reload, no load-more
+/// (`isLoadingOlderCommits`) and no reveal (`revealTask`, H1 Task 2:
 /// its row read runs before any reload is queued), and the last scheduled reload (`refreshTask`)
 /// has ended — the very task seen before waiting, not one that replaced it meanwhile
 /// (`scheduleRefresh` replaces it, and a wait on the old task returns at once). Polls every 20 ms, with no bound of its own: a hang is the
@@ -19,7 +20,7 @@ import Testing
 func waitUntilIdle(_ store: RepositoryStore, sourceLocation: SourceLocation = #_sourceLocation) async {
     @MainActor func quiet() -> Bool {
         !store.isMutating && store.remoteActivity == nil && !store.isReadingWorktreeState && !store.refreshIsQueued
-            && !store.isLoadingOlderCommits
+            && !store.isLoadingOlderCommits && !store.isReadingResolverSummaries
     }
     let call = CallUnderTest { @MainActor () -> Bool in
         while !Task.isCancelled {

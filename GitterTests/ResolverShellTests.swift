@@ -202,8 +202,6 @@ import Testing
         // Only the changed-outside bar is Keep Editing's.
         #expect(ResolverShell.bars(try Self.draft(detached: .resolvedOutside), matchesGitsConflict: true, keptEditing: true)
             == [.resolvedOutside])
-        #expect(ResolverShell.bars(try Self.draft(detached: .operationEnded), matchesGitsConflict: false, keptEditing: false)
-            == [.editedAfterConflict, .operationEnded])
 
         #expect(ConflictWording.bar(.editedAfterConflict)
             == "This file was edited after the conflict; resolving here replaces those edits. A copy will be kept.")
@@ -214,6 +212,26 @@ import Testing
         #expect(ConflictWording.reload == "Reload")
         #expect(ConflictWording.keepEditing == "Keep Editing")
         #expect(ConflictWording.copyResult == "Copy Result")
+    }
+
+    /// One bar describes the draft's state: a detached draft shows its detachment's bar only,
+    /// never "edited after the conflict" as well; the not-editable line is a separate kind and
+    /// still shows.
+    @Test func oneBarDescribesTheDraftsState() throws {
+        func bars(_ detached: DraftDetachment?, matches: Bool, kept: Bool = false) throws -> [ResolverBar] {
+            ResolverShell.bars(try Self.draft(detached: detached), matchesGitsConflict: matches, keptEditing: kept)
+        }
+        // Attached.
+        #expect(try bars(nil, matches: true) == [])
+        #expect(try bars(nil, matches: false) == [.editedAfterConflict])
+        // Each detachment, whether or not the file matched git's conflict.
+        for matches in [true, false] {
+            #expect(try bars(.changedOutside, matches: matches) == [.changedOutside])
+            #expect(try bars(.resolvedOutside, matches: matches) == [.resolvedOutside])
+            #expect(try bars(.operationEnded, matches: matches) == [.operationEnded])
+            // Changed outside after Keep Editing: no bar at all, not the edited-after one.
+            #expect(try bars(.changedOutside, matches: matches, kept: true) == [])
+        }
     }
 
     /// Keep Editing is keyed by the draft's snapshot: a reloaded draft (another snapshot) shows
