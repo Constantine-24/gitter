@@ -199,6 +199,7 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         for column in columns {
             column.textView.textStorage?.setAttributedString(NSAttributedString())
             column.textView.starts = [0]
+            column.textView.laidOutRows = 0
         }
         pushModel(redraw: [.ours, .result, .theirs], layout: true)
     }
@@ -237,6 +238,7 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         let previous = model
         model = ResolverColumnsModel(rows: newRows, document: document, current: current, canTake: draft.isEditable)
         sizeTextViews()
+        layOutVisibleRows()
         pushModel(redraw: redraw, layout: reset || !model.sameLayout(as: previous))
     }
 
@@ -294,6 +296,7 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
             for index in (old.count - suffix + 1)...old.count { newStarts.append(starts[index] + delta) }
         }
         view.starts = newStarts
+        view.laidOutRows = min(view.laidOutRows, prefix)
         view.needsDisplay = true
         let digit = ResolverAttributes.characterWidth
         let longest = changed.lazy.map { ResolverAttributes.cell($0, kind).text.map(Self.columns) ?? 0 }.max() ?? 0
@@ -504,8 +507,16 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         followScroll(origin)
     }
 
+    /// Every column laid out down to the last row in view, so TextKit draws the text on the rows
+    /// (`ResolverTextView.layOut(throughRow:)`).
+    private func layOutVisibleRows() {
+        let last = ResolverGeometry.rows(in: result.scrollView.contentView.bounds, count: rows.count).upperBound
+        for column in columns { column.textView.layOut(throughRow: last) }
+    }
+
     /// The overlays and strips follow the text vertically; the overlays learn the sideways offset.
     private func followScroll(_ origin: NSPoint) {
+        layOutVisibleRows()
         for column in columns {
             if column.overlay.bounds.origin.y != origin.y { column.overlay.setBoundsOrigin(NSPoint(x: 0, y: origin.y)) }
             if column.overlay.horizontalOffset != origin.x {
@@ -554,7 +565,25 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
                     && column.textView.starts.last == column.textView.textStorage?.length
             }
             let heights = Set(columns.map(\.textView.frame.height))
+            // Where TextKit 2 has the caret's line now (without asking it to lay anything out),
+            // against the row's place that the numbers, bars and outline are drawn at.
+            var laidOut = "nil"
+            if let manager = result.textView.textLayoutManager, let content = manager.textContentManager,
+                let viewport = manager.textViewportLayoutController.viewportRange, let map = resultMap
+            {
+                var first: (offset: Int, y: CGFloat)?
+                manager.enumerateTextLayoutFragments(from: viewport.location, options: []) { fragment in
+                    let offset = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
+                    first = (offset, fragment.layoutFragmentFrame.minY + self.result.textView.textContainerOrigin.y)
+                    return false
+                }
+                if let first {
+                    let firstRow = map.row(at: first.offset)
+                    laidOut = "viewport's first line at offset \(first.offset) (row \(firstRow)) y \(first.y), its row's y \(ResolverGeometry.y(ofRow: firstRow))"
+                }
+            }
             return "rows: \(rows.count) | aligned: \(aligned) | heights: \(heights.sorted()) | caret: \(selection.location) row \(row) "
+                + "| layout: \(laidOut) "
                 + "| scroll: \(result.scrollView.contentView.bounds.origin.y) | editable: \(result.textView.isEditable) "
                 + "| first responder: \(window?.firstResponder === result.textView)"
         }

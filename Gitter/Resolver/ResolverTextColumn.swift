@@ -90,6 +90,9 @@ final class ResolverTextView: NSTextView {
     var palette = ResolverPalette.standard
     /// The text's offset of each row, and the text's length last (`ResolverColumnsHost`).
     var starts: [Int] = [0]
+    /// How many rows from the top TextKit has laid out (`layOut(throughRow:)`); a change to the
+    /// text lowers it to the first row changed.
+    var laidOutRows = 0
     /// Where the composition of an input method started (dead keys, Japanese and the like): the
     /// selection then, in this text. The marked text is shown as AppKit types it and committed to
     /// the document only when it is final.
@@ -164,6 +167,21 @@ final class ResolverTextView: NSTextView {
     }
 
     override var textContainerOrigin: NSPoint { NSPoint(x: codeInset, y: ResolverGeometry.top) }
+
+    /// Lays out every row down to `row` that is not laid out yet. TextKit 2 places the lines it
+    /// shows by an estimate of the lines above them it has not laid out, and the estimate is not
+    /// a row's height (a jump 222 rows down drew the text 490 pt high); laid out, each line sits
+    /// on its row, where the numbers, bars and outline are drawn.
+    func layOut(throughRow row: Int) {
+        let row = min(row, starts.count - 1)
+        guard row > laidOutRows, let manager = textLayoutManager, let content = manager.textContentManager,
+            let from = content.location(content.documentRange.location, offsetBy: starts[laidOutRows]),
+            let to = content.location(content.documentRange.location, offsetBy: starts[row]),
+            let range = NSTextRange(location: from, end: to)
+        else { return }
+        manager.ensureLayout(for: range)
+        laidOutRows = row
+    }
 
     // MARK: Drawing
 

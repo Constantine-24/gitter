@@ -573,6 +573,53 @@ import Testing
 
     /// A click on the slot's lower row (the caret already at the slot, where it starts) stays in
     /// the slot, and typing goes into the conflict (I3).
+    /// A merge whose `long.txt` has 300 lines above its one conflict, so focus mode opens
+    /// scrolled far down it.
+    static func longMerge() throws -> ScratchRepo {
+        let repo = try ScratchRepo()
+        let above = (1...300).map { "line \($0)" }.joined(separator: "\n") + "\n"
+        try repo.write("long.txt", above + "x\nend\n")
+        try repo.git("add", ".")
+        try repo.git("commit", "-m", "base")
+        try repo.git("switch", "-c", "topic")
+        try repo.write("long.txt", above + "topic x\nend\n")
+        try repo.git("commit", "-qam", "topic")
+        try repo.git("switch", "-q", "main")
+        try repo.write("long.txt", above + "main x\nend\n")
+        try repo.git("commit", "-qam", "main")
+        try repo.gitExpectingFailure("merge", "topic")
+        return repo
+    }
+
+    /// The line numbers, tints, outline and take buttons are drawn at the rows, so TextKit 2 must
+    /// lay the text out on them too: also when the columns jump far down a file whose lines above
+    /// were never laid out, where TextKit places the lines it shows by an estimate of the ones
+    /// above (seen 490 pt high at row 222).
+    @Test(.timeLimit(.minutes(10))) func theTextSitsOnItsRowsAfterAJumpDownTheFile() async throws {
+        let repo = try Self.longMerge()
+        defer { repo.remove() }
+        let (_, host, window, cleanup) = try await Self.columns(repo, path: "long.txt")
+        defer { cleanup(); window.close() }
+        #expect(host.result.scrollView.contentView.bounds.minY > 3000)
+        for column in [host.ours, host.result, host.theirs] {
+            let view = column.textView
+            let manager = try #require(view.textLayoutManager)
+            let content = try #require(manager.textContentManager)
+            manager.textViewportLayoutController.layoutViewport()
+            let viewport = try #require(manager.textViewportLayoutController.viewportRange)
+            var checked = 0
+            manager.enumerateTextLayoutFragments(from: viewport.location, options: []) { fragment in
+                let offset = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
+                guard let row = view.starts.firstIndex(of: offset) else { return true }
+                let y = fragment.layoutFragmentFrame.minY + view.textContainerOrigin.y
+                #expect(abs(y - ResolverGeometry.y(ofRow: row)) < 0.5, "\(column.column) row \(row) laid out at \(y)")
+                checked += 1
+                return checked < 5
+            }
+            #expect(checked > 0)
+        }
+    }
+
     @Test(.timeLimit(.minutes(10))) func aClickOnASlotsLowerRowStaysInTheSlot() async throws {
         let repo = try Self.twoRowMerge()
         defer { repo.remove() }
