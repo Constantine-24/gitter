@@ -90,9 +90,10 @@ final class ResolverTextView: NSTextView {
     var palette = ResolverPalette.standard
     /// The text's offset of each row, and the text's length last (`ResolverColumnsHost`).
     var starts: [Int] = [0]
-    /// How many rows from the top TextKit has laid out (`layOut(throughRow:)`); a change to the
-    /// text lowers it to the first row changed.
-    var laidOutRows = 0
+    /// How many rows from the top TextKit has laid out (`layOut(throughRow:)`). Every change to
+    /// the text, whoever makes it — the host's patches and row restores, AppKit's own marked text
+    /// — lowers it to the row the change starts in (`storageEdited`).
+    private(set) var laidOutRows = 0
     /// Where the composition of an input method started (dead keys, Japanese and the like): the
     /// selection then, in this text. The marked text is shown as AppKit types it and committed to
     /// the document only when it is final.
@@ -152,6 +153,24 @@ final class ResolverTextView: NSTextView {
         // Moving text by dragging it would be two edits with offsets of the text before both.
         if column == .result { unregisterDraggedTypes() }
         setAccessibilityLabel(ConflictWording.columnLabel(column))
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(storageEdited(_:)), name: NSTextStorage.didProcessEditingNotification,
+            object: textStorage)
+    }
+
+    /// The text changed: the rows from the one the change starts in are laid out again when next
+    /// in view. `starts` may still be the old rows' (the host sets them after its edit, AppKit's
+    /// marked text never does), but the rows above the change are the same in both.
+    @objc private func storageEdited(_ notification: Notification) {
+        guard let storage = notification.object as? NSTextStorage else { return }
+        let location = storage.editedRange.location
+        guard location != NSNotFound else { return }
+        var low = 0, high = starts.count - 1
+        while low < high {
+            let middle = (low + high + 1) / 2
+            if starts[middle] <= location { low = middle } else { high = middle - 1 }
+        }
+        laidOutRows = min(laidOutRows, low)
     }
 
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {

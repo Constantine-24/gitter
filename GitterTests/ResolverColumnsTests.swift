@@ -571,21 +571,54 @@ import Testing
         return (store, host, window, cleanup)
     }
 
-    /// A click on the slot's lower row (the caret already at the slot, where it starts) stays in
-    /// the slot, and typing goes into the conflict (I3).
+    /// The first lines TextKit 2 has laid out in view, in each column, against their rows' places:
+    /// where it drew them is where the line numbers, tints, outline and take buttons are.
+    static func expectTextOnRows(_ host: ResolverColumnsHost, _ what: String) throws {
+        for column in [host.ours, host.result, host.theirs] {
+            let view = column.textView
+            let manager = try #require(view.textLayoutManager)
+            let content = try #require(manager.textContentManager)
+            manager.textViewportLayoutController.layoutViewport()
+            let viewport = try #require(manager.textViewportLayoutController.viewportRange)
+            var checked = 0
+            manager.enumerateTextLayoutFragments(from: viewport.location, options: []) { fragment in
+                let offset = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
+                guard let row = view.starts.firstIndex(of: offset) else { return true }
+                let y = fragment.layoutFragmentFrame.minY + view.textContainerOrigin.y
+                #expect(abs(y - ResolverGeometry.y(ofRow: row)) < 0.5, "\(what): \(column.column) row \(row) laid out at \(y)")
+                checked += 1
+                return checked < 5
+            }
+            #expect(checked > 0, "\(what): \(column.column) has no line in view")
+        }
+    }
+
+    /// The columns scrolled to near the end of the file, as a user's scroll does.
+    static func scrollDeep(_ host: ResolverColumnsHost) {
+        let clip = host.result.scrollView.contentView
+        let y = max(0, host.result.textView.frame.height - clip.bounds.height - 200)
+        clip.scroll(to: NSPoint(x: 0, y: y))
+        host.result.scrollView.reflectScrolledClipView(clip)
+        host.layoutSubtreeIfNeeded()
+    }
+
     /// A merge whose `long.txt` has 300 lines above its one conflict, so focus mode opens
-    /// scrolled far down it.
-    static func longMerge() throws -> ScratchRepo {
+    /// scrolled far down it; with `twice`, 300 more lines and a second conflict below the first.
+    static func longMerge(twice: Bool = false) throws -> ScratchRepo {
         let repo = try ScratchRepo()
         let above = (1...300).map { "line \($0)" }.joined(separator: "\n") + "\n"
-        try repo.write("long.txt", above + "x\nend\n")
+        let below = twice ? (301...600).map { "line \($0)" }.joined(separator: "\n") + "\n" : ""
+        func file(_ side: String) -> String {
+            above + "\(side) x\n" + below + (twice ? "\(side) y\n" : "") + "end\n"
+        }
+        try repo.write("long.txt", file("base"))
         try repo.git("add", ".")
         try repo.git("commit", "-m", "base")
         try repo.git("switch", "-c", "topic")
-        try repo.write("long.txt", above + "topic x\nend\n")
+        try repo.write("long.txt", file("topic"))
         try repo.git("commit", "-qam", "topic")
         try repo.git("switch", "-q", "main")
-        try repo.write("long.txt", above + "main x\nend\n")
+        try repo.write("long.txt", file("main"))
         try repo.git("commit", "-qam", "main")
         try repo.gitExpectingFailure("merge", "topic")
         return repo
@@ -601,25 +634,60 @@ import Testing
         let (_, host, window, cleanup) = try await Self.columns(repo, path: "long.txt")
         defer { cleanup(); window.close() }
         #expect(host.result.scrollView.contentView.bounds.minY > 3000)
-        for column in [host.ours, host.result, host.theirs] {
-            let view = column.textView
-            let manager = try #require(view.textLayoutManager)
-            let content = try #require(manager.textContentManager)
-            manager.textViewportLayoutController.layoutViewport()
-            let viewport = try #require(manager.textViewportLayoutController.viewportRange)
-            var checked = 0
-            manager.enumerateTextLayoutFragments(from: viewport.location, options: []) { fragment in
-                let offset = content.offset(from: content.documentRange.location, to: fragment.rangeInElement.location)
-                guard let row = view.starts.firstIndex(of: offset) else { return true }
-                let y = fragment.layoutFragmentFrame.minY + view.textContainerOrigin.y
-                #expect(abs(y - ResolverGeometry.y(ofRow: row)) < 0.5, "\(column.column) row \(row) laid out at \(y)")
-                checked += 1
-                return checked < 5
-            }
-            #expect(checked > 0)
-        }
+        try Self.expectTextOnRows(host, "after the jump")
     }
 
+    /// Once the columns are laid out deep down the file, an edit far above the rows in view —
+    /// typing, an input method's commit, an undo, Show Base turned on — changes the rows above
+    /// them, so what was laid out from there on must be laid out again: the text stays on its
+    /// rows, whichever path changed it.
+    @Test(.timeLimit(.minutes(10))) func theTextStaysOnItsRowsAfterAnEditAboveTheView() async throws {
+        let repo = try Self.longMerge(twice: true)
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.columns(repo, path: "long.txt")
+        defer { cleanup(); window.close() }
+        func refresh() {
+            host.update(
+                store: store, path: "long.txt", draft: store.resolverDrafts["long.txt"],
+                current: store.resolverFocus?.currentChunk, showBase: store.showsBase, labels: store.conflictSides)
+            host.layoutSubtreeIfNeeded()
+        }
+        let view = host.result.textView
+        Self.scrollDeep(host)
+        try Self.expectTextOnRows(host, "deep")
+
+        // Typing three lines near the top (the text view scrolls up to the caret), then back down.
+        view.setSelectedRange(NSRange(location: try Self.rowStart("line 5", host), length: 0))
+        view.insertText("typed\ntyped\ntyped\n", replacementRange: NSRange(location: NSNotFound, length: 0))
+        refresh()
+        #expect(store.resolverDrafts["long.txt"]?.hasUserChanges == true)
+        Self.scrollDeep(host)
+        try Self.expectTextOnRows(host, "after typing above")
+
+        // An input method's composition, committed near the top, then back down.
+        view.setSelectedRange(NSRange(location: try Self.rowStart("line 9", host), length: 0))
+        view.setMarkedText("k", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        view.insertText("\u{304B}\n", replacementRange: NSRange(location: NSNotFound, length: 0))
+        refresh()
+        Self.scrollDeep(host)
+        try Self.expectTextOnRows(host, "after an input method's commit above")
+
+        // Undo while deep: the rows above change under the view, which does not scroll.
+        let before = host.result.scrollView.contentView.bounds.minY
+        store.resolverUndo()
+        store.resolverUndo()
+        refresh()
+        #expect(host.result.scrollView.contentView.bounds.minY == before)
+        try Self.expectTextOnRows(host, "after undo while deep")
+
+        // Show Base turned on while deep: base strips appear above the view.
+        store.showsBase = true
+        refresh()
+        try Self.expectTextOnRows(host, "after Show Base while deep")
+    }
+
+    /// A click on the slot's lower row (the caret already at the slot, where it starts) stays in
+    /// the slot, and typing goes into the conflict (I3).
     @Test(.timeLimit(.minutes(10))) func aClickOnASlotsLowerRowStaysInTheSlot() async throws {
         let repo = try Self.twoRowMerge()
         defer { repo.remove() }
