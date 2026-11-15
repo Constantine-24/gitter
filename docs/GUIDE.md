@@ -539,14 +539,18 @@ Again**, which reads it again. A read that works, or selecting another file, end
 **Your work is kept until you resolve it.** What you do in the Result stays in memory, not in the
 file, until Resolve File. Switch to another file and back, or press Done and come back, and it is
 as you left it, with its undo, for as long as the window is open. Gitter drops it only when the
-file is resolved, when you choose **Discard Changes** in the Result's ⋯ menu, when you abort, or
-when you answer yes to one of these questions:
+file is resolved, when you choose **Discard Changes** or **Reload** in the Result's ⋯ menu or
+Reload on its bar, when you abort, or when you answer yes to one of these questions:
 
-- **"Discard your changes to "README.md"?"**, with Cancel and **Discard Changes**, before Gitter
-  writes over a file whose Result you changed: Mark Resolved, a whole-file take, Delete or Keep,
-  the file row's stage button or Space, Take Ours or Theirs for several files, Skip This Commit…,
-  and opening a worktree or another repository in this window. Your changes go only if the write
-  then happens: Cancel on a later sheet, or a write that is refused or fails, keeps them.
+- **"Discard your changes to "README.md"?"**, with Cancel and **Discard Changes**, when you
+  choose Discard Changes in the Result's ⋯ menu, and before Gitter writes over a file whose
+  Result you changed: Mark Resolved, a whole-file take, Delete or Keep, the file row's stage
+  button or Space, Take Ours or Theirs for several files, Skip This Commit…, and opening a
+  worktree or another repository in this window. Your changes go only if the write then happens:
+  Cancel on a later sheet, or a write that is refused or fails, keeps them.
+- **Reload…** in the ⋯ menu asks first too, with the bar's own sentence, when you changed the
+  Result. The bar's Reload does not ask: its sentence already says your changes will be
+  discarded.
 - **The Abort sheet** names the files with changes ("Your changes to "README.md" in Resolve
   Conflicts are discarded too."), and they go only once the abort has worked.
 - **Closing a window** with changes asks first: "You have changes in 2 conflicted files that
@@ -558,8 +562,12 @@ when you answer yes to one of these questions:
   at the push question keeps them.
 
 **When something changes outside Gitter.** If the file is resolved, or its operation ends, in a
-terminal or another app, your Result stays on screen, read-only, with a bar saying why and
-**Copy Result**, until Done or Discard Changes; Done asks before dropping a Result you changed.
+terminal or another app, your Result stays, read-only, with a bar saying why and **Copy Result**,
+until Done or Discard Changes; Done asks before dropping a Result you changed. If Resolve
+Conflicts is closed when that happens, a notice in the window says your changes are kept (for
+example "Your changes to "README.md" in Resolve Conflicts are kept, but it changed outside
+Gitter."), and its
+**Show Changes** opens Resolve Conflicts on that file, where the sidebar lists it as Read only.
 If the file or git's versions of it change while you have changes, a bar says "This file changed
 outside Gitter. Reload it to see the new version; your changes will be discarded.", with
 **Reload**, **Keep Editing** and Copy Result, and Resolve File refuses to write over the newer
