@@ -55,7 +55,7 @@ struct LayoutRow: Hashable, Sendable {
 ///     replaces; a line not in git's text is `edited`. A line the Result lacks is a filler there.
 ///
 /// **Cost.** The sides' work — splitting both stages, the whole-stage line diffs against stage 1
-/// (`CollectionDifference`, O(N·D): seconds for a side that rewrote most of a 20,000-line file),
+/// (bounded, `alignment`: linear in the lines where a side rewrote most of a file, Ruling 51),
 /// the block placement and the side lines' word marks — depends only on the stages and the chunk
 /// structure, never on typed text. `Sides` holds it, built once and reused while it `fits`. Each
 /// `rows(_:using:showBase:)` call then splits the Result's text and runs, per common chunk, the
@@ -238,7 +238,11 @@ enum ResolverLayout {
 
             var built: [LayoutRow] = []
             if chunk.blocks.isEmpty {
-                built = commonRows(chunk, result: result, ours: ours, theirs: theirs, spans: spans)
+                // The word marks of the rows this chunk had (same stages, kept above): a keystroke
+                // computes the marks of the lines it changed, not of every line beside a rewrite.
+                built = commonRows(
+                    chunk, result: result, ours: ours, theirs: theirs, spans: spans,
+                    previous: cache.entries[chunk.id]?.rows)
             } else {
                 if showBase {
                     let strip: [String?] = baseStrip(of: chunk) ?? [nil]
@@ -349,8 +353,42 @@ enum ResolverLayout {
     }
 
     private static func commonRows(
-        _ chunk: ResolverChunk, result: [NumberedLine], ours: Column, theirs: Column, spans: Spans
+        _ chunk: ResolverChunk, result: [NumberedLine], ours: Column, theirs: Column, spans: Spans,
+        previous: [LayoutRow]? = nil
     ) -> [LayoutRow] {
+        // The rows this chunk had (same stages): their Result lines, in order. A line in the
+        // unchanged run at either end keeps its word marks when it keeps its tint and partner —
+        // `lineMarks` is a word diff a line, and a keystroke beside a rewrite would redo thousands
+        // (Ruling 51).
+        let before = (previous ?? []).compactMap { row in row.result.text == nil || row.isBaseStrip ? nil : row }
+        var same = 0
+        while same < min(before.count, result.count),
+            before[same].result.text?.utf8.elementsEqual(result[same].line.key) == true
+        {
+            same += 1
+        }
+        var sameAtEnd = 0
+        while sameAtEnd < min(before.count, result.count) - same,
+            before[before.count - 1 - sameAtEnd].result.text?.utf8.elementsEqual(result[result.count - 1 - sameAtEnd].line.key)
+                == true
+        {
+            sameAtEnd += 1
+        }
+        /// The marks the row before had for Result line `index`, when it had that tint and partner.
+        func known(_ index: Int, _ tint: RowTint, partner number: Int) -> [Range<Int>]? {
+            let old: Int
+            if index < same {
+                old = index
+            } else if index >= result.count - sameAtEnd {
+                old = index - result.count + before.count
+            } else {
+                return nil
+            }
+            let row = before[old]
+            guard row.result.tint == tint else { return nil }
+            let partner = tint == .fromTheirs ? row.ours.lineNumber : row.theirs.lineNumber
+            return partner == number ? row.result.marks : nil
+        }
         let keys = result.map(\.line.key)
         let left = Spine(old: ours.lines[spans.ours].map(\.key), new: keys)
         let right = Spine(old: theirs.lines[spans.theirs].map(\.key), new: keys)
@@ -384,12 +422,16 @@ enum ResolverLayout {
                 (tint, marks) = (.edited, [])
             } else if oursPartner?.exact != true, theirsPartner?.exact == true {
                 tint = .fromTheirs
-                marks = oursPartner.map { lineMarks(old: ours.lines[spans.ours.lowerBound + $0.index].text, new: text) }
-                    ?? wholeLine(text)
+                marks = oursPartner.map { partner in
+                    let line = spans.ours.lowerBound + partner.index
+                    return known(index, .fromTheirs, partner: line + 1) ?? lineMarks(old: ours.lines[line].text, new: text)
+                } ?? wholeLine(text)
             } else if oursPartner?.exact == true, theirsPartner?.exact != true {
                 tint = .fromOurs
-                marks = theirsPartner.map { lineMarks(old: theirs.lines[spans.theirs.lowerBound + $0.index].text, new: text) }
-                    ?? wholeLine(text)
+                marks = theirsPartner.map { partner in
+                    let line = spans.theirs.lowerBound + partner.index
+                    return known(index, .fromOurs, partner: line + 1) ?? lineMarks(old: theirs.lines[line].text, new: text)
+                } ?? wholeLine(text)
             } else {
                 (tint, marks) = (.none, [])
             }
@@ -462,45 +504,201 @@ enum ResolverLayout {
 
     // MARK: - Line diffs
 
-    fileprivate enum Pair {
+    /// A line of `old` laid against one of `new`: equal (`matched`), the one it replaced
+    /// (`paired`), or a line only one of them has. In order: both indices only grow.
+    enum Pair: Hashable, Sendable {
         case matched(Int, Int), paired(Int, Int), old(Int), new(Int)
     }
 
-    /// `old` against `new` through `CollectionDifference`: equal lines matched, and in each hunk
-    /// the k-th removed line paired with the k-th inserted one; the rest one-sided.
-    private static func pairs(_ old: [[UInt8]], _ new: [[UInt8]]) -> [Pair] {
-        var removed = Set<Int>(), inserted = Set<Int>()
-        for change in new.difference(from: old) {
-            switch change {
-            case .remove(let offset, _, _): removed.insert(offset)
-            case .insert(let offset, _, _): inserted.insert(offset)
-            }
-        }
+    /// A line diff's pairs, and whether its bound was met (`ResolverLayout.alignment`).
+    struct Alignment: Hashable, Sendable {
+        let pairs: [Pair]
+        /// Some stretch was too costly for the full diff: its lines were placed by unique
+        /// anchors, or paired by position.
+        let bounded: Bool
+    }
+
+    /// The most work one line diff may do (Ruling 51), counted as `(n + m) · min(n, m)` of the
+    /// stretch it runs on — the shape of `CollectionDifference`'s O((n + m) · D) cost when the
+    /// lines all differ. Measured in an optimised build on this Mac, lines that all differ: 100
+    /// against 100 (20,000 units) 1.3 ms, 200 against 200 3.5 ms, 400 against 400 6.0 ms; so the
+    /// budget, about 224 lines against 224, is about 2–3 ms a diff at worst, and a keystroke's
+    /// three diffs of the chunk it changed stay within typing's bar (Ruling 32).
+    static let alignmentBudget = 100_000
+
+    /// `old` against `new`: equal lines matched, and in each hunk the k-th removed line paired
+    /// with the k-th inserted one; the rest one-sided.
+    ///
+    /// **Bounded** (Ruling 51). The common prefix and suffix are matched first. What is left
+    /// goes to `CollectionDifference` (Myers) when its cost fits `alignmentBudget`. Else lines
+    /// that occur once in each, equal but for the spaces and tabs around them, are anchors
+    /// (patience): their longest run in order is matched (paired, when only the indentation
+    /// differs), and each stretch between two anchors gets the full diff while the budget lasts.
+    /// Any stretch left, and a middle with no anchors, is paired by position: the k-th line with
+    /// the k-th, matched when equal. So a side that rewrote or re-indented a whole file costs time
+    /// linear in its lines, at open and at every keystroke, and a line typed beside it moves no
+    /// pairing below it.
+    static func alignment(_ old: [[UInt8]], _ new: [[UInt8]]) -> Alignment {
+        var work = PairWork(old: old, new: new, budget: alignmentBudget)
+        work.align(0..<old.count, 0..<new.count, anchoring: true)
+        return Alignment(pairs: work.pairs, bounded: work.bounded)
+    }
+
+    private static func pairs(_ old: [[UInt8]], _ new: [[UInt8]]) -> [Pair] { alignment(old, new).pairs }
+
+    private struct PairWork {
+        let old: [[UInt8]], new: [[UInt8]]
+        var budget: Int
         var pairs: [Pair] = []
-        var i = 0, j = 0
-        while i < old.count || j < new.count {
-            var gone: [Int] = [], added: [Int] = []
-            while i < old.count, removed.contains(i) {
-                gone.append(i)
-                i += 1
-            }
-            while j < new.count, inserted.contains(j) {
-                added.append(j)
-                j += 1
-            }
-            if gone.isEmpty, added.isEmpty {
-                guard i < old.count, j < new.count else { break }
-                pairs.append(.matched(i, j))
-                i += 1
-                j += 1
-                continue
-            }
-            let paired = min(gone.count, added.count)
-            for k in 0..<paired { pairs.append(.paired(gone[k], added[k])) }
-            pairs += gone.dropFirst(paired).map { .old($0) }
-            pairs += added.dropFirst(paired).map { .new($0) }
+        var bounded = false
+
+        init(old: [[UInt8]], new: [[UInt8]], budget: Int) {
+            self.old = old
+            self.new = new
+            self.budget = budget
+            pairs.reserveCapacity(max(old.count, new.count))
         }
-        return pairs
+
+        /// The pairs of `o` against `n`, appended in order.
+        mutating func align(_ o: Range<Int>, _ n: Range<Int>, anchoring: Bool) {
+            var low = (o.lowerBound, n.lowerBound), high = (o.upperBound, n.upperBound)
+            while low.0 < high.0, low.1 < high.1, old[low.0] == new[low.1] {
+                pairs.append(.matched(low.0, low.1))
+                low = (low.0 + 1, low.1 + 1)
+            }
+            var suffix = 0
+            while low.0 < high.0 - suffix, low.1 < high.1 - suffix, old[high.0 - 1 - suffix] == new[high.1 - 1 - suffix] {
+                suffix += 1
+            }
+            high = (high.0 - suffix, high.1 - suffix)
+            middle(low.0..<high.0, low.1..<high.1, anchoring: anchoring)
+            for k in 0..<suffix { pairs.append(.matched(high.0 + k, high.1 + k)) }
+        }
+
+        private mutating func middle(_ o: Range<Int>, _ n: Range<Int>, anchoring: Bool) {
+            if o.isEmpty || n.isEmpty {
+                pairs += o.map { .old($0) }
+                pairs += n.map { .new($0) }
+                return
+            }
+            let cost = (o.count + n.count).multipliedReportingOverflow(by: min(o.count, n.count))
+            if !cost.overflow, cost.partialValue <= budget {
+                budget -= cost.partialValue
+                diff(o, n)
+                return
+            }
+            bounded = true
+            if anchoring {
+                let anchors = Self.anchors(old, o, new, n)
+                if !anchors.isEmpty {
+                    var start = (o.lowerBound, n.lowerBound)
+                    for anchor in anchors {
+                        align(start.0..<anchor.0, start.1..<anchor.1, anchoring: false)
+                        pairs.append(old[anchor.0] == new[anchor.1] ? .matched(anchor.0, anchor.1) : .paired(anchor.0, anchor.1))
+                        start = (anchor.0 + 1, anchor.1 + 1)
+                    }
+                    align(start.0..<o.upperBound, start.1..<n.upperBound, anchoring: false)
+                    return
+                }
+            }
+            byPosition(o, n)
+        }
+
+        /// The full diff (`CollectionDifference`), its hunks' lines paired in order.
+        private mutating func diff(_ o: Range<Int>, _ n: Range<Int>) {
+            var removed = Set<Int>(), inserted = Set<Int>()
+            for change in new[n].difference(from: old[o]) {
+                switch change {
+                case .remove(let offset, _, _): removed.insert(o.lowerBound + offset)
+                case .insert(let offset, _, _): inserted.insert(n.lowerBound + offset)
+                }
+            }
+            var i = o.lowerBound, j = n.lowerBound
+            while i < o.upperBound || j < n.upperBound {
+                var gone: [Int] = [], added: [Int] = []
+                while i < o.upperBound, removed.contains(i) {
+                    gone.append(i)
+                    i += 1
+                }
+                while j < n.upperBound, inserted.contains(j) {
+                    added.append(j)
+                    j += 1
+                }
+                if gone.isEmpty, added.isEmpty {
+                    guard i < o.upperBound, j < n.upperBound else { break }
+                    pairs.append(.matched(i, j))
+                    i += 1
+                    j += 1
+                    continue
+                }
+                let paired = min(gone.count, added.count)
+                for k in 0..<paired { pairs.append(.paired(gone[k], added[k])) }
+                pairs += gone.dropFirst(paired).map { .old($0) }
+                pairs += added.dropFirst(paired).map { .new($0) }
+            }
+        }
+
+        /// The k-th line with the k-th, matched when equal; the longer side's rest one-sided.
+        private mutating func byPosition(_ o: Range<Int>, _ n: Range<Int>) {
+            let count = min(o.count, n.count)
+            for k in 0..<count {
+                let i = o.lowerBound + k, j = n.lowerBound + k
+                pairs.append(old[i] == new[j] ? .matched(i, j) : .paired(i, j))
+            }
+            pairs += o.dropFirst(count).map { .old($0) }
+            pairs += n.dropFirst(count).map { .new($0) }
+        }
+
+        /// Lines that occur exactly once in `o` and once in `n`, equal but for the spaces and
+        /// tabs around them (so a re-indented line anchors, as a line it replaced), the longest
+        /// run of them in order in both (patience): O(k log k) in their number.
+        private static func anchors(_ old: [[UInt8]], _ o: Range<Int>, _ new: [[UInt8]], _ n: Range<Int>)
+            -> [(Int, Int)]
+        {
+            func trimmed(_ line: [UInt8]) -> ArraySlice<UInt8> {
+                let blank: (UInt8) -> Bool = { $0 == UInt8(ascii: " ") || $0 == UInt8(ascii: "\t") }
+                guard let first = line.firstIndex(where: { !blank($0) }), let last = line.lastIndex(where: { !blank($0) })
+                else { return line[0..<0] }
+                return line[first...last]
+            }
+            // Per line: where it is in old (-1 when there twice or more), then in new.
+            var seen: [ArraySlice<UInt8>: (old: Int, new: Int)] = [:]
+            seen.reserveCapacity(o.count)
+            for i in o {
+                let key = trimmed(old[i])
+                if let entry = seen[key] {
+                    if entry.old != -1 { seen[key] = (-1, entry.new) }
+                } else {
+                    seen[key] = (i, -2)
+                }
+            }
+            for j in n {
+                let key = trimmed(new[j])
+                guard let entry = seen[key], entry.old >= 0 else { continue }
+                seen[key] = (entry.old, entry.new == -2 ? j : -1)
+            }
+            let candidates = seen.values.filter { $0.old >= 0 && $0.new >= 0 }.sorted { $0.old < $1.old }
+            guard !candidates.isEmpty else { return [] }
+            // The longest increasing run of new positions, by patience sorting.
+            var tails: [Int] = []  // index into candidates of the smallest tail of each length
+            var previous = [Int](repeating: -1, count: candidates.count)
+            for (index, candidate) in candidates.enumerated() {
+                var low = 0, high = tails.count
+                while low < high {
+                    let middle = (low + high) / 2
+                    if candidates[tails[middle]].new < candidate.new { low = middle + 1 } else { high = middle }
+                }
+                if low > 0 { previous[index] = tails[low - 1] }
+                if low == tails.count { tails.append(index) } else { tails[low] = index }
+            }
+            var run: [(Int, Int)] = []
+            var index = tails.last ?? -1
+            while index >= 0 {
+                run.append((candidates[index].old, candidates[index].new))
+                index = previous[index]
+            }
+            return run.reversed()
+        }
     }
 
     /// `old` laid along `new`: for each line of `new` its partner in `old` (exact or a replaced

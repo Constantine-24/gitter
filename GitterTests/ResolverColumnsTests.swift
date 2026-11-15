@@ -414,6 +414,26 @@ import Testing
         }
     }
 
+    /// The sides' part of the layout is kept per file (Ruling 51): going back to a file shown a
+    /// moment ago builds nothing again, and typing refits rather than rebuilds.
+    @Test(.timeLimit(.minutes(10))) func goingBackToAFileReusesItsSides() async throws {
+        let repo = try ResolverStoreTests.stoppedMerge()
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.columns(repo)
+        defer { cleanup(); window.close() }
+        #expect(host.sidesBuilt == 1)
+        let b = try #require(await ResolverStoreTests.openDraft(store, "b.txt"))
+        host.update(store: store, path: "b.txt", draft: b, current: nil, showBase: false, labels: store.conflictSides)
+        #expect(host.sidesBuilt == 2)
+        let a = try #require(store.resolverDrafts["a.txt"])
+        host.update(store: store, path: "a.txt", draft: a, current: nil, showBase: false, labels: store.conflictSides)
+        #expect(host.sidesBuilt == 2)
+        host.update(store: store, path: "b.txt", draft: b, current: nil, showBase: false, labels: store.conflictSides)
+        #expect(host.sidesBuilt == 2)
+        // The rows are still the fresh build's.
+        #expect(host.model.rows == ResolverLayout.rows(b.document, sides: b.sides, showBase: false))
+    }
+
     /// The caret rule in the view: on the line after a waiting slot, typing goes into that line.
     @Test(.timeLimit(.minutes(10))) func aCaretOnTheLineAfterASlotTypesIntoThatLine() async throws {
         let repo = try ResolverStoreTests.stoppedMerge()

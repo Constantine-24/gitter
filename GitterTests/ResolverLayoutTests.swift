@@ -695,4 +695,110 @@ import Testing
         #expect(rows.map(\.ours.text) == ["a", "O", "z"])
         #expect(rows.map(\.result.lineNumber) == [1, 2, 3])
     }
+
+    // MARK: - The bound (Ruling 51)
+
+    /// `count` distinct lines, `indent` before each.
+    static func lines(_ count: Int, indent: String = "    ") -> [String] {
+        (1...count).map { "\(indent)\"key_\($0)\": compute(value_\($0), factor=\($0 % 97)),  # entry \($0)" }
+    }
+
+    static func keys(_ lines: [String]) -> [[UInt8]] { lines.map { Array($0.utf8) } }
+
+    /// A side that re-indented every one of 5,000 lines is far over the budget and has no equal
+    /// line: each line is paired with the one it re-indented (anchored on its text without the
+    /// indentation), in time linear in the lines; a line typed among them is its own, and moves
+    /// no pairing below it.
+    @Test func aSideThatReindentedEveryLineIsPairedLineByLine() {
+        let base = Self.lines(5_000), reindented = Self.lines(5_000, indent: "      ")
+        let alignment = ResolverLayout.alignment(Self.keys(base), Self.keys(reindented))
+        #expect(alignment.bounded)
+        #expect(alignment.pairs == (0..<5_000).map { ResolverLayout.Pair.paired($0, $0) })
+
+        var typed = reindented
+        typed.insert("      typed", at: 2_000)
+        let shifted = ResolverLayout.alignment(Self.keys(base), Self.keys(typed))
+        #expect(shifted.bounded)
+        #expect(shifted.pairs
+            == (0..<2_000).map { ResolverLayout.Pair.paired($0, $0) } + [.new(2_000)]
+            + (2_000..<5_000).map { ResolverLayout.Pair.paired($0, $0 + 1) })
+
+        // Lines that differ in more than their indentation and have nothing in common: by position.
+        let rewritten = (1...5_000).map { "rewritten \($0 * 7)" }
+        let byPosition = ResolverLayout.alignment(Self.keys(base), Self.keys(rewritten))
+        #expect(byPosition.bounded)
+        #expect(byPosition.pairs == (0..<5_000).map { ResolverLayout.Pair.paired($0, $0) })
+    }
+
+    /// Over the budget with lines in common: the lines that occur once on each side anchor the
+    /// stretches between them, so an inserted line and scattered changes still align exactly.
+    @Test func overTheBudgetUniqueLinesAnchorTheAlignment() {
+        let old = Self.lines(3_000)
+        var new = old
+        for index in stride(from: 50, to: 3_000, by: 100) { new[index] = "    changed \(index)" }
+        new.insert("    inserted", at: 10)
+        let alignment = ResolverLayout.alignment(Self.keys(old), Self.keys(new))
+        #expect(alignment.bounded)
+        var expected: [ResolverLayout.Pair] = (0..<10).map { .matched($0, $0) } + [.new(10)]
+        for index in 10..<3_000 {
+            expected.append((index - 50) % 100 == 0 && index >= 50 ? .paired(index, index + 1) : .matched(index, index + 1))
+        }
+        #expect(alignment.pairs == expected)
+    }
+
+    /// Under the budget nothing changes: the full diff, its hunks paired in order.
+    @Test func underTheBudgetTheFullDiffRuns() {
+        let old = ["a", "b", "c", "d", "e"].map { Array($0.utf8) }, new = ["a", "x", "c", "e", "f"].map { Array($0.utf8) }
+        let alignment = ResolverLayout.alignment(old, new)
+        #expect(!alignment.bounded)
+        #expect(alignment.pairs == [.matched(0, 0), .paired(1, 1), .matched(2, 2), .old(3), .matched(4, 3), .new(4)])
+    }
+
+    /// The re-indent through the layout, as a merge leaves it: theirs re-indented all but the
+    /// last ten lines and changed the last, ours changed only the last. The common text is
+    /// theirs' re-indent, beside every line of ours it replaced, tinted From Theirs.
+    @Test func aReindentedSideStillLaysOutBesideTheOther() throws {
+        let count = 5_000
+        let base = Self.lines(count)
+        var theirs = Self.lines(count - 10, indent: "      ") + base[(count - 10)...]
+        theirs[count - 1] = "    theirs last"
+        var ours = base
+        ours[count - 1] = "    ours last"
+        func text(_ lines: some Sequence<String>) -> String { lines.map { $0 + "\n" }.joined() }
+        let sides = Self.sides(ours: text(ours), base: text(base), theirs: text(theirs))
+        let document = try Self.document(
+            [Self.common(text(theirs.dropLast())), Self.block("    ours last\n", "\(base[count - 1])\n", "    theirs last\n")],
+            sides: sides)
+        let rows = ResolverLayout.rows(document, sides: sides, showBase: false)
+        #expect(rows.count == count)
+        let common = rows.prefix(count - 1)
+        #expect(common.allSatisfy { $0.ours.text != nil && $0.theirs.text != nil && $0.result.text != nil })
+        #expect(common.prefix(count - 10).allSatisfy { $0.result.tint == .fromTheirs && $0.ours.text != $0.result.text })
+        #expect(common.suffix(9).allSatisfy { $0.result.tint == .none })
+        #expect(rows.last?.isSlot == true)
+    }
+
+    /// Typing in common text beside a rewrite reuses the word marks of the lines it did not
+    /// change, and gives the same rows as a fresh build.
+    @Test func typingBesideARewriteGivesTheFreshRows() throws {
+        let count = 300
+        let base = Self.lines(count)
+        var theirs = Self.lines(count - 10, indent: "      ") + base[(count - 10)...]
+        theirs[count - 1] = "    theirs last"
+        var ours = base
+        ours[count - 1] = "    ours last"
+        func text(_ lines: some Sequence<String>) -> String { lines.map { $0 + "\n" }.joined() }
+        let sides = Self.sides(ours: text(ours), base: text(base), theirs: text(theirs))
+        var document = try Self.document(
+            [Self.common(text(theirs.dropLast())), Self.block("    ours last\n", "\(base[count - 1])\n", "    theirs last\n")],
+            sides: sides)
+        let built = ResolverLayout.Sides(sides, document: document)
+        var cache = ResolverLayout.RowCache()
+        _ = ResolverLayout.rows(document, using: built, showBase: false, reusing: &cache)
+        for (offset, typed) in [(40, "x"), (41, "\n"), (2_000, "y")] {
+            document.replace(NSRange(location: offset, length: 0), with: typed)
+            let incremental = ResolverLayout.rows(document, using: built.refitted(to: document), showBase: false, reusing: &cache)
+            #expect(incremental == ResolverLayout.rows(document, sides: sides, showBase: false), "\(typed) at \(offset)")
+        }
+    }
 }

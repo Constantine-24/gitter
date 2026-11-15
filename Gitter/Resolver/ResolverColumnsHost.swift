@@ -5,9 +5,9 @@ import GitCore
 /// Theirs on the headers' grid (`ResolverGrid`), scrolled as one.
 ///
 /// **Rendering.** Each render lays the draft out (`ResolverLayout.rows`, reusing the sides' part,
-/// `ResolverLayout.Sides`, held here per draft and rebuilt only when it no longer fits — Rulings
-/// 10 and 13), then patches each column's text only where its rows changed: the rows before and
-/// after the change are compared, and the paragraphs between are rebuilt
+/// `ResolverLayout.Sides`, held here for the last few files shown and rebuilt only for new stages
+/// — Rulings 10, 13 and 51), then patches each column's text only where its rows changed: the
+/// rows before and after the change are compared, and the paragraphs between are rebuilt
 /// (`ResolverAttributes`). Line numbers are drawn from the rows, never part of the text, so a
 /// typed line break does not rebuild every row below it.
 ///
@@ -34,7 +34,13 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
     private(set) var path = ""
     var palette = ResolverPalette.standard
 
-    private var sidesCache: (snapshot: ConflictSnapshot, sides: ResolverLayout.Sides)?
+    /// The sides' part of the layout for the files shown last, most recent last, each for the
+    /// snapshot it was built from (Ruling 51): going back to a file reuses it.
+    private var sidesCache: [(path: String, snapshot: ConflictSnapshot, sides: ResolverLayout.Sides)] = []
+    /// How many files `sidesCache` keeps.
+    static let sidesKept = 8
+    /// How many times the sides' part was built afresh (not refitted): for the tests.
+    private(set) var sidesBuilt = 0
     /// The last build's rows per chunk, for the same draft (Ruling 32).
     private var rowCache = ResolverLayout.RowCache()
     private var snapshot: ConflictSnapshot?
@@ -210,7 +216,6 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         guard document != nil || !rows.isEmpty else { return }
         document = nil
         snapshot = nil
-        sidesCache = nil
         rowCache = ResolverLayout.RowCache()
         rows = []
         resultMap = nil
@@ -227,15 +232,21 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
     private func render(_ draft: ResolverDraft, showBase: Bool, current: Int?, reset: Bool) {
         let document = draft.document
         let sides: ResolverLayout.Sides
-        if let cache = sidesCache, cache.snapshot == draft.snapshot {
+        let cached = sidesCache.lastIndex { $0.path == path }
+        if let cached, sidesCache[cached].snapshot == draft.snapshot {
             // Chunks merged or split (an edit across an edge, its undo): placed again, keeping
             // the stages' tints (Ruling 28).
-            sides = cache.sides.refitted(to: document)
+            sides = sidesCache[cached].sides.refitted(to: document)
         } else {
             sides = ResolverLayout.Sides(draft.sides, document: document)
+            sidesBuilt += 1
             rowCache = ResolverLayout.RowCache()
         }
-        sidesCache = (draft.snapshot, sides)
+        // The row cache needs no reset on a file switch: rows built from other stages are never
+        // reused (`RowCache`'s stages id).
+        if let cached { sidesCache.remove(at: cached) }
+        sidesCache.append((path, draft.snapshot, sides))
+        if sidesCache.count > Self.sidesKept { sidesCache.removeFirst(sidesCache.count - Self.sidesKept) }
         // Only the chunks an edit changed are laid out again.
         let newRows = ResolverLayout.rows(document, using: sides, showBase: showBase, reusing: &rowCache)
         let old = reset ? [] : rows
