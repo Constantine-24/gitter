@@ -61,9 +61,10 @@ import Testing
     // MARK: - Discard questions
 
     /// Mark Resolved over a draft with changes asks first, naming the file; Cancel reads, writes
-    /// and drops nothing. Discard Changes drops the draft, then Mark Resolved runs as ever — the
-    /// file on disk still has its markers, so its own question comes, and the focused file is
-    /// read afresh rather than left waiting.
+    /// and drops nothing. Discard Changes runs Mark Resolved as ever — the file on disk still has
+    /// its markers, so its own question comes — and the draft is kept until the write goes ahead
+    /// (Ruling 39): Cancel on the markers question keeps it and stages nothing; its confirm
+    /// stages the file, and the draft goes, not left detached under an "outside" label.
     @Test(.timeLimit(.minutes(10))) func markResolvedAsksWhenADraftHasChanges() async throws {
         let repo = try Fixture.stoppedMerge()
         defer { repo.remove() }
@@ -86,18 +87,127 @@ import Testing
         #expect(try Fixture.file(repo, "a.txt") == bytes)
         #expect(try Fixture.isUnmerged(repo, "a.txt"))
 
-        store.markSelectedResolved()
-        store.confirmDiscardDrafts(Self.question(["a.txt"]))
-        #expect(store.resolverDrafts["a.txt"] == nil)
-        await waitUntil("the markers question") {
-            if case .markResolved = store.activeSheet { true } else { false }
+        func discardThenMarkersQuestion() async throws -> ConflictSnapshot {
+            store.markSelectedResolved()
+            store.confirmDiscardDrafts(Self.question(["a.txt"]))
+            await waitUntil("the markers question") {
+                if case .markResolved = store.activeSheet { true } else { false }
+            }
+            await waitUntilIdle(store)
+            guard case .markResolved(let snapshot, _) = store.activeSheet else { throw CancellationError() }
+            return snapshot
         }
+        _ = try await discardThenMarkersQuestion()
         #expect(backend.calls.contains(.markResolved))
+        #expect(store.resolverDrafts["a.txt"] == draft, "kept while the markers question is up")
         store.activeSheet = nil
-        await waitUntil("the file read afresh") { store.resolverDrafts["a.txt"] != nil }
-        #expect(store.resolverDrafts["a.txt"]?.hasUserChanges == false)
-        #expect(store.resolverDrafts["a.txt"]?.detached == nil)
+        await waitUntilIdle(store)
+        #expect(store.resolverDrafts["a.txt"] == draft, "Cancel on the markers question keeps the draft")
+        #expect(try Fixture.isUnmerged(repo, "a.txt"), "nothing staged")
+        #expect(try Fixture.file(repo, "a.txt") == bytes)
+
+        store.confirmMarkResolved(try await discardThenMarkersQuestion())
+        await waitUntil("a.txt staged") { (try? Fixture.isUnmerged(repo, "a.txt")) == false }
+        await waitUntilIdle(store)
+        #expect(store.resolverDrafts["a.txt"] == nil)
+        #expect(store.resolverDrafts.values.allSatisfy { $0.detached == nil }, "no draft left under an outside label")
+    }
+
+    /// Discard, then Cancel on the Replace sheet a whole-file take raises (the file was changed in
+    /// a terminal) keeps the draft; Discard and the Replace sheet's confirm take the file, and the
+    /// draft goes.
+    @Test(.timeLimit(.minutes(10))) func aCancelledReplaceSheetAfterDiscardKeepsTheDraft() async throws {
+        let repo = try Fixture.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        _ = try #require(await Self.changedDraft(store))
+        try repo.write("a.txt", "changed in a terminal\n")
+        await store.refresh()
+        await waitUntilIdle(store)
+        await waitUntil("the edited file read") { store.selectedConflict?.matchesGitsConflict == false }
+        let draft = try #require(store.resolverDrafts["a.txt"])
+        #expect(draft.detached == .changedOutside && draft.hasUserChanges)
+
+        func discardThenReplaceSheet() async throws -> (ConflictSnapshot, PendingResolution) {
+            store.takeSide(.theirs)
+            try #require(Self.asked(store) == Self.question(["a.txt"]))
+            store.confirmDiscardDrafts(Self.question(["a.txt"]))
+            await waitUntil("the Replace sheet") {
+                if case .replaceHandEdited = store.activeSheet { true } else { false }
+            }
+            await waitUntilIdle(store)
+            guard case .replaceHandEdited(let snapshot, let pending) = store.activeSheet else { throw CancellationError() }
+            return (snapshot, pending)
+        }
+        _ = try await discardThenReplaceSheet()
+        store.activeSheet = nil
+        await waitUntilIdle(store)
+        #expect(store.resolverDrafts["a.txt"] == draft, "Cancel on the Replace sheet keeps the draft")
+        #expect(try Fixture.file(repo, "a.txt") == Data("changed in a terminal\n".utf8))
         #expect(try Fixture.isUnmerged(repo, "a.txt"))
+
+        let (snapshot, pending) = try await discardThenReplaceSheet()
+        store.confirmReplaceHandEdited(snapshot, pending)
+        await waitUntil("a.txt taken") { (try? Fixture.isUnmerged(repo, "a.txt")) == false }
+        await waitUntilIdle(store)
+        #expect(try Fixture.file(repo, "a.txt") == Data(Fixture.theirs.utf8))
+        #expect(store.resolverDrafts["a.txt"] == nil)
+    }
+
+    /// After Discard, a write that is refused or fails keeps the draft: a Take for N Files whose
+    /// file changed after its sheet (that file refused, the other taken), and a Skip that fails.
+    @Test(.timeLimit(.minutes(10))) func aRefusedSkipOrTakeAfterDiscardKeepsTheDraft() async throws {
+        let repo = try Fixture.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        _ = try #require(await Self.changedDraft(store, "a.txt"))
+        _ = try #require(await Self.changedDraft(store, "b.txt"))
+        let aDraft = try #require(store.resolverDrafts["a.txt"])
+
+        store.takeSideForFiles(["a.txt", "b.txt"], .ours)
+        await waitUntil("the Take sheet") {
+            if case .takeForFiles = store.activeSheet { true } else { store.resolverFiles.isEmpty }
+        }
+        guard case .takeForFiles(let plan) = store.activeSheet else { throw CancellationError() }
+        // After the sheet read it: the take of a.txt is refused as changed since shown.
+        try repo.write("a.txt", "changed in a terminal\n")
+        store.confirmTakeForFiles(plan)
+        try #require(Self.asked(store) == Self.question(["a.txt", "b.txt"]))
+        store.confirmDiscardDrafts(Self.question(["a.txt", "b.txt"]))
+        await waitUntil("b.txt taken") { (try? Fixture.isUnmerged(repo, "b.txt")) == false }
+        await waitUntilIdle(store)
+        #expect(store.lastError != nil, "a.txt's refusal is the banner")
+        #expect(try Fixture.isUnmerged(repo, "a.txt"))
+        #expect(store.resolverDrafts["a.txt"]?.document == aDraft.document, "the refused file's draft is kept")
+        #expect(store.resolverDrafts["a.txt"]?.hasUserChanges == true)
+        #expect(store.resolverDrafts["b.txt"] == nil)
+
+        // Skip, failing.
+        let pick = try Self.stoppedPick()
+        defer { pick.remove() }
+        let backend = TestBackend()
+        let (other, otherCleanup) = await openedTestStore(pick, backend: backend)
+        defer { otherCleanup() }
+        let draft = try #require(await Self.changedDraft(other))
+        other.requestSkip()
+        await waitUntil("the Skip sheet") {
+            if case .skip = other.activeSheet { true } else { other.operationInProgress == nil }
+        }
+        guard case .skip(_, let current, _) = other.activeSheet else { throw CancellationError() }
+        backend.fail(.skip, with: SkipFailed())
+        other.confirmSkip(stoppedAt: current.sha)
+        try #require(Self.asked(other) == Self.question(["a.txt"]))
+        other.confirmDiscardDrafts(Self.question(["a.txt"]))
+        await waitUntil("the failure") { other.lastError != nil }
+        await waitUntilIdle(other)
+        #expect(other.operationInProgress == .cherryPick)
+        #expect(other.resolverDrafts["a.txt"] == draft, "a failed skip keeps the draft")
+    }
+
+    struct SkipFailed: Error, LocalizedError {
+        var errorDescription: String? { "the test made the skip fail" }
     }
 
     /// A pristine draft never asks: Mark Resolved and the row's stage button go straight to the
@@ -520,9 +630,9 @@ extension QuitFlowTests {
             return (
                 questions,
                 {
+                    // Ends whatever quit a test left: under way, terminating, drafts accepted.
+                    QuitGuard.calledOff(reply: { _ in })
                     QuitGuard.environment = .live
-                    QuitFlow.quitEnded()
-                    AppModel.windows.endAppTermination()
                 }
             )
         }
@@ -563,21 +673,28 @@ extension QuitFlowTests {
             #expect(try ResolverStoreTests.file(first, "a.txt") == bytes)
         }
 
-        /// Discard and Quit drops every draft and goes on to the lane question about a write
-        /// still running, on the same held reply; its Don't Quit then calls the quit off.
+        /// Discard and Quit goes on to the lane question about a write still running, on the same
+        /// held reply, dropping nothing; its Don't Quit then calls the quit off, and every draft in
+        /// both windows is still there (fix round 1, I2).
         @Test(.timeLimit(.minutes(10))) func quitDiscardsThenContinuesToTheLaneQuestion() async throws {
-            let conflicted = try ResolverStoreTests.stoppedMerge()
-            defer { conflicted.remove() }
+            let first = try ResolverStoreTests.stoppedMerge()
+            defer { first.remove() }
+            let second = try ResolverStoreTests.stoppedMerge()
+            defer { second.remove() }
             let pushing = try ScratchRepo("pushing")
             defer { pushing.remove() }
             _ = try HeldTransport.remoteOneCommitBehind(pushing)
-            let (a, aCleanup) = await openedTestStore(conflicted)
+            let (a, aCleanup) = await openedTestStore(first)
             defer { aCleanup() }
+            let (c, cCleanup) = await openedTestStore(second)
+            defer { cCleanup() }
             let backend = TestBackend()
             let (b, bCleanup) = await openedTestStore(pushing, backend: backend)
             defer { bCleanup() }
             defer { await releaseAndSettle([backend], [b]) }
             _ = try #require(await ResolverDraftGuardTests.changedDraft(a))
+            _ = try #require(await ResolverDraftGuardTests.changedDraft(c))
+            let drafts = [a.resolverDrafts, c.resolverDrafts]
             let gate = backend.hold(.push)
             b.push()
             #expect(await waitUntil("the push parked") { gate.waiting })
@@ -586,23 +703,69 @@ extension QuitFlowTests {
             defer { restore() }
 
             QuitFlow.delegateWasAsked()
-            #expect(QuitGuard.shouldTerminate([a, b]) == .terminateLater)
+            #expect(QuitGuard.shouldTerminate([a, b, c]) == .terminateLater)
             // Never answer the lane question here by mistake: its Stop and Quit replies later.
-            try #require(questions.titles == [ConflictWording.closeQuestion(1)])
+            try #require(questions.titles == [ConflictWording.closeQuestion(2)])
 
             let answer = try #require(questions.answers.first)
             answer(.alertSecondButtonReturn)
-            #expect(a.resolverDrafts.isEmpty)
-            #expect(questions.titles == [ConflictWording.closeQuestion(1), RemoteWording.quitDuringWriteTitle(push)])
+            #expect([a.resolverDrafts, c.resolverDrafts] == drafts, "nothing dropped before the quit is certain")
+            #expect(questions.titles == [ConflictWording.closeQuestion(2), RemoteWording.quitDuringWriteTitle(push)])
             #expect(questions.replies.isEmpty, "still held, for the lane question")
 
             let laneAnswer = try #require(questions.answers.dropFirst().first)
             laneAnswer(.alertThirdButtonReturn)
             #expect(questions.replies == [false])
             #expect(!QuitFlow.isUnderWay)
+            #expect([a.resolverDrafts, c.resolverDrafts] == drafts, "Don't Quit keeps every draft")
+            #expect(!QuitGuard.quitTakesTheDrafts)
         }
 
-        /// With every lane free, Discard and Quit quits: a reply of true, on the held path.
+        /// The lanes are judged as they were when the quit was asked (fix round 1, I3): a push
+        /// running at ⌘Q that ends rejected while the drafts question is up calls the quit off
+        /// after Discard and Quit — its banner left on screen, as Wait's call-off does — rather than
+        /// quitting with the lane now free. The drafts are kept.
+        @Test(.timeLimit(.minutes(10))) func aWriteEndingUnderTheDraftsQuestionStillCallsTheQuitOff() async throws {
+            let conflicted = try ResolverStoreTests.stoppedMerge()
+            defer { conflicted.remove() }
+            let refusing = try ScratchRepo("refusing")
+            defer { refusing.remove() }
+            try HiddenWindowTests.refusingRemote(refusing)
+            let (a, aCleanup) = await openedTestStore(conflicted)
+            defer { aCleanup() }
+            let backend = TestBackend()
+            let (b, bCleanup) = await openedTestStore(refusing, backend: backend)
+            defer { bCleanup() }
+            defer { await releaseAndSettle([backend], [b]) }
+            _ = try #require(await ResolverDraftGuardTests.changedDraft(a))
+            let drafts = a.resolverDrafts
+            let gate = backend.hold(.push)
+            b.push()
+            #expect(await waitUntil("the push parked") { gate.waiting })
+            let toReadBefore = b.laneMessagesToRead
+            let (questions, restore) = install()
+            defer { restore() }
+
+            QuitFlow.delegateWasAsked()
+            #expect(QuitGuard.shouldTerminate([a, b]) == .terminateLater)
+            try #require(questions.titles == [ConflictWording.closeQuestion(1)])
+
+            // The push ends, rejected, while the drafts question is up.
+            gate.release()
+            await waitUntil("the rejected push") { b.remoteActivity == nil && b.laneMessagesToRead != toReadBefore }
+            #expect(QuitGuard.decision([a, b].map(\.remoteActivity)) == .now, "the lanes alone would quit now")
+
+            let answer = try #require(questions.answers.first)
+            answer(.alertSecondButtonReturn)
+            #expect(questions.replies == [false], "called off, not quit")
+            #expect(!QuitFlow.isUnderWay)
+            #expect(!questions.titles.contains(RemoteWording.quitDuringWriteTitle(RemoteActivity(kind: .push, remote: "origin"))))
+            #expect(b.lastLaneMessageToRead != nil, "the rejection is there to read")
+            #expect(a.resolverDrafts == drafts)
+        }
+
+        /// With every lane free, Discard and Quit quits: a reply of true, on the held path. The
+        /// drafts go with the process; nothing dropped them first.
         @Test(.timeLimit(.minutes(10))) func quitDiscardsThenQuitsWhenTheLanesAreFree() async throws {
             let repo = try ResolverStoreTests.stoppedMerge()
             defer { repo.remove() }
@@ -618,8 +781,8 @@ extension QuitFlowTests {
             let answer = try #require(questions.answers.first)
             answer(.alertSecondButtonReturn)
             #expect(questions.replies == [true])
-            #expect(store.resolverDrafts.isEmpty)
             #expect(AppModel.windows.isTerminating)
+            #expect(QuitGuard.quitTakesTheDrafts)
         }
 
         /// No draft with changes, no question: the lanes decide as before.

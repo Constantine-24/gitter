@@ -21,12 +21,9 @@ struct DraftQuestion: Hashable, Sendable {
     var closes: Bool { purpose == .done && paths.count > 1 }
 }
 
-/// What the question's Discard runs, beside the sheet (a closure is not `Hashable`): every
-/// draft of the action's files goes — the pristine ones too, so Gitter's own write never leaves
-/// one detached under an "outside" label (Ruling 35) — and then the action.
+/// What the question's Discard runs, beside the sheet (a closure is not `Hashable`).
 struct PendingDraftDiscard {
     let question: DraftQuestion
-    let drops: [String]
     let action: @MainActor () -> Void
 }
 
@@ -37,6 +34,13 @@ struct PendingDraftDiscard {
 /// `changedDraftPaths`.
 ///
 /// A pristine draft never asks. Cancel does nothing at all: nothing is read, written or dropped.
+///
+/// **A Discard drops nothing by itself** (Ruling 39): the drafts go only when the action goes
+/// ahead — in the write's success, which runs before `finishMutation` checks the drafts against
+/// the reload, so Gitter's own write never leaves one detached under an "outside" label
+/// (`resolverDidResolve` for the resolving writes, the skip's success, `open`'s reset, Done's
+/// `closeResolver`). A later sheet cancelled (the markers question, the Replace sheet), a
+/// refusal or a failure keeps every draft.
 extension RepositoryStore {
 
     /// The files whose drafts have changes — read-only ones too, which a close or quit loses
@@ -46,19 +50,16 @@ extension RepositoryStore {
     }
 
     /// Runs `action`, which writes over or removes `paths` — after asking, when any of their
-    /// drafts has changes ("Discard your changes to <file>?", Cancel / Discard Changes). Before
-    /// `action` runs, every draft of `paths` is dropped, pristine ones included. Nothing is asked
-    /// while another sheet is up; the action is then not run either.
+    /// drafts has changes ("Discard your changes to <file>?", Cancel / Discard Changes). The
+    /// action drops the drafts itself once it has gone ahead (Ruling 39). Nothing is asked while
+    /// another sheet is up; the action is then not run either.
     func confirmDiscardingDrafts(for paths: [String], then action: @escaping @MainActor () -> Void) {
-        var drops: [String] = []
-        for path in paths where resolverDrafts[path] != nil && !drops.contains(path) { drops.append(path) }
-        let changed = drops.filter { resolverDrafts[$0]?.hasUserChanges == true }.sorted()
+        let changed = Set(paths.filter { resolverDrafts[$0]?.hasUserChanges == true }).sorted()
         guard !changed.isEmpty else {
-            dropDrafts(drops)
             action()
             return
         }
-        ask(DraftQuestion(paths: changed, purpose: .action), drops: drops, then: action)
+        ask(DraftQuestion(paths: changed, purpose: .action), then: action)
     }
 
     /// Opens `url` in this window in place of its repository (Open Worktree, an open routed to
@@ -85,24 +86,23 @@ extension RepositoryStore {
             closeResolver()
             return
         }
-        ask(DraftQuestion(paths: dropped, purpose: .done), drops: []) { [weak self] in self?.closeResolver() }
+        ask(DraftQuestion(paths: dropped, purpose: .done)) { [weak self] in self?.closeResolver() }
     }
 
-    private func ask(_ question: DraftQuestion, drops: [String], then action: @escaping @MainActor () -> Void) {
+    private func ask(_ question: DraftQuestion, then action: @escaping @MainActor () -> Void) {
         guard activeSheet == nil, !isClosed else { return }
-        pendingDraftDiscard = PendingDraftDiscard(question: question, drops: drops, action: action)
+        pendingDraftDiscard = PendingDraftDiscard(question: question, action: action)
         activeSheet = .discardDrafts(question)
     }
 
-    /// The question's destructive button, only as the answer to the question on screen: the
-    /// drafts go, then what was asked runs.
+    /// The question's destructive button, only as the answer to the question on screen: what was
+    /// asked runs, and drops the drafts if it goes ahead.
     func confirmDiscardDrafts(_ question: DraftQuestion) {
         guard case .discardDrafts(let shown) = activeSheet, shown == question,
             let pending = pendingDraftDiscard, pending.question == question
         else { return }
         activeSheet = nil
         pendingDraftDiscard = nil
-        dropDrafts(pending.drops)
         pending.action()
     }
 
@@ -112,10 +112,9 @@ extension RepositoryStore {
         pendingDraftDiscard = nil
     }
 
-    /// Drops the drafts of `paths`, with nothing read again: the action that follows writes, and
-    /// its refresh reads the focused file afresh — a read now would open a draft on what that
-    /// write is about to change. `reread` (a quit's Discard, after which nothing writes): the
-    /// focused file is read again, or the focus moves on (`discardDraft`).
+    /// Drops the drafts of `paths` — Gitter's own write that went ahead (the abort's, the skip's)
+    /// or a window closed — with nothing read again: the write's own reload reads the focused
+    /// file. `reread`: the focused file is read again, or the focus moves on (`discardDraft`).
     func dropDrafts(_ paths: [String], reread: Bool = false) {
         let present = paths.filter { resolverDrafts[$0] != nil }
         guard !present.isEmpty else { return }

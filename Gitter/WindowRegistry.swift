@@ -471,6 +471,12 @@ final class WindowRegistry {
     /// Cancel brings it back, since nothing watches a hidden window any more and it would never
     /// come back by itself. Nothing for a store shown again, or hidden again, while it was asked.
     private func closeHiddenForReal(_ store: RepositoryStore) {
+        // Under a held quit whose drafts question was answered Discard and Quit, the drafts go
+        // with the quit: not asked about again (fix round 1, I2).
+        if QuitGuard.quitTakesTheDrafts {
+            closeForReal(store)
+            return
+        }
         let key = ObjectIdentifier(store)
         let asked = askAboutDrafts(of: store, on: nil) { [weak self, weak store] discard in
             guard let self, let store, store.isHidden, self.hidden[key] == nil else { return }

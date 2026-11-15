@@ -636,6 +636,9 @@ extension RepositoryStore {
             mutate(result: { backend, root in
                 try await backend.skip(operation, stoppedAt: sha, at: root)
             }, onSuccess: { [self] result in
+                // The stop's drafts go once the skip went ahead (Ruling 39), before the reload's
+                // check could keep them under an "outside" label; a failed skip keeps them.
+                if case .failed = result.outcome {} else { dropDrafts(Array(resolverDrafts.keys)) }
                 finishSkip(operation, current, result)
             })
         }
