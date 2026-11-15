@@ -4,8 +4,8 @@ import SwiftUI
 /// which question is on screen.
 ///
 /// The switch is exhaustive on purpose: every question the store can ask has a view here, and
-/// nineteen of the thirty-nine are confirmations for actions that can replace or lose work —
-/// sixteen here (Drop Stash…, Discard…, replacing a hand-edited conflict, Take Ours / Theirs for N
+/// twenty of the forty are confirmations for actions that can replace or lose work —
+/// seventeen here (Discard your changes…, Drop Stash…, Discard…, replacing a hand-edited conflict, Take Ours / Theirs for N
 /// Files…, Reopen Conflict…, Skip
 /// This Commit…, Rebase onto…, Delete Tag…, Prune <remote>…, Clean Up Gone Branches…, Remove
 /// Remote…, Remove Worktree… and Remove All Missing… among them; the worktree check's progress
@@ -66,6 +66,8 @@ struct BranchSheetHost: View {
             MarkResolvedSheet(snapshot: snapshot, pending: pending)
         case .takeForFiles(let plan):
             TakeForFilesSheet(plan: plan)
+        case .discardDrafts(let question):
+            DiscardDraftsSheet(question: question)
         case .reopen(let path, _, let comesBack, let sides):
             ReopenConflictSheet(path: path, comesBack: comesBack, sides: sides)
         case .continueEmpty, .continueOthers:

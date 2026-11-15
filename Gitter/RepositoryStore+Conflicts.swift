@@ -175,7 +175,8 @@ extension RepositoryStore {
     }
 
     /// The whole-file write the resolver offered for this document, or nothing: the buttons are
-    /// the offer, and the debug hooks call straight in. Resolve File is not one of these.
+    /// the offer, and the debug hooks call straight in. Resolve File is not one of these. A draft
+    /// of the file with changes is asked about first (`confirmDiscardingDrafts`, Task 7).
     private func resolve(_ pending: PendingResolution, in document: ConflictDocument) {
         guard conflictActionBlockedReason == nil else { return }
         let action: ResolverAction? =
@@ -186,7 +187,9 @@ extension RepositoryStore {
             case .keep: .keep
             }
         guard let action, ResolverOffer.actions(for: document).contains(action) else { return }
-        runResolution(pending, document.snapshot, recordIfEdited: false)
+        confirmDiscardingDrafts(for: [document.snapshot.file.path]) { [self] in
+            runResolution(pending, document.snapshot, recordIfEdited: false)
+        }
     }
 
     /// The Replace sheet's destructive button, **only** as the answer to the sheet that asked
@@ -249,21 +252,27 @@ extension RepositoryStore {
 
     // MARK: - Mark Resolved
 
-    /// Mark Resolved: stages the file as it is, after counting the markers left in it.
+    /// Mark Resolved: stages the file as it is, after counting the markers left in it — and,
+    /// first, asking about a draft of it with changes (Task 7).
     func markSelectedResolved() {
         guard let document = selectedConflict, conflictActionBlockedReason == nil,
             ResolverOffer.actions(for: document).contains(.markResolved)
         else { return }
-        markResolved(document.snapshot, allowingMarkers: false)
+        confirmDiscardingDrafts(for: [document.snapshot.file.path]) { [self] in
+            markResolved(document.snapshot, allowingMarkers: false)
+        }
     }
 
-    /// The row's stage button on an unmerged file: the same Mark Resolved, so `git add` never
-    /// takes leftover markers unasked (M 10). The snapshot is the stages the row shows and the
-    /// file as it is at the click.
+    /// The row's stage button on an unmerged file (Space, the + button): the same Mark Resolved,
+    /// so `git add` never takes leftover markers unasked (M 10), and a draft with changes is asked
+    /// about first (Task 7). The snapshot is the stages the row shows and the file as it is at
+    /// the click.
     func markResolved(_ file: ConflictedFile) {
         guard let root, conflictActionBlockedReason == nil else { return }
         let snapshot = ConflictSnapshot(file: file, worktreeHash: ConflictSnapshot.worktreeHash(of: file.path, at: root))
-        markResolved(snapshot, allowingMarkers: false)
+        confirmDiscardingDrafts(for: [file.path]) { [self] in
+            markResolved(snapshot, allowingMarkers: false)
+        }
     }
 
     /// The Mark Resolved sheet's destructive button, only as the answer to the sheet about

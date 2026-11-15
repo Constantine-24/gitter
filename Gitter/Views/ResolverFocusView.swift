@@ -33,10 +33,12 @@ struct ResolverFocusView: View {
         .navigationTitle(ConflictWording.focusTitle)
         .navigationSubtitle(subtitle)
         // Escape is Done whenever no text is being edited; ⌘Z and ⇧⌘Z are the store's wherever
-        // the keys are (`ResolverKeyMonitor`).
+        // the keys are (`ResolverKeyMonitor`). Done asks first before it drops read-only drafts
+        // with changes (Ruling 36).
         .background(
             ResolverKeyMonitor(
-                done: { store.closeResolver() }, undo: { store.resolverUndo() }, redo: { store.resolverRedo() }))
+                done: { store.requestCloseResolver() }, undo: { store.resolverUndo() },
+                redo: { store.resolverRedo() }))
     }
 
     private var subtitle: String {
@@ -68,7 +70,7 @@ struct ResolverFocusView: View {
             let isDefault = ResolverShell.doneIsDefault(
                 allResolved: store.resolverAllResolved, ended: store.resolverEndedShown != nil)
             // The default button is drawn as one, and takes Return.
-            Button(ConflictWording.done) { store.closeResolver() }
+            Button(ConflictWording.done) { store.requestCloseResolver() }
                 .keyboardShortcut(isDefault ? .defaultAction : nil)
                 .help(ConflictWording.doneHelp)
         }

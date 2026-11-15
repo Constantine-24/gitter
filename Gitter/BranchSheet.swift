@@ -63,6 +63,10 @@ enum BranchSheet: Identifiable, Hashable {
     /// Take Ours / Theirs for N Files…: the files as they were read when the sheet opened, which
     /// of them get a copy first, and which are skipped (`confirmTakeForFiles` takes them as they are).
     case takeForFiles(TakeForFilesPlan)
+    /// Before one of Gitter's own actions writes over or removes files whose drafts have changes,
+    /// or Done drops read-only drafts with changes (Task 7): `confirmDiscardDrafts` runs what was
+    /// asked, kept beside the sheet (`pendingDraftDiscard`), only as the answer to this question.
+    case discardDrafts(DraftQuestion)
     /// Reopen Conflict… on a resolved file: `hash` is the file's worktree hash when the sheet
     /// opened (nil = no file), which `confirmReopen` hands to GitCore as what it must still be;
     /// `comesBack` is what `restore --merge` will write (`GitConflictBackend.reopenedFile`) and

@@ -175,6 +175,9 @@ extension RepositoryStore {
     /// abort must never be reported as "nothing happened".
     func confirmAbort(_ operation: RepositoryOperation) {
         activeSheet = nil
+        // The sheet named the files with drafts (`changedDraftPaths`, Task 7): the abort drops them
+        // all before it runs, rather than leaving them read-only under an "ended" label.
+        dropDrafts(Array(resolverDrafts.keys))
         mutate({ backend, root in
             do {
                 try await backend.abort(operation, at: root)

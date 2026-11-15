@@ -32,7 +32,8 @@
     ///                           card's or the operation bar's Resolve Conflicts… does; waits for
     ///                           its read (and draft) and the sidebar's summaries, and logs
     ///                           `focus: …` with the window number `screencapture -l` needs.
-    ///   resolver:done           Done; logs `focus: …`.
+    ///   resolver:done           Done (asking first over read-only drafts with changes, Ruling 36);
+    ///                           logs `focus: …`.
     ///   resolver:state          logs `focus: …` without doing anything, with the focused draft's
     ///                           waiting count, flags and detachment, and its Result's chunks.
     ///   resolver:take:<ours|theirs|both|bothTheirsFirst>  takes that side for the current
@@ -232,7 +233,8 @@
             case "":
                 logResolver(store)
             case "done":
-                store.closeResolver()
+                // Done as the toolbar's button and Escape: it may ask first (Ruling 36).
+                store.requestCloseResolver()
                 logFocus(store)
             case "state":
                 logFocus(store)
@@ -359,6 +361,9 @@
             case .takeForFiles(let plan)?:
                 "takeForFiles(\(plan.side), files: \(plan.files.map(\.file.path)), copies: \(plan.copies), "
                     + "skipped: \(plan.skipped.map { "\($0.path) (\($0.reason))" }))"
+            case .discardDrafts(let question)?:
+                "discardDrafts(\(question.paths), \(question.purpose), title: \(ConflictWording.draftQuestionTitle(question)), "
+                    + "button: \(ConflictWording.draftQuestionButton(question)))"
             case .reopen(let path, let hash, let comesBack, let sides)?:
                 "reopen(\(path), hash: \(hash?.prefix(12) ?? "nil"), comesBack: \(comesBack), "
                     + "sides: \(sides.ours) / \(sides.theirs), body: \(ConflictWording.reopenBody(path, comesBack, sides)))"

@@ -775,8 +775,10 @@ import Testing
         #expect(!eventLog.lines.contains { $0.contains(ConflictWording.operationEndedOutside(.merge)) })
         #expect(store.notice?.text != ConflictWording.operationEndedOutside(.merge))
         #expect(store.stickyNotice?.text != ConflictWording.operationEndedOutside(.merge))
-        // The draft with changes is kept read-only (asking first is the Abort sheet's).
-        #expect(store.resolverDrafts["a.txt"]?.detached == .operationEnded)
+        // The Abort sheet named the draft with changes, and the abort drops it rather than keeping
+        // it read-only under an "ended" label (Task 7, Ruling 35).
+        #expect(store.resolverDrafts.isEmpty)
+        #expect(store.resolverFocus == nil)
     }
 
     // MARK: - Done

@@ -13,7 +13,7 @@ import AppKit
 ///
 /// | on the lane | what quitting does |
 /// |---|---|
-/// | nothing | quits at once |
+/// | nothing | quits at once — once the drafts question below, if any, is answered |
 /// | fetch, automatic fetch, pull (its fetch) | stops it and quits when the lane frees — at most `readStopBound` (the runner's escalation ends git within about two grace periods) |
 /// | push, publish, force push, delete on a remote | asks: **Wait** (default) lets it finish — stopping every read on any lane — then quits, unless a lane that had a write has ended since the quit was asked with a banner, a sheet or a notice with a warning in it, which is then left on screen and the quit called off; and unless it is still running after `waitBound`, when the quit is called off with a banner saying so; **Stop and Quit** stops it and quits when the lane frees; **Don't Quit** calls the quit off |
 ///
@@ -37,6 +37,10 @@ import AppKit
 /// (`frontWindowToAsk`), and a hidden store's failure under Wait is told by its own hidden ending's
 /// alert, not a second time by the call-off — whether that alert is answered before or after Wait
 /// (`callingOff`, `hasWindow`).
+///
+/// **Drafts first** (Task 7): before any of this, drafts with changes in any window are asked
+/// about once, counted across every window (`changedDraftCount`): Cancel calls the quit off,
+/// Discard and Quit drops them and the lanes decide as in the table, on the same held reply.
 ///
 /// **Not covered:** a SIGTERM (`kill`, a logout that force-quits) never reaches
 /// `applicationShouldTerminate`, and git is left running as before; and a mutation that is not
@@ -89,16 +93,70 @@ enum QuitGuard {
         return lanes.contains { $0 != nil } ? .stopReads : .now
     }
 
+    /// What the quit puts on screen and how it answers AppKit: the live ones in the app; a test
+    /// records the questions and the replies instead (Task 7), so no alert is raised and no
+    /// reply of true ever reaches the test host.
+    struct Environment {
+        /// Raises `alert` — as a sheet on `window` (or on the sheet it already has), or app-modal
+        /// for nil, from the run loop so that every other window's work goes on under it (C3) —
+        /// and hands `answer` the button pressed.
+        var present: @MainActor (_ alert: NSAlert, _ window: NSWindow?,
+            _ answer: @escaping @MainActor (NSApplication.ModalResponse) -> Void) -> Void
+        /// The reply to a `.terminateLater`.
+        var reply: @MainActor (Bool) -> Void
+
+        static let live = Environment(
+            present: { alert, window, answer in
+                if let window {
+                    alert.beginSheetModal(for: window.attachedSheet ?? window, completionHandler: answer)
+                } else {
+                    ModalAlert.raise(alert, then: answer)
+                }
+            },
+            reply: { NSApp.reply(toApplicationShouldTerminate: $0) })
+    }
+
+    static var environment = Environment.live
+
+    /// How many conflicted files have drafts with changes across `stores` — read-only ones too,
+    /// which quitting loses as well — counting only stores whose window is still open (a closed
+    /// window asked before it closed, Task 7).
+    static func changedDraftCount(_ stores: [RepositoryStore]) -> Int {
+        stores.filter { !$0.isClosed }.reduce(0) { $0 + $1.changedDraftPaths.count }
+    }
+
     /// The answer to `applicationShouldTerminate`, over every store a quit takes with it
     /// (`AppModel.quitStores()`). Every path that answers false tells `QuitFlow` the quit has
     /// ended (`quitEnded`) and ends the terminating of every store it began.
+    ///
+    /// Drafts with changes in any window are asked about first, once, counted across every window
+    /// (Task 7): `.terminateLater`, and the reply waits on the answer — a logout waits on it as on
+    /// an unsaved document. Cancel calls the quit off; Discard and Quit drops every draft and goes
+    /// on to the lanes as below, on the same held reply.
     static func shouldTerminate(_ stores: [RepositoryStore]) -> NSApplication.TerminateReply {
+        let drafts = changedDraftCount(stores)
+        guard drafts == 0 else {
+            log("quit: \(drafts) conflicted file(s) with changes, asking")
+            askAboutDrafts(drafts, stores: stores)
+            return .terminateLater
+        }
+        return decideLanes(stores, held: false)
+    }
+
+    /// The lanes' part of the quit (the table above). `held`: the reply is already
+    /// `.terminateLater` — after the drafts question — so quitting now is a reply of true too.
+    @discardableResult
+    private static func decideLanes(_ stores: [RepositoryStore], held: Bool) -> NSApplication.TerminateReply {
         let lanes = stores.map(\.remoteActivity)
         switch decision(lanes) {
         case .now:
             log("quit: the lane is free, quitting now")
-            // No reply to AppKit: `.terminateNow` is the answer.
-            wentAhead(reply: { _ in })
+            if held {
+                quit()
+            } else {
+                // No reply to AppKit: `.terminateNow` is the answer.
+                wentAhead(reply: { _ in })
+            }
             return .terminateNow
         case .stopReads:
             let kinds = lanes.compactMap { $0.map { "\($0.kind)" } }
@@ -118,6 +176,30 @@ enum QuitGuard {
                 about: activity, of: stores[index], stores: stores,
                 writesAsked: lanes.map { $0?.isWrite == true }, messagesBefore: stores.map(\.laneMessagesToRead))
             return .terminateLater
+        }
+    }
+
+    /// The drafts question (`ConflictWording.closeQuestion`, Cancel / Discard and Quit): on the
+    /// window of the first store with changed drafts when it is on screen, app-modal otherwise.
+    /// Answered in its completion, synchronously — while the quit is held no `Task` may run.
+    private static func askAboutDrafts(_ count: Int, stores: [RepositoryStore]) {
+        let alert = HiddenWindowEnvironment.makeCloseQuestion(count, discard: ConflictWording.discardAndQuit)
+        let window = stores.first { !$0.isClosed && !$0.changedDraftPaths.isEmpty }
+            .flatMap { AppModel.windows.window(of: $0) }
+            .flatMap { $0.isVisible ? $0 : nil }
+        let eventLog = stores.first?.eventLog ?? .none
+        environment.present(alert, window) { response in
+            let discard = response == .alertSecondButtonReturn
+            eventLog.write(
+                "quit drafts question: \(discard ? ConflictWording.discardAndQuit : ConflictWording.cancel)")
+            guard discard else {
+                log("quit: Cancel, the drafts are kept")
+                callOff()
+                return
+            }
+            log("quit: Discard and Quit")
+            for store in stores { store.dropDrafts(Array(store.resolverDrafts.keys), reread: true) }
+            decideLanes(stores, held: true)
         }
     }
 
@@ -189,11 +271,7 @@ enum QuitGuard {
         // has), like every other question Gitter asks — a hidden one brought to the front first;
         // app-modal when there is no such window, or it is not on screen (minimized), raised from
         // the run loop so that every other window's work goes on under it (C3).
-        if let window = frontWindowToAsk(about: writing, in: AppModel.windows) {
-            alert.beginSheetModal(for: window.attachedSheet ?? window, completionHandler: answer)
-        } else {
-            ModalAlert.raise(alert, then: answer)
-        }
+        environment.present(alert, frontWindowToAsk(about: writing, in: AppModel.windows), answer)
     }
 
     /// The window the quit's question about `writing`'s write goes on as a sheet, or nil for an
@@ -357,7 +435,7 @@ enum QuitGuard {
         alert.messageText = RemoteWording.quitCalledOffTitle
         alert.informativeText = text
         alert.addButton(withTitle: "OK")
-        ModalAlert.raise(alert, then: { _ in })
+        environment.present(alert, nil, { _ in })
     }
 
     /// The quit goes ahead: from here on a window's close is part of it, and leaves the
@@ -393,7 +471,7 @@ enum QuitGuard {
     /// The live reply to a `.terminateLater`; the tests pass their own to `wentAhead` and
     /// `calledOff`.
     private static func replyToAppKit(_ quitting: Bool) {
-        NSApp.reply(toApplicationShouldTerminate: quitting)
+        environment.reply(quitting)
     }
 
     /// A `QUIT <time> …` line on stderr, DEBUG only. Internal: `QuitFlow` writes its lines here too.

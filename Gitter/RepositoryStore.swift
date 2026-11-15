@@ -168,6 +168,13 @@ final class RepositoryStore {
         }
     }
 
+    /// What the draft question on screen (`BranchSheet.discardDrafts`) runs on Discard
+    /// (`RepositoryStore+DraftGuard`); kept beside the sheet, since a closure is not `Hashable`,
+    /// and run only as the answer to that very question — a sheet closed any other way (Cancel,
+    /// a quit closing every sheet, `close()`) runs nothing.
+    // internal (not private(set) write): used by +DraftGuard.swift
+    @ObservationIgnored var pendingDraftDiscard: PendingDraftDiscard?
+
     /// Set once by `close()`, when the store's window has closed (E2 Task 3), and never cleared: a
     /// closed window's view tree lives on (M3.2), so nothing may act for its store again — `open()`,
     /// `refresh()`, `scheduleRefresh`, the automatic fetch, a claim of the lane and the harness's

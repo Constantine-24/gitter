@@ -491,4 +491,28 @@ import Testing
         #expect(ConflictWording.tookForFiles(one, [ConflictReceipt(path: "a.txt", recorded: nil)], Self.sides)
             == "Resolved \"a.txt\" with the whole file from main.")
     }
+
+    /// Task 7: the questions before a draft is dropped — the spec's sentences, the singular for
+    /// one file, and the Abort sheet's line.
+    @Test func theDraftQuestionsAreTheSpecs() {
+        #expect(ConflictWording.discardQuestion("src/a.txt") == "Discard your changes to \"src/a.txt\"?")
+        #expect(ConflictWording.discardQuestion(files: ["a.txt"]) == "Discard your changes to \"a.txt\"?")
+        #expect(
+            ConflictWording.discardQuestion(files: ["a.txt", "b.txt", "c.txt"])
+                == "Discard your changes to \"a.txt\", \"b.txt\" and \"c.txt\"?")
+        #expect(
+            ConflictWording.closeQuestion(4) == "You have changes in 4 conflicted files that aren't saved. Close anyway?")
+        #expect(ConflictWording.closeQuestion(1) == "You have changes in 1 conflicted file that isn't saved. Close anyway?")
+        #expect(ConflictWording.discardChanges == "Discard Changes")
+        #expect(ConflictWording.discardAndClose == "Discard and Close")
+        #expect(ConflictWording.discardAndQuit == "Discard and Quit")
+        let doneOne = DraftQuestion(paths: ["a.txt"], purpose: .done)
+        #expect(ConflictWording.draftQuestionTitle(doneOne) == "Discard your changes to \"a.txt\"?")
+        #expect(ConflictWording.draftQuestionButton(doneOne) == "Discard Changes")
+        let actionTwo = DraftQuestion(paths: ["a.txt", "b.txt"], purpose: .action)
+        #expect(ConflictWording.draftQuestionButton(actionTwo) == "Discard Changes")
+        #expect(
+            ConflictWording.abortDrafts(["a.txt", "b.txt"])
+                == "Your changes to \"a.txt\" and \"b.txt\" in Resolve Conflicts are discarded too.")
+    }
 }

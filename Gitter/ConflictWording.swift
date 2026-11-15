@@ -464,6 +464,44 @@ enum ConflictWording {
     static let cancel = "Cancel"
     static let keepEditing = "Keep Editing"
 
+    // Never losing a draft: the questions before one is dropped (Task 7).
+
+    /// Before Gitter's own action writes over or removes a file with a draft that has changes.
+    static func discardQuestion(_ file: String) -> String { "Discard your changes to \(name(file))?" }
+
+    /// The same question about several drafts at once (Take for N Files, Skip, an open in this
+    /// window): one question, listing them.
+    static func discardQuestion(files: [String]) -> String {
+        files.count == 1 ? discardQuestion(files[0]) : "Discard your changes to \(StashWording.names(files))?"
+    }
+
+    /// Closing a window, quitting, or Done over several read-only drafts. The spec gives the
+    /// plural; one file reads in the singular.
+    static func closeQuestion(_ count: Int) -> String {
+        count == 1
+            ? "You have changes in 1 conflicted file that isn't saved. Close anyway?"
+            : "You have changes in \(count) conflicted files that aren't saved. Close anyway?"
+    }
+
+    static let discardAndClose = "Discard and Close"
+    static let discardAndQuit = "Discard and Quit"
+
+    /// The in-window question's sentence (`BranchSheet.discardDrafts`): Done over several
+    /// read-only drafts asks the close question (Ruling 36); everything else the discard question.
+    static func draftQuestionTitle(_ question: DraftQuestion) -> String {
+        question.closes ? closeQuestion(question.paths.count) : discardQuestion(files: question.paths)
+    }
+
+    /// Its destructive button.
+    static func draftQuestionButton(_ question: DraftQuestion) -> String {
+        question.closes ? discardAndClose : discardChanges
+    }
+
+    /// The Abort sheet's line naming the files with drafts, which the abort discards too.
+    static func abortDrafts(_ paths: [String]) -> String {
+        "Your changes to \(StashWording.names(paths)) in Resolve Conflicts are discarded too."
+    }
+
     // The bars above the columns.
 
     static func bar(_ bar: ResolverBar) -> String {

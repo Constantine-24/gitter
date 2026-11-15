@@ -147,7 +147,8 @@ extension RepositoryStore {
         if entering { refreshResolverSummaries() }
     }
 
-    /// Done: back to the normal window. Drafts with changes are kept for next time — attached
+    /// Back to the normal window — Done once it has asked (`requestCloseResolver`, Ruling 36), or
+    /// focus mode left with nothing kept. Drafts with changes are kept for next time — attached
     /// ones, and ones changed outside, which are still edited (Keep Editing; Ruling 25); pristine
     /// ones go, and so do read-only ones, resolved outside or left by their operation (a
     /// read-only draft lasts until Done).
@@ -413,10 +414,16 @@ extension RepositoryStore {
 
     /// The sheet's button, only as the answer to the sheet about this plan: each file taken
     /// whole, those it named as copies filed first. One file refused (it moved on since the
-    /// sheet) does not stop the others; its refusal is the banner.
+    /// sheet) does not stop the others; its refusal is the banner. Files with drafts that have
+    /// changes are asked about first, in one question listing them (Task 7) — here, at the point
+    /// of no return, so that a Discard is never followed by a Cancel that took nothing.
     func confirmTakeForFiles(_ plan: TakeForFilesPlan) {
         guard case .takeForFiles(let shown) = activeSheet, shown == plan else { return }
         activeSheet = nil
+        confirmDiscardingDrafts(for: plan.files.map(\.file.path)) { [self] in takeForFiles(plan) }
+    }
+
+    private func takeForFiles(_ plan: TakeForFilesPlan) {
         let sides = conflictSides
         mutate(result: { backend, root -> (receipts: [ConflictReceipt], failures: [String]) in
             var receipts: [ConflictReceipt] = []
