@@ -21,6 +21,8 @@ let grammars: [(url: String, version: Version, products: [(name: String, package
     ("https://github.com/tree-sitter/tree-sitter-rust", "0.24.2", [("TreeSitterRust", "tree-sitter-rust")]),
     ("https://github.com/tree-sitter/tree-sitter-ruby", "0.23.1", [("TreeSitterRuby", "tree-sitter-ruby")]),
     ("https://github.com/tree-sitter/tree-sitter-java", "0.23.5", [("TreeSitterJava", "tree-sitter-java")]),
+    ("https://github.com/tree-sitter-grammars/tree-sitter-scss", "1.0.0", [("TreeSitterSCSS", "tree-sitter-scss")]),
+    ("https://github.com/fwcd/tree-sitter-kotlin", "0.3.8", [("TreeSitterKotlin", "tree-sitter-kotlin")]),
 ]
 
 let package = Package(
