@@ -34,7 +34,7 @@ import GitterSyntax
     /// Names that Xcode would leave uncoloured map to nothing.
     @Test(arguments: [
         "variable.member", "property", "punctuation.bracket", "operator", "spell", "embedded",
-        "none", "label", "namespace", "parameter",
+        "none", "label", "namespace", "parameter", "keyword.conditional.ternary",
     ])
     func plainCaptures(capture: String) {
         #expect(SyntaxKind(capture: capture) == nil)

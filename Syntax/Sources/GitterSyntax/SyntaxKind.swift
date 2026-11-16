@@ -24,7 +24,8 @@ public enum SyntaxKind: String, CaseIterable, Sendable {
         guard !capture.hasPrefix("_") else { return nil }
         var name = Substring(capture)
         while true {
-            if let kind = Self.byCapture[name] {
+            if let entry = Self.byCapture[name] {
+                guard let kind = entry else { return nil }
                 self = kind
                 return
             }
@@ -37,9 +38,11 @@ public enum SyntaxKind: String, CaseIterable, Sendable {
     /// Ruling 1), and the old-style names Kotlin's query still uses (`conditional`, `repeat`,
     /// `include`, `exception`, `float`). A name not here, and with no prefix here, is plain:
     /// `variable`, `property`, `punctuation`, `operator`, `label`, `namespace`, `parameter`,
-    /// `embedded`, `spell` and `none` among them.
-    private static let byCapture: [Substring: SyntaxKind] = [
-        "keyword": .keyword, "conditional": .keyword, "repeat": .keyword, "include": .keyword,
+    /// `embedded`, `spell` and `none` among them. A nil entry is plain although a shorter prefix
+    /// has a colour: Swift's ternary `?` and `:` are `keyword.conditional.ternary`, and Xcode
+    /// draws them plain.
+    private static let byCapture: [Substring: SyntaxKind?] = [
+        "keyword": .keyword, "keyword.conditional.ternary": nil, "conditional": .keyword, "repeat": .keyword, "include": .keyword,
         "exception": .keyword, "storageclass": .keyword, "boolean": .keyword,
         "constant.builtin": .keyword, "variable.builtin": .keyword, "tag": .keyword,
         "text.title": .keyword,

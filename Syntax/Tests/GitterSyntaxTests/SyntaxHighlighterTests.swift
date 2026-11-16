@@ -2,12 +2,21 @@ import Testing
 
 @testable import GitterSyntax
 
-/// The text in `range`, a range of UTF-16 offsets as `SyntaxToken` gives them.
+/// The text in `range`, a range of UTF-16 offsets as `SyntaxToken` gives them. A range that
+/// doesn't fit the text, or splits a surrogate pair, records an issue and gives "".
 func slice(_ text: String, _ range: Range<Int>) -> String {
     let utf16 = text.utf16
+    guard range.lowerBound >= 0, range.upperBound <= utf16.count else {
+        Issue.record("\(range) is outside the text's \(utf16.count) UTF-16 units")
+        return ""
+    }
     let start = utf16.index(utf16.startIndex, offsetBy: range.lowerBound)
     let end = utf16.index(utf16.startIndex, offsetBy: range.upperBound)
-    return String(utf16[start..<end])!
+    guard let piece = String(utf16[start..<end]) else {
+        Issue.record("\(range) splits a surrogate pair")
+        return ""
+    }
+    return piece
 }
 
 /// The UTF-16 range of the `occurrence`-th (0-based) appearance of `needle` in `text`.
@@ -120,6 +129,7 @@ struct Sample: Sendable, CustomTestStringConvertible {
         "variable", "variable.member", "variable.parameter", "property", "operator", "delimiter",
         "punctuation.bracket", "punctuation.delimiter", "punctuation.special", "label",
         "namespace", "parameter", "embedded", "none", "spell", "_class", "_function",
+        "keyword.conditional.ternary",
     ]
 
     @Test(arguments: SyntaxLanguage.allCases)
@@ -156,10 +166,93 @@ struct Sample: Sendable, CustomTestStringConvertible {
         #expect(tokens.contains { $0.range.contains(a) && $0.kind == .string })
     }
 
-    /// Where two patterns capture the same node, the later pattern in the query wins, as the
-    /// queries are written: Python's general `(identifier) @variable` comes first and its call
-    /// patterns later. Tree-sitter returns the call pattern's match first (it starts higher in
-    /// the tree), so going by the order matches arrive would leave both calls plain.
+    /// Where a general pattern and a contextual one capture the same node, the contextual one
+    /// wins whichever comes first in the query. Go and Java put their contextual patterns first
+    /// and their catch-alls later; Python, JavaScript and the nvim-style queries do the opposite.
+    @Test(arguments: [
+        Sample(language: .go,
+               text: "func main() { fmt.Println(helper(1)) }\nfunc helper(n int) int { return n }\n",
+               expected: [(.function, "main"), (.function, "Println")]),
+        Sample(language: .java,
+               text: "class URL { static final int MAX_N = 1; void f() { HTTP.get(); } }\n",
+               expected: [(.type, "URL"), (.type, "HTTP"), (.constant, "MAX_N"), (.function, "get")]),
+        Sample(language: .css, text: "a:hover { color: red; }\n", expected: [(.attribute, "hover")]),
+        Sample(language: .scss, text: "@mixin theme($c) { color: $c; }\n",
+               expected: [(.function, "theme")]),
+    ])
+    func contextualPatternsBeatGeneralOnes(sample: Sample) {
+        let tokens = SyntaxHighlighter.tokens(in: sample.text, language: sample.language)
+        let found = tokens.map { ($0.kind, slice(sample.text, $0.range)) }
+        for (kind, piece) in sample.expected {
+            #expect(found.contains { $0 == (kind, piece) },
+                    "\(sample.language): \(kind) over \(piece.debugDescription); got \(found)")
+        }
+    }
+
+    /// Swift's ternary `?` is captured as `keyword.conditional.ternary` inside the ternary, which
+    /// now beats the general `"?" @operator`; Xcode draws it plain, so it maps to plain.
+    @Test func swiftTernaryOperatorIsPlain() throws {
+        let text = "let y = a ? b : c\n"
+        let tokens = SyntaxHighlighter.tokens(in: text, language: .swift)
+        let mark = try #require(utf16Range(of: "?", in: text)).lowerBound
+        #expect(!tokens.contains { $0.range.contains(mark) }, "\(tokens)")
+        #expect(tokens.contains(SyntaxToken(range: 0..<3, kind: .keyword)))
+    }
+
+    /// Go's `helper` is both called and declared; each is a function name.
+    @Test func goFunctionNamesAreFunctions() throws {
+        let text = "func main() { fmt.Println(helper(1)) }\nfunc helper(n int) int { return n }\n"
+        let tokens = SyntaxHighlighter.tokens(in: text, language: .go)
+        for occurrence in 0..<2 {
+            let helper = try #require(utf16Range(of: "helper", in: text, occurrence: occurrence))
+            #expect(tokens.contains(SyntaxToken(range: helper, kind: .function)), "helper #\(occurrence)")
+        }
+    }
+
+    /// How specific each pattern is, read from the query source: the deepest nesting of node
+    /// patterns (an alternation adds no depth, a predicate group counts none), and how many text
+    /// predicates guard it.
+    @Test func patternSpecificityIsReadFromTheSource() throws {
+        let source = """
+            ; a comment with (parens) and "quotes"
+            (identifier) @variable
+            (call function: (identifier) @function)
+            ((identifier) @constant (#match? @constant "^[A-Z(]"))
+            ["def" "return"] @keyword
+            (call function: (attribute attribute: (identifier) @function.method))
+            [(integer) (float)] @number
+            "lambda" @keyword
+            """
+        let highlights = try #require(SyntaxHighlighter.highlights(source: source, language: .python))
+        #expect(highlights.depths == [1, 2, 1, 1, 3, 1, 1])
+        #expect(highlights.filters == [0, 0, 1, 0, 0, 0, 0])
+    }
+
+    /// Every language's patterns were all read: the source scan found as many patterns as the
+    /// compiled query has, so no language falls back to pattern order alone.
+    @Test(arguments: SyntaxLanguage.allCases)
+    func everyPatternHasASpecificity(language: SyntaxLanguage) throws {
+        let highlights = try #require(SyntaxHighlighter.highlights(for: language))
+        #expect(highlights.depths.count == highlights.query.patternCount)
+        #expect(highlights.depths.allSatisfy { $0 >= 1 })
+    }
+
+    /// A pattern guarded by a predicate the binding can't evaluate (it parses it as generic) never
+    /// matches, while one with a known predicate still does.
+    @Test func unknownPredicateMakesThePatternUnevaluable() throws {
+        let source = """
+            ((identifier) @function (#some-future-test? @function "x"))
+            ((identifier) @constant (#match? @constant "^[A-Z]"))
+            ((identifier) @variable.builtin (#is-not? local))
+            """
+        let highlights = try #require(SyntaxHighlighter.highlights(source: source, language: .python))
+        #expect(highlights.unevaluable == [0, 2])
+    }
+
+    /// Where two patterns capture the same node, the order matches arrive in doesn't decide:
+    /// tree-sitter returns Python's call pattern's match before the general `(identifier)
+    /// @variable` (it starts higher in the tree), so going by arrival would leave both calls
+    /// plain. The call pattern is the more specific one, and it also comes later in the query.
     @Test func laterPatternWinsAtTheSameRange() throws {
         let text = "print(len(x))\n"
         let tokens = SyntaxHighlighter.tokens(in: text, language: .python)

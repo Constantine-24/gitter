@@ -29,8 +29,12 @@ public enum SyntaxHighlighter {
     static let parseTimeout: TimeInterval = 0.5
 
     /// The tokens for `text`, sorted and non-overlapping, where captures nest the innermost wins
-    /// (a string's interpolated expression is not string-coloured), and among captures of the
-    /// same range the one from the later query pattern wins, as the queries are written.
+    /// (a string's interpolated expression is not string-coloured). Among captures of the same
+    /// node the more specific pattern wins: the more deeply nested one (`(function_declaration
+    /// name: (identifier))` over `(identifier)`), then the one with more text predicates, then the
+    /// later one. The pinned queries disagree on order — Go and Java put contextual patterns
+    /// before their catch-alls, Python, JavaScript and the nvim-style queries after — so order
+    /// alone can only break the remaining ties.
     ///
     /// Empty when the text is over a limit, the language's queries didn't load, or the parse
     /// failed or timed out.
@@ -50,8 +54,11 @@ public enum SyntaxHighlighter {
                 let lower = max(0, capture.range.lowerBound)
                 let upper = min(length, capture.range.upperBound)
                 guard lower < upper else { continue }
-                captures.append(Capture(range: lower..<upper, paint: paint,
-                                        pattern: capture.patternIndex, order: captures.count))
+                let pattern = capture.patternIndex
+                captures.append(Capture(
+                    range: lower..<upper, paint: paint,
+                    depth: highlights.depths.isEmpty ? 1 : highlights.depths[pattern],
+                    filters: highlights.filters[pattern], pattern: pattern, order: captures.count))
             }
         }
         return flatten(captures, length: length)
@@ -61,8 +68,10 @@ public enum SyntaxHighlighter {
     ///
     /// Lines end at `\n`, and a `\r` just before it belongs to the line's terminator, not its
     /// text; the split works on UTF-16 code units, because `"\r\n"` is one `Character`. A token
-    /// that spans lines becomes one token on each, and no token reaches into a terminator. The
-    /// tokens must be sorted and disjoint, as `tokens` returns them.
+    /// that spans lines becomes one token on each, and no token reaches into a terminator. There
+    /// is one array per `\n` plus one, so a text ending in `\n` ends with an empty array for the
+    /// empty line after it (unlike `maxLines`, which doesn't count that line). The tokens must be
+    /// sorted and disjoint, as `tokens` returns them.
     public static func lineTokens(_ tokens: [SyntaxToken], in text: String) -> [[SyntaxToken]] {
         var lines: [Range<Int>] = []
         var lineStart = 0
@@ -115,23 +124,28 @@ public enum SyntaxHighlighter {
 
     // MARK: - Flattening
 
-    /// One capture of a match: its range, what it paints (0 for plain, else a kind's code), and
-    /// its query pattern and position for ties.
+    /// One capture of a match: its range, what it paints (0 for plain, else a kind's code), how
+    /// specific its pattern is, and its pattern and position for the last ties.
     private struct Capture {
         let range: Range<Int>
         let paint: UInt8
+        let depth: Int
+        let filters: Int
         let pattern: Int
         let order: Int
     }
 
     /// Paints the captures over the text, outer ones first, so an inner capture overwrites the
-    /// part of an outer one it covers; at equal ranges the later pattern paints last. Tree-sitter
+    /// part of an outer one it covers; at equal ranges the more specific pattern paints last (see
+    /// `tokens`). Tree-sitter
     /// captures are nodes, so two ranges are always nested or disjoint. Then each run of one
     /// kind becomes a token.
     private static func flatten(_ captures: [Capture], length: Int) -> [SyntaxToken] {
         guard !captures.isEmpty else { return [] }
         let ordered = captures.sorted { a, b in
             if a.range.count != b.range.count { return a.range.count > b.range.count }
+            if a.depth != b.depth { return a.depth < b.depth }
+            if a.filters != b.filters { return a.filters < b.filters }
             if a.pattern != b.pattern { return a.pattern < b.pattern }
             return a.order < b.order
         }
@@ -166,14 +180,21 @@ public enum SyntaxHighlighter {
     /// string's colour. Ignored ones are spell-check markers (`spell`, on the same node as
     /// `comment`) and private helper captures (`_name`), which would otherwise clear real colours.
     ///
-    /// `unevaluable` holds the patterns guarded by `#is?` or `#is-not?`, which ask about scopes
-    /// (`local`) the binding doesn't track. It would answer "not local" for everything, so Ruby's
-    /// `((identifier) @function.method (#is-not? local))` would colour every local variable as a
-    /// method; those patterns never match instead (ledger Ruling 2).
+    /// `unevaluable` holds the patterns guarded by a predicate the binding can't evaluate:
+    /// `#is?` and `#is-not?`, which ask about scopes (`local`) it doesn't track, and any predicate
+    /// it doesn't know. It would let them all pass, so Ruby's `((identifier) @function.method
+    /// (#is-not? local))` would colour every local variable as a method; those patterns never
+    /// match instead (ledger Ruling 2). Directives (`#name!`) don't filter, so they don't count.
+    ///
+    /// `depths` and `filters` say how specific each pattern is, for captures of the same node:
+    /// how deeply its node patterns nest, and how many text predicates guard it. `depths` is
+    /// empty if the source scan didn't find exactly the query's patterns.
     struct Highlights: Sendable {
         let query: Query
         let paint: [UInt8?]
         let unevaluable: Set<Int>
+        let depths: [Int]
+        let filters: [Int]
     }
 
     private struct Cache {
@@ -214,6 +235,15 @@ public enum SyntaxHighlighter {
             source.append(data)
             source.append(0x0A)
         }
+        return highlights(source: source, language: language)
+    }
+
+    /// Compiles highlight query source for a language's grammar. The tests use it directly.
+    static func highlights(source: String, language: SyntaxLanguage) -> Highlights? {
+        highlights(source: Data(source.utf8), language: language)
+    }
+
+    private static func highlights(source: Data, language: SyntaxLanguage) -> Highlights? {
         guard let query = try? Query(language: language.grammar, data: source) else { return nil }
         let kinds = SyntaxKind.allCases
         let paint = (0..<query.captureCount).map { id -> UInt8? in
@@ -225,16 +255,91 @@ public enum SyntaxHighlighter {
             }
             return UInt8(index + 1)
         }
-        let unevaluable = Set((0..<query.patternCount).filter { pattern in
+        let patterns = 0..<query.patternCount
+        let unevaluable = Set(patterns.filter { pattern in
             query.predicates(for: pattern).contains { predicate in
                 switch predicate {
                 case .isNot: true
-                case .generic(let name, _, _): name == "is?" || name == "is-not?"
+                case .generic(let name, _, _): !name.hasSuffix("!")
                 default: false
                 }
             }
         })
-        return Highlights(query: query, paint: paint, unevaluable: unevaluable)
+        let filters = patterns.map { pattern in
+            query.predicates(for: pattern).count { predicate in
+                switch predicate {
+                case .set, .generic: false
+                default: true
+                }
+            }
+        }
+        let depths = patternDepths(Array(source))
+        return Highlights(query: query, paint: paint, unevaluable: unevaluable,
+                          depths: depths.count == query.patternCount ? depths : [], filters: filters)
+    }
+
+    /// Each top-level pattern's nesting depth in query source: 1 for a bare node (`(identifier)`,
+    /// `"if"`, an alternation of either), 2 for a node inside another (`(call function:
+    /// (identifier))`), and so on. Grouping parentheses and alternations add no depth, and
+    /// predicate groups `(#…)` count nothing. Comments and string contents are skipped, so their
+    /// brackets don't count.
+    static func patternDepths(_ source: [UInt8]) -> [Int] {
+        enum Open { case node, group, predicate }
+        var depths: [Int] = []
+        var stack: [Open] = []
+        var nodeDepth = 0
+        var predicates = 0
+        var index = 0
+
+        func isSpace(_ byte: UInt8) -> Bool { byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D }
+        func reach(_ depth: Int) {
+            if predicates == 0, !depths.isEmpty { depths[depths.count - 1] = max(depths[depths.count - 1], depth) }
+        }
+
+        while index < source.count {
+            let byte = source[index]
+            switch byte {
+            case UInt8(ascii: ";"):
+                while index < source.count, source[index] != 0x0A { index += 1 }
+            case UInt8(ascii: "\""):
+                if stack.isEmpty { depths.append(0) }
+                reach(nodeDepth + 1)
+                index += 1
+                while index < source.count, source[index] != UInt8(ascii: "\"") {
+                    if source[index] == UInt8(ascii: "\\") { index += 1 }
+                    index += 1
+                }
+            case UInt8(ascii: "("):
+                var next = index + 1
+                while next < source.count, isSpace(source[next]) { next += 1 }
+                let first = next < source.count ? source[next] : 0
+                if first == UInt8(ascii: "#") {
+                    stack.append(.predicate)
+                    predicates += 1
+                } else {
+                    if stack.isEmpty { depths.append(0) }
+                    let isNode = first == UInt8(ascii: "_") || (first | 0x20 >= UInt8(ascii: "a") && first | 0x20 <= UInt8(ascii: "z"))
+                    stack.append(isNode ? .node : .group)
+                    if isNode {
+                        nodeDepth += 1
+                        reach(nodeDepth)
+                    }
+                }
+            case UInt8(ascii: "["):
+                if stack.isEmpty { depths.append(0) }
+                stack.append(.group)
+            case UInt8(ascii: ")"), UInt8(ascii: "]"):
+                switch stack.popLast() {
+                case .node: nodeDepth -= 1
+                case .predicate: predicates -= 1
+                case .group, nil: break
+                }
+            default:
+                break
+            }
+            index += 1
+        }
+        return depths
     }
 
     /// The `queries` folder of a grammar's SwiftPM resource bundle. In the app the bundles are in
