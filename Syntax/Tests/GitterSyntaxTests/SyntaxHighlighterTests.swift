@@ -171,6 +171,36 @@ struct Sample: Sendable, CustomTestStringConvertible {
         #expect(!tokens.contains { $0.range.contains(x) })
     }
 
+    /// A pattern guarded by a predicate the binding can't evaluate is dropped (ledger Ruling 2).
+    /// Ruby's `((identifier) @function.method (#is-not? local))` needs scope tracking; evaluated
+    /// as "never local" it would colour every local variable as a method. The method a call or
+    /// a `def` names is still coloured by its own patterns.
+    @Test func unevaluablePredicateDropsThePattern() throws {
+        let text = "x = 1\nputs x\nobj.save\ndef foo\nend\n"
+        let tokens = SyntaxHighlighter.tokens(in: text, language: .ruby)
+        for occurrence in 0..<2 {
+            let x = try #require(utf16Range(of: "x", in: text, occurrence: occurrence))
+            #expect(!tokens.contains { $0.range.overlaps(x) }, "x #\(occurrence) is coloured")
+        }
+        let obj = try #require(utf16Range(of: "obj", in: text))
+        #expect(!tokens.contains { $0.range.overlaps(obj) })
+        #expect(tokens.contains(SyntaxToken(range: try #require(utf16Range(of: "save", in: text)),
+                                             kind: .function)))
+        #expect(tokens.contains(SyntaxToken(range: try #require(utf16Range(of: "foo", in: text)),
+                                             kind: .function)))
+    }
+
+    /// `.jsx` files detect as JavaScript, so JavaScript takes the JSX patterns too, last, as TSX
+    /// does (ledger Ruling 3).
+    @Test func jsxInJavaScriptGetsTagColours() {
+        let text = "const a = <div className=\"x\">hi</div>;\n"
+        let found = SyntaxHighlighter.tokens(in: text, language: .javascript)
+            .map { ($0.kind, slice(text, $0.range)) }
+        #expect(found.contains { $0 == (.keyword, "div") }, "\(found)")
+        #expect(found.contains { $0 == (.attribute, "className") }, "\(found)")
+        #expect(found.contains { $0 == (.string, "\"x\"") }, "\(found)")
+    }
+
     /// A text over either limit isn't parsed at all; one exactly at the limit still is, so the
     /// empty answer comes from the limit and not from a sample that has nothing to colour.
     @Test func overLimitTextIsPlain() {

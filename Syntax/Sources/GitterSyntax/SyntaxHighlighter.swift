@@ -44,7 +44,7 @@ public enum SyntaxHighlighter {
         let length = text.utf16.count
         var captures: [Capture] = []
         let matches = highlights.query.execute(in: tree).resolve(with: .init(string: text))
-        for match in matches {
+        for match in matches where !highlights.unevaluable.contains(match.patternIndex) {
             for capture in match.captures {
                 guard let paint = highlights.paint[capture.index] else { continue }
                 let lower = max(0, capture.range.lowerBound)
@@ -165,9 +165,15 @@ public enum SyntaxHighlighter {
     /// Plain captures still paint: a `variable` inside a string's interpolation must clear the
     /// string's colour. Ignored ones are spell-check markers (`spell`, on the same node as
     /// `comment`) and private helper captures (`_name`), which would otherwise clear real colours.
+    ///
+    /// `unevaluable` holds the patterns guarded by `#is?` or `#is-not?`, which ask about scopes
+    /// (`local`) the binding doesn't track. It would answer "not local" for everything, so Ruby's
+    /// `((identifier) @function.method (#is-not? local))` would colour every local variable as a
+    /// method; those patterns never match instead (ledger Ruling 2).
     struct Highlights: Sendable {
         let query: Query
         let paint: [UInt8?]
+        let unevaluable: Set<Int>
     }
 
     private struct Cache {
@@ -219,7 +225,16 @@ public enum SyntaxHighlighter {
             }
             return UInt8(index + 1)
         }
-        return Highlights(query: query, paint: paint)
+        let unevaluable = Set((0..<query.patternCount).filter { pattern in
+            query.predicates(for: pattern).contains { predicate in
+                switch predicate {
+                case .isNot: true
+                case .generic(let name, _, _): name == "is?" || name == "is-not?"
+                default: false
+                }
+            }
+        })
+        return Highlights(query: query, paint: paint, unevaluable: unevaluable)
     }
 
     /// The `queries` folder of a grammar's SwiftPM resource bundle. In the app the bundles are in
