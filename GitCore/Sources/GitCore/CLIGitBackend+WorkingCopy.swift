@@ -205,6 +205,21 @@ extension CLIGitBackend: GitWorkingCopyBackend {
         }
     }
 
+    public func blobBytes(_ object: String, at root: URL, limit: Int) async throws -> Data? {
+        // Lowercase hex only: nothing that starts with `-` or names a revision reaches git.
+        guard !object.isEmpty,
+            object.utf8.allSatisfy({ (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0)
+                || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains($0) })
+        else { throw BranchOperationError.invalidName(object) }
+        // Zeros of any length: an abbreviated diff (a commit's) prints `0000000`.
+        if object.utf8.allSatisfy({ $0 == UInt8(ascii: "0") }) { return nil }
+
+        let size = String(decoding: try await run(["cat-file", "-s", object], cwd: root), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let size = Int(size), size <= limit else { return nil }
+        return try await run(["cat-file", "blob", object], cwd: root)
+    }
+
     /// 40 (SHA-1) or 64 (SHA-256) lowercase hex digits; zeros included, as git's name for a
     /// side that does not exist.
     static func isFullObjectID(_ id: String) -> Bool {
