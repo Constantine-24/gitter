@@ -6,8 +6,9 @@ import GitterSyntax
 /// before it, and published only while that same diff is still the one shown.
 extension RepositoryStore {
 
-    /// Reads the sources of `diffs` (just set by `loadDiff`), colours them off the main actor and
-    /// publishes `diffSyntax`. The blob sides are read through the backend, the worktree side
+    /// Reads the sources of the files of `diffs` (just set by `loadDiff`) that have no colours
+    /// yet, colours them off the main actor and adds them to `diffSyntax`; a file whose colours
+    /// `setDiff` kept is not read again. The blob sides are read through the backend, the worktree side
     /// from disk; both with `SyntaxHighlighter.maxBytes` as the limit. A failed read leaves that
     /// side plain, with no banner. The result is dropped when the task was cancelled (`setDiff`
     /// cancels it with every new diff, `open()` and `close()` too) or when the generation,
@@ -19,6 +20,7 @@ extension RepositoryStore {
     ) {
         diffSyntaxTask?.cancel()
         let jobs = diffs.compactMap { diff -> (diff: FileDiff, old: DiffSyntax.Source, new: DiffSyntax.Source)? in
+            guard diffSyntax[diff.id] == nil else { return nil }
             let sides = DiffSyntax.sourceSides(for: diff, selection: selection, staged: staged)
             return sides == (.none, .none) ? nil : (diff, sides.old, sides.new)
         }

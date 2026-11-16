@@ -167,4 +167,120 @@ import Testing
         let line = try #require(Self.line(.added, in: new))
         #expect(store.diffSyntax[new.id]?[line.id]?.contains(SyntaxToken(range: 0..<3, kind: .keyword)) == true)
     }
+
+    // MARK: - Ruling 7: a reload keeps what is still right
+
+    /// A reload whose diff is the same (`==`, blob ids included) keeps the file's colours through
+    /// `setDiff`: no blank in between, and nothing is read again. `blobBytes` is held, so a re-read
+    /// would park instead of landing behind the check.
+    @Test(.timeLimit(.minutes(10))) func refreshWithSameDiffKeepsColours() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try repo.commit("a.swift", "let a = 1\n", "first")
+        try repo.write("a.swift", "var a = \"x\"\n")
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        defer { backend.releaseAll() }
+        store.select("a.swift", staged: false)
+        let diff = try #require(await Self.shownDiff(store, "a.swift"))
+        await store.diffSyntaxTask?.value
+        let colours = try #require(store.diffSyntax[diff.id])
+        let reads = Self.blobReads(backend)
+
+        let gate = backend.hold(.blobBytes)
+        let loads = backend.calls.filter { $0 == .workingCopyDiff }.count
+        store.loadDiff()
+        await store.diffTask?.value
+
+        #expect(backend.calls.filter { $0 == .workingCopyDiff }.count == loads + 1, "the diff was read again")
+        #expect(store.diff == [diff])
+        #expect(store.diffSyntax[diff.id] == colours)
+        // Nothing to read: no read parks on the hold, and the colours stay.
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!gate.waiting)
+        #expect(Self.blobReads(backend) == reads)
+        #expect(store.diffSyntax[diff.id] == colours)
+    }
+
+    /// A reload whose diff changed drops that file's colours at once, plain until the new ones land.
+    @Test(.timeLimit(.minutes(10))) func changedDiffDropsOldColours() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try repo.commit("a.swift", "let a = 1\n", "first")
+        try repo.write("a.swift", "var a = \"x\"\n")
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        defer { backend.releaseAll() }
+        store.select("a.swift", staged: false)
+        let before = try #require(await Self.shownDiff(store, "a.swift"))
+        await store.diffSyntaxTask?.value
+        #expect(store.diffSyntax[before.id] != nil)
+
+        try repo.write("a.swift", "let b = 2\nvar a = \"x\"\n")
+        let gate = backend.hold(.blobBytes)
+        store.loadDiff()
+        await store.diffTask?.value
+        let after = try #require(store.diff.first)
+        #expect(after != before)
+        #expect(after.id == before.id)
+        #expect(await waitUntil("the new read parked") { gate.waiting })
+        #expect(store.diffSyntax[after.id] == nil)
+
+        gate.release()
+        // A watcher reload may replace the task meanwhile: wait for the colours, not one task.
+        await waitUntil("the new colours") { store.diffSyntax[after.id] != nil }
+        let added = try #require(after.hunks.flatMap(\.lines).first { $0.kind == .added && $0.displayText == "let b = 2" })
+        #expect(store.diffSyntax[after.id]?[added.id]?.contains(SyntaxToken(range: 0..<3, kind: .keyword)) == true)
+    }
+
+    // MARK: - Ruling 8: the other sources
+
+    /// A stash entry's diff (`diff-tree`, abbreviated ids) is coloured from its blobs.
+    @Test(.timeLimit(.minutes(10))) func stashDiffGetsColours() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try repo.commit("a.swift", "let a = 1\n", "first")
+        try repo.write("a.swift", "var a = \"x\"\n")
+        try repo.git("stash")
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        let stash = try #require(store.stashes.first)
+
+        store.select(.stash(stash.sha))
+        await store.detailTask?.value
+        store.selectPath("a.swift")
+        let diff = try #require(await Self.shownDiff(store, "a.swift"))
+        await store.diffSyntaxTask?.value
+
+        let removed = try #require(Self.line(.removed, in: diff))
+        let added = try #require(Self.line(.added, in: diff))
+        #expect(store.diffSyntax[diff.id]?[removed.id]?.contains(SyntaxToken(range: 0..<3, kind: .keyword)) == true)
+        #expect(store.diffSyntax[diff.id]?[added.id]?.contains(SyntaxToken(range: 8..<11, kind: .string)) == true)
+        #expect(Self.blobReads(backend) == 2)
+    }
+
+    /// An untracked file's diff (`--no-index` against /dev/null): no old side, and the new side
+    /// is the file on disk, so git reads no blob.
+    @Test(.timeLimit(.minutes(10))) func untrackedFileGetsColours() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try repo.commit("a.swift", "let a = 1\n", "first")
+        try repo.write("n.swift", "// new\nlet n = \"new\"\n")
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+
+        store.select("n.swift", staged: false)
+        let diff = try #require(await Self.shownDiff(store, "n.swift"))
+        await store.diffSyntaxTask?.value
+
+        let lines = diff.hunks.flatMap(\.lines)
+        #expect(lines.count == 2)
+        #expect(store.diffSyntax[diff.id]?[lines[0].id] == [SyntaxToken(range: 0..<6, kind: .comment)])
+        #expect(store.diffSyntax[diff.id]?[lines[1].id]?.contains(SyntaxToken(range: 8..<13, kind: .string)) == true)
+        #expect(Self.blobReads(backend) == 0)
+    }
 }
