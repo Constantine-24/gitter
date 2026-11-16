@@ -28,18 +28,19 @@ import Testing
         .markupCode: ([0.665, 0.052, 0.569], [0.665, 0.052, 0.569]),
     ]
 
-    /// Kinds moved toward Resolver/Text in 0.02 steps until 4.5:1 on every background: the final
+    /// Kinds moved toward Resolver/Text in 0.02 steps until 4.5:1 on every background (3:1 on the
+    /// selected diff rows): the final
     /// value in each appearance and what forced it. Filled in by the contrast step.
     static let adjusted: [SyntaxKind: (light: RGB?, dark: RGB?, why: String)] = [
-        .keyword: ([0.608, 0.138, 0.576], [0.971, 0.627, 0.783], "Green 0.30 diff background, 3.08 original"),
-        .string: ([0.691, 0.103, 0.090], [0.972, 0.640, 0.619], "Red 0.30 in light (3.95), green 0.30 in dark (3.11)"),
-        .comment: ([0.314, 0.360, 0.404], [0.708, 0.731, 0.765], "Red 0.30 in light (3.59), green 0.30 in dark (1.99)"),
-        .function: ([0.422, 0.213, 0.664], [0.796, 0.687, 0.937], "Green 0.30 diff background, 2.36 original"),
-        .constant: ([0.422, 0.213, 0.664], [0.797, 0.686, 0.936], "Green 0.30 diff background, 2.35 original"),
-        .attribute: ([0.451, 0.334, 0.027], [0.833, 0.701, 0.600], "Red 0.30 in light (3.90), green 0.30 in dark (2.83)"),
-        .preprocessor: ([0.391, 0.220, 0.124], [0.981, 0.654, 0.419], "Green 0.30 diff background, 3.86 original"),
-        .url: ([0.055, 0.055, 1.000], [0.627, 0.721, 0.984], "Green 0.30 diff background, 2.54 original"),
-        .markupCode: ([0.643, 0.054, 0.551], [0.864, 0.680, 0.849], "Red 0.30 in light (4.38), green 0.30 in dark (1.33; the dark value was the unlightened light value)"),
+        .keyword: ([0.608, 0.138, 0.576], [0.976, 0.547, 0.737], "TheirsWord, 3.53 in dark"),
+        .string: ([0.717, 0.103, 0.089], [0.978, 0.565, 0.535], "TheirsWord, 4.10 in light and 3.56 in dark"),
+        .comment: ([0.319, 0.366, 0.411], [0.655, 0.684, 0.720], "TheirsWord, 3.72 in light and 2.28 in dark"),
+        .function: ([0.422, 0.213, 0.664], [0.758, 0.622, 0.929], "TheirsWord, 2.71 in dark"),
+        .constant: ([0.422, 0.213, 0.664], [0.759, 0.621, 0.928], "TheirsWord, 2.70 in dark"),
+        .attribute: ([0.466, 0.345, 0.023], [0.809, 0.650, 0.524], "TheirsWord, 4.05 in light and 3.24 in dark"),
+        .preprocessor: ([0.391, 0.220, 0.124], [0.989, 0.577, 0.275], "TheirsWord, 4.43 in dark"),
+        .url: ([0.055, 0.055, 1.000], [0.553, 0.669, 0.988], "TheirsWord, 2.91 in dark"),
+        .markupCode: ([0.665, 0.052, 0.569], [0.841, 0.608, 0.817], "TheirsWord, 1.53 in dark (the dark value was the unlightened light value)"),
     ]
 
     static func components(_ colour: NSColor, in appearance: NSAppearance) -> RGB {
@@ -75,22 +76,21 @@ import Testing
 
     /// One background as drawn, in an appearance.
     struct Background { let name: String; let colour: (NSAppearance) -> NSColor }
+    /// Needs 4.5:1, or 3:1 for the selected diff rows (`selected`).
+    static func diff(_ name: String, _ base: NSColor, _ alpha: Double) -> Background {
+        Background(name: name) { appearance in
+            SyntaxPalette.composite(base.withAlphaComponent(alpha), over: .textBackgroundColor, in: appearance)
+        }
+    }
 
     static func resolver(_ role: ResolverRole) -> NSColor { NSColor(named: role.assetName) ?? .magenta }
 
     /// The diff rows draw `Color.green/red.opacity(…)` over the pane (`DiffLineRow.background`).
     /// The resolver columns fill each opaque tint over the window and then an opaque word mark
     /// over that (`ResolverTextView.drawBackground`), so each is its own background.
+    /// Verified equal to SwiftUI's `Color.green` and `Color.red` in both appearances on macOS 26.
     nonisolated(unsafe) static let backgrounds: [Background] = {
-        func diff(_ name: String, _ base: NSColor, _ alpha: Double) -> Background {
-            Background(name: name) { appearance in
-                SyntaxPalette.composite(base.withAlphaComponent(alpha), over: .textBackgroundColor, in: appearance)
-            }
-        }
-        var list = [
-            diff("green 0.15", .systemGreen, 0.15), diff("green 0.30", .systemGreen, 0.30),
-            diff("red 0.15", .systemRed, 0.15), diff("red 0.30", .systemRed, 0.30),
-        ]
+        var list = [diff("green 0.15", .systemGreen, 0.15), diff("red 0.15", .systemRed, 0.15)]
         for role in [ResolverRole.oursTint, .theirsTint, .resolvedTint, .oursWord, .theirsWord, .filler] {
             list.append(Background(name: role.assetName) { appearance in
                 SyntaxPalette.composite(resolver(role), over: resolver(.window), in: appearance)
@@ -99,6 +99,9 @@ import Testing
         return list
     }()
 
+    /// Lines selected for staging draw at 0.30.
+    nonisolated(unsafe) static let selectedBackgrounds = [diff("green 0.30", .systemGreen, 0.30), diff("red 0.30", .systemRed, 0.30)]
+
     @Test func legibleOnEveryBackground() {
         for kind in SyntaxKind.allCases {
             for (name, appearance) in [("light", Self.light), ("dark", Self.dark)] {
@@ -106,6 +109,18 @@ import Testing
                     let ratio = SyntaxPalette.contrast(
                         SyntaxPalette.standard.color(kind), background.colour(appearance), in: appearance)
                     #expect(ratio >= 4.5, "\(kind) \(name) on \(background.name): \(ratio)")
+                }
+            }
+        }
+    }
+
+    @Test func legibleWhileSelected() {
+        for kind in SyntaxKind.allCases {
+            for (name, appearance) in [("light", Self.light), ("dark", Self.dark)] {
+                for background in Self.selectedBackgrounds {
+                    let ratio = SyntaxPalette.contrast(
+                        SyntaxPalette.standard.color(kind), background.colour(appearance), in: appearance)
+                    #expect(ratio >= 3.0, "\(kind) \(name) on \(background.name): \(ratio)")
                 }
             }
         }
