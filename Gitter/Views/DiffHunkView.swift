@@ -1,5 +1,6 @@
 import AppKit
 import GitCore
+import GitterSyntax
 import SwiftUI
 
 /// One hunk: the `@@` header with its stage/unstage buttons, then the hunk's lines.
@@ -14,6 +15,8 @@ struct DiffHunkView: View {
     /// untracked, binary and renamed files: then the hunk renders as the read-only diff it was
     /// before — no buttons, no gutter clicks, no hover.
     let canStage: Bool
+    /// The file's syntax colours by line (`RepositoryStore.diffSyntax`), nil until they are read.
+    let tokens: [DiffLine.ID: [SyntaxToken]]?
     @Binding var selection: DiffLineSelection
 
     @Environment(RepositoryStore.self) private var store
@@ -35,6 +38,7 @@ struct DiffHunkView: View {
         ForEach(hunk.lines, id: \.self) { line in
             DiffLineRow(
                 line: line,
+                tokens: tokens?[line.id],
                 isSelected: ids.contains(line.id),
                 isSelectable: canStage && (line.kind == .added || line.kind == .removed)
             ) { extending in
@@ -131,6 +135,8 @@ struct DiffHunkView: View {
 /// One diff line: a clickable gutter (numbers, selection bar, +/- marker) and the text.
 private struct DiffLineRow: View {
     let line: DiffLine
+    /// The line's syntax colours, ranges in UTF-16 units of `displayText`; nil draws it plain.
+    let tokens: [SyntaxToken]?
     let isSelected: Bool
     let isSelectable: Bool
     /// Called with `true` for a shift-click, which extends the range instead of toggling.
@@ -144,7 +150,7 @@ private struct DiffLineRow: View {
         // and +/- marker level with the *first* one, not centred across the whole wrapped height.
         HStack(alignment: .top, spacing: 0) {
             gutter
-            Text(line.displayText.isEmpty ? " " : line.displayText)
+            text
                 .font(.system(.body, design: .monospaced))
                 .italic(line.kind == .noNewline)
                 .foregroundStyle(
@@ -162,6 +168,26 @@ private struct DiffLineRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(background)
+    }
+
+    /// The line's text: plain, or with a foreground colour on each token's characters. Every
+    /// modifier after it in `body` is the same either way, so only the code's colour changes.
+    private var text: Text {
+        let display = line.displayText
+        guard let tokens, !tokens.isEmpty, line.kind != .noNewline, !display.isEmpty else {
+            return Text(display.isEmpty ? " " : display)
+        }
+        var attributed = AttributedString(display)
+        let length = display.utf16.count
+        for token in tokens where token.range.upperBound <= length {
+            let lower = String.Index(utf16Offset: token.range.lowerBound, in: display)
+            let upper = String.Index(utf16Offset: token.range.upperBound, in: display)
+            guard let start = AttributedString.Index(lower, within: attributed),
+                let end = AttributedString.Index(upper, within: attributed), start < end
+            else { continue }
+            attributed[start..<end].foregroundColor = SyntaxColor.color(token.kind)
+        }
+        return Text(attributed)
     }
 
     /// The part that takes clicks. `NSEvent.modifierFlags` is the only way to see the shift
