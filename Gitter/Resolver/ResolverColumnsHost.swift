@@ -101,20 +101,22 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
     private var resultSyntaxTask: Task<Void, Never>?
     /// Counts the Result's changes (and file switches): a parse made for an older one is dropped.
     private(set) var resultVersion = 0
-    /// The version whose tokens the Result shows: for the tests.
-    private(set) var appliedResultVersion = 0
-    /// Parses of the Result started, and those dropped as stale: for the tests.
-    private(set) var resultParses = 0
-    private(set) var droppedResultParses = 0
-    private var parsesRunning = 0
+    #if DEBUG
+        /// The version whose tokens the Result shows: for the tests.
+        private(set) var appliedResultVersion = 0
+        /// Parses of the Result started, and those dropped as stale: for the tests.
+        private(set) var resultParses = 0
+        private(set) var droppedResultParses = 0
+        private var parsesRunning = 0
+        /// No parse scheduled or running: for the tests.
+        var syntaxIdle: Bool { sideSyntaxTask == nil && resultSyntaxTask == nil && parsesRunning == 0 }
+    #endif
     /// How long the Result waits after a change before it is parsed again.
     var resultSyntaxDelay: Duration = .milliseconds(150)
     /// The parse, off the main actor (the tests hold it to make a parse stale).
     var tokenize: @Sendable (String, SyntaxLanguage) -> [SyntaxToken] = { text, language in
         SyntaxHighlighter.tokens(in: text, language: language)
     }
-    /// No parse scheduled or running: for the tests.
-    var syntaxIdle: Bool { sideSyntaxTask == nil && resultSyntaxTask == nil && parsesRunning == 0 }
 
     #if DEBUG
         /// The host on screen last, for the harness's `resolver:type:` step.
@@ -685,13 +687,17 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         }
         let sides = draft.sides, tokenize = tokenize
         let generation = sideSyntaxGeneration
-        parsesRunning += 1
+        #if DEBUG
+            parsesRunning += 1
+        #endif
         sideSyntaxTask = Task { [weak self] in
             let parsed = await Task.detached(priority: .userInitiated) {
                 (ours: Self.source(sides.ours, language, tokenize), theirs: Self.source(sides.theirs, language, tokenize))
             }.value
             guard let self else { return }
-            self.parsesRunning -= 1
+            #if DEBUG
+                self.parsesRunning -= 1
+            #endif
             self.sideSyntaxCache.removeAll { $0.path == path && $0.snapshot == snapshot }
             self.sideSyntaxCache.append((path, snapshot, parsed.ours, parsed.theirs))
             if self.sideSyntaxCache.count > Self.sidesKept {
@@ -731,18 +737,26 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         resultSyntaxTask = Task { [weak self] in
             if delay > .zero { try? await Task.sleep(for: delay) }
             guard let self, version == self.resultVersion, let document = self.document else { return }
-            self.resultParses += 1
-            self.parsesRunning += 1
+            #if DEBUG
+                self.resultParses += 1
+                self.parsesRunning += 1
+            #endif
             let source = await Task.detached(priority: .userInitiated) {
                 Self.source(document.resultText, language, tokenize)
             }.value
-            self.parsesRunning -= 1
+            #if DEBUG
+                self.parsesRunning -= 1
+            #endif
             guard version == self.resultVersion else {
-                self.droppedResultParses += 1
+                #if DEBUG
+                    self.droppedResultParses += 1
+                #endif
                 return
             }
             self.resultSyntaxTask = nil
-            self.appliedResultVersion = version
+            #if DEBUG
+                self.appliedResultVersion = version
+            #endif
             self.syntaxSources[.result] = source
             self.result.textView.updateRowTokens(self.syntaxTokens(self.rows[...], .result))
             self.colourVisibleRows()

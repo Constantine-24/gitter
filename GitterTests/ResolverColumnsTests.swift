@@ -1044,8 +1044,9 @@ import Testing
 }
 
 /// Syntax colours in the columns (syntax colours Task 4): Ours and Theirs from their stages, the
-/// Result from its text 150 ms after the last change, all as rendering attributes of each
-/// column's layout manager — never the text storage, never the store's history.
+/// Result from its text 150 ms after the last change. The Result's are rendering attributes of
+/// its layout manager, never its text storage; the read-only sides' are foreground colours in
+/// their text (Ruling 9). Neither touches the store's history.
 @MainActor @Suite(.leavesTheRealDefaultsAlone) struct ResolverColumnsSyntaxTests {
 
     static let base = "import Foundation\n\n// The answer.\nfunc answer() -> Int {\n    return 1\n}\n\nlet done = true\n"
@@ -1319,6 +1320,52 @@ import Testing
         let parses = host.resultParses
         try Self.expectColoursMatch(host, store, "after the cancelled composition")
         #expect(host.resultParses == parses)
+    }
+
+    /// A parse that lands while an input method composes leaves the Result alone: its text then
+    /// holds the marked text, which the rows' offsets don't count. Once the composition is
+    /// committed the rows are coloured where their text is.
+    @Test(.timeLimit(.minutes(10))) func aParseLandingDuringACompositionWaitsForIt() async throws {
+        let repo = try Self.swiftMerge()
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.open(repo)
+        defer { cleanup(); window.close() }
+        await Self.settle(host)
+        let gate = ParseGate()
+        host.tokenize = { text, language in
+            gate.holdFirst()
+            return SyntaxHighlighter.tokens(in: text, language: language)
+        }
+        let view = host.result.textView
+        view.insertText("let typed = 1", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(await waitUntil("the held parse") { gate.isHolding })
+        let typed = try #require(host.model.rows.firstIndex { $0.result.text == "let typed = 1" })
+        let comment = try #require(host.model.rows.firstIndex { $0.result.text == "// The answer." })
+        #expect(comment < typed)
+        // A composition at the end of the comment, above the typed row.
+        let map = try #require(host.resultMap)
+        view.setSelectedRange(NSRange(location: map.displayStart(ofRow: comment) + "// The answer.".utf16.count, length: 0))
+        view.setMarkedText("\u{B4}", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(view.hasMarkedText())
+        gate.release()
+        await Self.settle(host)
+        #expect(host.appliedResultVersion == host.resultVersion)
+        // Not coloured while the text holds the marked text.
+        #expect(Self.rendered(view)[typed] == nil)
+
+        // Committed, with the next parse held off: every row but the composed one as its line.
+        host.resultSyntaxDelay = .seconds(30)
+        view.insertText("\u{E9}", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(!view.hasMarkedText())
+        let draft = try #require(store.resolverDrafts["a.swift"])
+        #expect(draft.document.resultText.contains("// The answer.\u{E9}"))
+        let shown = Self.rendered(view)
+        let wanted = Self.expected(host, .result, draft)
+        let composed = try #require(host.model.rows.firstIndex { $0.result.text == "// The answer.\u{E9}" })
+        for row in host.model.rows.indices where row != composed {
+            #expect(shown[row] == wanted[row], "row \(row)")
+        }
+        #expect(shown[typed]?.first == SyntaxRun(range: 0..<3, colour: SyntaxPalette.standard.color(.keyword)))
     }
 
     /// Ours and Theirs take their colours in their text (Ruling 9): no rendering attributes,

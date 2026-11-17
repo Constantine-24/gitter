@@ -255,8 +255,13 @@ final class ResolverTextView: NSTextView {
     ///   colour first, in one batch of edits. TextKit lays the edited rows out again and draws
     ///   them like any text, where a rendering attribute is redrawn on every scroll (measured,
     ///   Task 4) and a line already drawn did not take one at all.
+    ///
+    /// Nothing while an input method composes in the Result: its text then holds the marked
+    /// text, which `starts` doesn't count, so every offset after it would be off. `restoreRow`
+    /// colours the rows once the composition ends.
     @discardableResult
     func colour(rows range: Range<Int>) -> Int {
+        if column == .result, hasMarkedText() || compositionStart != nil { return 0 }
         let range = range.clamped(to: 0..<min(starts.count - 1, rowTokens.count))
         guard !range.isEmpty, let storage = textStorage else { return 0 }
         var missing = IndexSet(integersIn: range)
