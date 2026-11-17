@@ -85,7 +85,9 @@ open Gitter.xcodeproj
 
 The second command fetches the Tree-sitter packages once, so it needs the network, and the first
 run takes a while: the Kotlin grammar's repository history is about 470 MB. Run it again only when
-a pin in `Syntax/Package.swift` changes.
+a pin in `Syntax/Package.swift` changes. Opening the project in Xcode resolves the packages once
+more, into Xcode's own DerivedData folder, which can use the network; the command-line builds use
+`.build/SourcePackages` and never do.
 
 To build without opening Xcode:
 

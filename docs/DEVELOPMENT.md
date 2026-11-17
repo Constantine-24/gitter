@@ -36,6 +36,9 @@ open Gitter.xcodeproj
 The second line is the one-time resolve of the Tree-sitter packages (see "Syntax colours" below). It
 needs the network, and the first run takes a while because the Kotlin grammar's repository history is
 large (about 470 MB as a mirror). Run it again only when a pin in `Syntax/Package.swift` changes.
+Xcode's own window doesn't use `.build/SourcePackages`: opening the project there resolves the
+packages again into its DerivedData folder, which can use the network and take a while the first
+time. The command-line builds below never do.
 
 Or build headlessly, which never resolves anything:
 
@@ -123,7 +126,7 @@ xcodegen generate && GIT_ALLOW_PROTOCOL=file GIT_SSH_COMMAND=/usr/bin/false GIT_
   -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -scmProvider system test
 ```
 
-`GitterTests` (1 182 tests in 87 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (1 229 tests in 92 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -390,8 +393,9 @@ Some highlight queries only add to another grammar's, so they are joined: SCSS t
 and TSX to JavaScript's (TSX also takes JavaScript's JSX patterns), C++ to C's. The queries are SwiftPM
 resource bundles in `Gitter.app/Contents/Resources`, found by `Bundle.main`, not by the binding's own
 lookup. tree-sitter-kotlin's `highlights.scm` is adapted from nvim-treesitter's (Apache-2.0), so
-`Gitter/Acknowledgements.txt`, which ships in Resources, carries the licence of every package and that
-notice, and About Gitter points at it.
+`Gitter/Acknowledgements.txt`, which ships in Resources, carries the licence of every package, the
+ICU licence of the `utf8.h` and `utf16.h` the core compiles (`lib/src/unicode/`), and that notice, and
+About Gitter points at it.
 
 **The resolve step, and no network in packaging.** Resolving fetches the packages from GitHub, so it
 is a step you run, once, and again only when a pin changes (it needs the network; the Kotlin grammar's
@@ -435,7 +439,13 @@ for a few well-known ones; then a `#!` first line, directly or through `env`. Th
 
 **Limits.** A file over 1,000,000 bytes or 20,000 lines, one whose language is unknown, a parse that
 passes 0.5 seconds, and a line that is not the line it was coloured from (Git LFS pointers, clean
-filters) stay plain. Embedded languages — JavaScript and CSS in HTML, code in Markdown fences — and
+filters) stay plain. So does a line over 2,000 UTF-16 units (`SyntaxHighlighter.maxLineLength`), in
+the diff and in every column, while the rest of its file colours: its colours would go on on the main
+actor, one run per token, and a minified line has hundreds of thousands (about 2.7 µs a run, so about
+3 ms for a line at the cap with a token every two units, measured `-O`). The query that follows the
+parse has no time limit of its own: the binding's only bound is `QueryCursor.matchLimit`, and past it
+tree-sitter abandons matches without a way for the binding to tell, which could colour a node by a
+less specific pattern instead of leaving it plain. Embedded languages — JavaScript and CSS in HTML, code in Markdown fences — and
 Markdown's inline styling are not coloured. Resolve Conflicts' own edit limits (5,200 lines or 370 KB)
 do not change: Ours and Theirs are coloured as read-only text, and the editable Result is recoloured
 150 ms after its last change and never while an input method is composing.
@@ -1033,8 +1043,8 @@ Colours code in diffs and in Resolve Conflicts (milestone S1): Tree-sitter reads
 diff or the columns are already on screen, for 18 languages, Swift to Kotlin, and puts the colour on
 the code's characters only, in Xcode's Default light and dark values adjusted to keep text readable on
 every tint and selection. Resolve Conflicts' Result recolours 150 ms after you stop typing. Files over
-1,000,000 bytes or 20,000 lines, unknown languages and lines that no longer match the file they were
-read from stay plain. The packages are pinned exactly and fetched by one resolve step you run; every
+1,000,000 bytes or 20,000 lines, unknown languages, lines over 2,000 characters and lines that no
+longer match the file they were read from stay plain. The packages are pinned exactly and fetched by one resolve step you run; every
 build, test and `scripts/package.sh` after it uses them with no network, and the DMG grows from about
-3.3 MB to about 7.5 MB. About Gitter credits Tree-sitter, and `Acknowledgements.txt` in the app's
+3.3 MB to about 6 MB. About Gitter credits Tree-sitter, and `Acknowledgements.txt` in the app's
 Resources carries the licences.

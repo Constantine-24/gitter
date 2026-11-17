@@ -126,10 +126,12 @@ public enum SyntaxLanguage: String, CaseIterable, Sendable {
 
     /// The highlight queries, as SwiftPM resource bundle and file name, concatenated in this
     /// order. TypeScript, TSX, C++ and SCSS only add to another grammar's highlights, so the
-    /// other's file is joined in (spec, "Measured"). At the same node the later pattern wins, so
-    /// TSX and JavaScript (whose `.jsx` files are JSX, ledger Ruling 3) take the JSX patterns
-    /// last: after JavaScript's general `(identifier) @variable` and `(property_identifier)
-    /// @property`, which would otherwise leave every tag and attribute plain.
+    /// other's file is joined in (spec, "Measured"). TSX and JavaScript (whose `.jsx` files are
+    /// JSX, ledger Ruling 3) take the JSX patterns too. Among captures of one node the more
+    /// specific pattern wins, by nesting depth and then text predicates, and the order of the
+    /// patterns only breaks the ties that remain (`SyntaxHighlighter.tokens`): JSX's tag and
+    /// attribute patterns nest inside their elements, so they beat JavaScript's general
+    /// `(identifier) @variable` and `(property_identifier) @property` wherever they stand.
     var queryFiles: [(bundle: String, file: String)] {
         switch self {
         case .javascript:

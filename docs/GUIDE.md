@@ -159,7 +159,9 @@ selection stay as they are.
   after. In Resolve Conflicts the Result takes its colours again 150 ms after you stop typing.
 - **When a file stays plain.** A file over 1,000,000 bytes or 20,000 lines, a language not on the
   list, and any line that is not the line the colours were read from, which happens with Git LFS
-  pointers and clean filters. Plain is always the answer when Gitter is not sure.
+  pointers and clean filters. A single line over 2,000 characters, such as a minified bundle's,
+  stays plain too, while the rest of its file is coloured. Plain is always the answer when Gitter
+  is not sure.
 - **Not coloured.** Languages inside another one: the script and style in an HTML file, and the code
   inside Markdown fences. Markdown shows its block structure only.
 

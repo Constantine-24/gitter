@@ -206,7 +206,11 @@ extension CLIGitBackend: GitWorkingCopyBackend {
     }
 
     public func blobBytes(_ object: String, at root: URL, limit: Int) async throws -> Data? {
-        // Lowercase hex only: nothing that starts with `-` or names a revision reaches git.
+        // Lowercase hex only, so nothing that starts with `-` reaches git as an option. Git still
+        // resolves a short id as a revision, so a ref named like one (a tag `1a2b3c4`) can win
+        // over the blob it abbreviates. The caller then gets another blob's text, and its line
+        // check (`DiffSyntax`) leaves every line that doesn't match it plain; a line that does is
+        // coloured as it reads in that text. Nothing is run or written either way.
         guard !object.isEmpty,
             object.utf8.allSatisfy({ (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0)
                 || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains($0) })

@@ -323,7 +323,7 @@ cd gitter
 brew install xcodegen
 xcodegen generate && xcodebuild -resolvePackageDependencies -project Gitter.xcodeproj \
   -scheme Gitter -clonedSourcePackagesDirPath .build/SourcePackages   # once; fetches the Tree-sitter packages
-open Gitter.xcodeproj      # then press Run</code></pre>
+open Gitter.xcodeproj      # then press Run; Xcode resolves the packages again for itself</code></pre>
           <p><a href="https://github.com/Constantine-24/gitter/blob/main/docs/INSTALL.md">INSTALL.md</a> covers git,
             updating, the logs and building your own DMG.</p>
         </article>
