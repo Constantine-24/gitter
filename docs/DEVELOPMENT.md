@@ -22,20 +22,25 @@ How Gitter is built, packaged and tested, how the code is laid out, and the debu
 | Windows | `WindowGroup(for: RepositoryWindow.self)`, one `RepositoryStore` per window made by `@State private var store = AppModel.windows.makeStore()`; a `WindowRegistry` routes every open; Gitter's own reopen list, restoration off; a window still writing or mid-change hides instead of closing (`WindowCloseProxy` as its delegate) and comes back on the next open of its repository | A store per window keeps sheets, lanes and fetch schedules apart; routing keeps one index to one store; restoration cannot be told what Gitter's list knows, and a killed launch could leave state that restores no window; a hidden window's live store is the one an open finds, so its work is never run twice nor its ending lost |
 | Quit | One `QuitFlow` (menu, quit Apple Event, harness), which closes every sheet and waits for AppKit to show none before terminating through `QuitGuard`, which checks every window; the quit Apple Event's reply held until the outcome; its alerts raised from a run-loop timer (`ModalAlert`) | AppKit does not ask the app whether it may quit while a window has a sheet attached; a logout learns only from the reply that the user said Don't Quit; an alert run from a main-queue block would hold up every other window's work |
 | Packaging and the log | A script that builds from a clean tree only, with the commit count as the build number and the commit in `Info.plist`, re-signs with the identity you name, checks the result before the DMG and can notarize it; the log fed by a `CommandLog` sink at `CLIGitBackend`'s three git seams, written by one serial queue, never installed under the test host | Every DMG maps to a commit and says which in About; an ad-hoc identity is the binary's hash, so every build would lose macOS's folder grants; one place sees every git call, and a queue keeps the order lines were given in from any thread |
-| Scope | Browsing, diffs, staging, commit, branch and remote operations, stash and discard, conflict resolution and continuing an operation, cherry-pick, revert, rebase onto a commit, tags, remotes housekeeping, the sidebar filter, comparing branches and worktrees are done | Each milestone keeps the promise before it adds the next way to lose work |
+| Syntax colours | Tree-sitter through its Swift binding, in a local `Syntax` package with one package per grammar, every version exact; queries run off the main actor, per file, after the diff or the columns are already on screen; only the colour of code characters changes, and a line whose text is not the line the colours were read from stays plain | A parser reads the file, so no regular expressions to get wrong on nested strings and comments; exact pins give the same code from every resolve without a committed `Package.resolved`; a diff that shows later than before, or a colour at the wrong offset, is worse than none |
+| Scope | Browsing, diffs, staging, commit, branch and remote operations, stash and discard, conflict resolution and continuing an operation, cherry-pick, revert, rebase onto a commit, tags, remotes housekeeping, the sidebar filter, comparing branches and worktrees, and syntax colours for 18 languages are done | Each milestone keeps the promise before it adds the next way to lose work |
 
 ## Build & run
 
 ```sh
 brew install xcodegen
-xcodegen generate
+xcodegen generate && xcodebuild -resolvePackageDependencies -project Gitter.xcodeproj -scheme Gitter -clonedSourcePackagesDirPath .build/SourcePackages
 open Gitter.xcodeproj
 ```
 
-Or build headlessly:
+The second line is the one-time resolve of the Tree-sitter packages (see "Syntax colours" below). It
+needs the network, and the first run takes a while because the Kotlin grammar's repository history is
+large (about 470 MB as a mirror). Run it again only when a pin in `Syntax/Package.swift` changes.
+
+Or build headlessly, which never resolves anything:
 
 ```sh
-xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug -derivedDataPath .build/DerivedData build
+xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug -derivedDataPath .build/DerivedData -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution build
 ```
 
 ## Packaging and installing
@@ -108,10 +113,14 @@ experimental `SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH`, so nothing depend
 can exceed. A hang is caught by a ten-minute `.timeLimit`, a latency is measured on the runner's
 own clock, and "it did not happen" is a counted event.
 
-Or both test targets — `GitCoreTests` and the app's `GitterTests` — through the scheme:
+Or all three test targets — `GitCoreTests`, the app's `GitterTests` and the syntax package's
+`GitterSyntaxTests` — through the scheme. Run it with no network, as every build and test command
+of this milestone does:
 
 ```sh
-xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test
+xcodegen generate && GIT_ALLOW_PROTOCOL=file GIT_SSH_COMMAND=/usr/bin/false GIT_TERMINAL_PROMPT=0 \
+  xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug \
+  -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -scmProvider system test
 ```
 
 `GitterTests` (1 182 tests in 87 suites) is hosted by the app and pins the wording the UI shows
@@ -133,7 +142,8 @@ operation bar and the composer's prefill, and the launch guard's decisions (`Deb
 and the diagnostics log: its lines (`LogLine`), the file's order, rotation, recreation and stop
 (`LogFileWriter`, in a temporary folder only), the events a store and the window registry write, the
 quit question's answer, Show Logs' failures and a launch with no writer through a seam, the quit's
-bounded flush with a writer stuck on a hung write, and the About panel's version.
+bounded flush with a writer stuck on a hung write, and the About panel's version and its credits
+line, with a check that `Acknowledgements.txt` is in the app's Resources.
 Under a test host the app reopens no repository, starts no automatic fetch and adds nothing to
 Open Recent, and keeps no list of open repositories (`TestHost`). Every test's store keeps its settings in a scratch defaults suite of
 its own, named by a path inside its own temporary folder and removed with it (`makeTestStore`),
@@ -352,6 +362,94 @@ expects a hosted view told it is not under the test host to give none (four); an
 comparison up (one).
 
 Deleting any of them would take the proof away and the suite would go on looking green.
+
+## Syntax colours
+
+Diffs and Resolve Conflicts colour code with Tree-sitter (milestone S1). `Syntax/` is a local
+SwiftPM package, `GitterSyntax`, and nothing outside it imports the binding. It holds the language
+detection, one highlighter per language with its compiled query cached, and `SyntaxKind`, the
+small set of kinds the captures of every grammar are mapped to. The app turns a kind into a colour
+(`SyntaxPalette`, one asset-catalog colour per kind, light and dark) and puts it on the text:
+`DiffSyntax` and `RepositoryStore+DiffSyntax` for the diff, `ResolverSyntax` for the three columns.
+Parsing and queries run off the main actor, after the diff or the columns are already on screen, so
+nothing appears later than it did before; each result is checked against the generation, selection
+and text it was read from, and a line whose text is not the line that was parsed stays plain.
+
+**Exact pins, and why some are older.** Every package in `Syntax/Package.swift` is pinned with
+`exact:`, so each resolve gives the same code without a committed `Package.resolved`: swift-tree-sitter
+0.25.0, the tree-sitter core 0.25.10 and the 18 grammar packages. No pin may be raised without
+building and running again, because the newest release is not always the one that works under Xcode:
+
+- the newer python, javascript, css and yaml manifests decide whether to include `scanner.c` with a
+  relative `fileExists`, so under Xcode they drop it and fail to link;
+- tree-sitter-c 0.24.1's manifest is invalid;
+- tree-sitter-yaml carries a test-suite submodule, which a resolve would fetch;
+- tree-sitter-swift is the `0.7.4-with-generated-files` tag, because plain 0.7.4 has no `parser.c`.
+
+Some highlight queries only add to another grammar's, so they are joined: SCSS to CSS's, TypeScript
+and TSX to JavaScript's (TSX also takes JavaScript's JSX patterns), C++ to C's. The queries are SwiftPM
+resource bundles in `Gitter.app/Contents/Resources`, found by `Bundle.main`, not by the binding's own
+lookup. tree-sitter-kotlin's `highlights.scm` is adapted from nvim-treesitter's (Apache-2.0), so
+`Gitter/Acknowledgements.txt`, which ships in Resources, carries the licence of every package and that
+notice, and About Gitter points at it.
+
+**The resolve step, and no network in packaging.** Resolving fetches the packages from GitHub, so it
+is a step you run, once, and again only when a pin changes (it needs the network; the Kotlin grammar's
+history is about 470 MB, so the first run takes a while):
+
+```sh
+xcodegen generate && xcodebuild -resolvePackageDependencies -project Gitter.xcodeproj -scheme Gitter -clonedSourcePackagesDirPath .build/SourcePackages
+```
+
+Every build, test and packaging command after that adds `-clonedSourcePackagesDirPath
+.build/SourcePackages -disableAutomaticPackageResolution`, and the gates run with `GIT_ALLOW_PROTOCOL=file
+GIT_SSH_COMMAND=/usr/bin/false GIT_TERMINAL_PROMPT=0` as well, so nothing can reach the network.
+`scripts/package.sh` passes the same flags and, with `.build/SourcePackages` missing, stops before
+building and prints the resolve command.
+
+**The 18 languages.** The file name's last extension decides first, in any case; then the whole name
+for a few well-known ones; then a `#!` first line, directly or through `env`. This is what
+`SyntaxLanguage.detect` does:
+
+| Language | Grammar | Extensions | Also detected by |
+|---|---|---|---|
+| Swift | `tree-sitter-swift` | `.swift` | |
+| Python | `tree-sitter-python` | `.py` `.pyi` `.pyw` | a `python*` shebang |
+| JavaScript (and JSX) | `tree-sitter-javascript` | `.js` `.mjs` `.cjs` `.jsx` | a `node` shebang |
+| TypeScript | `tree-sitter-typescript` | `.ts` `.mts` `.cts` | |
+| TSX | `tree-sitter-typescript` | `.tsx` | |
+| JSON | `tree-sitter-json` | `.json` `.jsonc` `.json5` | `.babelrc`, `.eslintrc` |
+| HTML | `tree-sitter-html` | `.html` `.htm` `.xhtml` | |
+| CSS | `tree-sitter-css` | `.css` | |
+| SCSS | `tree-sitter-scss` | `.scss` | |
+| Markdown (blocks only) | `tree-sitter-markdown` | `.md` `.markdown` `.mdown` | |
+| YAML | `tree-sitter-yaml` | `.yml` `.yaml` | |
+| Shell | `tree-sitter-bash` | `.sh` `.bash` `.zsh` `.command` | `sh`, `bash`, `zsh`, `dash` and `ksh` shebangs; `.bashrc`, `.zshrc`, `.profile`, `.bash_profile`, `.zprofile` |
+| C | `tree-sitter-c` | `.c` `.h` | |
+| C++ | `tree-sitter-cpp` | `.cc` `.cpp` `.cxx` `.c++` `.hh` `.hpp` `.hxx` `.h++` `.ipp` `.tpp` | |
+| Go | `tree-sitter-go` | `.go` | |
+| Rust | `tree-sitter-rust` | `.rs` | |
+| Ruby | `tree-sitter-ruby` | `.rb` `.rake` `.gemspec` `.ru` | a `ruby` shebang; `Gemfile`, `Rakefile`, `Podfile`, `Fastfile` |
+| Java | `tree-sitter-java` | `.java` | |
+| Kotlin | `tree-sitter-kotlin` | `.kt` `.kts` | |
+
+**Limits.** A file over 1,000,000 bytes or 20,000 lines, one whose language is unknown, a parse that
+passes 0.5 seconds, and a line that is not the line it was coloured from (Git LFS pointers, clean
+filters) stay plain. Embedded languages — JavaScript and CSS in HTML, code in Markdown fences — and
+Markdown's inline styling are not coloured. Resolve Conflicts' own edit limits (5,200 lines or 370 KB)
+do not change: Ours and Theirs are coloured as read-only text, and the editable Result is recoloured
+150 ms after its last change and never while an input method is composing.
+
+**Colours.** Xcode's Default (Light) and Default (Dark) values, moved toward the text colour only
+where a contrast check needed it: at least 4.5:1 on an unselected diff line and on every Resolve
+Conflicts tint and word mark, and at least 3:1 on a selected diff line. The tests read the contrast
+from the asset catalog. Only the colour of code characters changes: tints, word marks, selection,
+fonts and row heights do not.
+
+**The gates.** Each ends a task and runs with no network: `bash scripts/test-gitcore.sh`; the
+scheme's `test` (command under "Tests"); a Release build with zero compiler warnings; the app's
+preferences and `~/Library/Logs/Gitter` unchanged after the tests; `ProcessRunner.swift` unchanged
+against `v0.2.0`; and no planning files tracked.
 
 ## Project layout
 
@@ -930,3 +1028,13 @@ commit that About Gitter shows, and checked before it is wrapped; and every git 
 message Gitter showed goes to a rotating `~/Library/Logs/Gitter/gitter.log`, with a URL's credentials
 removed (the few exceptions are in `docs/INSTALL.md` §5), which Help › Show Logs opens.
 [`docs/INSTALL.md`](INSTALL.md) covers installing, updating, the log and building your own DMG.
+
+Colours code in diffs and in Resolve Conflicts (milestone S1): Tree-sitter reads each file after the
+diff or the columns are already on screen, for 18 languages, Swift to Kotlin, and puts the colour on
+the code's characters only, in Xcode's Default light and dark values adjusted to keep text readable on
+every tint and selection. Resolve Conflicts' Result recolours 150 ms after you stop typing. Files over
+1,000,000 bytes or 20,000 lines, unknown languages and lines that no longer match the file they were
+read from stay plain. The packages are pinned exactly and fetched by one resolve step you run; every
+build, test and `scripts/package.sh` after it uses them with no network, and the DMG grows from about
+3.3 MB to about 7.5 MB. About Gitter credits Tree-sitter, and `Acknowledgements.txt` in the app's
+Resources carries the licences.

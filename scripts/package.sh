@@ -16,6 +16,9 @@
 # script works from the repository, not the caller's folder. GITTER_PACKAGE_ROOT overrides the
 # repository to package (the selftest uses it); by default it is this script's own.
 #
+# The Tree-sitter packages must already be resolved into .build/SourcePackages (docs/INSTALL.md);
+# the build never touches the network.
+#
 # Exit codes: 2 refused before building, 3 a check on the built app or DMG failed, 1 anything else
 # (a tool that failed, whatever its own status: the ERR trap below; -E carries it into functions
 # and command substitutions).
@@ -122,8 +125,13 @@ if [ -n "${GITTER_PACKAGE_NO_BUILD:-}" ]; then
     exit 99
 fi
 command -v xcodegen >/dev/null 2>&1 || refuse "xcodegen is not installed (brew install xcodegen)"
+# The Tree-sitter packages are resolved once by hand (that needs the network); packaging never
+# fetches anything.
+SOURCE_PACKAGES=".build/SourcePackages"
+[ -d "$SOURCE_PACKAGES/checkouts" ] || refuse "$SOURCE_PACKAGES is missing: run once (needs the network): xcodegen generate && xcodebuild -resolvePackageDependencies -project Gitter.xcodeproj -scheme Gitter -clonedSourcePackagesDirPath .build/SourcePackages"
 xcodegen generate
 xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Release \
+    -clonedSourcePackagesDirPath "$SOURCE_PACKAGES" -disableAutomaticPackageResolution \
     -derivedDataPath "$DERIVED" ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
     CURRENT_PROJECT_VERSION="$BUILD" GITTER_COMMIT="$COMMIT" CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
     DEPLOYMENT_POSTPROCESSING=YES STRIP_INSTALLED_PRODUCT=YES STRIP_STYLE=debugging clean build

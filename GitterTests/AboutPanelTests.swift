@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 
 @testable import Gitter
@@ -20,5 +21,19 @@ import Testing
             "CFBundleShortVersionString": "0.1.0", "CFBundleVersion": "412", "GitterCommit": "",
         ])
         #expect(empty == ("0.1.0", "412"))
+    }
+
+    /// S1 Task 5: the About panel credits Tree-sitter and points at the licence file.
+    @Test func creditsNameTreeSitter() {
+        #expect(AboutPanel.credits.string == "Syntax colours by Tree-sitter. Licences: Acknowledgements.txt in Gitter's Resources.")
+    }
+
+    /// The licence notices ship in the app's Resources, and hold the notices the credits promise.
+    @Test func acknowledgementsShipInTheAppResources() throws {
+        let url = try #require(Bundle.main.url(forResource: "Acknowledgements", withExtension: "txt"))
+        let text = try String(contentsOf: url, encoding: .utf8)
+        #expect(text.contains("swift-tree-sitter"))
+        #expect(text.contains("nvim-treesitter"))
+        #expect(text.contains("Apache License"))
     }
 }
