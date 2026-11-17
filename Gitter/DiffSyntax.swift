@@ -48,8 +48,9 @@ enum DiffSyntax {
     /// A context or added line is coloured from line `newNumber` of `new`, a removed line from
     /// line `oldNumber` of `old`, and only when that line's text equals the diff line's
     /// `displayText`, both without a trailing `\r`. A line that doesn't match, a `\ No newline`
-    /// line and a line with no tokens get no entry; a binary or non-UTF-8 diff, or a side whose
-    /// text is over the limits or failed to parse, gets none at all.
+    /// line, a line longer than `SyntaxHighlighter.maxLineLength` and a line with no tokens get no
+    /// entry; a binary or non-UTF-8 diff, or a side whose text is over the limits or failed to
+    /// parse, gets none at all.
     static func lineTokens(
         for diff: FileDiff, old: String?, new: String?, language: SyntaxLanguage
     ) -> [DiffLine.ID: [SyntaxToken]] {
@@ -68,6 +69,8 @@ enum DiffSyntax {
                 case .removed: (side, number) = (oldSide, line.oldNumber)
                 case .noNewline: continue
                 }
+                // Its row builds the colours on the main actor, token by token (`DiffLineRow`).
+                guard line.displayText.utf16.count <= SyntaxHighlighter.maxLineLength else { continue }
                 guard let side, let number, let tokens = side.tokens(ofLine: number, matching: line.displayText),
                     !tokens.isEmpty
                 else { continue }

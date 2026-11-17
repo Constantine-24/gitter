@@ -27,6 +27,13 @@ public enum SyntaxHighlighter {
     public static let maxLines = 20_000
     /// How long one parse may run before it gives up, and the text stays plain.
     static let parseTimeout: TimeInterval = 0.5
+    /// Lines longer than this many UTF-16 units (terminator not counted) stay plain where they
+    /// are shown, in the diff and in Resolve Conflicts, though the rest of their file colours: the
+    /// colours go on a line on the main actor, at a cost that grows with its tokens, and a
+    /// minified line under `maxBytes` has hundreds of thousands. At this length a line as dense
+    /// as one token every two units takes about 3 ms to build, measured `-O`; ordinary long code
+    /// lines are far shorter, and stay coloured.
+    public static let maxLineLength = 2_000
 
     /// The tokens for `text`, sorted and non-overlapping, where captures nest the innermost wins
     /// (a string's interpolated expression is not string-coloured). Among captures of the same

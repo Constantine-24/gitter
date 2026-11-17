@@ -8,7 +8,8 @@ import GitterSyntax
 /// Theirs, the Result's text as last parsed. A row takes its line's tokens through its cell's
 /// line number, and only while its text is still that line, unit for unit: a Result row typed
 /// into since the parse, or one that shares its line with the chunk before it, stays plain until
-/// the next parse. Fillers, the waiting slot and Show Base rows stay plain too. A row's text is
+/// the next parse. Fillers, the waiting slot, Show Base rows and rows longer than
+/// `SyntaxHighlighter.maxLineLength` stay plain too. A row's text is
 /// shown with the same UTF-16 length (`ResolverAttributes.shown`), so the line's offsets are the
 /// row's.
 enum ResolverSyntax {
@@ -33,13 +34,15 @@ enum ResolverSyntax {
         if column == .result, row.isSlot || row.isBaseStrip { return nil }
         let cell = ResolverAttributes.cell(row, column)
         guard let number = cell.lineNumber, let text = cell.text else { return nil }
+        // The colours go on the row's text on the main actor, token by token.
+        let length = text.utf16.count
+        guard length <= SyntaxHighlighter.maxLineLength else { return nil }
         let index = number - 1
         guard lines.indices.contains(index), sourceLines.indices.contains(index),
             text.utf16.elementsEqual(sourceLines[index].utf16)
         else { return nil }
         let tokens = lines[index]
         guard !tokens.isEmpty else { return nil }
-        let length = text.utf16.count
         // `lineTokens` never reaches past the line; kept to the text all the same.
         return tokens.allSatisfy({ $0.range.upperBound <= length }) ? tokens : tokens.filter { $0.range.upperBound <= length }
     }

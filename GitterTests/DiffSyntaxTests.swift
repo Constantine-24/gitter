@@ -70,6 +70,34 @@ import Testing
         #expect(tokens[Self.line(.removed, in: Self.change).id] != nil)
     }
 
+    /// A line longer than `SyntaxHighlighter.maxLineLength` stays plain, so a minified line can't
+    /// stall the main actor building its row, while a line at the cap and the file's short lines
+    /// still colour.
+    @Test func aLineOverTheLengthCapStaysPlain() throws {
+        let cap = SyntaxHighlighter.maxLineLength
+        // `let s = "…"`: nine units before the string's text, one after it.
+        let atCap = "let s = \"" + String(repeating: "x", count: cap - 10) + "\""
+        let overCap = "let t = \"" + String(repeating: "y", count: cap - 9) + "\""
+        #expect(atCap.utf16.count == cap)
+        #expect(overCap.utf16.count == cap + 1)
+        let diff = Self.diff("""
+            @@ -0,0 +1,3 @@
+            +\(atCap)
+            +\(overCap)
+            +let a = 1
+
+            """)
+        let new = "\(atCap)\n\(overCap)\nlet a = 1\n"
+
+        let tokens = DiffSyntax.lineTokens(for: diff, old: nil, new: new, language: .swift)
+
+        let first = try #require(tokens[Self.line(.added, in: diff, 0).id])
+        #expect(first.contains(SyntaxToken(range: 0..<3, kind: .keyword)))
+        #expect(first.contains { $0.kind == .string && $0.range.upperBound == cap })
+        #expect(tokens[Self.line(.added, in: diff, 1).id] == nil)
+        #expect(tokens[Self.line(.added, in: diff, 2).id]?.contains(SyntaxToken(range: 0..<3, kind: .keyword)) == true)
+    }
+
     /// A line number past the source's end is a mismatch too, never a crash.
     @Test func aLineNumberPastTheEndStaysPlain() {
         let tokens = DiffSyntax.lineTokens(

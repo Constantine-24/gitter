@@ -74,6 +74,30 @@ import Testing
         #expect(ResolverSyntax.rowTokens(rows: decomposed, column: .result, lines: [[Self.keyword], []], sourceLines: composed).isEmpty)
     }
 
+    /// A row longer than `SyntaxHighlighter.maxLineLength` stays plain in every column, though its
+    /// text is still its line, while a row at the cap and the short rows colour.
+    @Test func aRowOverTheLengthCapStaysPlain() throws {
+        let cap = SyntaxHighlighter.maxLineLength
+        let atCap = "let s = \"" + String(repeating: "x", count: cap - 10) + "\""
+        let overCap = "let t = \"" + String(repeating: "y", count: cap - 9) + "\""
+        let source = "\(atCap)\n\(overCap)\nlet a = 1\n"
+        let lines = SyntaxHighlighter.lineTokens(SyntaxHighlighter.tokens(in: source, language: .swift), in: source)
+        let sourceLines = ResolverSyntax.sourceLines(source)
+        // The long line has its tokens: only the cap keeps its row plain.
+        #expect(lines[1].contains(SyntaxToken(range: 0..<3, kind: .keyword)))
+        let rows = [atCap, overCap, "let a = 1"].enumerated().map { index, text in
+            Self.row(ours: Self.cell(index + 1, text), result: Self.cell(index + 1, text), theirs: Self.cell(index + 1, text))
+        }
+        for column in [ResolverColumn.ours, .result, .theirs] {
+            let tokens = ResolverSyntax.rowTokens(rows: rows, column: column, lines: lines, sourceLines: sourceLines)
+            #expect(tokens[0]?.contains(SyntaxToken(range: 0..<3, kind: .keyword)) == true, "\(column)")
+            #expect(tokens[1] == nil, "\(column)")
+            #expect(tokens[2]?.contains(SyntaxToken(range: 0..<3, kind: .keyword)) == true, "\(column)")
+            // The app's own path, one row at a time.
+            #expect(ResolverSyntax.tokens(of: rows[1], column: column, lines: lines, sourceLines: sourceLines) == nil, "\(column)")
+        }
+    }
+
     @Test func shownSymbolsKeepOffsets() throws {
         // A lone `\r` inside line 1: the text view shows it as `␍`, one UTF-16 unit as well.
         let source = "let a = 1\r// note\nlet b = 2\n"
