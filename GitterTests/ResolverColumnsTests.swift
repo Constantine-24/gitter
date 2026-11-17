@@ -1105,6 +1105,27 @@ import Testing
         return runs
     }
 
+    /// A side column's colours in its text (Ruling 9), per row: each run not in the plain text
+    /// colour, its range within its row.
+    static func stored(_ view: ResolverTextView) -> [Int: [SyntaxRun]] {
+        guard let storage = view.textStorage, view.starts.count > 1 else { return [:] }
+        var runs: [Int: [SyntaxRun]] = [:]
+        for row in 0..<(view.starts.count - 1) {
+            let start = view.starts[row], length = max(0, view.starts[row + 1] - start - 1)
+            storage.enumerateAttribute(.foregroundColor, in: NSRange(location: start, length: length)) { value, range, _ in
+                guard let colour = value as? NSColor, colour != ResolverPalette.standard.text else { return }
+                runs[row, default: []].append(SyntaxRun(range: (range.location - start)..<(NSMaxRange(range) - start), colour: colour))
+            }
+        }
+        return runs
+    }
+
+    /// A column's syntax colours as drawn: the Result's rendering attributes, the sides' text.
+    static func colours(_ host: ResolverColumnsHost, _ column: ResolverColumn) -> [Int: [SyntaxRun]] {
+        let view = Self.column(host, column)
+        return column == .result ? rendered(view) : stored(view)
+    }
+
     struct SyntaxRun: Equatable, CustomStringConvertible {
         let range: Range<Int>
         let colour: NSColor
@@ -1138,7 +1159,7 @@ import Testing
     static func expectColoursMatch(_ host: ResolverColumnsHost, _ store: RepositoryStore, _ what: String) throws {
         let draft = try #require(store.resolverDrafts["a.swift"])
         for column in [ResolverColumn.ours, .result, .theirs] {
-            let shown = Self.rendered(Self.column(host, column))
+            let shown = Self.colours(host, column)
             let wanted = Self.expected(host, column, draft)
             #expect(!wanted.isEmpty, "\(what): \(column) has nothing to colour")
             #expect(shown == wanted, "\(what): \(column)")
@@ -1154,7 +1175,7 @@ import Testing
         let keyword = SyntaxPalette.standard.color(.keyword)
         for column in [ResolverColumn.ours, .result, .theirs] {
             let row = try #require(host.model.rows.firstIndex { ResolverAttributes.cell($0, column).text == "import Foundation" })
-            let runs = Self.rendered(Self.column(host, column))[row] ?? []
+            let runs = Self.colours(host, column)[row] ?? []
             #expect(runs.contains(SyntaxRun(range: 0..<6, colour: keyword)), "\(column): \(runs)")
         }
         try Self.expectColoursMatch(host, store, "after the first render")
@@ -1212,12 +1233,10 @@ import Testing
         #expect(store.resolverDrafts["a.swift"] == draft)
         #expect(view.undoManager?.canUndo != true)
         let palette = ResolverPalette.standard
-        for column in [host.ours, host.result, host.theirs] {
-            let storage = try #require(column.textView.textStorage)
-            storage.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
-                let colour = value as? NSColor
-                #expect(colour == palette.text || colour == palette.secondaryText, "\(column.column) \(range)")
-            }
+        let storage = try #require(view.textStorage)
+        storage.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            let colour = value as? NSColor
+            #expect(colour == palette.text || colour == palette.secondaryText, "result \(range)")
         }
         // The typed row is coloured from the re-parse.
         let row = try #require(host.model.rows.firstIndex { $0.result.text == "let typed = 1" })
@@ -1277,6 +1296,7 @@ import Testing
         await Self.settle(host)
         #expect(host.droppedResultParses == dropped + 1)
         for column in [ResolverColumn.ours, .result, .theirs] {
+            #expect(Self.colours(host, column).isEmpty, "\(column)")
             #expect(Self.rendered(Self.column(host, column)).isEmpty, "\(column)")
         }
     }
@@ -1299,6 +1319,40 @@ import Testing
         let parses = host.resultParses
         try Self.expectColoursMatch(host, store, "after the cancelled composition")
         #expect(host.resultParses == parses)
+    }
+
+    /// Ours and Theirs take their colours in their text (Ruling 9): no rendering attributes,
+    /// nothing for undo, no edit reaching the store, and the rows' tints and marks kept.
+    @Test(.timeLimit(.minutes(10))) func theSidesTakeTheirColoursInTheirText() async throws {
+        let repo = try Self.swiftMerge()
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.open(repo)
+        defer { cleanup(); window.close() }
+        let draft = try #require(store.resolverDrafts["a.swift"])
+        let before = [host.ours, host.theirs].map { NSAttributedString(attributedString: $0.textView.textStorage ?? NSTextStorage()) }
+        await Self.settle(host)
+        #expect(store.resolverDrafts["a.swift"] == draft)
+        #expect(window.undoManager?.canUndo != true)
+        let keyword = SyntaxPalette.standard.color(.keyword)
+        for (index, column) in [host.ours, host.theirs].enumerated() {
+            let view = column.textView
+            #expect(view.undoManager?.canUndo != true, "\(column.column)")
+            #expect(Self.rendered(view).isEmpty, "\(column.column)")
+            let row = try #require(host.model.rows.firstIndex { ResolverAttributes.cell($0, column.column).text == "import Foundation" })
+            #expect(Self.stored(view)[row]?.first == SyntaxRun(range: 0..<6, colour: keyword), "\(column.column)")
+            // The same text, rows, tints and marks; only colours added.
+            let storage = try #require(view.textStorage)
+            #expect(storage.string == before[index].string, "\(column.column)")
+            for key in [NSAttributedString.Key.resolverRow, .resolverMark, .font, .paragraphStyle] {
+                var same = true
+                before[index].enumerateAttribute(key, in: NSRange(location: 0, length: before[index].length)) { value, range, _ in
+                    var effective = NSRange()
+                    let now = storage.attribute(key, at: range.location, effectiveRange: &effective)
+                    if (now as? NSObject) != (value as? NSObject) { same = false }
+                }
+                #expect(same, "\(column.column) \(key.rawValue)")
+            }
+        }
     }
 
     /// Keyword-coloured pixels in what a column's layers hold now, as on screen: rendered from
@@ -1341,14 +1395,13 @@ import Testing
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: .aqua)
         window.contentView?.wantsLayer = true
-        window.orderFront(nil)
         defer { window.close() }
         let host = ResolverColumnsHost()
         host.frame = window.contentView?.bounds ?? .zero
         window.contentView?.addSubview(host)
         let gate = ParseGate()
         host.tokenize = { text, language in
-            gate.holdFirst()
+            gate.holdEvery()
             return SyntaxHighlighter.tokens(in: text, language: language)
         }
         Self.refresh(store, host)
@@ -1367,7 +1420,7 @@ import Testing
             try await Task.sleep(for: .milliseconds(20))
         }
         for column in [host.ours, host.theirs] {
-            #expect(!Self.rendered(column.textView).isEmpty, "\(column.column)")
+            #expect(!Self.stored(column.textView).isEmpty, "\(column.column)")
             #expect(try Self.keywordPixelsOnScreen(column) > 50, "\(column.column)")
         }
     }
@@ -1402,7 +1455,7 @@ import Testing
         #expect(inView.count > 10, "\(what)")
         let keyword = SyntaxPalette.standard.color(.keyword)
         for column in [ResolverColumn.ours, .result, .theirs] {
-            let shown = Self.rendered(Self.column(host, column))
+            let shown = Self.colours(host, column)
             let wanted = Self.expected(host, column, draft)
             for row in inView {
                 #expect(shown[row] == wanted[row], "\(what): \(column) row \(row)")
@@ -1444,6 +1497,12 @@ final class ParseGate: Sendable {
         guard first else { return }
         while !state.withLock({ $0.released }) { Thread.sleep(forTimeInterval: 0.005) }
         state.withLock { $0.holding = false }
+    }
+
+    /// Holds every parse that reaches it until released.
+    func holdEvery() {
+        state.withLock { $0.holding = true }
+        while !state.withLock({ $0.released }) { Thread.sleep(forTimeInterval: 0.005) }
     }
 
     func release() { state.withLock { $0.released = true } }

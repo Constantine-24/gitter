@@ -213,9 +213,8 @@ final class ResolverTextView: NSTextView {
     /// Each row's syntax tokens (`ResolverSyntax`), empty for a plain row: one per row, kept in
     /// step with `starts` by the host.
     private(set) var rowTokens: [[SyntaxToken]] = []
-    /// The rows whose rendering attributes are their `rowTokens` now. The colours are the layout
-    /// manager's rendering attributes, never the text's: they move with the text when rows above
-    /// change, and a replaced paragraph loses its own (measured, Task 4).
+    /// The rows whose colours are their `rowTokens` now. Both kinds of colour move with the text
+    /// when rows above change, and a replaced paragraph loses its own (measured, Task 4).
     private(set) var colouredRows = IndexSet()
 
     /// Every row's tokens anew, for new text (`patch` from nothing) or after `clear`: no row is
@@ -246,20 +245,39 @@ final class ResolverTextView: NSTextView {
         colouredRows.remove(row)
     }
 
-    /// Gives the rows in `range` not coloured yet their tokens' colours, as rendering attributes
-    /// over each row's paragraph (anything there before is removed first); how many rows that was.
+    /// Gives the rows in `range` not coloured yet their tokens' colours; how many rows that was.
+    ///
+    /// - **The Result** takes them as rendering attributes of its layout manager, over each row's
+    ///   paragraph (anything there before removed first): its text is the store's, edited only
+    ///   through `patch`, and its storage feeds the edit map and the input method.
+    /// - **Ours and Theirs** are read-only, with no undo and no edit tracking, so they take them
+    ///   in the text itself (Ruling 9): `.foregroundColor` over each row's text, the plain text
+    ///   colour first, in one batch of edits. TextKit lays the edited rows out again and draws
+    ///   them like any text, where a rendering attribute is redrawn on every scroll (measured,
+    ///   Task 4) and a line already drawn did not take one at all.
     @discardableResult
     func colour(rows range: Range<Int>) -> Int {
         let range = range.clamped(to: 0..<min(starts.count - 1, rowTokens.count))
-        guard !range.isEmpty, let manager = textLayoutManager, let content = manager.textContentManager,
-            let length = textStorage?.length
-        else { return 0 }
+        guard !range.isEmpty, let storage = textStorage else { return 0 }
         var missing = IndexSet(integersIn: range)
         missing.subtract(colouredRows)
         guard let first = missing.first, let last = missing.last else { return 0 }
+        colouredRows.formUnion(missing)
+        if column == .result {
+            colourRendering(missing, length: storage.length)
+            let top = ResolverGeometry.y(ofRow: first)
+            setNeedsDisplay(NSRect(x: 0, y: top, width: bounds.width, height: ResolverGeometry.y(ofRow: last + 1) - top))
+        } else {
+            colourStorage(missing, storage)
+        }
+        return missing.count
+    }
+
+    private func colourRendering(_ rows: IndexSet, length: Int) {
+        guard let manager = textLayoutManager, let content = manager.textContentManager else { return }
         let origin = content.documentRange.location
         let palette = SyntaxPalette.standard
-        for row in missing {
+        for row in rows {
             let start = starts[row], end = starts[row + 1]
             guard start < end, end <= length, let from = content.location(origin, offsetBy: start),
                 let to = content.location(from, offsetBy: end - start), let paragraph = NSTextRange(location: from, end: to)
@@ -275,26 +293,24 @@ final class ResolverTextView: NSTextView {
                 manager.addRenderingAttribute(.foregroundColor, value: palette.color(token.kind), for: tokenRange)
             }
         }
-        colouredRows.formUnion(missing)
-        let top = ResolverGeometry.y(ofRow: first)
-        redisplay(NSRect(x: 0, y: top, width: bounds.width, height: ResolverGeometry.y(ofRow: last + 1) - top))
-        return missing.count
     }
 
-    /// Redraws `rect` here and in the views TextKit draws the lines in. A line already drawn is
-    /// not drawn again for a change of its rendering attributes, nor for this view's own
-    /// `setNeedsDisplay` (measured in the app: Ours and Theirs, coloured after their first draw,
-    /// stayed plain until their line views were marked).
-    private func redisplay(_ rect: NSRect) {
-        setNeedsDisplay(rect)
-        func mark(_ view: NSView) {
-            for subview in view.subviews {
-                let local = subview.convert(rect, from: self).intersection(subview.bounds)
-                if !local.isEmpty { subview.setNeedsDisplay(local) }
-                mark(subview)
+    private func colourStorage(_ rows: IndexSet, _ storage: NSTextStorage) {
+        let syntax = SyntaxPalette.standard
+        storage.beginEditing()
+        for row in rows {
+            let start = starts[row], end = starts[row + 1]
+            // The row's text, without its break; a filler has none.
+            guard start < end, end <= storage.length, end - start > 1 else { continue }
+            let text = end - start - 1
+            storage.addAttribute(.foregroundColor, value: palette.text, range: NSRange(location: start, length: text))
+            for token in rowTokens[row] where !token.range.isEmpty && token.range.upperBound <= text {
+                storage.addAttribute(
+                    .foregroundColor, value: syntax.color(token.kind),
+                    range: NSRange(location: start + token.range.lowerBound, length: token.range.count))
             }
         }
-        mark(self)
+        storage.endEditing()
     }
 
     // MARK: Drawing

@@ -29,9 +29,10 @@ import GitterSyntax
 /// and Theirs are parsed once per file and snapshot, off the main actor, and kept beside the
 /// sides' layout (`sideSyntaxCache`); the Result is parsed `resultSyntaxDelay` after its last
 /// change (at once for another file), and a parse whose version is no longer the Result's is
-/// dropped. Rows map to their lines' tokens (`ResolverSyntax`), and the colours go on as each
-/// column's rendering attributes (`ResolverTextView.colour(rows:)`) only for the rows in view and
-/// a screen around them, so a scroll, a keystroke or a parse colours a few rows at most.
+/// dropped. Rows map to their lines' tokens (`ResolverSyntax`), and the colours go on
+/// (`ResolverTextView.colour(rows:)`: the Result's as rendering attributes, the read-only sides'
+/// in their text, Ruling 9) only for the rows in view and a screen around them, so a scroll, a
+/// keystroke or a parse colours a few rows at most.
 final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceValidations {
     let ours = ResolverTextColumn(column: .ours)
     let result = ResolverTextColumn(column: .result)
@@ -756,13 +757,20 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         }
     }
 
-    /// Colours the rows in view and a screen above and below it, in every column: each row once
-    /// until its paragraph or its tokens change.
+    /// Colours the rows in view and a screen around them, in every column: each row once until
+    /// its paragraph or its tokens change. The Result's colours are rendering attributes, so a
+    /// screen above the view as well; Ours and Theirs take theirs in the text, which TextKit lays
+    /// out again, so only from the first row in view down: the rows above it stay laid out, and
+    /// the text in view on its rows (`layOutVisibleRows`).
     private func colourVisibleRows() {
         guard !rows.isEmpty else { return }
         let clip = result.scrollView.contentView.bounds
-        let rows = ResolverGeometry.rows(in: clip.insetBy(dx: 0, dy: -max(clip.height, 400)), count: rows.count)
-        for column in columns { column.textView.colour(rows: rows) }
+        let margin = max(clip.height, 400)
+        let around = ResolverGeometry.rows(in: clip.insetBy(dx: 0, dy: -margin), count: rows.count)
+        let inView = ResolverGeometry.rows(in: clip, count: rows.count)
+        result.textView.colour(rows: around)
+        let below = inView.lowerBound..<around.upperBound
+        for column in [ours, theirs] { column.textView.colour(rows: below) }
     }
 
     /// A text's tokens per line and its lines; nil when it has none (no stage, over the limits,
