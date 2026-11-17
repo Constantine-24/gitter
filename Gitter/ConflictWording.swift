@@ -379,18 +379,11 @@ enum ConflictWording {
         "The \(operation.noun.lowercased()) ended outside Gitter."
     }
 
-    /// The kept notice in the normal window when a Result with changes can no longer be written
-    /// because something outside Gitter resolved its file or ended its operation while Resolve
-    /// Conflicts was closed (Ruling 49). Its button opens Resolve Conflicts on the first file.
-    static func keptOutside(_ paths: [String], ended: RepositoryOperation?) -> String {
-        let names = StashWording.names(paths)
-        if let ended { return "\(operationEndedOutside(ended)) Your changes to \(names) in Resolve Conflicts are kept." }
-        let it = paths.count == 1 ? "it" : "they"
-        return "Your changes to \(names) in Resolve Conflicts are kept, but \(it) changed outside Gitter."
+    /// The kept bar's text in the normal window: every file whose Result with changes is kept
+    /// while Resolve Conflicts is closed, with no merge left to continue.
+    static func keptChanges(_ paths: [String]) -> String {
+        "Your changes to \(StashWording.names(paths)) in Resolve Conflicts are kept."
     }
-
-    /// The kept notice's button.
-    static let showKeptChanges = "Show Changes"
 
     /// The card where a conflicted file's diff would be: the kind, and how many conflicts when
     /// the file has blocks ("Changed on both sides · 3 conflicts").

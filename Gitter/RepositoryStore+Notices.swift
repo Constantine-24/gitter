@@ -104,8 +104,6 @@ extension RepositoryStore {
             restoreTags(receipts)
         case .openWorktree(let path):
             openAddedWorktree(path)
-        case .openResolver(let path):
-            openResolver(at: path)
         }
     }
 }
