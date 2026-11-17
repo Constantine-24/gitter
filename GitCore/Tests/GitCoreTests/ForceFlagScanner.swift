@@ -1233,12 +1233,14 @@ enum ForceFlagScanner {
                 .literal("theirs"), .interpolated(prefix: ":2:", suffix: ""), .data,
                 .interpolated(prefix: ":3:", suffix: "")),
         ],
-        // The rebuilt blob or a stage in worktree form (`--filters --path=`), and the discard
-        // section's two reads of a record's blob.
+        // The rebuilt blob or a stage in worktree form (`--filters --path=`), the discard
+        // section's two reads of a record's blob, and the diff colours' size check before a
+        // blob read (`blobBytes`).
         "cat-file": [
             Shape(.literal("--filters"), .interpolated(prefix: "--path=", suffix: ""), .data),
             Shape(.literal("--filters"), .data),
             Shape(.literal("blob"), .data),
+            Shape(.literal("-s"), .data),
         ],
         // `check-attr` takes path names, not pathspecs: `:(literal)f.txt` is looked up as a file
         // of that name (measured, A2 Task 1), so the path after `--` is plain.
@@ -1496,8 +1498,8 @@ enum ForceFlagScanner {
             "without `--object-id` merge-file overwrites its first argument in the worktree (M 2), "
             + "and the conflict reader parses only the two rebuilds it was measured with",
         "cat-file":
-            "the conflict reader and the discard section parse exactly these reads; `-p`, "
-            + "`--textconv` or a read without `--filters` gives them bytes in another form",
+            "the conflict reader, the discard section and the diff colours parse exactly these "
+            + "reads; `-p`, `--textconv` or a read without `--filters` gives them bytes in another form",
         "check-attr": "the conflict reader asks for exactly these two attributes, of one plain path",
         "cherry-pick":
             "a pick without `--empty=drop` stops on an already-applied commit as an empty pick (B4), "

@@ -321,8 +321,9 @@
 <pre><code>git clone https://github.com/Constantine-24/gitter.git
 cd gitter
 brew install xcodegen
-xcodegen generate
-open Gitter.xcodeproj      # then press Run</code></pre>
+xcodegen generate && xcodebuild -resolvePackageDependencies -project Gitter.xcodeproj \
+  -scheme Gitter -clonedSourcePackagesDirPath .build/SourcePackages   # once; fetches the Tree-sitter packages
+open Gitter.xcodeproj      # then press Run; Xcode resolves the packages again for itself</code></pre>
           <p><a href="https://github.com/Constantine-24/gitter/blob/main/docs/INSTALL.md">INSTALL.md</a> covers git,
             updating, the logs and building your own DMG.</p>
         </article>
@@ -349,6 +350,8 @@ open Gitter.xcodeproj      # then press Run</code></pre>
               loaded. The last row says <i>Start of history</i> when you reach the first commit.</li>
             <li>Click a branch or a tag in the sidebar to select its commit. If that commit is older than what has
               loaded, Gitter loads down to it and scrolls there.</li>
+            <li>Diffs are in syntax colours for 18 languages, from Swift and Python to Rust and Kotlin, and the
+              three columns of Resolve Conflicts too. Files Gitter can't colour exactly stay plain.</li>
             <li>Tags appear as pills on their commit rows. Hover over one to see the tagger, the date and the message.</li>
           </ul>
         </article>

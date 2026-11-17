@@ -14,6 +14,9 @@ hooks and commit signing all work exactly as they do in the terminal.
 
 - **History.** A gitk-style lane graph that goes back to the first commit. Older commits load as
   you scroll, and clicking an old branch or tag jumps straight to it.
+- **Syntax colours.** Diffs and Resolve Conflicts show code in colour for 18 languages, from
+  Swift and Python to Rust and Kotlin, parsed on your Mac. Files Gitter can't colour exactly stay
+  plain.
 - **Staging and committing.** Stage whole files, single hunks or hand-picked lines. Commit, amend,
   or commit every tracked change in one step.
 - **Branches.** Create, switch, rename, delete and merge branches: fast-forward, merge commit or
@@ -75,22 +78,31 @@ fetch and push, stash and discard, conflicts, history actions and remotes.
 
 ```sh
 brew install xcodegen
-xcodegen generate
+xcodegen generate && xcodebuild -resolvePackageDependencies -project Gitter.xcodeproj -scheme Gitter \
+  -clonedSourcePackagesDirPath .build/SourcePackages
 open Gitter.xcodeproj
 ```
+
+The second command fetches the Tree-sitter packages once, so it needs the network, and the first
+run takes a while: the Kotlin grammar's repository history is about 470 MB. Run it again only when
+a pin in `Syntax/Package.swift` changes. Opening the project in Xcode resolves the packages once
+more, into Xcode's own DerivedData folder, which can use the network; the command-line builds use
+`.build/SourcePackages` and never do.
 
 To build without opening Xcode:
 
 ```sh
 xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter \
-  -configuration Debug -derivedDataPath .build/DerivedData build
+  -configuration Debug -derivedDataPath .build/DerivedData \
+  -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution build
 ```
 
 ## Tests
 
 ```sh
 bash scripts/test-gitcore.sh      # GitCore: the git layer, parsers and models
-xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug test   # both targets
+xcodegen generate && xcodebuild -project Gitter.xcodeproj -scheme Gitter -configuration Debug \
+  -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution test   # all three targets
 ```
 
 The tests run against real git, in throwaway repositories. They never touch your own
@@ -103,6 +115,9 @@ repositories, defaults or logs.
   `/usr/bin/git` through `Process`, and its parsers read git's own output.
 - **Changes the way you'd make them.** Staging builds patches in-process and applies them with
   `git apply --cached`. Gitter has no index writer of its own.
+- **`Syntax`**, a local package around [Tree-sitter](https://tree-sitter.github.io/), Gitter's one
+  third-party dependency: the Swift binding, the core and 18 grammar packages, each pinned to an
+  exact version. Their licences are in `Acknowledgements.txt` in the app's Resources.
 - **One store per window** (`RepositoryStore`), which owns that window's sheets, network lane and
   fetch schedule.
 

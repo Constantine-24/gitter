@@ -8,6 +8,8 @@ options:
 packages:
   GitCore:
     path: GitCore
+  Syntax:
+    path: Syntax
 targets:
   Gitter:
     type: application
@@ -16,6 +18,8 @@ targets:
       - path: Gitter
     dependencies:
       - package: GitCore
+      - package: Syntax
+        product: GitterSyntax
     settings:
       base:
         SWIFT_VERSION: "6.0"
@@ -74,4 +78,5 @@ schemes:
       config: Debug
       targets:
         - package: GitCore/GitCoreTests
+        - package: Syntax/GitterSyntaxTests
         - GitterTests

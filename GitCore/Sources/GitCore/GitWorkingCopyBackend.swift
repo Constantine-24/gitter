@@ -106,6 +106,15 @@ public protocol GitWorkingCopyBackend: Sendable {
     /// Returns `""` in a repository with no commits yet, where `log` would otherwise fail.
     func headMessage(at root: URL) async throws -> String
 
+    /// The raw bytes of blob `object` (syntax colours): `cat-file -s <object>`, then, when the
+    /// size is at most `limit`, `cat-file blob <object>` — no textconv and no filters, the bytes
+    /// a diff's blob side was compared from. Nil for the all-zeros id (a side that does not
+    /// exist; git does not run) and for a blob over `limit` (only its size is read). An
+    /// abbreviated id is read as git resolves it. Throws `BranchOperationError.invalidName`
+    /// before git runs for an id that is not lowercase hex, and when git fails (a missing
+    /// object, or one that is not a blob).
+    func blobBytes(_ object: String, at root: URL, limit: Int) async throws -> Data?
+
     // MARK: - Discard
 
     /// What a discard sheet for tracked paths shows, and exactly what `discard` re-reads for

@@ -223,6 +223,10 @@ extension RepositoryStore {
                 self.setDiff([], staged: capturedStagedView)
             } else {
                 self.setDiff(result, staged: capturedStagedView)
+                // Then the colours, on their own: the diff is already on screen, plain.
+                self.loadDiffSyntax(
+                    for: result, root: root, selection: capturedSelection, path: capturedPath,
+                    staged: capturedStagedView, generation: capturedGeneration, comparison: capturedComparison)
             }
         }
     }

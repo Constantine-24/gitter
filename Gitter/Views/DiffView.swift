@@ -107,7 +107,9 @@ struct DiffView: View {
             // the hunk, and it is what decides whether this diff is interactive at all.
             let canStage = store.canPartiallyStage(diff)
             ForEach(diff.hunks) { hunk in
-                DiffHunkView(file: diff, hunk: hunk, canStage: canStage, selection: $selection)
+                DiffHunkView(
+                    file: diff, hunk: hunk, canStage: canStage, tokens: store.diffSyntax[diff.id],
+                    selection: $selection)
             }
         }
     }

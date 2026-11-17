@@ -147,6 +147,18 @@ From a clean checkout, with [XcodeGen](https://github.com/yonaskolb/XcodeGen) in
 (`brew install xcodegen`), `scripts/package.sh` builds an arm64 Release and wraps it in a DMG. Sign it with a
 self-signed certificate for your own Macs, or with a Developer ID to release it.
 
+The script never uses the network, so the Tree-sitter packages that colour the code must be in
+`.build/SourcePackages` first. Fetch them once, on a connection:
+
+```sh
+xcodegen generate && xcodebuild -resolvePackageDependencies -project Gitter.xcodeproj -scheme Gitter \
+  -clonedSourcePackagesDirPath .build/SourcePackages
+```
+
+The first run takes a while, because the Kotlin grammar's repository history is large (about 470 MB
+as a mirror). Run it again only when a pin in `Syntax/Package.swift` changes. Without it,
+`scripts/package.sh` stops before building and prints this command.
+
 ### Self-signed, for your own Macs
 
 A build that is not signed with a certificate is signed "ad-hoc", and its identity is a hash of the
@@ -197,12 +209,13 @@ What it does, in order:
 
 - **It refuses** (exit 2, before building) when `git status --porcelain --untracked-files=all` shows
   anything, so every DMG maps to a commit (a new file counts even if your `status.showUntrackedFiles`
-  hides it); when XcodeGen is missing; for an unknown flag, or a `--sign` with no name; for a
+  hides it); when XcodeGen is missing; when `.build/SourcePackages` is missing; for an unknown flag, or a `--sign` with no name; for a
   relative `GITTER_DIST_DIR` (give an absolute path: the script works from the repository, not the
   folder you run it in); for `--notarize` without `--sign`, or with a name that is not a `Developer ID Application`
   identity; and for `--notarize` with no profile name.
 - **It builds** an arm64 Release with `xcodegen generate` and `xcodebuild`, into `dist/DerivedData`, not
-  your Xcode folder. The version is `MARKETING_VERSION` in `project.yml`, which you bump by hand. The
+  your Xcode folder, from the packages in `.build/SourcePackages` (`-clonedSourcePackagesDirPath
+  .build/SourcePackages -disableAutomaticPackageResolution`; with that folder missing it refuses, exit 2). The version is `MARKETING_VERSION` in `project.yml`, which you bump by hand. The
   build number is `git rev-list --count HEAD`, so it goes up with every commit on `main`. The commit's
   short hash goes into `Info.plist` as `GitterCommit`. `project.yml` is not edited.
 - **With `--sign`**, it re-signs the built app with that identity: `codesign --force --options runtime

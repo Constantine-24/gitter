@@ -6,7 +6,8 @@ Everything Gitter does, and how it keeps your work safe. The short version is in
 
 - Browse commit history with a lane graph (gitk-style), all the way to the first commit: older
   commits load as you scroll
-- View diffs of a commit, or of the working copy, with wrapping long lines
+- View diffs of a commit, or of the working copy, with wrapping long lines, and in syntax colours
+  for 18 languages (see "Syntax colours" below)
 - Stage and unstage whole files, individual hunks, or a hand-picked set of lines
 - Commit, amend the last commit, or commit every tracked change in one step
 - Create, switch, rename and delete local branches; check out a remote branch as a local
@@ -141,6 +142,28 @@ Conflicts without its toolbar and sidebar; the rest still show the older layout.
 ![Pruning "origin": three remote-tracking branches the server no longer has, each with its full id; the three commits only they hold; and two ticked boxes keeping a local branch at each ref that holds them, with Keep All and Keep None](screenshots/prune.png)
 
 ![Removing the remote "fork": its four remote-tracking branches with their ids, the one commit only they hold with a ticked box keeping a branch at it, and the branch that will be left with no upstream](screenshots/remove-remote.png)
+
+### Syntax colours
+
+Diffs, and the three columns of Resolve Conflicts, show code in colour: keywords, strings,
+comments, numbers, types, functions and so on. Gitter reads the file with Tree-sitter on your Mac;
+nothing is sent anywhere, and only the colour of the characters changes. The tints, word marks and
+selection stay as they are.
+
+- **Languages.** Swift, Python, JavaScript (including JSX), TypeScript and TSX, JSON, HTML, CSS,
+  SCSS, Markdown, YAML, Shell, C, C++, Go, Rust, Ruby, Java and Kotlin. Gitter knows a file by its
+  extension, by a few well-known names (`Gemfile`, `Rakefile`, `Podfile`, `Fastfile`, `.zshrc`,
+  `.bashrc`, `.profile`, `.babelrc`, `.eslintrc` and a few more) and, for scripts with no extension,
+  by the `#!` line.
+- **A moment later.** The diff or the conflict appears first, plain, and the colours follow a moment
+  after. In Resolve Conflicts the Result takes its colours again 150 ms after you stop typing.
+- **When a file stays plain.** A file over 1,000,000 bytes or 20,000 lines, a language not on the
+  list, and any line that is not the line the colours were read from, which happens with Git LFS
+  pointers and clean filters. A single line over 2,000 characters, such as a minified bundle's,
+  stays plain too, while the rest of its file is coloured. Plain is always the answer when Gitter
+  is not sure.
+- **Not coloured.** Languages inside another one: the script and style in an HTML file, and the code
+  inside Markdown fences. Markdown shows its block structure only.
 
 ## Updates
 

@@ -13,10 +13,18 @@ enum AboutPanel {
         return (application, "\(build), \(commit)")
     }
 
+    /// The panel's credits line: the colours come from Tree-sitter, whose licence texts ship in
+    /// `Acknowledgements.txt` in the app's Resources.
+    static var credits: NSAttributedString {
+        NSAttributedString(
+            string: "Syntax colours by Tree-sitter. Licences: Acknowledgements.txt in Gitter's Resources.",
+            attributes: [.font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize), .foregroundColor: NSColor.labelColor])
+    }
+
     @MainActor static func show() {
         let versions = versions(info: Bundle.main.infoDictionary ?? [:])
         NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationVersion: versions.application, .version: versions.build,
+            .applicationVersion: versions.application, .version: versions.build, .credits: credits,
         ])
     }
 }

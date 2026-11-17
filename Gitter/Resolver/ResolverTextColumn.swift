@@ -1,5 +1,6 @@
 import AppKit
 import GitCore
+import GitterSyntax
 
 /// What the columns' views draw from, rebuilt with every render of the rows
 /// (`ResolverColumnsHost`): the rows, and per conflict its rows and whether it can be taken.
@@ -205,6 +206,141 @@ final class ResolverTextView: NSTextView {
         manager.ensureLayout(for: range)
         laidOutRows = through
         return through == row
+    }
+
+    // MARK: Syntax colours
+
+    /// Each row's syntax tokens (`ResolverSyntax`), empty for a plain row: one per row, kept in
+    /// step with `starts` by the host.
+    private(set) var rowTokens: [[SyntaxToken]] = []
+    /// The rows whose colours are their `rowTokens` now. Both kinds of colour move with the text
+    /// when rows above change, and a replaced paragraph loses its own (measured, Task 4).
+    private(set) var colouredRows = IndexSet()
+
+    /// Every row's tokens anew, for new text (`patch` from nothing) or after `clear`: no row is
+    /// coloured yet.
+    func resetRowTokens(_ tokens: [[SyntaxToken]]) {
+        rowTokens = tokens
+        colouredRows = []
+    }
+
+    /// Every row's tokens from a new parse: a row whose tokens did not change keeps its colours.
+    func updateRowTokens(_ tokens: [[SyntaxToken]]) {
+        guard tokens.count == rowTokens.count else { return resetRowTokens(tokens) }
+        colouredRows = colouredRows.filteredIndexSet { rowTokens[$0] == tokens[$0] }
+        rowTokens = tokens
+    }
+
+    /// The host replaced the paragraphs of rows `old` with `new.count` new ones (`patch`): those
+    /// carry no colour; the rows after them keep theirs, which moved with their text.
+    func replaceRowTokens(_ old: Range<Int>, with new: [[SyntaxToken]]) {
+        guard old.upperBound <= rowTokens.count else { return resetRowTokens(new) }
+        rowTokens.replaceSubrange(old, with: new)
+        colouredRows.remove(integersIn: old)
+        colouredRows.shift(startingAt: old.upperBound, by: new.count - old.count)
+    }
+
+    /// A row's paragraph was put back as it was (`restoreRow`): coloured again when next asked.
+    func rowReplaced(_ row: Int) {
+        colouredRows.remove(row)
+    }
+
+    /// Gives the rows in `range` not coloured yet their tokens' colours; how many rows that was.
+    ///
+    /// - **The Result** takes them as rendering attributes of its layout manager, over each row's
+    ///   paragraph (anything there before removed first): its text is the store's, edited only
+    ///   through `patch`, and its storage feeds the edit map and the input method.
+    /// - **Ours and Theirs** are read-only, with no undo and no edit tracking, so they take them
+    ///   in the text itself (Ruling 9): `.foregroundColor` over each row's text, the plain text
+    ///   colour first, in one batch of edits. TextKit lays the edited rows out again and draws
+    ///   them like any text, where a rendering attribute is redrawn on every scroll (measured,
+    ///   Task 4) and a line already drawn did not take one at all.
+    ///
+    /// Nothing while an input method composes in the Result: its text then holds the marked
+    /// text, which `starts` doesn't count, so every offset after it would be off. `restoreRow`
+    /// colours the rows once the composition ends.
+    @discardableResult
+    func colour(rows range: Range<Int>) -> Int {
+        if column == .result, hasMarkedText() || compositionStart != nil { return 0 }
+        let range = range.clamped(to: 0..<min(starts.count - 1, rowTokens.count))
+        guard !range.isEmpty, let storage = textStorage else { return 0 }
+        var missing = IndexSet(integersIn: range)
+        missing.subtract(colouredRows)
+        guard let first = missing.first, let last = missing.last else { return 0 }
+        colouredRows.formUnion(missing)
+        if column == .result {
+            colourRendering(missing, length: storage.length)
+            let top = ResolverGeometry.y(ofRow: first)
+            redisplay(NSRect(x: 0, y: top, width: bounds.width, height: ResolverGeometry.y(ofRow: last + 1) - top))
+        } else {
+            colourStorage(missing, storage)
+        }
+        return missing.count
+    }
+
+    /// Marks `rect` for display in this view and in every view under it that covers part of it.
+    ///
+    /// TextKit 2 draws each line in a view of its own under the text view. Adding a rendering
+    /// attribute marks none of them, and nor does the text view's own `setNeedsDisplay(_:)`: in
+    /// the real app, lines drawn plain when a jump brought them back into view (⌘] then ⌘[ at
+    /// 5,000 lines while the parse ran) stayed plain under their new colours. Each public route
+    /// was tried there and left them plain (Ruling 14): `setNeedsDisplay(rect)` now and on the
+    /// next turn, `needsDisplay = true`, `textViewportLayoutController.layoutViewport()`,
+    /// `invalidateLayout(for:)` over the rows in the viewport (before or after colouring, with
+    /// or without `layoutViewport()`), and a `renderingAttributesValidator` with
+    /// `invalidateRenderingAttributes(for:)`, which TextKit never called again. Marking the line
+    /// views is what draws them. It uses only public `NSView` calls on the views AppKit put under
+    /// this one, and marks nothing when there are none.
+    private func redisplay(_ rect: NSRect) {
+        setNeedsDisplay(rect)
+        func mark(_ view: NSView) {
+            for subview in view.subviews {
+                let local = subview.convert(rect, from: self).intersection(subview.bounds)
+                if !local.isEmpty { subview.setNeedsDisplay(local) }
+                mark(subview)
+            }
+        }
+        mark(self)
+    }
+
+    private func colourRendering(_ rows: IndexSet, length: Int) {
+        guard let manager = textLayoutManager, let content = manager.textContentManager else { return }
+        let origin = content.documentRange.location
+        let palette = SyntaxPalette.standard
+        for row in rows {
+            let start = starts[row], end = starts[row + 1]
+            guard start < end, end <= length, let from = content.location(origin, offsetBy: start),
+                let to = content.location(from, offsetBy: end - start), let paragraph = NSTextRange(location: from, end: to)
+            else { continue }
+            manager.removeRenderingAttribute(.foregroundColor, for: paragraph)
+            // The paragraph's text, without its break.
+            let text = end - start - 1
+            for token in rowTokens[row] where !token.range.isEmpty && token.range.upperBound <= text {
+                guard let lower = content.location(from, offsetBy: token.range.lowerBound),
+                    let upper = content.location(lower, offsetBy: token.range.count),
+                    let tokenRange = NSTextRange(location: lower, end: upper)
+                else { continue }
+                manager.addRenderingAttribute(.foregroundColor, value: palette.color(token.kind), for: tokenRange)
+            }
+        }
+    }
+
+    private func colourStorage(_ rows: IndexSet, _ storage: NSTextStorage) {
+        let syntax = SyntaxPalette.standard
+        storage.beginEditing()
+        for row in rows {
+            let start = starts[row], end = starts[row + 1]
+            // The row's text, without its break; a filler has none.
+            guard start < end, end <= storage.length, end - start > 1 else { continue }
+            let text = end - start - 1
+            storage.addAttribute(.foregroundColor, value: palette.text, range: NSRange(location: start, length: text))
+            for token in rowTokens[row] where !token.range.isEmpty && token.range.upperBound <= text {
+                storage.addAttribute(
+                    .foregroundColor, value: syntax.color(token.kind),
+                    range: NSRange(location: start + token.range.lowerBound, length: token.range.count))
+            }
+        }
+        storage.endEditing()
     }
 
     // MARK: Drawing

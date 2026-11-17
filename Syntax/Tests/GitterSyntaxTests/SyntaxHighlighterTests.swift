@@ -1,0 +1,351 @@
+import Testing
+
+@testable import GitterSyntax
+
+/// The text in `range`, a range of UTF-16 offsets as `SyntaxToken` gives them. A range that
+/// doesn't fit the text, or splits a surrogate pair, records an issue and gives "".
+func slice(_ text: String, _ range: Range<Int>) -> String {
+    let utf16 = text.utf16
+    guard range.lowerBound >= 0, range.upperBound <= utf16.count else {
+        Issue.record("\(range) is outside the text's \(utf16.count) UTF-16 units")
+        return ""
+    }
+    let start = utf16.index(utf16.startIndex, offsetBy: range.lowerBound)
+    let end = utf16.index(utf16.startIndex, offsetBy: range.upperBound)
+    guard let piece = String(utf16[start..<end]) else {
+        Issue.record("\(range) splits a surrogate pair")
+        return ""
+    }
+    return piece
+}
+
+/// The UTF-16 range of the `occurrence`-th (0-based) appearance of `needle` in `text`.
+func utf16Range(of needle: String, in text: String, occurrence: Int = 0) -> Range<Int>? {
+    var searchStart = text.startIndex
+    var found = 0
+    while let range = text.range(of: needle, range: searchStart..<text.endIndex) {
+        if found == occurrence {
+            let lower = text.utf16.distance(from: text.utf16.startIndex, to: range.lowerBound)
+            return lower..<(lower + needle.utf16.count)
+        }
+        found += 1
+        searchStart = range.upperBound
+    }
+    return nil
+}
+
+/// A small text per language and the colours some of its pieces must get, each over exactly
+/// that piece.
+struct Sample: Sendable, CustomTestStringConvertible {
+    let language: SyntaxLanguage
+    let text: String
+    let expected: [(SyntaxKind, String)]
+
+    var testDescription: String { language.rawValue }
+}
+
+@Suite struct SyntaxHighlighterTests {
+
+    static let samples: [Sample] = [
+        Sample(language: .swift, text: "import Foundation\n// note\nlet s = \"hi\"\n",
+               expected: [(.keyword, "import"), (.comment, "// note"), (.keyword, "let"), (.string, "\"hi\"")]),
+        Sample(language: .python, text: "import os\n# note\nx = \"hi\"\n",
+               expected: [(.keyword, "import"), (.comment, "# note"), (.string, "\"hi\"")]),
+        Sample(language: .javascript, text: "const x = \"hi\"; // note\nfoo(1);\n",
+               expected: [(.keyword, "const"), (.string, "\"hi\""), (.comment, "// note"),
+                          (.function, "foo"), (.number, "1")]),
+        Sample(language: .typescript, text: "let n: number = 1; // note\n",
+               expected: [(.keyword, "let"), (.type, "number"), (.number, "1"), (.comment, "// note")]),
+        Sample(language: .tsx, text: "const a = <div className=\"x\">hi</div>; // note\n",
+               expected: [(.keyword, "const"), (.string, "\"x\""), (.comment, "// note"),
+                          (.keyword, "div"), (.attribute, "className")]),
+        Sample(language: .json, text: "{\"a\": \"b\", \"n\": 1, \"t\": true}\n",
+               expected: [(.string, "\"a\""), (.string, "\"b\""), (.number, "1"), (.keyword, "true")]),
+        Sample(language: .html, text: "<!-- note -->\n<p class=\"x\">hi</p>\n",
+               expected: [(.comment, "<!-- note -->"), (.keyword, "p"), (.attribute, "class"),
+                          (.string, "x")]),
+        Sample(language: .css, text: "/* note */\n@media screen { a { width: 10px; content: \"x\"; } }\n",
+               expected: [(.comment, "/* note */"), (.keyword, "@media"), (.string, "\"x\"")]),
+        Sample(language: .scss, text: "// note\n@mixin m { color: red; content: \"x\"; }\n",
+               expected: [(.comment, "// note"), (.keyword, "@mixin"), (.string, "\"x\"")]),
+        Sample(language: .markdown, text: "# Title\n\n```\ncode\n```\n\n[ref]: https://example.com \"T\"\n",
+               expected: [(.keyword, "Title"), (.url, "[ref]"), (.url, "https://example.com"),
+                          (.markupCode, "\"T\"")]),
+        Sample(language: .yaml, text: "# note\nkey: \"v\"\nn: 1\nb: true\n",
+               expected: [(.comment, "# note"), (.string, "\"v\""), (.number, "1"), (.keyword, "true")]),
+        Sample(language: .shell, text: "# note\nif true; then echo \"hi\"; fi\n",
+               expected: [(.comment, "# note"), (.keyword, "if"), (.string, "\"hi\"")]),
+        Sample(language: .c, text: "// note\nint main(void) { return 0; }\nchar *s = \"hi\";\n",
+               expected: [(.comment, "// note"), (.keyword, "return"), (.type, "int"), (.number, "0"),
+                          (.string, "\"hi\"")]),
+        Sample(language: .cpp, text: "// note\nclass A { public: int x = 1; };\nauto s = \"hi\";\n",
+               expected: [(.comment, "// note"), (.keyword, "class"), (.string, "\"hi\"")]),
+        Sample(language: .go, text: "package main\n// note\nfunc f() string { return \"hi\" }\n",
+               expected: [(.keyword, "package"), (.comment, "// note"), (.keyword, "func"),
+                          (.keyword, "return"), (.string, "\"hi\"")]),
+        Sample(language: .rust, text: "// note\nfn main() { let s = \"hi\"; }\n",
+               expected: [(.comment, "// note"), (.keyword, "fn"), (.keyword, "let"), (.string, "\"hi\"")]),
+        Sample(language: .ruby, text: "# note\ndef f\n  \"hi\"\nend\n",
+               expected: [(.comment, "# note"), (.keyword, "def"), (.keyword, "end"), (.string, "\"hi\"")]),
+        Sample(language: .java, text: "// note\nclass A { String s = \"hi\"; int n = 1; }\n",
+               expected: [(.comment, "// note"), (.keyword, "class"), (.string, "\"hi\""), (.number, "1")]),
+        Sample(language: .kotlin, text: "// note\nfun f(): String = \"hi\"\nval n = 1\n",
+               expected: [(.comment, "// note"), (.keyword, "fun"), (.keyword, "val"), (.number, "1"),
+                          (.string, "\"hi\"")]),
+    ]
+
+    @Test func everyLanguageHasASample() {
+        #expect(Set(Self.samples.map(\.language)) == Set(SyntaxLanguage.allCases))
+    }
+
+    /// Each expected piece is one token of the expected kind, starting and ending exactly there.
+    @Test(arguments: samples)
+    func everyLanguageColoursASample(sample: Sample) {
+        let tokens = SyntaxHighlighter.tokens(in: sample.text, language: sample.language)
+        let found = tokens.map { ($0.kind, slice(sample.text, $0.range)) }
+        for (kind, piece) in sample.expected {
+            #expect(found.contains { $0 == (kind, piece) },
+                    "\(sample.language): \(kind) over \(piece.debugDescription); got \(found)")
+        }
+    }
+
+    /// Offsets count UTF-16 code units: "é" is two UTF-8 bytes and one unit, and "😀" is four
+    /// bytes, two units and one scalar, so a keyword after them on the same line lands exactly
+    /// only when the units are counted.
+    @Test func nonASCIIOffsetsAreUTF16() throws {
+        let text = "let e = \"é😀\"; let x = 1\n"
+        let tokens = SyntaxHighlighter.tokens(in: text, language: .swift)
+        let secondLet = try #require(utf16Range(of: "let", in: text, occurrence: 1))
+        #expect(secondLet == 15..<18)
+        #expect(tokens.contains(SyntaxToken(range: secondLet, kind: .keyword)))
+        #expect(tokens.contains { $0.kind == .string && slice(text, $0.range).contains("é😀") })
+    }
+
+    /// Every capture name any language's compiled query can emit either gets a colour or is
+    /// listed here on purpose, so a capture a pin raise brings in fails until someone decides.
+    /// Spell-check markers and `_` helpers are ignored outright; the rest paint plain, so they
+    /// clear an enclosing capture's colour.
+    static let deliberatelyPlain: Set<String> = [
+        "variable", "variable.member", "variable.parameter", "property", "operator", "delimiter",
+        "punctuation.bracket", "punctuation.delimiter", "punctuation.special", "label",
+        "namespace", "parameter", "embedded", "none", "spell", "_class", "_function",
+        "keyword.conditional.ternary",
+    ]
+
+    @Test(arguments: SyntaxLanguage.allCases)
+    func everyEmittedCaptureIsMapped(language: SyntaxLanguage) throws {
+        let names = try #require(SyntaxHighlighter.captureNames(for: language),
+                                 "\(language)'s query did not load")
+        #expect(!names.isEmpty)
+        for name in names {
+            let mapped = SyntaxKind(capture: name) != nil
+            #expect(mapped || Self.deliberatelyPlain.contains(name),
+                    "\(language) emits \(name.debugDescription), neither mapped nor deliberately plain")
+            #expect(!(mapped && Self.deliberatelyPlain.contains(name)),
+                    "\(name.debugDescription) is mapped but listed as deliberately plain")
+        }
+    }
+
+    /// Nested captures (an interpolation inside a string, a doc comment) come out as sorted,
+    /// non-empty, non-overlapping tokens, and the innermost capture wins: the interpolated
+    /// expression isn't string-coloured.
+    @Test func tokensAreSortedAndDisjoint() throws {
+        let text = "/// Doc comment\nlet s = \"a \\(b + 1) c\"\n"
+        let tokens = SyntaxHighlighter.tokens(in: text, language: .swift)
+        #expect(!tokens.isEmpty)
+        for token in tokens { #expect(!token.range.isEmpty) }
+        for (a, b) in zip(tokens, tokens.dropFirst()) {
+            #expect(a.range.upperBound <= b.range.lowerBound, "\(a) overlaps or precedes \(b)")
+        }
+        #expect(tokens.contains(SyntaxToken(range: 0..<15, kind: .comment)))
+        let b = try #require(utf16Range(of: "b + 1", in: text)).lowerBound
+        #expect(!tokens.contains { $0.range.contains(b) && $0.kind == .string })
+        let one = try #require(utf16Range(of: "1", in: text))
+        #expect(tokens.contains(SyntaxToken(range: one, kind: .number)))
+        let a = try #require(utf16Range(of: "a ", in: text)).lowerBound
+        #expect(tokens.contains { $0.range.contains(a) && $0.kind == .string })
+    }
+
+    /// Where a general pattern and a contextual one capture the same node, the contextual one
+    /// wins whichever comes first in the query. Go and Java put their contextual patterns first
+    /// and their catch-alls later; Python, JavaScript and the nvim-style queries do the opposite.
+    @Test(arguments: [
+        Sample(language: .go,
+               text: "func main() { fmt.Println(helper(1)) }\nfunc helper(n int) int { return n }\n",
+               expected: [(.function, "main"), (.function, "Println")]),
+        Sample(language: .java,
+               text: "class URL { static final int MAX_N = 1; void f() { HTTP.get(); } }\n",
+               expected: [(.type, "URL"), (.type, "HTTP"), (.constant, "MAX_N"), (.function, "get")]),
+        Sample(language: .css, text: "a:hover { color: red; }\n", expected: [(.attribute, "hover")]),
+        Sample(language: .scss, text: "@mixin theme($c) { color: $c; }\n",
+               expected: [(.function, "theme")]),
+    ])
+    func contextualPatternsBeatGeneralOnes(sample: Sample) {
+        let tokens = SyntaxHighlighter.tokens(in: sample.text, language: sample.language)
+        let found = tokens.map { ($0.kind, slice(sample.text, $0.range)) }
+        for (kind, piece) in sample.expected {
+            #expect(found.contains { $0 == (kind, piece) },
+                    "\(sample.language): \(kind) over \(piece.debugDescription); got \(found)")
+        }
+    }
+
+    /// Swift's ternary `?` is captured as `keyword.conditional.ternary` inside the ternary, which
+    /// now beats the general `"?" @operator`; Xcode draws it plain, so it maps to plain.
+    @Test func swiftTernaryOperatorIsPlain() throws {
+        let text = "let y = a ? b : c\n"
+        let tokens = SyntaxHighlighter.tokens(in: text, language: .swift)
+        let mark = try #require(utf16Range(of: "?", in: text)).lowerBound
+        #expect(!tokens.contains { $0.range.contains(mark) }, "\(tokens)")
+        #expect(tokens.contains(SyntaxToken(range: 0..<3, kind: .keyword)))
+    }
+
+    /// Go's `helper` is both called and declared; each is a function name.
+    @Test func goFunctionNamesAreFunctions() throws {
+        let text = "func main() { fmt.Println(helper(1)) }\nfunc helper(n int) int { return n }\n"
+        let tokens = SyntaxHighlighter.tokens(in: text, language: .go)
+        for occurrence in 0..<2 {
+            let helper = try #require(utf16Range(of: "helper", in: text, occurrence: occurrence))
+            #expect(tokens.contains(SyntaxToken(range: helper, kind: .function)), "helper #\(occurrence)")
+        }
+    }
+
+    /// How specific each pattern is, read from the query source: the deepest nesting of node
+    /// patterns (an alternation adds no depth, a predicate group counts none), and how many text
+    /// predicates guard it.
+    @Test func patternSpecificityIsReadFromTheSource() throws {
+        let source = """
+            ; a comment with (parens) and "quotes"
+            (identifier) @variable
+            (call function: (identifier) @function)
+            ((identifier) @constant (#match? @constant "^[A-Z(]"))
+            ["def" "return"] @keyword
+            (call function: (attribute attribute: (identifier) @function.method))
+            [(integer) (float)] @number
+            "lambda" @keyword
+            """
+        let highlights = try #require(SyntaxHighlighter.highlights(source: source, language: .python))
+        #expect(highlights.depths == [1, 2, 1, 1, 3, 1, 1])
+        #expect(highlights.filters == [0, 0, 1, 0, 0, 0, 0])
+    }
+
+    /// Every language's patterns were all read: the source scan found as many patterns as the
+    /// compiled query has, so no language falls back to pattern order alone.
+    @Test(arguments: SyntaxLanguage.allCases)
+    func everyPatternHasASpecificity(language: SyntaxLanguage) throws {
+        let highlights = try #require(SyntaxHighlighter.highlights(for: language))
+        #expect(highlights.depths.count == highlights.query.patternCount)
+        #expect(highlights.depths.allSatisfy { $0 >= 1 })
+    }
+
+    /// A pattern guarded by a predicate the binding can't evaluate (it parses it as generic) never
+    /// matches, while one with a known predicate still does.
+    @Test func unknownPredicateMakesThePatternUnevaluable() throws {
+        let source = """
+            ((identifier) @function (#some-future-test? @function "x"))
+            ((identifier) @constant (#match? @constant "^[A-Z]"))
+            ((identifier) @variable.builtin (#is-not? local))
+            """
+        let highlights = try #require(SyntaxHighlighter.highlights(source: source, language: .python))
+        #expect(highlights.unevaluable == [0, 2])
+    }
+
+    /// Where two patterns capture the same node, the order matches arrive in doesn't decide:
+    /// tree-sitter returns Python's call pattern's match before the general `(identifier)
+    /// @variable` (it starts higher in the tree), so going by arrival would leave both calls
+    /// plain. The call pattern is the more specific one, and it also comes later in the query.
+    @Test func laterPatternWinsAtTheSameRange() throws {
+        let text = "print(len(x))\n"
+        let tokens = SyntaxHighlighter.tokens(in: text, language: .python)
+        #expect(tokens.contains(SyntaxToken(range: try #require(utf16Range(of: "print", in: text)),
+                                             kind: .function)))
+        #expect(tokens.contains(SyntaxToken(range: try #require(utf16Range(of: "len", in: text)),
+                                             kind: .function)))
+        let x = try #require(utf16Range(of: "x", in: text)).lowerBound
+        #expect(!tokens.contains { $0.range.contains(x) })
+    }
+
+    /// A pattern guarded by a predicate the binding can't evaluate is dropped (ledger Ruling 2).
+    /// Ruby's `((identifier) @function.method (#is-not? local))` needs scope tracking; evaluated
+    /// as "never local" it would colour every local variable as a method. The method a call or
+    /// a `def` names is still coloured by its own patterns.
+    @Test func unevaluablePredicateDropsThePattern() throws {
+        let text = "x = 1\nputs x\nobj.save\ndef foo\nend\n"
+        let tokens = SyntaxHighlighter.tokens(in: text, language: .ruby)
+        for occurrence in 0..<2 {
+            let x = try #require(utf16Range(of: "x", in: text, occurrence: occurrence))
+            #expect(!tokens.contains { $0.range.overlaps(x) }, "x #\(occurrence) is coloured")
+        }
+        let obj = try #require(utf16Range(of: "obj", in: text))
+        #expect(!tokens.contains { $0.range.overlaps(obj) })
+        #expect(tokens.contains(SyntaxToken(range: try #require(utf16Range(of: "save", in: text)),
+                                             kind: .function)))
+        #expect(tokens.contains(SyntaxToken(range: try #require(utf16Range(of: "foo", in: text)),
+                                             kind: .function)))
+    }
+
+    /// `.jsx` files detect as JavaScript, so JavaScript takes the JSX patterns too, last, as TSX
+    /// does (ledger Ruling 3).
+    @Test func jsxInJavaScriptGetsTagColours() {
+        let text = "const a = <div className=\"x\">hi</div>;\n"
+        let found = SyntaxHighlighter.tokens(in: text, language: .javascript)
+            .map { ($0.kind, slice(text, $0.range)) }
+        #expect(found.contains { $0 == (.keyword, "div") }, "\(found)")
+        #expect(found.contains { $0 == (.attribute, "className") }, "\(found)")
+        #expect(found.contains { $0 == (.string, "\"x\"") }, "\(found)")
+    }
+
+    /// A text over either limit isn't parsed at all; one exactly at the limit still is, so the
+    /// empty answer comes from the limit and not from a sample that has nothing to colour.
+    @Test func overLimitTextIsPlain() {
+        let atBytes = "// " + String(repeating: "a", count: SyntaxHighlighter.maxBytes - 3)
+        #expect(atBytes.utf8.count == 1_000_000)
+        #expect(!SyntaxHighlighter.tokens(in: atBytes, language: .javascript).isEmpty)
+        let overBytes = atBytes + "a"
+        #expect(SyntaxHighlighter.tokens(in: overBytes, language: .javascript) == [])
+
+        let atLines = String(repeating: "// c\n", count: SyntaxHighlighter.maxLines)
+        #expect(!SyntaxHighlighter.tokens(in: atLines, language: .javascript).isEmpty)
+        let overLines = atLines + "// c"
+        #expect(SyntaxHighlighter.tokens(in: overLines, language: .javascript) == [])
+    }
+
+    /// Lines split on `\n`, with a `\r` before it belonging to the line, and no token reaching
+    /// into a line terminator. A block comment over two lines becomes one token on each.
+    @Test func lineTokensSplitsCRLFAndMultiLineTokens() throws {
+        let text = "int a; /* x\r\ny */\r\nint b;"
+        let lines = SyntaxHighlighter.lineTokens(
+            SyntaxHighlighter.tokens(in: text, language: .c), in: text)
+        try #require(lines.count == 3)
+        let open = try #require(utf16Range(of: "/*", in: text)).lowerBound
+        #expect(lines[0].contains(SyntaxToken(range: open..<(open + 4), kind: .comment)))
+        #expect(lines[0].allSatisfy { $0.range.upperBound <= 11 })
+        #expect(lines[1] == [SyntaxToken(range: 0..<4, kind: .comment)])
+        // tree-sitter-c captures `int` as `(primitive_type) @type`.
+        #expect(lines[2].first == SyntaxToken(range: 0..<3, kind: .type))
+    }
+
+    /// A line comment on a CRLF line can include the `\r` in its node; the line's token stops
+    /// before it, so the token never runs past the line's text.
+    @Test func lineTokensClipLineCommentsBeforeCR() {
+        let text = "// a\r\nint b;\r\n"
+        let lines = SyntaxHighlighter.lineTokens(
+            SyntaxHighlighter.tokens(in: text, language: .c), in: text)
+        #expect(lines.count == 3)
+        #expect(lines[0] == [SyntaxToken(range: 0..<4, kind: .comment)])
+        #expect(lines[2] == [])
+    }
+
+    /// The compiled query is cached, a failed one too: once every language has been used, there
+    /// has been exactly one compile each, and no later call compiles. Every language is warmed
+    /// first so that tests running in parallel can't move the count.
+    @Test func queriesCompileOncePerLanguage() {
+        for language in SyntaxLanguage.allCases {
+            _ = SyntaxHighlighter.tokens(in: "x", language: language)
+        }
+        let before = SyntaxHighlighter.compiledCount
+        #expect(before == SyntaxLanguage.allCases.count)
+        _ = SyntaxHighlighter.tokens(in: "let x = 1", language: .swift)
+        _ = SyntaxHighlighter.tokens(in: "x = 1", language: .python)
+        #expect(SyntaxHighlighter.compiledCount == before)
+    }
+}

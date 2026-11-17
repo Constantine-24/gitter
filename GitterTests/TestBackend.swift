@@ -7,7 +7,7 @@ import Testing
 // `Testing.Tag` is in scope here too, so GitCore's is written `GitCore.Tag` (B1.3).
 @testable import GitCore
 
-/// The store's backend for a test: all 106 requirements of the twelve protocols forwarded to a
+/// The store's backend for a test: all 107 requirements of the twelve protocols forwarded to a
 /// real `CLIGitBackend` on the test's scratch repository, with any one call open to the test
 /// (E3 Task 3, spec Design §2). A test can, around a call:
 /// - `hook` it: run code before or after every such call, and throw to make the call throw;
@@ -38,7 +38,7 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
     GitStashBackend, GitConflictBackend, GitOperationBackend, GitHistoryBackend, GitTagBackend,
     GitRemoteAdminBackend, GitCompareBackend, GitWorktreeBackend, Sendable
 {
-    /// One case per protocol requirement (106); the raw value is the method's `#function`
+    /// One case per protocol requirement (107); the raw value is the method's `#function`
     /// spelling. The overloads' cases carry what tells them apart: `stageAllExpecting`,
     /// `discardExpectationTracked` / `discardExpectationUntracked`, `commitByID` (`GitBackend`'s
     /// one-commit read, beside `GitWorkingCopyBackend`'s `commit`), `rebaseOnto`
@@ -63,6 +63,7 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
         case applyToIndex = "applyToIndex(patch:reverse:at:)"
         case commit = "commit(message:amend:allTracked:at:)"
         case headMessage = "headMessage(at:)"
+        case blobBytes = "blobBytes(_:at:limit:)"
         case discardExpectationTracked = "discardExpectation(tracked:includingStaged:at:)"
         case discardExpectationUntracked = "discardExpectation(untracked:at:)"
         case discard = "discard(_:trasher:at:)"
@@ -378,6 +379,9 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
     }
     func headMessage(at root: URL) async throws -> String {
         try await around(.headMessage) { try await real.headMessage(at: root) }
+    }
+    func blobBytes(_ object: String, at root: URL, limit: Int) async throws -> Data? {
+        try await around(.blobBytes) { try await real.blobBytes(object, at: root, limit: limit) }
     }
     func discardExpectation(tracked paths: [String], includingStaged: Bool, at root: URL) async throws -> DiscardExpectation {
         try await around(.discardExpectationTracked) {

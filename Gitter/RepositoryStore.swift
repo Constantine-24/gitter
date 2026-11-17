@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import GitCore
+import GitterSyntax
 import Observation
 
 /// What is shown in the detail pane: the working copy, a specific commit, or a stash entry.
@@ -75,6 +76,12 @@ final class RepositoryStore {
     /// disagree. Anything that has to describe the diff actually on screen — the hunk buttons'
     /// labels, the direction their patch is applied in — reads this instead of `stagedView`.
     private(set) var diffIsStaged = false
+    /// The syntax colours of `diff` (syntax colours Task 3, `RepositoryStore+DiffSyntax`): per
+    /// file, per line, ranges relative to the line's `displayText`. Read after `diff` is already
+    /// on screen; a file or line that isn't here is drawn plain. `setDiff` keeps a file's entry
+    /// only while the new diff holds an equal `FileDiff` (Ruling 7), so it never outlives the
+    /// file diff it was read for.
+    private(set) var diffSyntax: [FileDiff.ID: [DiffLine.ID: [SyntaxToken]]] = [:]
 
     /// The selected conflicted file, read for the resolver (`RepositoryStore+Conflicts`): nil
     /// unless the working copy's selected file is unmerged and its read has landed. It can lag
@@ -480,6 +487,9 @@ final class RepositoryStore {
     var detailTask: Task<Void, Never>?
     // internal (not private), bookkeeping only, views must not touch this: used by +Detail.swift
     var diffTask: Task<Void, Never>?
+    /// The read and colouring of the diff on screen (`loadDiffSyntax`); `setDiff` cancels it.
+    // internal (not private), bookkeeping only, views must not touch this: used by +DiffSyntax.swift
+    var diffSyntaxTask: Task<Void, Never>?
     // internal (not private), bookkeeping only, views must not touch this: used by +Conflicts.swift
     var conflictTask: Task<Void, Never>?
     // internal (not private), bookkeeping only, views must not touch this: used by +Compare.swift
@@ -580,6 +590,7 @@ final class RepositoryStore {
         refreshTask?.cancel()
         detailTask?.cancel()
         diffTask?.cancel()
+        diffSyntaxTask?.cancel()
         conflictTask?.cancel()
         compareTask?.cancel()
         revealTask?.cancel()
@@ -727,6 +738,7 @@ final class RepositoryStore {
         refreshTask = nil
         detailTask?.cancel()
         diffTask?.cancel()
+        diffSyntaxTask?.cancel()
         conflictTask?.cancel()
         compareTask?.cancel()
         revealTask?.cancel()
@@ -1419,7 +1431,22 @@ final class RepositoryStore {
     /// internal (not private): used by +Detail.swift's `loadDiff()`; kept here since it writes
     /// `diff`/`diffIsStaged` and both stay `private(set)`.
     func setDiff(_ newDiff: [FileDiff], staged: Bool) {
+        // A file diff equal to one on screen (its lines, ids and blob ids, so its sources too)
+        // keeps its colours, so a reload of the same diff never blinks plain (Ruling 7). Any
+        // other entry goes: a changed file's line ids now name other lines.
+        let kept = diffSyntax.filter { id, _ in
+            guard let new = newDiff.first(where: { $0.id == id }) else { return false }
+            return new == diff.first { $0.id == id }
+        }
         diff = newDiff
         diffIsStaged = staged
+        diffSyntaxTask?.cancel()
+        if kept.count != diffSyntax.count { diffSyntax = kept }
+    }
+
+    /// internal (not private(set) write): used by +DiffSyntax.swift's `loadDiffSyntax`, for the
+    /// diff on screen only.
+    func setDiffSyntax(_ colours: [FileDiff.ID: [DiffLine.ID: [SyntaxToken]]]) {
+        diffSyntax.merge(colours) { _, new in new }
     }
 }
