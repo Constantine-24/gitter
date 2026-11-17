@@ -591,8 +591,8 @@ Conflicts is closed when that happens, a bar above the file list and diff says y
 ("Your changes to "README.md" in Resolve Conflicts are kept.", naming every kept file). Its
 **Resolve Conflicts…** opens the first of them, and the sidebar lists each as Read only. The same item is in
 **Repository ▸ Resolve** whenever a file is conflicted or changes are kept, and in the operation bar
-while an operation lasts. Done drops every kept Result you changed, after asking ("You have changes in 2 conflicted
-files that aren't saved…" when there are several), and the bar goes with them. With a commit, stash or comparison
+while an operation lasts. Done drops every read-only Result you changed, after asking ("You have changes in 2 conflicted
+files that aren't saved…" when there are several), and the bar goes once nothing you changed is kept. With a commit, stash or comparison
 selected during an operation the bar shows too, since the operation bar is only above the working
 copy; the bar's button opens the first kept file.
 If the file or git's versions of it change while you have changes, a bar says "This file changed
