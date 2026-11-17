@@ -50,7 +50,7 @@ struct OperationBar: View {
             }
             HStack(spacing: 8) {
                 // Focus mode on the first file with conflicts, while any file is conflicted.
-                if !store.resolverFiles.isEmpty {
+                if store.resolveConflictsAvailable {
                     Button(ConflictWording.resolveConflictsButton) { store.openResolver() }
                         .font(.callout)
                         .help(ConflictWording.resolveConflictsHelp)
@@ -105,6 +105,29 @@ struct HaltedSequenceBar: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             CopyCommandButton(command: ContinueWording.reapplyCommand(halted))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+    }
+}
+
+/// The bar above the detail pane while Resolve Conflicts is closed, no operation is left to show
+/// the operation bar's button, and Results with changes are kept (`keptChangesBarShown`): it names
+/// the files and opens them again (K1).
+struct KeptChangesBar: View {
+    @Environment(RepositoryStore.self) private var store
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Label(ConflictWording.keptChanges(store.changedDraftPaths), systemImage: "tray.full")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button(ConflictWording.resolveConflictsButton) { store.openResolver() }
+                .font(.callout)
+                .help(ConflictWording.resolveConflictsHelp)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 8)

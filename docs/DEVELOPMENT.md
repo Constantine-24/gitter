@@ -126,7 +126,7 @@ xcodegen generate && GIT_ALLOW_PROTOCOL=file GIT_SSH_COMMAND=/usr/bin/false GIT_
   -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -scmProvider system test
 ```
 
-`GitterTests` (1 231 tests in 92 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (1 236 tests in 92 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -1051,3 +1051,8 @@ longer match the file they were read from stay plain. The packages are pinned ex
 build, test and `scripts/package.sh` after it uses them with no network, and the DMG grows from about
 3.3 MB to about 6 MB. About Gitter credits Tree-sitter, and `Acknowledgements.txt` in the app's
 Resources carries the licences.
+
+Kept Resolve Conflicts changes keep a way back (milestone K1): while they exist and Resolve Conflicts
+is closed with no operation left, a bar above the detail pane names the files and has **Resolve
+Conflicts…**; the same item is in Repository ▸ Resolve (`RepositoryCommands.resolveConflictsIsOff`)
+and in the operation bar while one lasts. `resolver:state` logs `kept: bar … | available: … | changed: …`.

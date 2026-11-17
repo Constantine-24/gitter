@@ -587,10 +587,12 @@ Reload on its bar, when you abort, or when you answer yes to one of these questi
 **When something changes outside Gitter.** If the file is resolved, or its operation ends, in a
 terminal or another app, your Result stays, read-only, with a bar saying why and **Copy Result**,
 until Done or Discard Changes; Done asks before dropping a Result you changed. If Resolve
-Conflicts is closed when that happens, a notice in the window says your changes are kept (for
-example "Your changes to "README.md" in Resolve Conflicts are kept, but it changed outside
-Gitter."), and its
-**Show Changes** opens Resolve Conflicts on that file, where the sidebar lists it as Read only.
+Conflicts is closed when that happens, a bar at the top of the window says your changes are kept
+("Your changes to "README.md" in Resolve Conflicts are kept.", naming every kept file). Its
+**Resolve Conflicts…** opens them, and the sidebar lists each as Read only. The same item is in
+**Repository ▸ Resolve** whenever a file is conflicted or changes are kept, and in the operation bar
+while an operation lasts. Done drops the Result you opened, after asking when you changed it, and
+the bar goes with the last kept change.
 If the file or git's versions of it change while you have changes, a bar says "This file changed
 outside Gitter. Reload it to see the new version; your changes will be discarded.", with
 **Reload**, **Keep Editing** and Copy Result, and Resolve File refuses to write over the newer

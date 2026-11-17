@@ -51,6 +51,30 @@ import Testing
         #expect(RepositoryCommands.resolverIsOff(store) && RepositoryCommands.resolverTakeIsOff(store))
     }
 
+    /// Repository ▸ Resolve ▸ Resolve Conflicts…: on while a file is conflicted or changes are kept.
+    @Test(.timeLimit(.minutes(10))) func theResolveConflictsItemIsOnWhileAFileIsConflictedOrChangesAreKept() async throws {
+        let repo = try ResolverStoreTests.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        #expect(RepositoryCommands.resolveConflictsIsOff(nil))
+        #expect(!RepositoryCommands.resolveConflictsIsOff(store))  // files conflicted
+        store.activeSheet = .rename("main")
+        #expect(RepositoryCommands.resolveConflictsIsOff(store))
+        store.activeSheet = nil
+        _ = try #require(await ResolverStoreTests.openDraft(store))
+        #expect(RepositoryCommands.resolveConflictsIsOff(store))  // already open
+        store.resolverTake(.ours)
+        store.closeResolver()
+        try repo.git("merge", "--abort")
+        await store.refresh()
+        await waitUntilIdle(store)
+        #expect(store.resolverFiles.isEmpty)
+        #expect(!RepositoryCommands.resolveConflictsIsOff(store))  // only kept changes
+        store.dropDrafts(store.changedDraftPaths)
+        #expect(RepositoryCommands.resolveConflictsIsOff(store))  // nothing left
+    }
+
     /// The Repository menu's rule, which Refresh now follows: off with no window, off while the
     /// sheet is up even when the item's own reason is nil, and off for that reason.
     @Test(.timeLimit(.minutes(10))) func aRepositoryItemIsOffWithNoWindowUnderASheetOrForItsReason() async throws {

@@ -79,7 +79,6 @@ extension RepositoryStore {
     /// - Restore Tag(s) recreates the tags Delete Tag took (`restoreTags`).
     /// - Open (Add Worktree's notice) switches this window to the new worktree
     ///   (`openAddedWorktree`).
-    /// - Show Changes (a kept Result made read-only outside Gitter) opens Resolve Conflicts on it.
     ///
     /// `pasteboard` and `openURL` are the seams: a test and the DEBUG harness pass a private
     /// pasteboard and an opener that records, so neither ever touches the user's clipboard or
