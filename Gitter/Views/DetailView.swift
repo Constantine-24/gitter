@@ -14,10 +14,16 @@ struct DetailView: View {
     var body: some View {
         // One split view for both selections: switching to a commit and back replaces its
         // top half, not the split itself, so the divider stays where the user put it.
-        VSplitView {
-            top
-            DiffView(diffs: store.diff, hasSelection: store.selectedPath != nil)
-                .frame(minHeight: 140)
+        VStack(spacing: 0) {
+            if store.keptChangesBarShown {
+                KeptChangesBar()
+                Divider()
+            }
+            VSplitView {
+                top
+                DiffView(diffs: store.diff, hasSelection: store.selectedPath != nil)
+                    .frame(minHeight: 140)
+            }
         }
     }
 

@@ -119,6 +119,24 @@ extension RepositoryStore {
     /// Focus mode is up and no file is conflicted any more: the all-resolved footer.
     var resolverAllResolved: Bool { resolverFocus != nil && resolverFiles.isEmpty }
 
+    /// Resolve Conflicts has something to open: a conflicted file, or a kept Result with changes
+    /// (read-only ones too, once the operation is over). The menu item's enablement.
+    var resolveConflictsAvailable: Bool { !resolverFiles.isEmpty || !changedDraftPaths.isEmpty }
+
+    /// The kept bar shows: Resolve Conflicts is closed, Results with changes are kept, and the
+    /// operation bar's button is not on screen — it is there only for an operation, and only with
+    /// the working copy selected (a commit, stash or comparison shows the kept bar instead).
+    var keptChangesBarShown: Bool {
+        resolverFocus == nil && !changedDraftPaths.isEmpty
+            && (operationInProgress == nil || selection != .workingCopy)
+    }
+
+    /// The kept bar's button: Resolve Conflicts on the first kept path, the file the bar names,
+    /// whatever else is conflicted.
+    func openKeptChanges() {
+        openResolver(at: changedDraftPaths.first)
+    }
+
     /// The operation that ended, while a draft from it is kept (`ResolverShell.endedOperation`):
     /// what the subtitle names, and why neither footer line shows (Ruling 24).
     var resolverEndedShown: RepositoryOperation? {
@@ -130,12 +148,12 @@ extension RepositoryStore {
 
     // MARK: - Entering and leaving
 
-    /// Focus mode on `path`, or (nil) on the first file with conflicts. A file that is not
-    /// conflicted and has no draft is not opened.
+    /// Focus mode on `path`, or (nil) on the first file with conflicts, else the first kept
+    /// Result with changes. A file that is not conflicted and has no draft is not opened.
     func openResolver(at path: String? = nil) {
         guard root != nil, !isClosed else { return }
         let files = resolverFiles.map(\.path)
-        guard let target = path ?? files.first, files.contains(target) || resolverDrafts[target] != nil else {
+        guard let target = path ?? files.first ?? changedDraftPaths.first, files.contains(target) || resolverDrafts[target] != nil else {
             return
         }
         let entering = resolverFocus == nil
@@ -559,8 +577,9 @@ extension RepositoryStore {
     /// when the operation focus mode opened under has ended, every draft `.operationEnded` —
     /// pristine ones go, focus mode stays only while a draft has changes, and a kept notice says
     /// so. A draft is never re-attached or dropped with changes in it. With focus mode closed, a
-    /// kept Result with changes made read-only here is announced by a kept notice whose button
-    /// opens focus mode on it (Ruling 49), where the sidebar lists every draft.
+    /// kept Result with changes made read-only here is announced by nothing: the kept bar
+    /// (`keptChangesBarShown`) and the Resolve Conflicts menu item show it, and focus mode lists
+    /// every draft in its sidebar.
     ///
     /// During one of Gitter's own writes this waits for the write to finish (`finishMutation`
     /// calls it again with `afterGitterWrite`): the file that write resolved is not resolved
@@ -574,8 +593,6 @@ extension RepositoryStore {
         let files = snapshot?.status.files ?? []
         let ended = resolverOperation.map { $0 != operationInProgress } ?? false
         var drafts = resolverDrafts
-        // Kept Results with changes that this pass makes read-only (Ruling 49).
-        var madeReadOnly: [String] = []
         for (path, draft) in resolverDrafts {
             let record = files.first { $0.path == path }?.conflict
             let reason: DraftDetachment
@@ -593,7 +610,6 @@ extension RepositoryStore {
             if !draft.hasUserChanges, reason == .operationEnded || (reason == .resolvedOutside && afterGitterWrite) {
                 drafts[path] = nil
             } else if (draft.detached?.rank ?? 0) < reason.rank {
-                if draft.hasUserChanges, draft.isEditable, reason != .changedOutside { madeReadOnly.append(path) }
                 drafts[path]?.detached = reason
             }
         }
@@ -602,17 +618,8 @@ extension RepositoryStore {
         if ended {
             setResolverOperation(nil)
             // Named in the subtitle while its drafts are kept, until Done (Ruling 24) — also when
-            // Resolve Conflicts opens on one later, from the notice below.
+            // Resolve Conflicts opens on one later, from the kept bar or the menu.
             if let operation { setResolverEndedOperation(operation) }
-        }
-        // Resolve Conflicts closed: nothing on screen shows these Results, so a kept notice says
-        // they are kept, with the way back to them (Ruling 49). Gitter's own writes never leave
-        // one (they ask, and drop it).
-        if resolverFocus == nil, !afterGitterWrite, let first = madeReadOnly.sorted().first {
-            showStickyNotice(
-                Notice(
-                    text: ConflictWording.keptOutside(madeReadOnly.sorted(), ended: operation),
-                    actions: [.openResolver(first)], keep: true))
         }
         guard let operation else {
             // A draft dropped above may leave the focus on a path with nothing to show.

@@ -823,12 +823,12 @@ import Testing
     }
 
     /// Done keeps an edited draft; then the file is resolved, or the merge ends, in a terminal
-    /// while Resolve Conflicts is closed. A kept notice in the normal window says the changes are
-    /// kept, once, and its button opens Resolve Conflicts on the draft — read-only, listed in the
-    /// sidebar, Copy Result working — so the close and quit questions name work that can be
-    /// found (Ruling 49).
+    /// while Resolve Conflicts is closed. No notice is raised: the window's kept bar (K1) shows
+    /// the kept changes once the merge is over, and the operation bar's button is the entry while
+    /// it lasts. Resolve Conflicts opens on the draft — read-only, listed in the sidebar, Copy
+    /// Result working — so the close and quit questions name work that can be found.
     @Test(.timeLimit(.minutes(10)), arguments: [false, true])
-    func aKeptDraftMadeReadOnlyWhileClosedRaisesAKeptNotice(endTheMerge: Bool) async throws {
+    func aKeptDraftMadeReadOnlyWhileClosedShowsTheKeptBar(endTheMerge: Bool) async throws {
         let repo = try Self.stoppedMerge()
         defer { repo.remove() }
         let (store, cleanup) = await openedTestStore(repo)
@@ -849,23 +849,26 @@ import Testing
         await waitUntilIdle(store)
         let detached: DraftDetachment = endTheMerge ? .operationEnded : .resolvedOutside
         #expect(store.resolverDrafts["a.txt"]?.detached == detached)
-        let notice = try #require(store.stickyNotice)
-        #expect(notice.text == (endTheMerge
-            ? "The merge ended outside Gitter. Your changes to \"a.txt\" in Resolve Conflicts are kept."
-            : "Your changes to \"a.txt\" in Resolve Conflicts are kept, but it changed outside Gitter."))
-        #expect(notice.actions == [.openResolver("a.txt")])
-        #expect(NoticeWording.title(.openResolver("a.txt")) == "Show Changes")
+        #expect(store.stickyNotice == nil)
+        #expect(store.resolveConflictsAvailable)
+        // The merge is over only after --abort; after `git add` it still lasts, and the operation
+        // bar's button is the entry instead of the kept bar.
+        #expect(store.keptChangesBarShown == endTheMerge)
         #expect(store.changedDraftPaths == ["a.txt"])
 
-        // Not raised again by the next reload.
-        store.dismissStickyNotice()
+        // Not raised by the next reload either.
         await store.refresh()
         await waitUntilIdle(store)
         #expect(store.stickyNotice == nil)
 
-        // Its button: Resolve Conflicts on the draft, read-only, in the sidebar, copyable.
-        store.perform(notice.actions[0])
+        if endTheMerge {
+            store.openResolver()
+        } else {
+            // b.txt is still conflicted, so the kept path is asked for by name.
+            store.openResolver(at: "a.txt")
+        }
         #expect(store.resolverFocus?.path == "a.txt")
+        #expect(!store.keptChangesBarShown)
         let draft = try #require(store.focusedDraft)
         #expect(draft.detached == detached && !draft.isEditable && draft.hasUserChanges)
         let rows = ResolverShell.rows(
@@ -885,6 +888,150 @@ import Testing
         store.copyResult("a.txt", to: pasteboard)
         #expect(pasteboard.string(forType: .string) == draft.document.resultText)
         #expect(draft.document.resultText.contains("main x"))
+
+        if !endTheMerge {
+            // Closing drops the read-only draft; the first conflicted file comes first.
+            store.closeResolver()
+            #expect(store.resolverFocus == nil)
+            store.openResolver()
+            #expect(store.resolverFocus?.path == "b.txt")
+        }
+    }
+
+    /// Files kept in separate events are all named by the kept bar.
+    @Test(.timeLimit(.minutes(10))) func theKeptBarNamesFilesKeptInSeparateEvents() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        _ = try #require(await Self.openDraft(store))
+        store.resolverTake(.ours)
+        store.focusResolverFile("b.txt")
+        await waitUntil("b's draft") { store.resolverDrafts["b.txt"] != nil }
+        store.resolverTake(.theirs)
+        store.closeResolver()
+
+        try repo.git("add", "a.txt")
+        await store.refresh()
+        await waitUntilIdle(store)
+        try repo.git("merge", "--abort")
+        await store.refresh()
+        await waitUntilIdle(store)
+
+        #expect(store.changedDraftPaths == ["a.txt", "b.txt"])
+        #expect(store.keptChangesBarShown)
+        let text = ConflictWording.keptChanges(store.changedDraftPaths)
+        #expect(text.contains("a.txt") && text.contains("b.txt"))
+    }
+
+    /// Dropping the kept changes (the path Done's discard takes) takes the bar and the entry away.
+    @Test(.timeLimit(.minutes(10))) func theKeptBarGoesWhenTheKeptChangesAreDropped() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        _ = try #require(await Self.openDraft(store))
+        store.resolverTake(.ours)
+        store.closeResolver()
+        try repo.git("merge", "--abort")
+        await store.refresh()
+        await waitUntilIdle(store)
+        #expect(store.keptChangesBarShown)
+
+        store.dropDrafts(store.changedDraftPaths)
+        #expect(!store.keptChangesBarShown && !store.resolveConflictsAvailable)
+    }
+
+    /// During an operation the operation bar carries the entry in the working copy only; with a
+    /// commit selected the kept bar shows (K1 final review, I1).
+    @Test(.timeLimit(.minutes(10))) func theKeptBarShowsDuringAnOperationOnlyOutsideTheWorkingCopy() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        _ = try #require(await Self.openDraft(store))
+        store.resolverTake(.ours)
+        store.closeResolver()
+        try repo.git("add", "a.txt")
+        await store.refresh()
+        await waitUntilIdle(store)
+        #expect(store.operationInProgress != nil)
+        #expect(store.changedDraftPaths == ["a.txt"])
+        #expect(store.selection == .workingCopy)
+        #expect(!store.keptChangesBarShown)
+        let head = try repo.git("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines)
+        store.select(.commit(head))
+        #expect(store.keptChangesBarShown)
+        store.select(.workingCopy)
+        #expect(!store.keptChangesBarShown)
+    }
+
+    /// The bar's button opens the first kept path, never a conflicted file the bar does not name (I2).
+    @Test(.timeLimit(.minutes(10))) func theKeptBarsActionOpensTheFirstKeptPathNotTheFirstConflictedFile() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        _ = try #require(await Self.openDraft(store, "b.txt"))
+        store.resolverTake(.ours)
+        store.closeResolver()
+        #expect(store.changedDraftPaths == ["b.txt"])
+        #expect(store.resolverFiles.map(\.path) == ["a.txt", "b.txt"])
+        store.openKeptChanges()
+        #expect(store.resolverFocus?.path == "b.txt")
+    }
+
+    /// A file resolved outside in the same reload as one of Gitter's own writes is detached
+    /// without a notice, and the bar shows once the merge is over.
+    @Test(.timeLimit(.minutes(10)))
+    func theKeptBarShowsWhenAnOutsideResolveCoincidesWithAGitterWrite() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        _ = try #require(await Self.openDraft(store))
+        store.resolverTake(.ours)
+        store.closeResolver()
+
+        try repo.write("c.txt", "unrelated\n")
+        await store.refresh()
+        await waitUntilIdle(store)
+        let unrelated = try #require(store.snapshot?.status.files.first { $0.path == "c.txt" })
+        try repo.git("add", "a.txt")
+        store.stage(unrelated)
+        await waitUntilIdle(store)
+        #expect(store.resolverDrafts["a.txt"]?.detached == .resolvedOutside)
+        #expect(store.stickyNotice == nil)
+        #expect(store.changedDraftPaths == ["a.txt"])
+        #expect(!store.keptChangesBarShown)  // the merge lasts: the operation bar has the button
+
+        try repo.git("merge", "--abort")
+        await store.refresh()
+        await waitUntilIdle(store)
+        #expect(store.keptChangesBarShown)
+    }
+
+    /// With nothing conflicted, opening goes to the first kept path; with nothing kept it stays closed.
+    @Test(.timeLimit(.minutes(10)))
+    func openResolverWithNothingConflictedOpensTheFirstKeptPath() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        _ = try #require(await Self.openDraft(store))
+        store.resolverTake(.ours)
+        store.closeResolver()
+        try repo.git("merge", "--abort")
+        await store.refresh()
+        await waitUntilIdle(store)
+
+        store.openResolver()
+        #expect(store.resolverFocus?.path == "a.txt")
+
+        store.closeResolver()
+        store.dropDrafts(store.changedDraftPaths)
+        store.openResolver()
+        #expect(store.resolverFocus == nil)
     }
 
     // MARK: - Done

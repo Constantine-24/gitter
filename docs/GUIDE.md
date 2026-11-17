@@ -455,8 +455,8 @@ says why.
 `DU` and so on, with the kind in words as the tooltip — and a card takes the diff's place: the
 file's name, what each side did, how many conflicts it has, and **Resolve Conflicts…**. That
 button, Return or a double-click on the row opens Resolve Conflicts on the file. So does
-**Resolve Conflicts…** in the operation bar, there while any file is conflicted, which opens it
-on the first file with conflicts. Selecting a file never takes over the window by itself:
+**Resolve Conflicts…** in the operation bar, there while any file is conflicted or changes are kept, which opens it
+on the first file with conflicts, else the first kept one. Selecting a file never takes over the window by itself:
 arrowing through the list only shows the card.
 
 **What it shows.** Resolve Conflicts fills the window:
@@ -506,7 +506,7 @@ beside Theirs (←), click a choice in the waiting box, or use the keys:
 
 **Both** in the waiting box takes ours first; ⌥-click it, or right-click it, for theirs first.
 The bar at the bottom shows the keys for Ours, Theirs, both with ours first, and the next and
-previous conflict, and the Repository menu lists the four takes and Next and Previous Conflict.
+previous conflict, and the Repository menu lists Resolve Conflicts…, the four takes and Next and Previous Conflict.
 **Use Ours for the rest** and **Use Theirs for the rest**, above each side, take that side for
 every conflict still waiting in the file; the ones you took or edited stay as they are. A
 conflict can be taken again: the new choice replaces the old one, and ⌘Z brings the old one back,
@@ -587,10 +587,14 @@ Reload on its bar, when you abort, or when you answer yes to one of these questi
 **When something changes outside Gitter.** If the file is resolved, or its operation ends, in a
 terminal or another app, your Result stays, read-only, with a bar saying why and **Copy Result**,
 until Done or Discard Changes; Done asks before dropping a Result you changed. If Resolve
-Conflicts is closed when that happens, a notice in the window says your changes are kept (for
-example "Your changes to "README.md" in Resolve Conflicts are kept, but it changed outside
-Gitter."), and its
-**Show Changes** opens Resolve Conflicts on that file, where the sidebar lists it as Read only.
+Conflicts is closed when that happens, a bar above the file list and diff says your changes are kept
+("Your changes to "README.md" in Resolve Conflicts are kept.", naming every kept file). Its
+**Resolve Conflicts…** opens the first of them, and the sidebar lists each as Read only. The same item is in
+**Repository ▸ Resolve** whenever a file is conflicted or changes are kept, and in the operation bar
+while an operation lasts. Done drops every read-only Result you changed, after asking ("You have changes in 2 conflicted
+files that aren't saved…" when there are several), and the bar goes once nothing you changed is kept. With a commit, stash or comparison
+selected during an operation the bar shows too, since the operation bar is only above the working
+copy; the bar's button opens the first kept file.
 If the file or git's versions of it change while you have changes, a bar says "This file changed
 outside Gitter. Reload it to see the new version; your changes will be discarded.", with
 **Reload**, **Keep Editing** and Copy Result, and Resolve File refuses to write over the newer

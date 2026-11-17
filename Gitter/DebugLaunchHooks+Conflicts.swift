@@ -239,6 +239,7 @@
                 logFocus(store)
             case "state":
                 logFocus(store)
+                log("kept: bar \(store.keptChangesBarShown) | available: \(store.resolveConflictsAvailable) | changed: \(store.changedDraftPaths)")
             case "next":
                 store.resolverNextConflict()
                 await settleFocus(store)

@@ -181,9 +181,15 @@ struct RepositoryCommands: Commands {
             // one is added from here (or a branch's menu).
             Button(WorktreeWording.addTitle) { store?.requestAddWorktree(branch: nil) }
                 .disabled(isOff(\.addWorktreeBlockedReason))
-            // Focus mode's keys (spec, "Taking a side"), on its current conflict. Off outside
-            // focus mode and while a sheet is up; the takes also while the draft is read-only.
+            // The first item opens Resolve Conflicts (on while a file is conflicted or changes are
+            // kept). The rest are focus mode's keys (spec, "Taking a side"), on its current
+            // conflict: off outside focus mode and while a sheet is up; the takes also while the
+            // draft is read-only.
             Section(ConflictWording.resolveMenu) {
+                // Opens the first conflicted file, or the first kept Result: the way back to kept
+                // changes (K1). No shortcut.
+                Button(ConflictWording.resolveConflictsButton) { store?.openResolver() }
+                    .disabled(Self.resolveConflictsIsOff(store))
                 Button(ConflictWording.takeOursMenuItem) { store?.resolverTake(.ours) }
                     .keyboardShortcut(.leftArrow, modifiers: [.control, .command])
                     .disabled(Self.resolverTakeIsOff(store))
@@ -234,6 +240,14 @@ struct RepositoryCommands: Commands {
     /// front window's sheet is up.
     static func resolverIsOff(_ store: RepositoryStore?) -> Bool {
         store?.resolverFocus == nil || store?.activeSheet != nil
+    }
+
+    /// Whether Resolve Conflicts… is off: with no repository, under a sheet, while it is open, or
+    /// with nothing conflicted and no changes kept.
+    static func resolveConflictsIsOff(_ store: RepositoryStore?) -> Bool {
+        guard let store else { return true }
+        return store.root == nil || store.activeSheet != nil || store.resolverFocus != nil
+            || !store.resolveConflictsAvailable
     }
 
     /// Whether focus mode's takes are off: as Next and Previous, and without an editable draft
