@@ -40,7 +40,8 @@
     ///                           conflict, as its key does; logs `focus: …`.
     ///   resolver:type:<text>    types into the Result at the current conflict through the text
     ///                           view's own path (`insertText`, the caret rule, the store); `\n`
-    ///                           in the text is a line break. Logs `focus: …`.
+    ///                           in the text is a line break. Logs how long the keystroke took
+    ///                           (`resolver:type: took …`) and `focus: …`.
     ///   resolver:next, resolver:previous  ⌘] and ⌘[.
     ///   resolver:undo, resolver:redo      ⌘Z and ⇧⌘Z, as the columns send them to the store.
     ///   resolver:resolve        Resolve File; waits for the write, logs `focus: …`.
@@ -277,7 +278,21 @@
                     log("resolver:type: no columns on screen")
                     return
                 }
-                if !host.debugType(text) { log("resolver:type: the Result is read-only") }
+                guard let took = host.debugType(text) else {
+                    log("resolver:type: the Result is read-only")
+                    await settleFocus(store)
+                    return
+                }
+                // The next turn of the run loop, drawn: what SwiftUI did with the store's change too.
+                await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                    DispatchQueue.main.async {
+                        host.window?.displayIfNeeded()
+                        done.resume()
+                    }
+                }
+                let turn = ContinuousClock.now - took.start
+                let next = Double(turn.components.seconds) * 1000 + Double(turn.components.attoseconds) / 1e15
+                log(String(format: "resolver:type: took %.2f ms to insert, %.2f ms drawn, %.2f ms by the next turn drawn", took.insert, took.drawn, next))
                 await settleFocus(store)
             case "backspace":
                 _ = await wait({

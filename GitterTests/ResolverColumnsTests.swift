@@ -1472,6 +1472,93 @@ import Testing
         }
     }
 
+    /// The views TextKit draws a text view's lines in (`subviews`, all the way down), shown and
+    /// over `rect`, in the text view's coordinates.
+    static func lineViews(_ view: NSTextView, over rect: NSRect) -> [NSView] {
+        var found: [NSView] = []
+        func walk(_ parent: NSView) {
+            for child in parent.subviews where !child.isHidden {
+                if child.convert(child.bounds, to: view).intersects(rect), child.subviews.isEmpty { found.append(child) }
+                walk(child)
+            }
+        }
+        walk(view)
+        return found
+    }
+
+    /// A view marked for display: in the view, or in its layer, where the views TextKit draws its
+    /// lines in keep the mark.
+    static func waitsToDraw(_ view: NSView) -> Bool {
+        view.needsDisplay || view.layer?.needsDisplay() == true
+    }
+
+    /// The Result's colours land after a jump away and back, on lines TextKit drew plain when they
+    /// came back into view (Ruling 14; in the real app at 5,000 lines, ⌘] and ⌘[ while the parse
+    /// ran, they stayed plain). Nothing else redraws those lines, so colouring them must mark them
+    /// for display. A window that is never put on screen draws them anyway when asked
+    /// (`keywordPixelsOnScreen`), so the marks are what this test can see of the stale draw; the
+    /// colours are put on directly, so no turn of the run loop draws, and clears the marks, first.
+    @Test(.timeLimit(.minutes(10))) func colouringLinesDrawnAfterAJumpBackMarksThemForDisplay() async throws {
+        let repo = try Self.longSwiftMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        _ = try #require(await ResolverStoreTests.openDraft(store, "long.swift"))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .aqua)
+        window.contentView?.wantsLayer = true
+        defer { window.close() }
+        let host = ResolverColumnsHost()
+        host.frame = window.contentView?.bounds ?? .zero
+        window.contentView?.addSubview(host)
+        // Every parse held: the Result has no colours while it jumps.
+        let gate = ParseGate()
+        defer { gate.release() }
+        host.tokenize = { text, language in
+            gate.holdEvery()
+            return SyntaxHighlighter.tokens(in: text, language: language)
+        }
+        Self.refresh(store, host, "long.swift")
+        host.layoutSubtreeIfNeeded()
+        try await ResolverColumnsHostTests.settleLayout(host)
+        #expect(await waitUntil("the held parse") { gate.isHolding })
+        // Down to the next conflict and back, each drawn through a few turns, as on screen.
+        for step in [store.resolverNextConflict, store.resolverPreviousConflict] {
+            step()
+            Self.refresh(store, host, "long.swift")
+            try await ResolverColumnsHostTests.settleLayout(host)
+            for _ in 0..<5 {
+                window.displayIfNeeded()
+                try await Task.sleep(for: .milliseconds(20))
+            }
+        }
+        let view = host.result.textView
+        let visible = host.result.scrollView.contentView.bounds
+        #expect(Self.rendered(view).isEmpty)
+        #expect(try Self.keywordPixelsOnScreen(host.result) == 0)
+        // The lines in view are drawn, plain, and none waits to be drawn.
+        let drawn = Self.lineViews(view, over: visible)
+        #expect(drawn.count >= 10)
+        let waiting = drawn.filter(Self.waitsToDraw).count
+        #expect(waiting == 0)
+        // Their colours land: `let` as a keyword on each row that starts with it.
+        let rows = host.model.rows
+        let keyword = [SyntaxToken(range: 0..<3, kind: .keyword)]
+        view.updateRowTokens(rows.map { ($0.result.text ?? "").hasPrefix("let ") ? keyword : [] })
+        let inView = ResolverGeometry.rows(in: visible, count: rows.count)
+        #expect(view.colour(rows: inView) >= 10)
+        #expect(!Self.rendered(view).isEmpty)
+        // Every line in view is marked for display, before anything draws.
+        let lines = Self.lineViews(view, over: visible)
+        #expect(lines.count >= 10)
+        let unmarked = lines.filter { !Self.waitsToDraw($0) }.count
+        #expect(unmarked == 0, "\(unmarked) of \(lines.count) lines not marked")
+        window.displayIfNeeded()
+        #expect(try Self.keywordPixelsOnScreen(host.result) > 50)
+    }
+
     /// A Swift merge whose `long.swift` has 300 lines above its first conflict and 300 more above
     /// its second, so the columns open far down it and lay the lines above out over several turns.
     static func longSwiftMerge() throws -> ScratchRepo {

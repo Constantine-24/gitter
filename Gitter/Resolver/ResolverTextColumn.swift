@@ -271,11 +271,36 @@ final class ResolverTextView: NSTextView {
         if column == .result {
             colourRendering(missing, length: storage.length)
             let top = ResolverGeometry.y(ofRow: first)
-            setNeedsDisplay(NSRect(x: 0, y: top, width: bounds.width, height: ResolverGeometry.y(ofRow: last + 1) - top))
+            redisplay(NSRect(x: 0, y: top, width: bounds.width, height: ResolverGeometry.y(ofRow: last + 1) - top))
         } else {
             colourStorage(missing, storage)
         }
         return missing.count
+    }
+
+    /// Marks `rect` for display in this view and in every view under it that covers part of it.
+    ///
+    /// TextKit 2 draws each line in a view of its own under the text view. Adding a rendering
+    /// attribute marks none of them, and nor does the text view's own `setNeedsDisplay(_:)`: in
+    /// the real app, lines drawn plain when a jump brought them back into view (⌘] then ⌘[ at
+    /// 5,000 lines while the parse ran) stayed plain under their new colours. Each public route
+    /// was tried there and left them plain (Ruling 14): `setNeedsDisplay(rect)` now and on the
+    /// next turn, `needsDisplay = true`, `textViewportLayoutController.layoutViewport()`,
+    /// `invalidateLayout(for:)` over the rows in the viewport (before or after colouring, with
+    /// or without `layoutViewport()`), and a `renderingAttributesValidator` with
+    /// `invalidateRenderingAttributes(for:)`, which TextKit never called again. Marking the line
+    /// views is what draws them. It uses only public `NSView` calls on the views AppKit put under
+    /// this one, and marks nothing when there are none.
+    private func redisplay(_ rect: NSRect) {
+        setNeedsDisplay(rect)
+        func mark(_ view: NSView) {
+            for subview in view.subviews {
+                let local = subview.convert(rect, from: self).intersection(subview.bounds)
+                if !local.isEmpty { subview.setNeedsDisplay(local) }
+                mark(subview)
+            }
+        }
+        mark(self)
     }
 
     private func colourRendering(_ rows: IndexSet, length: Int) {

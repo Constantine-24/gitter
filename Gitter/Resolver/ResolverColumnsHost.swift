@@ -814,12 +814,24 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
     // MARK: - The harness
 
     #if DEBUG
-        /// Types `text` into the Result at the current conflict, through the text view's own path.
-        func debugType(_ text: String) -> Bool {
+        /// Types `text` into the Result at the current conflict, through the text view's own path;
+        /// nil when the Result takes no typing. When the keystroke started, and how long it took
+        /// in ms: `insertText` (the store and the columns' patch), and that plus laying out and
+        /// drawing the window.
+        func debugType(_ text: String) -> (start: ContinuousClock.Instant, insert: Double, drawn: Double)? {
             caretToCurrent(scroll: true)
-            guard editable else { return false }
+            guard editable else { return nil }
+            window?.displayIfNeeded()
+            let clock = ContinuousClock()
+            let start = clock.now
             result.textView.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
-            return true
+            let inserted = clock.now
+            window?.displayIfNeeded()
+            let drawn = clock.now
+            func ms(_ duration: Duration) -> Double {
+                Double(duration.components.seconds) * 1000 + Double(duration.components.attoseconds) / 1e15
+            }
+            return (start, ms(inserted - start), ms(drawn - start))
         }
 
         /// Backspace at the start of the line after the current conflict, through the text
