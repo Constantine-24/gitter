@@ -1,5 +1,6 @@
 import AppKit
 import GitCore
+import GitterSyntax
 
 /// The three columns and the two strips between them, as one AppKit view: Ours | → | Result | ← |
 /// Theirs on the headers' grid (`ResolverGrid`), scrolled as one.
@@ -23,6 +24,14 @@ import GitCore
 ///
 /// **Undo.** ⌘Z and ⇧⌘Z reach `undo:` and `redo:` here, or in a column's text view, and go to the
 /// store's history; the text views' own undo is off.
+///
+/// **Syntax colours** (syntax colours Task 4) follow the uncoloured text, never hold it up. Ours
+/// and Theirs are parsed once per file and snapshot, off the main actor, and kept beside the
+/// sides' layout (`sideSyntaxCache`); the Result is parsed `resultSyntaxDelay` after its last
+/// change (at once for another file), and a parse whose version is no longer the Result's is
+/// dropped. Rows map to their lines' tokens (`ResolverSyntax`), and the colours go on as each
+/// column's rendering attributes (`ResolverTextView.colour(rows:)`) only for the rows in view and
+/// a screen around them, so a scroll, a keystroke or a parse colours a few rows at most.
 final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceValidations {
     let ours = ResolverTextColumn(column: .ours)
     let result = ResolverTextColumn(column: .result)
@@ -74,6 +83,37 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
     private var focusedOnce = false
     /// A render came while an input method was composing: done once it commits.
     private var renderPending = false
+
+    /// One text's syntax tokens per line, and its lines, to map rows to (`ResolverSyntax`).
+    struct SyntaxSource: Sendable {
+        let lines: [[SyntaxToken]]
+        let sourceLines: [Substring]
+    }
+    /// The sides' tokens for the files shown last, like `sidesCache`, most recent last.
+    private var sideSyntaxCache: [(path: String, snapshot: ConflictSnapshot, ours: SyntaxSource?, theirs: SyntaxSource?)] = []
+    /// What each column's rows are mapped to now; none for a column that stays plain.
+    private var syntaxSources: [ResolverColumn: SyntaxSource] = [:]
+    /// The language of the file shown; nil leaves it plain.
+    private var syntaxLanguage: SyntaxLanguage?
+    private var sideSyntaxTask: Task<Void, Never>?
+    private var sideSyntaxGeneration = 0
+    private var resultSyntaxTask: Task<Void, Never>?
+    /// Counts the Result's changes (and file switches): a parse made for an older one is dropped.
+    private(set) var resultVersion = 0
+    /// The version whose tokens the Result shows: for the tests.
+    private(set) var appliedResultVersion = 0
+    /// Parses of the Result started, and those dropped as stale: for the tests.
+    private(set) var resultParses = 0
+    private(set) var droppedResultParses = 0
+    private var parsesRunning = 0
+    /// How long the Result waits after a change before it is parsed again.
+    var resultSyntaxDelay: Duration = .milliseconds(150)
+    /// The parse, off the main actor (the tests hold it to make a parse stale).
+    var tokenize: @Sendable (String, SyntaxLanguage) -> [SyntaxToken] = { text, language in
+        SyntaxHighlighter.tokens(in: text, language: language)
+    }
+    /// No parse scheduled or running: for the tests.
+    var syntaxIdle: Bool { sideSyntaxTask == nil && resultSyntaxTask == nil && parsesRunning == 0 }
 
     #if DEBUG
         /// The host on screen last, for the harness's `resolver:type:` step.
@@ -223,7 +263,9 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         for column in columns {
             column.textView.textStorage?.setAttributedString(NSAttributedString())
             column.textView.starts = [0]
+            column.textView.resetRowTokens([])
         }
+        resetSyntax(language: nil)
         jumpOrigin = nil
         pushModel(redraw: [.ours, .result, .theirs], layout: true)
     }
@@ -250,7 +292,9 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         // Only the chunks an edit changed are laid out again.
         let newRows = ResolverLayout.rows(document, using: sides, showBase: showBase, reusing: &rowCache)
         let old = reset ? [] : rows
+        let textChanged = reset || self.document.map { !Self.sameText($0, document) } ?? true
         if reset {
+            prepareSyntax(draft)
             jumpOrigin = nil
             // Another file: it starts at its top, not at the depth the last one was scrolled to
             // (which would lay the new file out down to there).
@@ -279,6 +323,8 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         model = ResolverColumnsModel(rows: newRows, document: document, current: current, canTake: draft.isEditable)
         sizeTextViews()
         layOutVisibleRows()
+        if textChanged { scheduleResultSyntax(delay: reset ? .zero : resultSyntaxDelay) }
+        colourVisibleRows()
         pushModel(redraw: redraw, layout: reset || !model.sameLayout(as: previous))
     }
 
@@ -336,6 +382,11 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
             for index in (old.count - suffix + 1)...old.count { newStarts.append(starts[index] + delta) }
         }
         view.starts = newStarts
+        if old.isEmpty {
+            view.resetRowTokens(syntaxTokens(new[...], kind))
+        } else {
+            view.replaceRowTokens(prefix..<(old.count - suffix), with: syntaxTokens(new[prefix..<(new.count - suffix)], kind))
+        }
         view.needsDisplay = true
         let digit = ResolverAttributes.characterWidth
         let longest = changed.lazy.map { ResolverAttributes.cell($0, kind).text.map(Self.columns) ?? 0 }.max() ?? 0
@@ -481,6 +532,8 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         let start = view.starts[row]
         let paragraph = (storage.string as NSString).paragraphRange(for: NSRange(location: min(start, storage.length), length: 0))
         storage.replaceCharacters(in: paragraph, with: ResolverAttributes.text(for: [rows[row]], column: .result, palette: palette))
+        view.rowReplaced(row)
+        colourVisibleRows()
         if renderPending {
             renderPending = false
             if let store { refresh(from: store) }
@@ -576,6 +629,7 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
         layoutPending = false
         layOutVisibleRows(budget: catchUpBudget)
         guard !layoutPending else { return }
+        colourVisibleRows()
         for column in columns {
             column.textView.textLayoutManager?.textViewportLayoutController.layoutViewport()
             column.textView.needsDisplay = true
@@ -593,6 +647,7 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
     /// The overlays and strips follow the text vertically; the overlays learn the sideways offset.
     private func followScroll(_ origin: NSPoint) {
         layOutVisibleRows()
+        colourVisibleRows()
         for column in columns {
             if column.overlay.bounds.origin.y != origin.y { column.overlay.setBoundsOrigin(NSPoint(x: 0, y: origin.y)) }
             if column.overlay.horizontalOffset != origin.x {
@@ -605,6 +660,133 @@ final class ResolverColumnsHost: NSView, NSTextViewDelegate, NSUserInterfaceVali
             gutter.needsDisplay = true
         }
         result.overlay.updateAccessibility()
+    }
+
+    // MARK: - Syntax colours
+
+    /// Another file, or the same one read again: the sides' tokens from the cache, or parsed off
+    /// the main actor; the Result's are parsed anew (`render` schedules it).
+    private func prepareSyntax(_ draft: ResolverDraft) {
+        let document = draft.document
+        // Not UTF-8: shown as a lossy decoding, which stays plain, as in the diff.
+        let language =
+            document.notEditable == .notUTF8
+            ? nil : SyntaxLanguage.detect(path: path, firstLine: Self.firstLine(document.chunks.first?.text ?? ""))
+        resetSyntax(language: language)
+        guard let language else { return }
+        let path = path, snapshot = draft.snapshot
+        if let cached = sideSyntaxCache.lastIndex(where: { $0.path == path && $0.snapshot == snapshot }) {
+            let entry = sideSyntaxCache.remove(at: cached)
+            sideSyntaxCache.append(entry)
+            syntaxSources[.ours] = entry.ours
+            syntaxSources[.theirs] = entry.theirs
+            return
+        }
+        let sides = draft.sides, tokenize = tokenize
+        let generation = sideSyntaxGeneration
+        parsesRunning += 1
+        sideSyntaxTask = Task { [weak self] in
+            let parsed = await Task.detached(priority: .userInitiated) {
+                (ours: Self.source(sides.ours, language, tokenize), theirs: Self.source(sides.theirs, language, tokenize))
+            }.value
+            guard let self else { return }
+            self.parsesRunning -= 1
+            self.sideSyntaxCache.removeAll { $0.path == path && $0.snapshot == snapshot }
+            self.sideSyntaxCache.append((path, snapshot, parsed.ours, parsed.theirs))
+            if self.sideSyntaxCache.count > Self.sidesKept {
+                self.sideSyntaxCache.removeFirst(self.sideSyntaxCache.count - Self.sidesKept)
+            }
+            guard generation == self.sideSyntaxGeneration else { return }
+            self.sideSyntaxTask = nil
+            self.syntaxSources[.ours] = parsed.ours
+            self.syntaxSources[.theirs] = parsed.theirs
+            for column in [self.ours, self.theirs] {
+                column.textView.updateRowTokens(self.syntaxTokens(self.rows[...], column.column))
+            }
+            self.colourVisibleRows()
+        }
+    }
+
+    /// No tokens for any column, nothing scheduled: what a pass for another file starts from.
+    private func resetSyntax(language: SyntaxLanguage?) {
+        syntaxLanguage = language
+        syntaxSources = [:]
+        sideSyntaxTask?.cancel()
+        sideSyntaxTask = nil
+        sideSyntaxGeneration += 1
+        resultSyntaxTask?.cancel()
+        resultSyntaxTask = nil
+        resultVersion += 1
+    }
+
+    /// The Result changed: parsed again after `delay`, unless it changes again first. The parse
+    /// runs off the main actor and is applied only if the Result is still that version.
+    private func scheduleResultSyntax(delay: Duration) {
+        resultVersion += 1
+        resultSyntaxTask?.cancel()
+        resultSyntaxTask = nil
+        guard let language = syntaxLanguage else { return }
+        let version = resultVersion, tokenize = tokenize
+        resultSyntaxTask = Task { [weak self] in
+            if delay > .zero { try? await Task.sleep(for: delay) }
+            guard let self, version == self.resultVersion, let document = self.document else { return }
+            self.resultParses += 1
+            self.parsesRunning += 1
+            let source = await Task.detached(priority: .userInitiated) {
+                Self.source(document.resultText, language, tokenize)
+            }.value
+            self.parsesRunning -= 1
+            guard version == self.resultVersion else {
+                self.droppedResultParses += 1
+                return
+            }
+            self.resultSyntaxTask = nil
+            self.appliedResultVersion = version
+            self.syntaxSources[.result] = source
+            self.result.textView.updateRowTokens(self.syntaxTokens(self.rows[...], .result))
+            self.colourVisibleRows()
+        }
+    }
+
+    /// Each row's tokens in a column, from the column's source; all plain without one.
+    private func syntaxTokens(_ rows: ArraySlice<LayoutRow>, _ column: ResolverColumn) -> [[SyntaxToken]] {
+        guard let source = syntaxSources[column] else { return Array(repeating: [], count: rows.count) }
+        return rows.map { row in
+            ResolverSyntax.tokens(of: row, column: column, lines: source.lines, sourceLines: source.sourceLines) ?? []
+        }
+    }
+
+    /// Colours the rows in view and a screen above and below it, in every column: each row once
+    /// until its paragraph or its tokens change.
+    private func colourVisibleRows() {
+        guard !rows.isEmpty else { return }
+        let clip = result.scrollView.contentView.bounds
+        let rows = ResolverGeometry.rows(in: clip.insetBy(dx: 0, dy: -max(clip.height, 400)), count: rows.count)
+        for column in columns { column.textView.colour(rows: rows) }
+    }
+
+    /// A text's tokens per line and its lines; nil when it has none (no stage, over the limits,
+    /// a failed or timed-out parse). A stage is decoded as the layout decodes it
+    /// (`ResolverLayout.lines(of:)`), so its line numbers are the rows'.
+    nonisolated private static func source(
+        _ stage: Data?, _ language: SyntaxLanguage, _ tokenize: @Sendable (String, SyntaxLanguage) -> [SyntaxToken]
+    ) -> SyntaxSource? {
+        guard let stage else { return nil }
+        return source(String(validating: stage, as: UTF8.self) ?? String(decoding: stage, as: UTF8.self), language, tokenize)
+    }
+
+    nonisolated private static func source(
+        _ text: String, _ language: SyntaxLanguage, _ tokenize: @Sendable (String, SyntaxLanguage) -> [SyntaxToken]
+    ) -> SyntaxSource? {
+        let tokens = tokenize(text, language)
+        guard !tokens.isEmpty else { return nil }
+        return SyntaxSource(lines: SyntaxHighlighter.lineTokens(tokens, in: text), sourceLines: ResolverSyntax.sourceLines(text))
+    }
+
+    /// The text before its first `\n`, found on UTF-16 units: `"\r\n"` is one `Character`.
+    private static func firstLine(_ text: String) -> Substring {
+        guard let end = text.utf16.firstIndex(of: 0x0A) else { return text[...] }
+        return text[..<end]
     }
 
     // MARK: - The harness

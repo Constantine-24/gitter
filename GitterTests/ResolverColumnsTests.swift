@@ -1,6 +1,8 @@
 import AppKit
 import Foundation
 import GitCore
+import GitterSyntax
+import Synchronization
 import Testing
 
 @testable import Gitter
@@ -1039,4 +1041,410 @@ import Testing
         store.resolverUndo()
         #expect(store.resolverDrafts["a.txt"]?.hasUserChanges == false)
     }
+}
+
+/// Syntax colours in the columns (syntax colours Task 4): Ours and Theirs from their stages, the
+/// Result from its text 150 ms after the last change, all as rendering attributes of each
+/// column's layout manager — never the text storage, never the store's history.
+@MainActor @Suite(.leavesTheRealDefaultsAlone) struct ResolverColumnsSyntaxTests {
+
+    static let base = "import Foundation\n\n// The answer.\nfunc answer() -> Int {\n    return 1\n}\n\nlet done = true\n"
+    static let ours = base.replacingOccurrences(of: "return 1", with: "return 2")
+    static let theirs = base.replacingOccurrences(of: "    return 1", with: "    let x = 3\n    return x")
+
+    /// A merge stopped with a Swift conflict in `a.swift` and a plain-text one in `b.txt`.
+    static func swiftMerge() throws -> ScratchRepo {
+        let repo = try ScratchRepo()
+        try repo.write("a.swift", base)
+        try repo.write("b.txt", "top\nx\nend\n")
+        try repo.git("add", ".")
+        try repo.git("commit", "-m", "base")
+        try repo.git("switch", "-c", "topic")
+        try repo.write("a.swift", theirs)
+        try repo.write("b.txt", "top\ntopic x\nend\n")
+        try repo.git("commit", "-qam", "topic")
+        try repo.git("switch", "-q", "main")
+        try repo.write("a.swift", ours)
+        try repo.write("b.txt", "top\nmain x\nend\n")
+        try repo.git("commit", "-qam", "main")
+        try repo.gitExpectingFailure("merge", "topic")
+        return repo
+    }
+
+    static func open(_ repo: ScratchRepo) async throws
+        -> (store: RepositoryStore, host: ResolverColumnsHost, window: NSWindow, cleanup: () -> Void)
+    {
+        try await ResolverColumnsHostTests.columns(repo, path: "a.swift")
+    }
+
+    static func refresh(_ store: RepositoryStore, _ host: ResolverColumnsHost, _ path: String = "a.swift") {
+        let focus = store.resolverFocus
+        host.update(
+            store: store, path: path, draft: store.resolverDrafts[path], current: focus?.path == path ? focus?.currentChunk : nil,
+            showBase: store.showsBase, labels: store.conflictSides)
+    }
+
+    static func settle(_ host: ResolverColumnsHost) async {
+        _ = await waitUntil("the syntax passes") { host.syntaxIdle }
+        host.window?.displayIfNeeded()
+    }
+
+    /// A column's rendering-attribute colours, per row: each run's range within its row.
+    static func rendered(_ view: ResolverTextView) -> [Int: [SyntaxRun]] {
+        guard let manager = view.textLayoutManager, let content = manager.textContentManager else { return [:] }
+        let origin = content.documentRange.location
+        var runs: [Int: [SyntaxRun]] = [:]
+        manager.enumerateRenderingAttributes(from: origin, reverse: false) { _, attributes, range in
+            guard let colour = attributes[.foregroundColor] as? NSColor else { return true }
+            let lower = content.offset(from: origin, to: range.location)
+            let upper = content.offset(from: origin, to: range.endLocation)
+            let row = (view.starts.lastIndex { $0 <= lower }) ?? 0
+            runs[row, default: []].append(SyntaxRun(range: (lower - view.starts[row])..<(upper - view.starts[row]), colour: colour))
+            return true
+        }
+        return runs
+    }
+
+    struct SyntaxRun: Equatable, CustomStringConvertible {
+        let range: Range<Int>
+        let colour: NSColor
+        var description: String { "\(range) \(colour.colorNameComponent)" }
+    }
+
+    /// What each row should show, from a fresh parse of the column's text as it is now.
+    static func expected(_ host: ResolverColumnsHost, _ column: ResolverColumn, _ draft: ResolverDraft) -> [Int: [SyntaxRun]] {
+        let text: String
+        switch column {
+        case .ours: text = String(decoding: draft.sides.ours ?? Data(), as: UTF8.self)
+        case .theirs: text = String(decoding: draft.sides.theirs ?? Data(), as: UTF8.self)
+        case .result: text = draft.document.resultText
+        }
+        let lines = SyntaxHighlighter.lineTokens(SyntaxHighlighter.tokens(in: text, language: .swift), in: text)
+        let tokens = ResolverSyntax.rowTokens(
+            rows: host.model.rows, column: column, lines: lines, sourceLines: ResolverSyntax.sourceLines(text))
+        return tokens.mapValues { row in
+            row.map { SyntaxRun(range: $0.range, colour: SyntaxPalette.standard.color($0.kind)) }
+        }
+    }
+
+    static func column(_ host: ResolverColumnsHost, _ column: ResolverColumn) -> ResolverTextView {
+        switch column {
+        case .ours: host.ours.textView
+        case .result: host.result.textView
+        case .theirs: host.theirs.textView
+        }
+    }
+
+    static func expectColoursMatch(_ host: ResolverColumnsHost, _ store: RepositoryStore, _ what: String) throws {
+        let draft = try #require(store.resolverDrafts["a.swift"])
+        for column in [ResolverColumn.ours, .result, .theirs] {
+            let shown = Self.rendered(Self.column(host, column))
+            let wanted = Self.expected(host, column, draft)
+            #expect(!wanted.isEmpty, "\(what): \(column) has nothing to colour")
+            #expect(shown == wanted, "\(what): \(column)")
+        }
+    }
+
+    @Test(.timeLimit(.minutes(10))) func columnsGetColoursAfterRender() async throws {
+        let repo = try Self.swiftMerge()
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.open(repo)
+        defer { cleanup(); window.close() }
+        await Self.settle(host)
+        let keyword = SyntaxPalette.standard.color(.keyword)
+        for column in [ResolverColumn.ours, .result, .theirs] {
+            let row = try #require(host.model.rows.firstIndex { ResolverAttributes.cell($0, column).text == "import Foundation" })
+            let runs = Self.rendered(Self.column(host, column))[row] ?? []
+            #expect(runs.contains(SyntaxRun(range: 0..<6, colour: keyword)), "\(column): \(runs)")
+        }
+        try Self.expectColoursMatch(host, store, "after the first render")
+    }
+
+    /// Two keystrokes within 150 ms parse once; and a parse still running when the text changes
+    /// again is dropped, so only the newest version's tokens are applied.
+    @Test(.timeLimit(.minutes(10))) func staleResultParseIsDropped() async throws {
+        let repo = try Self.swiftMerge()
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.open(repo)
+        defer { cleanup(); window.close() }
+        await Self.settle(host)
+        let view = host.result.textView
+        let parses = host.resultParses
+        view.insertText("let a", replacementRange: NSRange(location: NSNotFound, length: 0))
+        view.insertText("1 = 1", replacementRange: NSRange(location: NSNotFound, length: 0))
+        await Self.settle(host)
+        #expect(host.resultParses == parses + 1)
+        #expect(host.appliedResultVersion == host.resultVersion)
+        try Self.expectColoursMatch(host, store, "after two quick keystrokes")
+
+        // The next parse is held until the text has changed again.
+        let gate = ParseGate()
+        host.tokenize = { text, language in
+            gate.holdFirst()
+            return SyntaxHighlighter.tokens(in: text, language: language)
+        }
+        view.insertText("\n// held", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let held = host.resultVersion
+        #expect(await waitUntil("the held parse") { gate.isHolding })
+        view.insertText("\nlet b = 2", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(host.resultVersion > held)
+        let dropped = host.droppedResultParses
+        gate.release()
+        await Self.settle(host)
+        #expect(host.droppedResultParses == dropped + 1)
+        #expect(host.appliedResultVersion == host.resultVersion)
+        try Self.expectColoursMatch(host, store, "after the held parse")
+    }
+
+    /// Colouring never edits the text: the storage keeps only the rows' default colours, and the
+    /// store's draft, its history included, is what typing left.
+    @Test(.timeLimit(.minutes(10))) func typingDoesNotTouchStorageAttributes() async throws {
+        let repo = try Self.swiftMerge()
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.open(repo)
+        defer { cleanup(); window.close() }
+        await Self.settle(host)
+        let view = host.result.textView
+        view.insertText("let typed = 1", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let draft = try #require(store.resolverDrafts["a.swift"])
+        await Self.settle(host)
+        #expect(host.appliedResultVersion == host.resultVersion)
+        #expect(store.resolverDrafts["a.swift"] == draft)
+        #expect(view.undoManager?.canUndo != true)
+        let palette = ResolverPalette.standard
+        for column in [host.ours, host.result, host.theirs] {
+            let storage = try #require(column.textView.textStorage)
+            storage.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                let colour = value as? NSColor
+                #expect(colour == palette.text || colour == palette.secondaryText, "\(column.column) \(range)")
+            }
+        }
+        // The typed row is coloured from the re-parse.
+        let row = try #require(host.model.rows.firstIndex { $0.result.text == "let typed = 1" })
+        #expect(Self.rendered(view)[row]?.first == SyntaxRun(range: 0..<3, colour: SyntaxPalette.standard.color(.keyword)))
+    }
+
+    /// A typed line break moves the rows below it: their colours move with them at once, before
+    /// the re-parse, and a take, an undo and Show Base leave every row coloured as its line.
+    @Test(.timeLimit(.minutes(10))) func coloursFollowTheRowsThroughEditsTakesAndUndo() async throws {
+        let repo = try Self.swiftMerge()
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.open(repo)
+        defer { cleanup(); window.close() }
+        await Self.settle(host)
+        func refreshAfter(_ change: () -> Void) {
+            change()
+            Self.refresh(store, host)
+        }
+        host.resultSyntaxDelay = .seconds(30)
+        let view = host.result.textView
+        view.insertText("\n\n", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let done = try #require(host.model.rows.firstIndex { $0.result.text == "let done = true" })
+        #expect(Self.rendered(view)[done]?.first == SyntaxRun(range: 0..<3, colour: SyntaxPalette.standard.color(.keyword)))
+        host.resultSyntaxDelay = .milliseconds(150)
+        refreshAfter { store.resolverUndo() }
+        await Self.settle(host)
+        try Self.expectColoursMatch(host, store, "after the undo")
+
+        let current = try #require(store.resolverFocus?.currentChunk)
+        refreshAfter { store.resolverTake(.theirs, chunk: current) }
+        await Self.settle(host)
+        try Self.expectColoursMatch(host, store, "after a take")
+
+        refreshAfter { store.showsBase = true }
+        await Self.settle(host)
+        try Self.expectColoursMatch(host, store, "with Show Base")
+    }
+
+    /// Another file: the old file's parse is dropped, and a file in no known language is plain.
+    @Test(.timeLimit(.minutes(10))) func aFileSwitchDropsTheOldFilesColours() async throws {
+        let repo = try Self.swiftMerge()
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.open(repo)
+        defer { cleanup(); window.close() }
+        await Self.settle(host)
+        let gate = ParseGate()
+        host.tokenize = { text, language in
+            gate.holdFirst()
+            return SyntaxHighlighter.tokens(in: text, language: language)
+        }
+        host.result.textView.insertText("let held = 1", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(await waitUntil("the held parse") { gate.isHolding })
+        _ = try #require(await ResolverStoreTests.openDraft(store, "b.txt"))
+        Self.refresh(store, host, "b.txt")
+        let dropped = host.droppedResultParses
+        gate.release()
+        await Self.settle(host)
+        #expect(host.droppedResultParses == dropped + 1)
+        for column in [ResolverColumn.ours, .result, .theirs] {
+            #expect(Self.rendered(Self.column(host, column)).isEmpty, "\(column)")
+        }
+    }
+
+    /// An input method's cancelled composition puts its row back from the model
+    /// (`restoreRow`): the row is coloured again at once, as its line, with no parse.
+    @Test(.timeLimit(.minutes(10))) func aCancelledCompositionLeavesItsRowColoured() async throws {
+        let repo = try Self.swiftMerge()
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await Self.open(repo)
+        defer { cleanup(); window.close() }
+        await Self.settle(host)
+        let view = host.result.textView
+        let start = try ResolverColumnsHostTests.rowStart("func answer() -> Int {", host)
+        view.setSelectedRange(NSRange(location: start, length: 0))
+        view.setMarkedText("\u{B4}", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        view.setMarkedText("", selectedRange: NSRange(location: 0, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(!view.hasMarkedText())
+        #expect(store.resolverDrafts["a.swift"]?.hasUserChanges == false)
+        let parses = host.resultParses
+        try Self.expectColoursMatch(host, store, "after the cancelled composition")
+        #expect(host.resultParses == parses)
+    }
+
+    /// Keyword-coloured pixels in what a column's layers hold now, as on screen: rendered from
+    /// the layers' contents (`CALayer.render(in:)`), so text drawn before its colours came
+    /// and never drawn again counts none.
+    static func keywordPixelsOnScreen(_ column: ResolverTextColumn) throws -> Int {
+        let window = try #require(column.window)
+        let root = try #require(window.contentView)
+        let layer = try #require(root.layer)
+        let width = Int(root.bounds.width), height = Int(root.bounds.height)
+        let space = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try #require(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        layer.render(in: context)
+        let frame = column.convert(column.bounds, to: root)
+        let pixels = try #require(context.data).bindMemory(to: UInt8.self, capacity: context.bytesPerRow * height)
+        var count = 0
+        for y in 0..<height {
+            for x in Int(frame.minX)..<min(width, Int(frame.maxX)) {
+                let offset = y * context.bytesPerRow + x * 4
+                let (r, g, b) = (Int(pixels[offset]), Int(pixels[offset + 1]), Int(pixels[offset + 2]))
+                // The light keyword colour's pink-purple, antialiased.
+                if r > 120, g < 90, b > 110, r - g > 60 { count += 1 }
+            }
+        }
+        return count
+    }
+
+    /// The sides' colours land after the columns are on screen and drawn plain: the drawn text
+    /// takes them, with no other event to redraw it.
+    @Test(.timeLimit(.minutes(10))) func coloursThatLandAfterTheTextIsDrawnAreDrawn() async throws {
+        let repo = try Self.swiftMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        _ = try #require(await ResolverStoreTests.openDraft(store, "a.swift"))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .aqua)
+        window.contentView?.wantsLayer = true
+        window.orderFront(nil)
+        defer { window.close() }
+        let host = ResolverColumnsHost()
+        host.frame = window.contentView?.bounds ?? .zero
+        window.contentView?.addSubview(host)
+        let gate = ParseGate()
+        host.tokenize = { text, language in
+            gate.holdFirst()
+            return SyntaxHighlighter.tokens(in: text, language: language)
+        }
+        Self.refresh(store, host)
+        host.layoutSubtreeIfNeeded()
+        #expect(await waitUntil("the held parse") { gate.isHolding })
+        // Drawn plain, through a few turns of the run loop as on screen.
+        for _ in 0..<5 {
+            window.displayIfNeeded()
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(try Self.keywordPixelsOnScreen(host.ours) == 0)
+        gate.release()
+        await Self.settle(host)
+        for _ in 0..<5 {
+            window.displayIfNeeded()
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        for column in [host.ours, host.theirs] {
+            #expect(!Self.rendered(column.textView).isEmpty, "\(column.column)")
+            #expect(try Self.keywordPixelsOnScreen(column) > 50, "\(column.column)")
+        }
+    }
+
+    /// A Swift merge whose `long.swift` has 300 lines above its first conflict and 300 more above
+    /// its second, so the columns open far down it and lay the lines above out over several turns.
+    static func longSwiftMerge() throws -> ScratchRepo {
+        let repo = try ScratchRepo()
+        func file(_ side: String) -> String {
+            let above = (1...300).map { "let line\($0) = \($0) // entry" }.joined(separator: "\n") + "\n"
+            let below = (301...600).map { "let line\($0) = \($0) // entry" }.joined(separator: "\n") + "\n"
+            return above + "let \(side)X = 1\n" + below + "let \(side)Y = 2\nfunc end() {}\n"
+        }
+        try repo.write("long.swift", file("base"))
+        try repo.git("add", ".")
+        try repo.git("commit", "-m", "base")
+        try repo.git("switch", "-c", "topic")
+        try repo.write("long.swift", file("topic"))
+        try repo.git("commit", "-qam", "topic")
+        try repo.git("switch", "-q", "main")
+        try repo.write("long.swift", file("main"))
+        try repo.git("commit", "-qam", "main")
+        try repo.gitExpectingFailure("merge", "topic")
+        return repo
+    }
+
+    /// The rows in view, in every column, coloured as their lines, with the text on its rows.
+    static func expectViewColoured(_ host: ResolverColumnsHost, _ store: RepositoryStore, _ what: String) throws {
+        try ResolverColumnsHostTests.expectTextOnRows(host, what)
+        let draft = try #require(store.resolverDrafts["long.swift"])
+        let inView = ResolverGeometry.rows(in: host.result.scrollView.contentView.bounds, count: host.model.rows.count)
+        #expect(inView.count > 10, "\(what)")
+        let keyword = SyntaxPalette.standard.color(.keyword)
+        for column in [ResolverColumn.ours, .result, .theirs] {
+            let shown = Self.rendered(Self.column(host, column))
+            let wanted = Self.expected(host, column, draft)
+            for row in inView {
+                #expect(shown[row] == wanted[row], "\(what): \(column) row \(row)")
+            }
+            #expect(inView.contains { shown[$0]?.first == SyntaxRun(range: 0..<3, colour: keyword) }, "\(what): \(column)")
+        }
+    }
+
+    /// Opening far down a long file and scrolling to its end: the rows that come into view are
+    /// coloured, and colouring them leaves the text on its rows.
+    @Test(.timeLimit(.minutes(10))) func rowsComingIntoViewAreColouredAndStayOnTheirRows() async throws {
+        let repo = try Self.longSwiftMerge()
+        defer { repo.remove() }
+        let (store, host, window, cleanup) = try await ResolverColumnsHostTests.columns(repo, path: "long.swift")
+        defer { cleanup(); window.close() }
+        #expect(host.result.scrollView.contentView.bounds.minY > 3000)
+        try await ResolverColumnsHostTests.settleLayout(host)
+        await Self.settle(host)
+        try Self.expectViewColoured(host, store, "after the jump")
+        ResolverColumnsHostTests.scrollDeep(host)
+        try await ResolverColumnsHostTests.settleLayout(host)
+        await Self.settle(host)
+        try Self.expectViewColoured(host, store, "scrolled to the end")
+    }
+}
+
+/// Holds the first parse that reaches it until released, off the main actor.
+final class ParseGate: Sendable {
+    private let state = Mutex((calls: 0, holding: false, released: false))
+
+    var isHolding: Bool { state.withLock { $0.holding } }
+
+    func holdFirst() {
+        let first = state.withLock { state -> Bool in
+            state.calls += 1
+            if state.calls == 1 { state.holding = true }
+            return state.calls == 1
+        }
+        guard first else { return }
+        while !state.withLock({ $0.released }) { Thread.sleep(forTimeInterval: 0.005) }
+        state.withLock { $0.holding = false }
+    }
+
+    func release() { state.withLock { $0.released = true } }
 }
