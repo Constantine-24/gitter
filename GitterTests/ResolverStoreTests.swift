@@ -942,6 +942,45 @@ import Testing
         #expect(!store.keptChangesBarShown && !store.resolveConflictsAvailable)
     }
 
+    /// During an operation the operation bar carries the entry in the working copy only; with a
+    /// commit selected the kept bar shows (K1 final review, I1).
+    @Test(.timeLimit(.minutes(10))) func theKeptBarShowsDuringAnOperationOnlyOutsideTheWorkingCopy() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        _ = try #require(await Self.openDraft(store))
+        store.resolverTake(.ours)
+        store.closeResolver()
+        try repo.git("add", "a.txt")
+        await store.refresh()
+        await waitUntilIdle(store)
+        #expect(store.operationInProgress != nil)
+        #expect(store.changedDraftPaths == ["a.txt"])
+        #expect(store.selection == .workingCopy)
+        #expect(!store.keptChangesBarShown)
+        let head = try repo.git("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines)
+        store.select(.commit(head))
+        #expect(store.keptChangesBarShown)
+        store.select(.workingCopy)
+        #expect(!store.keptChangesBarShown)
+    }
+
+    /// The bar's button opens the first kept path, never a conflicted file the bar does not name (I2).
+    @Test(.timeLimit(.minutes(10))) func theKeptBarsActionOpensTheFirstKeptPathNotTheFirstConflictedFile() async throws {
+        let repo = try Self.stoppedMerge()
+        defer { repo.remove() }
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        _ = try #require(await Self.openDraft(store, "b.txt"))
+        store.resolverTake(.ours)
+        store.closeResolver()
+        #expect(store.changedDraftPaths == ["b.txt"])
+        #expect(store.resolverFiles.map(\.path) == ["a.txt", "b.txt"])
+        store.openKeptChanges()
+        #expect(store.resolverFocus?.path == "b.txt")
+    }
+
     /// A file resolved outside in the same reload as one of Gitter's own writes is detached
     /// without a notice, and the bar shows once the merge is over.
     @Test(.timeLimit(.minutes(10)))
@@ -963,7 +1002,8 @@ import Testing
         await waitUntilIdle(store)
         #expect(store.resolverDrafts["a.txt"]?.detached == .resolvedOutside)
         #expect(store.stickyNotice == nil)
-        #expect(store.resolveConflictsAvailable)
+        #expect(store.changedDraftPaths == ["a.txt"])
+        #expect(!store.keptChangesBarShown)  // the merge lasts: the operation bar has the button
 
         try repo.git("merge", "--abort")
         await store.refresh()

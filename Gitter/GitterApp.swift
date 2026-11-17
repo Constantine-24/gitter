@@ -181,8 +181,10 @@ struct RepositoryCommands: Commands {
             // one is added from here (or a branch's menu).
             Button(WorktreeWording.addTitle) { store?.requestAddWorktree(branch: nil) }
                 .disabled(isOff(\.addWorktreeBlockedReason))
-            // Focus mode's keys (spec, "Taking a side"), on its current conflict. Off outside
-            // focus mode and while a sheet is up; the takes also while the draft is read-only.
+            // The first item opens Resolve Conflicts (on while a file is conflicted or changes are
+            // kept). The rest are focus mode's keys (spec, "Taking a side"), on its current
+            // conflict: off outside focus mode and while a sheet is up; the takes also while the
+            // draft is read-only.
             Section(ConflictWording.resolveMenu) {
                 // Opens the first conflicted file, or the first kept Result: the way back to kept
                 // changes (K1). No shortcut.

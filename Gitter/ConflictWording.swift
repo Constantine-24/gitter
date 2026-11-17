@@ -380,7 +380,7 @@ enum ConflictWording {
     }
 
     /// The kept bar's text in the normal window: every file whose Result with changes is kept
-    /// while Resolve Conflicts is closed, with no merge left to continue.
+    /// while Resolve Conflicts is closed and no operation bar shows.
     static func keptChanges(_ paths: [String]) -> String {
         "Your changes to \(StashWording.names(paths)) in Resolve Conflicts are kept."
     }
@@ -394,6 +394,7 @@ enum ConflictWording {
 
     /// The card's and the operation bar's button.
     static let resolveConflictsButton = "Resolve Conflicts\u{2026}"
+    static let keptChangesHelp = "Open Resolve Conflicts on the files whose changes are kept"
     static let resolveConflictsHelp = "Resolve the conflicts with both sides and the result side by side"
 
     static let focusTitle = "Resolve Conflicts"

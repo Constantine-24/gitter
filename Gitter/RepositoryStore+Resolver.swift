@@ -123,10 +123,18 @@ extension RepositoryStore {
     /// (read-only ones too, once the operation is over). The menu item's enablement.
     var resolveConflictsAvailable: Bool { !resolverFiles.isEmpty || !changedDraftPaths.isEmpty }
 
-    /// The kept bar shows: Resolve Conflicts is closed, no operation is left to show the
-    /// operation bar's button, and Results with changes are kept.
+    /// The kept bar shows: Resolve Conflicts is closed, Results with changes are kept, and the
+    /// operation bar's button is not on screen — it is there only for an operation, and only with
+    /// the working copy selected (a commit, stash or comparison shows the kept bar instead).
     var keptChangesBarShown: Bool {
-        resolverFocus == nil && operationInProgress == nil && !changedDraftPaths.isEmpty
+        resolverFocus == nil && !changedDraftPaths.isEmpty
+            && (operationInProgress == nil || selection != .workingCopy)
+    }
+
+    /// The kept bar's button: Resolve Conflicts on the first kept path, the file the bar names,
+    /// whatever else is conflicted.
+    func openKeptChanges() {
+        openResolver(at: changedDraftPaths.first)
     }
 
     /// The operation that ended, while a draft from it is kept (`ResolverShell.endedOperation`):

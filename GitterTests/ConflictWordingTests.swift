@@ -521,6 +521,10 @@ import Testing
         #expect(ConflictWording.keptChanges(["a.txt"])
             == "Your changes to \"a.txt\" in Resolve Conflicts are kept.")
         #expect(ConflictWording.keptChanges(["a.txt", "b.txt"])
-            == "Your changes to \(StashWording.names(["a.txt", "b.txt"])) in Resolve Conflicts are kept.")
+            == "Your changes to \"a.txt\" and \"b.txt\" in Resolve Conflicts are kept.")
+    }
+
+    @Test func theKeptBarsTooltipHasItsOwnWording() {
+        #expect(ConflictWording.keptChangesHelp == "Open Resolve Conflicts on the files whose changes are kept")
     }
 }
