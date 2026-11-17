@@ -5,7 +5,8 @@ import Testing
 @testable import Gitter
 
 /// Syntax colours Task 2: the palette reads Xcode's Default theme values from the asset catalog,
-/// toned down only where a colour is under 4.5:1 on a background code sits on.
+/// toned down only where a colour is under 4.5:1 on a background code sits on (3:1 on the selected
+/// diff rows). Comments recede as in Xcode, with a floor of 3:1 on every background (Ruling 13).
 @Suite struct SyntaxPaletteTests {
 
     typealias RGB = [Double]
@@ -29,12 +30,12 @@ import Testing
     ]
 
     /// Kinds moved toward Resolver/Text in 0.02 steps until 4.5:1 on every background (3:1 on the
-    /// selected diff rows): the final
-    /// value in each appearance and what forced it. Filled in by the contrast step.
+    /// selected diff rows; 3:1 on every background for comments): the final value in each
+    /// appearance (nil: Xcode's) and what forced it. Filled in by the contrast step.
     static let adjusted: [SyntaxKind: (light: RGB?, dark: RGB?, why: String)] = [
         .keyword: ([0.608, 0.138, 0.576], [0.976, 0.547, 0.737], "TheirsWord, 3.53 in dark"),
         .string: ([0.717, 0.103, 0.089], [0.978, 0.565, 0.535], "TheirsWord, 4.10 in light and 3.56 in dark"),
-        .comment: ([0.319, 0.366, 0.411], [0.655, 0.684, 0.720], "TheirsWord, 3.72 in light and 2.28 in dark"),
+        .comment: (nil, [0.550, 0.589, 0.631], "green 0.30 (selected), 2.07 in dark; 12 steps (TheirsWord alone would need 9)"),
         .function: ([0.422, 0.213, 0.664], [0.758, 0.622, 0.929], "TheirsWord, 2.71 in dark"),
         .constant: ([0.422, 0.213, 0.664], [0.759, 0.621, 0.928], "TheirsWord, 2.70 in dark"),
         .attribute: ([0.466, 0.345, 0.023], [0.809, 0.650, 0.524], "TheirsWord, 4.05 in light and 3.24 in dark"),
@@ -103,7 +104,7 @@ import Testing
     nonisolated(unsafe) static let selectedBackgrounds = [diff("green 0.30", .systemGreen, 0.30), diff("red 0.30", .systemRed, 0.30)]
 
     @Test func legibleOnEveryBackground() {
-        for kind in SyntaxKind.allCases {
+        for kind in SyntaxKind.allCases where kind != .comment {
             for (name, appearance) in [("light", Self.light), ("dark", Self.dark)] {
                 for background in Self.backgrounds {
                     let ratio = SyntaxPalette.contrast(
@@ -124,6 +125,35 @@ import Testing
                 }
             }
         }
+    }
+
+    /// Every background code is drawn on, the plain ones too: the diff pane and the resolver's
+    /// window, as well as the tints, word marks, filler and selected rows.
+    nonisolated(unsafe) static let everyBackground: [Background] =
+        [diff("diff plain", .clear, 0), Background(name: "Resolver/Window") { appearance in
+            SyntaxPalette.composite(resolver(.window), over: .textBackgroundColor, in: appearance)
+        }] + backgrounds + selectedBackgrounds
+
+    /// Comments keep Xcode's own values, which recede, with a floor of 3:1 on every background
+    /// (Ruling 13): light is Xcode's exactly; dark is moved toward Resolver/Text only as far as
+    /// the floor needs, so one 0.02 step less falls under it somewhere.
+    @Test func commentsRecedeWithAThreeToOneFloor() {
+        let comment = SyntaxPalette.standard.color(.comment)
+        let xcode = Self.spec[.comment]!
+        let light = Self.components(comment, in: Self.light)
+        for i in 0..<3 { #expect(abs(light[i] - xcode.light[i]) <= 0.002, "light \(light) vs Xcode \(xcode.light)") }
+        for (name, appearance) in [("light", Self.light), ("dark", Self.dark)] {
+            for background in Self.everyBackground {
+                let ratio = SyntaxPalette.contrast(comment, background.colour(appearance), in: appearance)
+                #expect(ratio >= 3.0, "comment \(name) on \(background.name): \(ratio)")
+            }
+        }
+        // Minimal: eleven steps from Xcode's dark value toward Resolver/Text are not enough.
+        let text = Self.components(Self.resolver(.text), in: Self.dark)
+        let fewer = (0..<3).map { xcode.dark[$0] + 0.22 * (text[$0] - xcode.dark[$0]) }
+        let short = NSColor(srgbRed: fewer[0], green: fewer[1], blue: fewer[2], alpha: 1)
+        let lowest = Self.everyBackground.map { SyntaxPalette.contrast(short, $0.colour(Self.dark), in: Self.dark) }.min() ?? 0
+        #expect(lowest < 3.0, "one step less still clears 3:1 (\(lowest))")
     }
 
     @Test func contrastIsWCAG() {

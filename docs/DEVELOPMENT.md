@@ -126,7 +126,7 @@ xcodegen generate && GIT_ALLOW_PROTOCOL=file GIT_SSH_COMMAND=/usr/bin/false GIT_
   -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -scmProvider system test
 ```
 
-`GitterTests` (1 230 tests in 92 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (1 231 tests in 92 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -452,8 +452,11 @@ do not change: Ours and Theirs are coloured as read-only text, and the editable 
 
 **Colours.** Xcode's Default (Light) and Default (Dark) values, moved toward the text colour only
 where a contrast check needed it: at least 4.5:1 on an unselected diff line and on every Resolve
-Conflicts tint and word mark, and at least 3:1 on a selected diff line. The tests read the contrast
-from the asset catalog. Only the colour of code characters changes: tints, word marks, selection,
+Conflicts tint and word mark, and at least 3:1 on a selected diff line. Comments are the exception:
+they keep Xcode's values so that they recede as they do in Xcode, with a floor of 3:1 on every
+background (plain, tinted, word-marked or selected). Light is Xcode's exactly; dark is moved twelve
+0.02 steps toward the text colour, to .550 .589 .631, which is what a selected green line needs. The
+tests read the contrast from the asset catalog. Only the colour of code characters changes: tints, word marks, selection,
 fonts and row heights do not.
 
 **The gates.** Each ends a task and runs with no network: `bash scripts/test-gitcore.sh`; the
