@@ -181,6 +181,20 @@ import Testing
         #expect(all.stashes.count == 3 && all.showsStashes && !all.stashesHaveNoMatches)
     }
 
+    /// The branch clause on its own: the title the row shows ("polish the copy") does not hold the
+    /// branch ("release-9"), so only `stash.branch` can find it by the branch.
+    @Test func aStashWithAWrittenMessageIsFoundByItsBranchAndItsTitle() {
+        let written = Self.stash(5, "On release-9: polish the copy")
+        #expect(StashWording.title(written) == "polish the copy")
+        #expect(!StashWording.title(written).contains("release-9"))
+        let byBranch = SidebarFilter.rows(Self.refs, stashes: [written], deletedTags: [], query: "release-9")
+        #expect(byBranch.stashes == [written])
+        let byTitle = SidebarFilter.rows(Self.refs, stashes: [written], deletedTags: [], query: "polish copy")
+        #expect(byTitle.stashes == [written])
+        let neither = SidebarFilter.rows(Self.refs, stashes: [written], deletedTags: [], query: "zzz")
+        #expect(neither.stashes.isEmpty)
+    }
+
     @Test func stashMatchesCountTowardTheAnnouncement() {
         let rows = SidebarFilter.rows(Self.refs, stashes: Self.stashList, deletedTags: [], query: "main")
         // local main, origin/main, and the stash made on main.
@@ -199,7 +213,7 @@ import Testing
         #expect(!noStashes.showsStashes && !noStashes.stashesHaveNoMatches)
     }
 
-    @Test func filteringForcesEverythingOpenWithoutWriting() {
+    @Test func filteringForcesEverythingOpen() {
         #expect(SidebarFilter.isExpanded(stored: false, query: "x"))
         #expect(!SidebarFilter.isExpanded(stored: false, query: "  "))
         #expect(SidebarFilter.isExpanded(stored: true, query: ""))
