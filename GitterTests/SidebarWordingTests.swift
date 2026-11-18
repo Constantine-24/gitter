@@ -10,6 +10,10 @@ import Testing
         #expect(SidebarWording.showFewerStashes == "Show Fewer Stashes")
     }
 
+    @Test func everySectionHasItsTitle() {
+        #expect(SidebarSection.allCases.map(SidebarWording.title) == ["Recent", "Branches", "Worktrees", "Stashes", "Remotes", "Tags"])
+    }
+
     @Test func aFolderReadsItsBranchCount() {
         #expect(SidebarWording.folderAccessibility("feature", count: 12) == "Branch folder feature, 12 branches")
         #expect(SidebarWording.folderAccessibility("fix", count: 1) == "Branch folder fix, 1 branch")

@@ -12,7 +12,18 @@
     ///                          empties it), then the `sidebar` lines.
     ///   sidebar                every section the sidebar draws with its rows after the filter —
     ///                          each remote group with whether it is expanded, "No matches" — and
-    ///                          the count VoiceOver announces.
+    ///                          the count VoiceOver announces. N1 adds `sidebar Recent: a, b` (or
+    ///                          `(hidden)`), `sidebar folders: feature(6, folded), …`, `sidebar
+    ///                          plain: …`, `sidebar folded sections: …` (the saved folding) and
+    ///                          `sidebar Stashes: <shown> shown, <hidden> hidden | rows: … |
+    ///                          toggle: …` (hidden while filtering: the entries that do not
+    ///                          match). A folded section's rows read `(folded, <header count>)`.
+    ///   sidebarfold:<section> / sidebarunfold:<section>
+    ///                          a click on that section's disclosure (`recent`, `branches`,
+    ///                          `worktrees`, `stashes`, `remotes`, `tags`) through `setSection`,
+    ///                          then the saved folding. Ignored while filtering, as a click is.
+    ///   sidebarfolder:<prefix> a click on that branch folder's disclosure (`setFolder`, a toggle).
+    ///   sidebarstashes:all|fewer  the Stashes section's Show All / Show Fewer row.
     ///   worktrees              every worktree row: folder, branch line, each mark's text and
     ///                          tooltip, the changes read; this window's path, whether it is a
     ///                          linked worktree, the main folder, the store's title and the
@@ -134,6 +145,7 @@
         static let navigationCommands: Set<String> = Set([
             "filter", "sidebar", "worktrees", "worktreemenu", "openworktree", "pills", "watchloads", "firstresponder",
             "reloadtiming", "newwindow", "inwindow", "closewindow", "loadolder", "reveal",
+            "sidebarfold", "sidebarunfold", "sidebarfolder", "sidebarstashes",
         ]).union(compareCommands).union(worktreeSheetCommands)
 
         /// How often the end row's cell appeared and disappeared (`CommitListView`'s `EndRowCell`):
@@ -162,6 +174,20 @@
                 try? await Task.sleep(for: .milliseconds(300))
                 logSidebar(store)
             case "sidebar": logSidebar(store)
+            case "sidebarfold", "sidebarunfold":
+                guard let section = SidebarSection(rawValue: rest) else { return log("\(command): no section \(rest)") }
+                store.setSection(section, folded: command == "sidebarfold")
+                log("\(command) \(rest): \(foldedSectionsLine(store))")
+            case "sidebarfolder":
+                store.setFolder(rest, expanded: !store.sidebarFolding.expandedFolders.contains(rest))
+                log("sidebarfolder \(rest): expanded folders \(store.sidebarFolding.expandedFolders.sorted())")
+            case "sidebarstashes":
+                switch rest {
+                case "all": store.showsAllStashes = true
+                case "fewer": store.showsAllStashes = false
+                default: return log("sidebarstashes: all or fewer, not \(rest)")
+                }
+                log("sidebarstashes \(rest): showsAllStashes \(store.showsAllStashes)")
             case "worktrees": logWorktrees(store)
             case "worktreemenu": logWorktreeMenus(store)
             case "openworktree":
@@ -651,29 +677,68 @@
         private static func logSidebar(_ store: RepositoryStore) {
             let refs = store.snapshot?.refs ?? .empty
             let rows = SidebarFilter.rows(refs, stashes: store.stashes, deletedTags: store.deletedTags.receipts, query: store.sidebarFilter)
+            let query = store.sidebarFilter
+            // What a section shows: its rows when open (as the view decides, filter included),
+            // else what its folded header draws.
+            func shown(_ section: SidebarSection, _ rowsText: @autoclosure () -> String) -> String {
+                if store.sidebarShows(section) { return rowsText() }
+                let count = SidebarWording.foldedCount(section, count: store.sidebarHeaderCount(section))
+                return "(folded" + (count.map { ", \($0)" } ?? "") + ")"
+            }
+            func list(_ names: [String]) -> String { names.isEmpty ? "(none)" : names.joined(separator: ", ") }
             log("sidebar filter: \"\(store.sidebarFilter)\" | filtering: \(rows.isFiltering) | matches: \(rows.matchCount) "
                 + "| voiceover: \(rows.isFiltering ? SidebarFilter.announcement(matches: rows.matchCount) : "(none)")")
+            log("sidebar folded sections: \(foldedSectionsLine(store))")
+            if SidebarLayout.showsRecent(localBranchCount: refs.localBranches.count, query: query) {
+                log("sidebar Recent: \(shown(.recent, list(store.recentBranches.map(\.name))))")
+            } else {
+                log("sidebar Recent: (hidden)")
+            }
             if rows.showsBranches {
-                log("sidebar Branches: \(rows.branchesHaveNoMatches ? SidebarFilter.noMatches : rows.localBranches.map(\.name).joined(separator: ", "))")
+                log("sidebar Branches: \(shown(.branches, rows.branchesHaveNoMatches ? SidebarFilter.noMatches : rows.localBranches.map(\.name).joined(separator: ", ")))")
+                let tree = SidebarLayout.tree(rows.localBranches)
+                let folders = tree.folders.map { folder in
+                    let state = SidebarLayout.isFolderExpanded(folder.prefix, folding: store.sidebarFolding, query: query)
+                    return "\(folder.prefix)(\(folder.branches.count), \(state ? "expanded" : "folded"))"
+                }
+                log("sidebar folders: \(list(folders))")
+                log("sidebar plain: \(list(tree.plain.map(\.name)))")
             }
             if WorktreeWording.showsSection(store.worktrees) {
-                log("sidebar Worktrees (not filtered): \(store.worktrees.map { WorktreeWording.folderName($0.path) }.joined(separator: ", "))")
+                log("sidebar Worktrees (not filtered): \(shown(.worktrees, store.worktrees.map { WorktreeWording.folderName($0.path) }.joined(separator: ", ")))")
             }
-            log("sidebar Stashes (not filtered): \(store.snapshot?.stashes.count ?? 0)")
+            if rows.showsStashes {
+                let stashes = store.stashList(rows)
+                let open = "\(stashes.rows.count) shown, \(stashes.hidden) hidden | rows: "
+                    + (rows.stashesHaveNoMatches ? SidebarFilter.noMatches : list(stashes.rows.map { "stash@{\($0.index)}" }))
+                    + " | toggle: \(stashes.toggle ?? "(none)")"
+                log("sidebar Stashes: \(shown(.stashes, open))")
+            }
             if rows.showsRemotes {
-                if rows.remotesHaveNoMatches { log("sidebar Remotes: \(SidebarFilter.noMatches)") }
-                for group in rows.remoteGroups {
-                    // The view's own expansion is @State; while filtering it is forced open.
-                    let expanded = rows.isFiltering ? "expanded (filtering)" : "the user's own expansion"
-                    log("sidebar Remotes \(group.remote.name) [\(expanded)]: \(group.branches.map(\.name).joined(separator: ", "))")
+                let open = store.sidebarShows(.remotes)
+                if !open { log("sidebar Remotes: \(shown(.remotes, ""))") }
+                if open, rows.remotesHaveNoMatches { log("sidebar Remotes: \(SidebarFilter.noMatches)") }
+                for group in rows.remoteGroups where open {
+                    let expanded = SidebarFilter.isExpanded(
+                        stored: store.sidebarFolding.expandedRemotes.contains(group.remote.name), query: query)
+                    log("sidebar Remotes \(group.remote.name) [\(expanded ? "expanded" : "folded")]: \(group.branches.map(\.name).joined(separator: ", "))")
                 }
-                if !rows.otherBranches.isEmpty {
-                    log("sidebar Remotes Other: \(rows.otherBranches.map(\.name).joined(separator: ", "))")
+                if open, !rows.otherBranches.isEmpty {
+                    let expanded = SidebarFilter.isExpanded(stored: store.sidebarFolding.otherExpanded, query: query)
+                    log("sidebar Remotes Other [\(expanded ? "expanded" : "folded")]: \(rows.otherBranches.map(\.name).joined(separator: ", "))")
                 }
             }
             if rows.showsTags {
-                log("sidebar Tags: \(rows.tagsHaveNoMatches ? SidebarFilter.noMatches : (rows.tags.map(\.name) + rows.deletedTags.map { "\($0.name) (deleted)" }).joined(separator: ", "))")
+                log("sidebar Tags: \(shown(.tags, rows.tagsHaveNoMatches ? SidebarFilter.noMatches : (rows.tags.map(\.name) + rows.deletedTags.map { "\($0.name) (deleted)" }).joined(separator: ", ")))")
             }
+        }
+
+        /// The saved folding, in the sidebar's order (`(none)` when nothing is folded), and
+        /// whether the filter is showing it all open regardless.
+        private static func foldedSectionsLine(_ store: RepositoryStore) -> String {
+            let folded = SidebarSection.allCases.filter { store.sidebarFolding.foldedSections.contains($0) }.map(\.rawValue)
+            let text = folded.isEmpty ? "(none)" : folded.joined(separator: ", ")
+            return SidebarFilter.isFiltering(store.sidebarFilter) ? text + " (shown open while filtering)" : text
         }
 
         // MARK: - Windows (E2 Task 4)

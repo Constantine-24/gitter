@@ -146,4 +146,83 @@ import Testing
         let result = SidebarLayout.stashes(all, showAll: false, selected: "nope")
         #expect(result.rows.count == 5 && result.hidden == 3)
     }
+
+    // MARK: - stashList
+
+    @Test func sixStashesWithTheSixthSelectedStillOfferTheToggle() {
+        let all = (0..<6).map { Self.stash($0) }
+        let list = SidebarLayout.stashList(all, matching: all, isFiltering: false, showAll: false, selected: all[5].sha)
+        #expect(list.rows == all)
+        #expect(list.hidden == 0)
+        #expect(list.toggle == "Show All 6 Stashes")
+    }
+
+    @Test func theToggleReadsShowFewerOnceEverythingShows() {
+        let all = (0..<8).map { Self.stash($0) }
+        let list = SidebarLayout.stashList(all, matching: all, isFiltering: false, showAll: true, selected: nil)
+        #expect(list.rows == all && list.hidden == 0)
+        #expect(list.toggle == "Show Fewer Stashes")
+    }
+
+    @Test func fiveStashesHaveNoToggle() {
+        let all = (0..<5).map { Self.stash($0) }
+        #expect(SidebarLayout.stashList(all, matching: all, isFiltering: false, showAll: false, selected: nil).toggle == nil)
+        #expect(SidebarLayout.stashList(all, matching: all, isFiltering: false, showAll: true, selected: nil).toggle == nil)
+    }
+
+    @Test func filteringShowsEveryMatchPastTheLimitWithNoToggle() {
+        let all = (0..<9).map { Self.stash($0) }
+        let matching = Array(all.dropFirst(1))
+        let list = SidebarLayout.stashList(all, matching: matching, isFiltering: true, showAll: false, selected: nil)
+        #expect(list.rows == matching)
+        #expect(list.hidden == 1)
+        #expect(list.toggle == nil)
+    }
+
+    // MARK: - sections
+
+    @Test func recentHidesWhileFilteringAndWithNoBranch() {
+        #expect(SidebarLayout.showsRecent(localBranchCount: 3, query: ""))
+        #expect(SidebarLayout.showsRecent(localBranchCount: 3, query: "  "))
+        #expect(!SidebarLayout.showsRecent(localBranchCount: 3, query: "fix"))
+        #expect(!SidebarLayout.showsRecent(localBranchCount: 0, query: ""))
+    }
+
+    @Test func aFoldedSectionOpensWhileFiltering() {
+        var folding = SidebarFolding()
+        folding.foldedSections = [.tags]
+        #expect(!SidebarLayout.isExpanded(.tags, folding: folding, query: ""))
+        #expect(SidebarLayout.isExpanded(.branches, folding: folding, query: ""))
+        #expect(SidebarLayout.isExpanded(.tags, folding: folding, query: "fix"))
+    }
+
+    @Test func foldersStartFoldedAndOpenWhileFiltering() {
+        var folding = SidebarFolding()
+        #expect(!SidebarLayout.isFolderExpanded("feature", folding: folding, query: ""))
+        #expect(SidebarLayout.isFolderExpanded("feature", folding: folding, query: "x"))
+        folding.expandedFolders = ["feature"]
+        #expect(SidebarLayout.isFolderExpanded("feature", folding: folding, query: ""))
+        #expect(!SidebarLayout.isFolderExpanded("fix", folding: folding, query: ""))
+    }
+
+    @Test func headerCountsAreUnfilteredTotals() {
+        let refs = RefCollection(
+            localBranches: ["main", "a", "b"].map { Self.branch($0) },
+            remoteBranches: [Self.branch("origin/main"), Self.branch("ghost/x")],
+            tags: [Tag(name: "v1", sha: Self.sha, isAnnotated: false), Tag(name: "v2", sha: Self.sha, isAnnotated: false)],
+            remotes: [Remote(name: "origin", fetchURL: "/r", pushURL: nil)])
+        func worktree(_ path: String, main: Bool) -> Worktree {
+            Worktree(path: path, head: Self.sha, branch: nil, isMain: main, isBare: false, lock: nil, missingReason: nil)
+        }
+        let worktrees = [worktree("/m", main: true), worktree("/l1", main: false), worktree("/l2", main: false)]
+        func count(_ section: SidebarSection) -> Int {
+            SidebarLayout.headerCount(section, refs: refs, stashCount: 7, worktrees: worktrees)
+        }
+        #expect(count(.branches) == 3)
+        #expect(count(.worktrees) == 2)
+        #expect(count(.stashes) == 7)
+        #expect(count(.remotes) == 1)
+        #expect(count(.tags) == 2)
+        #expect(count(.recent) == 0)
+    }
 }

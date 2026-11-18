@@ -86,4 +86,64 @@ enum SidebarLayout {
         }
         return (rows, all.count - rows.count)
     }
+
+    /// What the Stashes section draws: its rows, how many entries are not among them, and the
+    /// last row's title ("Show All 8 Stashes" / "Show Fewer Stashes"), or nil for no such row.
+    struct StashList: Hashable {
+        let rows: [Stash]
+        /// Unfiltered: the entries past the limit. Filtering: the entries that do not match.
+        let hidden: Int
+        let toggle: String?
+    }
+
+    /// While filtering, every match and no toggle (`matching` is `SidebarFilter.Rows.stashes`);
+    /// otherwise `stashes(_:showAll:selected:)`, with the toggle whenever there are more entries
+    /// than the limit — keyed off the count, not `hidden`, so six entries with the sixth selected
+    /// (all shown, none hidden) can still be folded back to five.
+    static func stashList(
+        _ all: [Stash], matching: [Stash], isFiltering: Bool, showAll: Bool, selected: String?
+    ) -> StashList {
+        if isFiltering {
+            return StashList(rows: matching, hidden: all.count - matching.count, toggle: nil)
+        }
+        let (rows, hidden) = stashes(all, showAll: showAll, selected: selected)
+        let toggle =
+            all.count > stashLimit
+            ? (showAll ? SidebarWording.showFewerStashes : SidebarWording.showAllStashes(all.count)) : nil
+        return StashList(rows: rows, hidden: hidden, toggle: toggle)
+    }
+
+    // MARK: - Sections
+
+    /// Recent is drawn when there is a local branch and the filter narrows nothing: while
+    /// filtering, the matching branches are in Branches, and a current branch that does not
+    /// match is not shown.
+    static func showsRecent(localBranchCount: Int, query: String) -> Bool {
+        localBranchCount > 0 && !SidebarFilter.isFiltering(query)
+    }
+
+    /// Whether a section shows its rows: the user's own folding, overridden while filtering.
+    static func isExpanded(_ section: SidebarSection, folding: SidebarFolding, query: String) -> Bool {
+        SidebarFilter.isExpanded(stored: !folding.foldedSections.contains(section), query: query)
+    }
+
+    /// Whether a branch folder shows its rows: folded unless the user opened it, open while
+    /// filtering.
+    static func isFolderExpanded(_ prefix: String, folding: SidebarFolding, query: String) -> Bool {
+        SidebarFilter.isExpanded(stored: folding.expandedFolders.contains(prefix), query: query)
+    }
+
+    /// What a section's header counts, unfiltered: local branches, linked worktrees (the main one
+    /// left out), stash entries, configured remotes, tags (not the dimmed deleted ones). Recent
+    /// counts nothing (`SidebarWording.foldedCount` draws none for it).
+    static func headerCount(_ section: SidebarSection, refs: RefCollection, stashCount: Int, worktrees: [Worktree]) -> Int {
+        switch section {
+        case .recent: 0
+        case .branches: refs.localBranches.count
+        case .worktrees: worktrees.filter { !$0.isMain }.count
+        case .stashes: stashCount
+        case .remotes: refs.remotes.count
+        case .tags: refs.tags.count
+        }
+    }
 }

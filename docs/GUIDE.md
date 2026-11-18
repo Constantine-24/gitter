@@ -104,8 +104,12 @@ Everything Gitter does, and how it keeps your work safe. The short version is in
   tooltip — and it never stands in your way: Fetch, Pull and Push stay available while it
   runs, and using one stops it (yours starts once the stopped fetch's git has gone — at once
   for a transport that honours the stop, about 2 s for one that ignores it)
-- **Filter** the sidebar (⌘F): branches, remote branches and tags narrowed as you type, every
-  word matching, case and accents ignored (see "Navigation" below)
+- **Recent branches** at the top of the sidebar: the branch you are on, then the ones you switched
+  to last, five at most; local branches grouped into folders by their prefix (`feature/…`); every
+  section folds from its header, remembered for each repository; Stashes shows the newest five
+  with **Show All** (see "Navigation" below)
+- **Filter** the sidebar (⌘F): branches, remote branches, tags and stashes narrowed as you type,
+  every word matching, case and accents ignored (see "Navigation" below)
 - **Compare two branches**: "Compare with "main"" on any branch, or Compare Branches… — the
   commits only on each side with exact counts, and the changes one side brings, exactly as `git
   diff A...B` shows them
@@ -823,13 +827,33 @@ reaches (a stash's) stays selected with a notice saying so. The list stops at 50
 its last row then says so, and a click on a commit further back selects it with a notice — so a
 very large repository never loads everything at once.
 
+**The sidebar.** Under Working Copy, **Recent** lists the branch you are on and then the branches
+you switched to most recently, newest first, five at most — read from the switches git records
+for this worktree (`checkout: moving from … to …` in the HEAD reflog), so a switch made in a
+terminal shows there too; a branch deleted or renamed since is left out, and free places go to
+the branches with the newest commits. **Branches** lists every local branch again, including the
+recent ones: branches whose names share a first part (`feature/…`, `fix/…`) with another branch
+are grouped in a folder named by it, which shows how many it holds and starts folded; inside, a
+row reads the rest of the name (`ui/login`), and its tooltip and VoiceOver give the whole of it.
+A branch's row does the same everywhere: one click selects its commit, a double-click switches,
+and its menu is the same in Recent as in its folder. Every section but Working Copy folds from its
+header's arrow, and a folded header shows how many it
+holds: local branches, linked worktrees, stashes, remotes, tags (not the deleted ones). Which
+sections are folded, which folders are open and which remotes are open is remembered for each
+repository, across launches; it is saved only when you fold or unfold something, never by
+opening. **Stashes** shows the newest five, then "Show All 23 Stashes" (and "Show Fewer Stashes"
+after it); the stash you selected stays listed even when it is older. Show All is for this window
+until another repository opens.
+
 **Filter.** ⌘F (Edit › Filter Sidebar) puts the cursor in the field at the top of the sidebar.
-Local branches, remote branches and tags narrow as you type: every word you type must appear,
-case and accents ignored (`cafe` finds `Café-menu`), and a remote branch matches as
-`origin/name` too. A remote shows only with a match and opens while you filter; clear the field
-and each remote is as you left it. An empty section says "No matches", VoiceOver hears the count,
-and Working Copy, Worktrees and Stashes are never filtered. The text survives a refresh and is
-cleared when another repository opens.
+Local branches, remote branches, tags and stashes narrow as you type: every word you type must
+appear, case and accents ignored (`cafe` finds `Café-menu`), a remote branch matches as
+`origin/name` too, and a stash by the title its row shows or the branch it was made on. While you
+filter, Recent is hidden and every section, folder and remote is shown open, with every matching
+stash past the five; a click on a section's or a folder's arrow meanwhile changes nothing, and once
+the field is cleared everything is folded as you left it. A remote shows only with a match. An
+empty section says "No matches", VoiceOver hears the count, and Working Copy and Worktrees are
+never filtered. The text survives a refresh and is cleared when another repository opens.
 
 **Compare.** "Compare with "main"" on any local or remote branch's menu compares the branch you
 are on (A) with that one (B); **Compare Branches…** (that menu, and the Repository menu) picks
@@ -920,7 +944,8 @@ own.
 window restoration is off, so no killed launch can leave saved state that restores no window. A
 Finder open at launch comes first, then the list. Closing a window takes its repository off the
 list, except while the app is quitting, so the list survives a quit. A path that no longer opens is
-dropped. Window frames and sidebar state are not kept across launches. With System Settings ›
+dropped. Window frames are not kept across launches; the sidebar's folding is, for each
+repository (see "The sidebar" above). With System Settings ›
 Desktop & Dock › "Close windows when quitting an application" off, macOS relaunches Gitter with
 no window at all, every time; Gitter then asks for one itself, the way a click on its Dock icon
 does, and the reopen list goes on from there (`gitter.log` has `launch: no window, asking for

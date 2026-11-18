@@ -10,6 +10,18 @@ enum SidebarSection: String, Codable, CaseIterable, Sendable {
 enum SidebarWording {
     static let recent = "Recent"
 
+    /// Each section's header title.
+    static func title(_ section: SidebarSection) -> String {
+        switch section {
+        case .recent: recent
+        case .branches: "Branches"
+        case .worktrees: WorktreeWording.sectionTitle
+        case .stashes: "Stashes"
+        case .remotes: "Remotes"
+        case .tags: "Tags"
+        }
+    }
+
     static func showAllStashes(_ n: Int) -> String { "Show All \(n) Stashes" }
 
     static let showFewerStashes = "Show Fewer Stashes"

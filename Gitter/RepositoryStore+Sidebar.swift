@@ -9,6 +9,29 @@ extension RepositoryStore {
         SidebarLayout.recent(localBranches, activity: branchActivity)
     }
 
+    /// The stash the detail pane shows, which Stashes keeps on screen past its limit.
+    var selectedStashSHA: String? {
+        if case .stash(let sha) = selection { sha } else { nil }
+    }
+
+    /// What Stashes draws now: the rows, how many are left out, and its Show All / Show Fewer row.
+    func stashList(_ rows: SidebarFilter.Rows) -> SidebarLayout.StashList {
+        SidebarLayout.stashList(
+            stashes, matching: rows.stashes, isFiltering: rows.isFiltering, showAll: showsAllStashes,
+            selected: selectedStashSHA)
+    }
+
+    /// The count a section's header shows once folded (`SidebarLayout.headerCount`).
+    func sidebarHeaderCount(_ section: SidebarSection) -> Int {
+        SidebarLayout.headerCount(
+            section, refs: snapshot?.refs ?? .empty, stashCount: stashes.count, worktrees: worktrees)
+    }
+
+    /// Whether `section` shows its rows now: the user's folding, or open while filtering.
+    func sidebarShows(_ section: SidebarSection) -> Bool {
+        SidebarLayout.isExpanded(section, folding: sidebarFolding, query: sidebarFilter)
+    }
+
     func setSection(_ section: SidebarSection, folded: Bool) {
         changeFolding {
             if folded { $0.foldedSections.insert(section) } else { $0.foldedSections.remove(section) }
