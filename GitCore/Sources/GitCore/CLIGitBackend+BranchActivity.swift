@@ -16,8 +16,7 @@ extension CLIGitBackend {
         return BranchActivity(switchTargets: try await switches, tipDates: try await dates)
     }
 
-    /// The `--` ends the revisions: without it a file named `HEAD` in the worktree makes git
-    /// refuse with "ambiguous argument" (measured, exit 128).
+    /// The `--` ends the revisions (why: `GitBackend.branchActivity(at:)`).
     private func reflogSwitchTargets(at root: URL) async throws -> [String] {
         do {
             let data = try await run(

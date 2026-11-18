@@ -152,7 +152,8 @@ bounded flush with a writer stuck on a hung write, and the About panel's version
 line, with a check that `Acknowledgements.txt` is in the app's Resources.
 Under a test host the app reopens no repository, starts no automatic fetch and adds nothing to
 Open Recent, and keeps no list of open repositories (`TestHost`). Every test's store keeps its settings in a scratch defaults suite of
-its own, named by a path inside its own temporary folder and removed with it (`makeTestStore`),
+its own, named by a path inside its own temporary folder and removed with it (`makeTestStore`, or
+`makeTestStore(on:)` for a test that reads that suite's domain by name),
 so a run never touches the repository you last had open or the app's real `dev.penzin.Gitter`
 defaults, and leaves nothing in `~/Library/Preferences`; `DefaultsIsolationTests` reads the real
 domain before and after each of its tests, never writing it, and tests the reopen and Open
@@ -312,7 +313,7 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   final review probed; and three pins of what is still kept: an scp-form password with a parenthesis
   in git's words, and a password with an unencoded `/` in two URLs.
 
-`GitterTests` reports **fifty-eight known issues** of its own, as deliberate. The list below accounts for fifty of them; eight are not yet itemized (the run reports controls in `StashAndContinueFlowTests`, `QuitFlowTests`, `StayingNoticeFlowTests` and `GitterTestIsolationTests` that it does not name, and more in `TestBackendTests` and the scratch-git helpers' suite than it counts). `WorktreeHeldSwitchTests`
+`GitterTests` reports **fifty-eight known issues** of its own, as deliberate. The list below accounts for fifty of them; eight are not yet itemized. `WorktreeHeldSwitchTests`
 shows that the operation gate alone lets a branch another worktree holds through, which is why
 the switch asks about the hold first. Three come from `DefaultsIsolationTests`: the check that
 the real defaults are unchanged fails when a store writes the domain it watches (a scratch
