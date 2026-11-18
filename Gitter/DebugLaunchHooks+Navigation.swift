@@ -650,7 +650,7 @@
 
         private static func logSidebar(_ store: RepositoryStore) {
             let refs = store.snapshot?.refs ?? .empty
-            let rows = SidebarFilter.rows(refs, deletedTags: store.deletedTags.receipts, query: store.sidebarFilter)
+            let rows = SidebarFilter.rows(refs, stashes: store.stashes, deletedTags: store.deletedTags.receipts, query: store.sidebarFilter)
             log("sidebar filter: \"\(store.sidebarFilter)\" | filtering: \(rows.isFiltering) | matches: \(rows.matchCount) "
                 + "| voiceover: \(rows.isFiltering ? SidebarFilter.announcement(matches: rows.matchCount) : "(none)")")
             if rows.showsBranches {

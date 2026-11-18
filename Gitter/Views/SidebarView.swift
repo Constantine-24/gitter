@@ -26,7 +26,7 @@ struct SidebarView: View {
     private var refs: RefCollection { store.snapshot?.refs ?? .empty }
 
     var body: some View {
-        let rows = SidebarFilter.rows(refs, deletedTags: store.deletedTags.receipts, query: store.sidebarFilter)
+        let rows = SidebarFilter.rows(refs, stashes: store.stashes, deletedTags: store.deletedTags.receipts, query: store.sidebarFilter)
         List {
             Section("Working Copy") {
                 Button {

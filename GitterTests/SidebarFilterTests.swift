@@ -1,3 +1,4 @@
+import Foundation
 import GitCore
 import Testing
 
@@ -92,7 +93,7 @@ import Testing
     // MARK: - rows
 
     @Test func notFilteringShowsEverythingAsBefore() {
-        let rows = SidebarFilter.rows(Self.refs, deletedTags: [], query: " ")
+        let rows = SidebarFilter.rows(Self.refs, stashes: [], deletedTags: [], query: " ")
         #expect(!rows.isFiltering)
         #expect(rows.localBranches.map(\.name) == Self.refs.localBranches.map(\.name))
         // Every configured remote keeps its group, the empty one too.
@@ -104,7 +105,7 @@ import Testing
 
     /// A remote group shows only with a match; a section with none says "No matches".
     @Test func filteringNarrowsEverySectionButKeepsThem() {
-        let rows = SidebarFilter.rows(Self.refs, deletedTags: [], query: "login")
+        let rows = SidebarFilter.rows(Self.refs, stashes: [], deletedTags: [], query: "login")
         #expect(rows.isFiltering)
         #expect(rows.localBranches.map(\.name) == ["feature/login"])
         #expect(rows.remoteGroups.map(\.remote.name) == ["origin"])
@@ -119,7 +120,7 @@ import Testing
     }
 
     @Test func theRemotesNameFindsItsBranchesAndOnlyThem() {
-        let rows = SidebarFilter.rows(Self.refs, deletedTags: [], query: "fork/")
+        let rows = SidebarFilter.rows(Self.refs, stashes: [], deletedTags: [], query: "fork/")
         #expect(rows.localBranches.isEmpty)
         #expect(rows.branchesHaveNoMatches)
         #expect(rows.remoteGroups.map(\.remote.name) == ["fork"])
@@ -129,7 +130,7 @@ import Testing
 
     /// A ref no configured remote claims is matched by its whole name.
     @Test func theOtherGroupMatchesByItsWholeName() {
-        let rows = SidebarFilter.rows(Self.refs, deletedTags: [], query: "stray/left")
+        let rows = SidebarFilter.rows(Self.refs, stashes: [], deletedTags: [], query: "stray/left")
         #expect(rows.otherBranches.map(\.name) == ["stray/leftover"])
         #expect(rows.remoteGroups.isEmpty)
         #expect(!rows.remotesHaveNoMatches)
@@ -138,10 +139,10 @@ import Testing
     @Test func tagsAndDeletedTagsAreFiltered() {
         let receipt = TagReceipt(name: "v0.9-old", objectID: Self.sha, target: Self.sha)
         let other = TagReceipt(name: "nightly", objectID: Self.sha, target: Self.sha)
-        let rows = SidebarFilter.rows(Self.refs, deletedTags: [receipt, other], query: "V")
+        let rows = SidebarFilter.rows(Self.refs, stashes: [], deletedTags: [receipt, other], query: "V")
         #expect(rows.tags.map(\.name) == ["v1.0"])
         #expect(rows.deletedTags == [receipt])
-        let none = SidebarFilter.rows(Self.refs, deletedTags: [receipt], query: "zzz")
+        let none = SidebarFilter.rows(Self.refs, stashes: [], deletedTags: [receipt], query: "zzz")
         #expect(none.tagsHaveNoMatches && none.branchesHaveNoMatches && none.remotesHaveNoMatches)
         #expect(none.matchCount == 0)
     }
@@ -149,11 +150,59 @@ import Testing
     /// A section that has nothing to filter is not drawn at all, as before.
     @Test func aSectionWithNothingInItStaysHidden() {
         let bare = RefCollection(localBranches: [Self.local("main")], remoteBranches: [], tags: [], remotes: [])
-        let rows = SidebarFilter.rows(bare, deletedTags: [], query: "x")
+        let rows = SidebarFilter.rows(bare, stashes: [], deletedTags: [], query: "x")
         #expect(rows.showsBranches)
         #expect(!rows.showsRemotes)
         #expect(!rows.showsTags)
         #expect(!rows.remotesHaveNoMatches && !rows.tagsHaveNoMatches)
+    }
+
+    // MARK: - stashes
+
+    static func stash(_ index: Int, _ subject: String) -> Stash {
+        Stash(sha: String(format: "%040x", index + 1), index: index, reflogSubject: subject, parents: [],
+              date: Date(timeIntervalSince1970: 0))
+    }
+
+    static let stashList = [
+        stash(0, "On main: tidy the header"),
+        stash(1, "On feature/login: half a form"),
+        stash(2, "WIP on fix-ünï: 2153ff9 root"),
+    ]
+
+    @Test func stashesMatchOnTitleAndBranch() {
+        let byTitle = SidebarFilter.rows(Self.refs, stashes: Self.stashList, deletedTags: [], query: "header")
+        #expect(byTitle.stashes.map(\.index) == [0])
+        let byBranch = SidebarFilter.rows(Self.refs, stashes: Self.stashList, deletedTags: [], query: "feature/login")
+        #expect(byBranch.stashes.map(\.index) == [1])
+        let both = SidebarFilter.rows(Self.refs, stashes: Self.stashList, deletedTags: [], query: "UNI")
+        #expect(both.stashes.map(\.index) == [2])
+        let all = SidebarFilter.rows(Self.refs, stashes: Self.stashList, deletedTags: [], query: "")
+        #expect(all.stashes.count == 3 && all.showsStashes && !all.stashesHaveNoMatches)
+    }
+
+    @Test func stashMatchesCountTowardTheAnnouncement() {
+        let rows = SidebarFilter.rows(Self.refs, stashes: Self.stashList, deletedTags: [], query: "main")
+        // local main, origin/main, and the stash made on main.
+        #expect(rows.matchCount == 3)
+        #expect(rows.stashes.map(\.index) == [0])
+    }
+
+    @Test func aStashOnlyMatchLeavesNoMatchesElsewhere() {
+        let rows = SidebarFilter.rows(Self.refs, stashes: Self.stashList, deletedTags: [], query: "header")
+        #expect(rows.branchesHaveNoMatches && rows.tagsHaveNoMatches && rows.remotesHaveNoMatches)
+        #expect(!rows.stashesHaveNoMatches)
+        #expect(rows.matchCount == 1)
+        let none = SidebarFilter.rows(Self.refs, stashes: Self.stashList, deletedTags: [], query: "zzz")
+        #expect(none.stashesHaveNoMatches)
+        let noStashes = SidebarFilter.rows(Self.refs, stashes: [], deletedTags: [], query: "zzz")
+        #expect(!noStashes.showsStashes && !noStashes.stashesHaveNoMatches)
+    }
+
+    @Test func filteringForcesEverythingOpenWithoutWriting() {
+        #expect(SidebarFilter.isExpanded(stored: false, query: "x"))
+        #expect(!SidebarFilter.isExpanded(stored: false, query: "  "))
+        #expect(SidebarFilter.isExpanded(stored: true, query: ""))
     }
 
     // MARK: - expansion, wording

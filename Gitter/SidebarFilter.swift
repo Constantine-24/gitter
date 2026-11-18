@@ -2,7 +2,7 @@ import Foundation
 import GitCore
 
 /// The sidebar's filter (B3): the field at the top of the sidebar (⌘F) narrows local branches,
-/// remote branches and tags as you type. Working Copy, Stashes and Worktrees are not filtered.
+/// remote branches, tags and stashes as you type. Working Copy and Worktrees are not filtered.
 ///
 /// The rule is `matches`: case- and diacritic-insensitive substring matching, where every
 /// whitespace-separated word of the query must match. A remote branch also matches as
@@ -61,25 +61,29 @@ enum SidebarFilter {
         let otherBranches: [Branch]
         let tags: [Tag]
         let deletedTags: [TagReceipt]
+        /// The stashes that match; all of them, whatever `SidebarLayout.stashLimit` says.
+        let stashes: [Stash]
         let isFiltering: Bool
         let showsBranches: Bool
         let showsRemotes: Bool
         let showsTags: Bool
+        let showsStashes: Bool
 
         var branchesHaveNoMatches: Bool { isFiltering && showsBranches && localBranches.isEmpty }
         var remotesHaveNoMatches: Bool {
             isFiltering && showsRemotes && remoteGroups.isEmpty && otherBranches.isEmpty
         }
+        var stashesHaveNoMatches: Bool { isFiltering && showsStashes && stashes.isEmpty }
         var tagsHaveNoMatches: Bool { isFiltering && showsTags && tags.isEmpty && deletedTags.isEmpty }
 
         /// Every ref row left: what VoiceOver announces.
         var matchCount: Int {
             localBranches.count + remoteGroups.reduce(0) { $0 + $1.branches.count } + otherBranches.count
-                + tags.count + deletedTags.count
+                + tags.count + deletedTags.count + stashes.count
         }
     }
 
-    static func rows(_ refs: RefCollection, deletedTags: [TagReceipt], query: String) -> Rows {
+    static func rows(_ refs: RefCollection, stashes: [Stash], deletedTags: [TagReceipt], query: String) -> Rows {
         let filtering = isFiltering(query)
         let groups = refs.remotes.compactMap { remote -> RemoteGroup? in
             let branches = refs.branches(of: remote).filter {
@@ -94,10 +98,15 @@ enum SidebarFilter {
             otherBranches: refs.branchesWithoutRemote.filter { matches($0.name, remote: nil, query: query) },
             tags: refs.tags.filter { matches($0.name, remote: nil, query: query) },
             deletedTags: deletedTags.filter { matches($0.name, remote: nil, query: query) },
+            stashes: stashes.filter { stash in
+                matches(StashWording.title(stash), remote: nil, query: query)
+                    || stash.branch.map { matches($0, remote: nil, query: query) } == true
+            },
             isFiltering: filtering,
             showsBranches: !refs.localBranches.isEmpty,
             showsRemotes: !refs.remotes.isEmpty || !refs.branchesWithoutRemote.isEmpty,
-            showsTags: !refs.tags.isEmpty || !deletedTags.isEmpty)
+            showsTags: !refs.tags.isEmpty || !deletedTags.isEmpty,
+            showsStashes: !stashes.isEmpty)
     }
 
     // MARK: - Words
