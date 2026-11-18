@@ -270,7 +270,7 @@ extension RepositoryStore {
 
     /// `path` with its links followed as `realpath(3)` follows them — `/var` is `/private/var`,
     /// as git prints it — or as it is when it cannot be resolved.
-    nonisolated private static func realPath(_ path: String) -> String {
+    nonisolated static func realPath(_ path: String) -> String {
         guard let resolved = realpath(path, nil) else { return path }
         defer { free(resolved) }
         return String(cString: resolved)

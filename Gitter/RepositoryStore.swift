@@ -357,6 +357,20 @@ final class RepositoryStore {
     /// never persisted.
     var sidebarFilter = ""
 
+    /// What Recent is built from (N1): `.none` until a snapshot's side read lands, and again after
+    /// `open()`. Written with the snapshot so Recent and the refs describe the same moment.
+    private(set) var branchActivity = BranchActivity.none
+
+    /// Which sidebar sections, folders and remote groups are folded in this repository (N1).
+    /// Loaded by `open()`, which never writes it; the setters in `+Sidebar` do.
+    private(set) var sidebarFolding = SidebarFolding()
+
+    /// Whether Stashes lists every entry rather than the newest few. View state, not persisted.
+    var showsAllStashes = false
+
+    func setBranchActivity(_ activity: BranchActivity) { branchActivity = activity }
+    func replaceSidebarFolding(_ folding: SidebarFolding) { sidebarFolding = folding }
+
     /// Whether this store's window is wide enough for the toolbar's running item to draw its
     /// progress line (`RemoteActivityItem.showsProgressLine(windowWidth:)`, B4 fix 7). Layout,
     /// hosted here because the toolbar items already read the store and a toolbar item's own
@@ -666,6 +680,9 @@ final class RepositoryStore {
         // The filter was typed for the repository being left (B3 Ruling 2), and its worktrees
         // are not this one's.
         sidebarFilter = ""
+        branchActivity = .none
+        showsAllStashes = false
+        sidebarFolding = SidebarFolding.load(from: defaults, root: standardized)
         worktreeState = WorktreeState()
         // A worktree read in flight is the repository being left's (B3 final review, I2).
         worktreeReadTask?.cancel()

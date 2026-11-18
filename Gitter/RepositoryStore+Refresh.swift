@@ -154,8 +154,13 @@ extension RepositoryStore {
                 newSnapshot.status.operationInProgress == nil ? (try? await backend.haltedSequence(at: root)) ?? nil : nil
             // The repository may have been switched (via `open`) while this snapshot was in
             // flight; a snapshot from before that must never overwrite the new state.
+            // Recent's input, a side read like the halted sequence and never part of the
+            // snapshot: a failed read leaves `.none`, Recent falls back to name order and the
+            // refresh carries on (N1). Read after the snapshot, so the call log keeps its order.
+            let newActivity = (try? await backend.branchActivity(at: root)) ?? BranchActivity.none
             guard generation == capturedGeneration else { return }
             setSnapshot(newSnapshot)
+            setBranchActivity(newActivity)
             // The worktrees after the snapshot, in their own read, never awaited here (B3 final
             // review, I2): the state before stays until it lands. Never a failure (Task 3).
             scheduleWorktreeStateRead()
