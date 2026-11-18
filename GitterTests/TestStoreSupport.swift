@@ -62,10 +62,19 @@ struct ScratchDefaults {
 func makeTestStore(
     backend: RepositoryStore.Backend = CLIGitBackend(), eventLog: EventLog = .none
 ) -> (RepositoryStore, UserDefaults, cleanup: () -> Void) {
-    precondition(TestGitEnvironment.isolated)
     let scratch = ScratchDefaults()
-    let store = RepositoryStore(backend: backend, defaults: scratch.defaults, eventLog: eventLog)
+    let store = makeTestStore(on: scratch, backend: backend, eventLog: eventLog)
     return (store, scratch.defaults, { scratch.remove() })
+}
+
+/// `makeTestStore` on a suite the test made and removes itself, for a test that reads the suite's
+/// own domain by name (`DefaultsDomainSnapshot.read(scratch.suiteName)`).
+@MainActor
+func makeTestStore(
+    on scratch: ScratchDefaults, backend: RepositoryStore.Backend = CLIGitBackend(), eventLog: EventLog = .none
+) -> RepositoryStore {
+    precondition(TestGitEnvironment.isolated)
+    return RepositoryStore(backend: backend, defaults: scratch.defaults, eventLog: eventLog)
 }
 
 /// What one defaults domain holds, read and never written: `persistentDomain(forName:)`, which

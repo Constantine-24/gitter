@@ -95,9 +95,7 @@ import Testing
         #expect(activity.switchTargets.first == "feature")
     }
 
-    /// Measured (git 2.54, `LC_ALL=C`): `reflog show … HEAD --` in a repository with no commit
-    /// is `fatal: bad revision 'HEAD'`, exit 128 (the `reflog` form without a revision says
-    /// "does not have any commits yet").
+    /// An unborn HEAD (no commit yet) reads as no switches; see `GitBackend.branchActivity`.
     @Test func anEmptyRepositoryHasNoSwitches() async throws {
         let repo = try await TestRepo.makeEmpty()
         defer { repo.cleanUp() }
@@ -107,12 +105,40 @@ import Testing
         #expect(activity == .none)
     }
 
-    /// Positive control: a failure that is not the empty-repository one still throws.
+    /// `switch --orphan` leaves HEAD unborn on a new name while the other branches keep their
+    /// commits: no switches are read, and every existing branch's tip date still is.
+    @Test func anOrphanHEADKeepsTheTipDates() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try await repo.commit("a.txt", "one", "root")
+        try await repo.git(["branch", "x"])
+        try await repo.git(["switch", "-q", "x"])
+        try await repo.git(["switch", "-q", "--orphan", "o"])
+
+        let activity = try await backend.branchActivity(at: repo.root)
+
+        #expect(activity.switchTargets == [])
+        #expect(Set(activity.tipDates.keys) == ["main", "x"])
+    }
+
+    /// Positive control: a reflog failure that is not the unborn one still throws, with git's
+    /// own words. A detached HEAD naming an object that does not exist (measured, git 2.54): the
+    /// reflog read exits 128 with `fatal: bad object HEAD`, while the tip-date read of
+    /// `refs/heads` still exits 0 — so the throw is the reflog clause's, reached through git.
     @Test func anyOtherFailureThrows() async throws {
-        let missing = FileManager.default.temporaryDirectory
-            .appendingPathComponent("gitter-no-such-\(UUID().uuidString)")
-        await #expect(throws: (any Error).self) {
-            _ = try await backend.branchActivity(at: missing)
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try await repo.commit("a.txt", "one", "root")
+        try repo.write(".git/HEAD", String(repeating: "1", count: 40) + "\n")
+
+        do {
+            _ = try await backend.branchActivity(at: repo.root)
+            Issue.record("expected a throw, but activity came back")
+        } catch GitError.commandFailed(let exitCode, let stderr) {
+            #expect(exitCode == 128)
+            #expect(stderr.contains("bad object"), "\(stderr)")
+        } catch {
+            Issue.record("expected GitError.commandFailed, got \(error)")
         }
     }
 

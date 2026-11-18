@@ -837,11 +837,11 @@ are grouped in a folder named by it, which shows how many it holds and starts fo
 row reads the rest of the name (`ui/login`), and its tooltip and VoiceOver give the whole of it.
 A branch's row does the same everywhere: one click selects its commit, a double-click switches,
 and its menu is the same in Recent as in its folder. Every section but Working Copy folds from its
-header's arrow, and a folded header shows how many it
-holds: local branches, linked worktrees, stashes, remotes, tags (not the deleted ones). Which
-sections are folded, which folders are open and which remotes are open is remembered for each
-repository, across launches; it is saved only when you fold or unfold something, never by
-opening. **Stashes** shows the newest five, then "Show All 23 Stashes" (and "Show Fewer Stashes"
+header's arrow, and a folded header (except Recent's) shows how many it holds: local branches,
+linked worktrees, stashes, remotes (with "Other" counted as one when it is there), tags (not the
+deleted ones). Which sections are folded, which folders are open and which remotes are open is
+remembered for each repository, across launches; it is saved only when you fold or unfold
+something, never by opening. **Stashes** shows the newest five, then "Show All 23 Stashes" (and "Show Fewer Stashes"
 after it); the stash you selected stays listed even when it is older. Show All is for this window
 until another repository opens.
 

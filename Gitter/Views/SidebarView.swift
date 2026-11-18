@@ -15,23 +15,21 @@ import SwiftUI
 /// (`SidebarLayout.tree`) that start folded. A branch in Recent and the same branch in its folder
 /// are one row view (`localBranchRow`) — same menu, same double-click — under distinct ids
 /// (`recent:<name>`, `branch:<name>`, `folder:<prefix>`), so the list never merges them. Every
-/// section but Working Copy folds from its header, which then shows a count; the folding, each
-/// folder's and each remote group's expansion are the store's (`sidebarFolding`), kept per
-/// repository and written only by a click (`setSection`, `setFolder`, `setRemote`).
+/// section but Working Copy folds from its header, which then shows a count (except Recent); the
+/// folding, each folder's and each remote group's expansion are the store's (`sidebarFolding`),
+/// kept per repository and written only by a click (`setSection`, `setFolder`, `setRemote`).
 ///
 /// The filter field (B3, `.searchable` on this column, ⌘F) narrows local branches, remote
 /// branches, tags and stashes (`SidebarFilter.rows`); Working Copy and Worktrees are not
 /// filtered. While it narrows anything, Recent is hidden and every section, folder and remote
 /// group is shown open — the user's own folding is kept by the store and comes back when the
 /// filter is cleared, and a disclosure click meanwhile changes nothing — a section left empty
-/// says "No matches", and VoiceOver announces how many refs match.
+/// says "No matches", and VoiceOver announces how many rows match.
 struct SidebarView: View {
     @Environment(RepositoryStore.self) private var store
 
-    private var refs: RefCollection { store.snapshot?.refs ?? .empty }
-
     var body: some View {
-        let rows = SidebarFilter.rows(refs, stashes: store.stashes, deletedTags: store.deletedTags.receipts, query: store.sidebarFilter)
+        let rows = store.sidebarRows
         List {
             Section("Working Copy") {
                 Button {
@@ -51,7 +49,7 @@ struct SidebarView: View {
                 .buttonStyle(.plain)
             }
 
-            if SidebarLayout.showsRecent(localBranchCount: refs.localBranches.count, query: store.sidebarFilter) {
+            if store.sidebarShowsRecent {
                 Section(isExpanded: SidebarSectionHeader.expansion(.recent, store: store)) {
                     ForEach(store.recentBranches) { branch in
                         localBranchRow(branch, title: branch.name)
@@ -82,7 +80,7 @@ struct SidebarView: View {
                         localBranchRow(branch, title: branch.name)
                             .id("branch:" + branch.name)
                     }
-                    if rows.branchesHaveNoMatches { noMatches }
+                    if rows.branchesHaveNoMatches { SidebarNoMatchesRow() }
                 } header: {
                     SidebarSectionHeader(section: .branches)
                 }
@@ -119,7 +117,7 @@ struct SidebarView: View {
                             }
                         }
                     }
-                    if rows.remotesHaveNoMatches { noMatches }
+                    if rows.remotesHaveNoMatches { SidebarNoMatchesRow() }
                 } header: {
                     SidebarSectionHeader(section: .remotes)
                 }
@@ -162,7 +160,7 @@ struct SidebarView: View {
                             Button(TagWording.restoreMenuTitle) { store.restoreTags([receipt]) }
                         }
                     }
-                    if rows.tagsHaveNoMatches { noMatches }
+                    if rows.tagsHaveNoMatches { SidebarNoMatchesRow() }
                 } header: {
                     SidebarSectionHeader(section: .tags)
                 }
@@ -176,16 +174,11 @@ struct SidebarView: View {
         }
     }
 
-    private var noMatches: some View {
-        Text(SidebarFilter.noMatches)
-            .foregroundStyle(.secondary)
-    }
-
     /// A branch folder's expansion: folded until the user opens it, open while filtering. The
     /// store ignores a click while filtering, so the user's choice is what the cleared filter shows.
     private func folderExpansion(_ prefix: String) -> Binding<Bool> {
         Binding(
-            get: { SidebarLayout.isFolderExpanded(prefix, folding: store.sidebarFolding, query: store.sidebarFilter) },
+            get: { store.sidebarShowsFolder(prefix) },
             set: { store.setFolder(prefix, expanded: $0) })
     }
 
@@ -193,16 +186,13 @@ struct SidebarView: View {
     /// per repository by the store (which ignores a click while filtering).
     private func expansion(of remote: String) -> Binding<Bool> {
         Binding(
-            get: {
-                SidebarFilter.isExpanded(
-                    stored: store.sidebarFolding.expandedRemotes.contains(remote), query: store.sidebarFilter)
-            },
+            get: { store.sidebarShowsRemote(remote) },
             set: { store.setRemote(remote, expanded: $0) })
     }
 
     private var otherExpansion: Binding<Bool> {
         Binding(
-            get: { SidebarFilter.isExpanded(stored: store.sidebarFolding.otherExpanded, query: store.sidebarFilter) },
+            get: { store.sidebarShowsOther },
             set: { store.setOtherExpanded($0) })
     }
 
@@ -294,9 +284,7 @@ struct SidebarSectionHeader: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(SidebarWording.title(section))
-            if !store.sidebarShows(section),
-                let count = SidebarWording.foldedCount(section, count: store.sidebarHeaderCount(section))
-            {
+            if !store.sidebarShows(section), let count = store.sidebarFoldedCount(section) {
                 Text(count)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -311,6 +299,14 @@ struct SidebarSectionHeader: View {
         Binding(
             get: { store.sidebarShows(section) },
             set: { store.setSection(section, folded: !$0) })
+    }
+}
+
+/// "No matches", in a section the filter left empty: Branches, Stashes, Remotes and Tags.
+struct SidebarNoMatchesRow: View {
+    var body: some View {
+        Text(SidebarFilter.noMatches)
+            .foregroundStyle(.secondary)
     }
 }
 

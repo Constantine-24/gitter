@@ -36,9 +36,10 @@ enum SidebarFilter {
         }
     }
 
-    /// A remote's group is expanded while the filter narrows anything, whatever the user left it
-    /// as: what matched must be seen. `stored` — the user's own choice — is never written over,
-    /// so it is what shows again once the filter is cleared.
+    /// A foldable part of the sidebar — a section, a branch folder, a remote's group — is expanded
+    /// while the filter narrows anything, whatever the user left it as: what matched must be seen.
+    /// `stored` — the user's own choice — is never written over, so it is what shows again once
+    /// the filter is cleared.
     static func isExpanded(stored: Bool, query: String) -> Bool {
         isFiltering(query) || stored
     }
@@ -76,7 +77,7 @@ enum SidebarFilter {
         var stashesHaveNoMatches: Bool { isFiltering && showsStashes && stashes.isEmpty }
         var tagsHaveNoMatches: Bool { isFiltering && showsTags && tags.isEmpty && deletedTags.isEmpty }
 
-        /// Every ref row left: what VoiceOver announces.
+        /// Every row left: what VoiceOver announces.
         var matchCount: Int {
             localBranches.count + remoteGroups.reduce(0) { $0 + $1.branches.count } + otherBranches.count
                 + tags.count + deletedTags.count + stashes.count

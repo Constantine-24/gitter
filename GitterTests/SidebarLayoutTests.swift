@@ -44,11 +44,12 @@ import Testing
     }
 
     @Test func freeSlotsFillByTipDateThenName() {
-        let local = [Self.branch("main", head: true), Self.branch("b"), Self.branch("A"), Self.branch("c"), Self.branch("d")]
+        // "a" before "B" only case-insensitively: a case-sensitive order would put "B" first.
+        let local = [Self.branch("main", head: true), Self.branch("B"), Self.branch("a"), Self.branch("c"), Self.branch("d")]
         let activity = BranchActivity(switchTargets: [], tipDates: [
-            "b": Self.date(5), "A": Self.date(5), "c": Self.date(9), "d": Self.date(1), "main": Self.date(100),
+            "B": Self.date(5), "a": Self.date(5), "c": Self.date(9), "d": Self.date(1), "main": Self.date(100),
         ])
-        #expect(Self.names(SidebarLayout.recent(local, activity: activity)) == ["main", "c", "A", "b", "d"])
+        #expect(Self.names(SidebarLayout.recent(local, activity: activity)) == ["main", "c", "a", "B", "d"])
     }
 
     @Test func neverMoreThanFive() {
@@ -221,8 +222,24 @@ import Testing
         #expect(count(.branches) == 3)
         #expect(count(.worktrees) == 2)
         #expect(count(.stashes) == 7)
-        #expect(count(.remotes) == 1)
+        // origin, and the "Other" group `ghost/x` is in.
+        #expect(count(.remotes) == 2)
         #expect(count(.tags) == 2)
         #expect(count(.recent) == 0)
+    }
+
+    /// The folded Remotes header counts the groups it hides: each configured remote, and "Other"
+    /// when refs no configured remote claims are there — never 0 over a section that is drawn.
+    @Test func remotesCountTheOtherGroup() {
+        func count(_ refs: RefCollection) -> Int {
+            SidebarLayout.headerCount(.remotes, refs: refs, stashCount: 0, worktrees: [])
+        }
+        let otherOnly = RefCollection(
+            localBranches: [Self.branch("main")], remoteBranches: [Self.branch("ghost/x")], tags: [], remotes: [])
+        #expect(count(otherOnly) == 1)
+        let configuredOnly = RefCollection(
+            localBranches: [Self.branch("main")], remoteBranches: [Self.branch("origin/main")], tags: [],
+            remotes: [Remote(name: "origin", fetchURL: "/r", pushURL: nil), Remote(name: "up", fetchURL: "/u", pushURL: nil)])
+        #expect(count(configuredOnly) == 2)
     }
 }

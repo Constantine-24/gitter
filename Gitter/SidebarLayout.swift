@@ -49,8 +49,8 @@ enum SidebarLayout {
     }
 
     /// The prefix is the first path segment; it is a folder when two or more branches share it
-    /// (case-sensitively, as git does). Folders are sorted case-insensitively, then the plain rows
-    /// follow in input order.
+    /// (prefixes compared case-sensitively). Folders are sorted case-insensitively, then the plain
+    /// rows follow in input order.
     static func tree(_ local: [Branch]) -> Tree {
         func prefix(_ branch: Branch) -> String? {
             guard let slash = branch.name.firstIndex(of: "/") else { return nil }
@@ -98,8 +98,8 @@ enum SidebarLayout {
 
     /// While filtering, every match and no toggle (`matching` is `SidebarFilter.Rows.stashes`);
     /// otherwise `stashes(_:showAll:selected:)`, with the toggle whenever there are more entries
-    /// than the limit — keyed off the count, not `hidden`, so six entries with the sixth selected
-    /// (all shown, none hidden) can still be folded back to five.
+    /// than the limit. It is keyed off the count, not `hidden`, because with `showAll` on `hidden`
+    /// is always 0, and Show Fewer must still be offered then.
     static func stashList(
         _ all: [Stash], matching: [Stash], isFiltering: Bool, showAll: Bool, selected: String?
     ) -> StashList {
@@ -134,7 +134,8 @@ enum SidebarLayout {
     }
 
     /// What a section's header counts, unfiltered: local branches, linked worktrees (the main one
-    /// left out), stash entries, configured remotes, tags (not the dimmed deleted ones). Recent
+    /// left out), stash entries, the Remotes groups (each configured remote, plus "Other" when
+    /// refs no configured remote claims are there), tags (not the dimmed deleted ones). Recent
     /// counts nothing (`SidebarWording.foldedCount` draws none for it).
     static func headerCount(_ section: SidebarSection, refs: RefCollection, stashCount: Int, worktrees: [Worktree]) -> Int {
         switch section {
@@ -142,7 +143,7 @@ enum SidebarLayout {
         case .branches: refs.localBranches.count
         case .worktrees: worktrees.filter { !$0.isMain }.count
         case .stashes: stashCount
-        case .remotes: refs.remotes.count
+        case .remotes: refs.remotes.count + (refs.branchesWithoutRemote.isEmpty ? 0 : 1)
         case .tags: refs.tags.count
         }
     }

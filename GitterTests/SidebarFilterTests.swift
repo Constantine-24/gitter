@@ -213,12 +213,6 @@ import Testing
         #expect(!noStashes.showsStashes && !noStashes.stashesHaveNoMatches)
     }
 
-    @Test func filteringForcesEverythingOpen() {
-        #expect(SidebarFilter.isExpanded(stored: false, query: "x"))
-        #expect(!SidebarFilter.isExpanded(stored: false, query: "  "))
-        #expect(SidebarFilter.isExpanded(stored: true, query: ""))
-    }
-
     // MARK: - expansion, wording
 
     /// Expanded while filtering whatever the user left it as; their choice is what shows again
@@ -227,6 +221,7 @@ import Testing
         #expect(SidebarFilter.isExpanded(stored: false, query: "log"))
         #expect(SidebarFilter.isExpanded(stored: true, query: "log"))
         #expect(!SidebarFilter.isExpanded(stored: false, query: ""))
+        #expect(!SidebarFilter.isExpanded(stored: false, query: "  "))
         #expect(SidebarFilter.isExpanded(stored: true, query: "  "))
     }
 

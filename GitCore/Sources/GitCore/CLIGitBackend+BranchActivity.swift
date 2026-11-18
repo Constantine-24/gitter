@@ -1,15 +1,14 @@
 import Foundation
 
-/// The sidebar's Recent input (N1 Task 1). Two reads, run concurrently:
-/// `reflog show -n 2000 --no-show-signature --format=%gs HEAD --` and
-/// `for-each-ref --format=%(refname)%00%(committerdate:unix) --end-of-options refs/heads`.
+/// The sidebar's Recent input (N1 Task 1): the two reads and what each failure means are
+/// documented, with the measurements, on `GitBackend.branchActivity(at:)`.
 extension CLIGitBackend {
 
-    /// Measured (git 2.54, `LC_ALL=C`, scratch repositories): in a repository whose HEAD has no
-    /// commit, the reflog read exits 128 with `fatal: bad revision 'HEAD'` (the `reflog` form
-    /// without a revision says "does not have any commits yet", and is not the one used); that
-    /// is read as no switches. Any other failure throws.
-    private static let emptyRepositoryMessages = ["bad revision 'HEAD'", "does not have any commits yet"]
+    /// The reflog read's failures that mean HEAD does not resolve to a commit yet (see
+    /// `GitBackend.branchActivity(at:)`), read as no switches. "bad revision 'HEAD'" is what this
+    /// command form prints; "does not have any commits yet" (the form without a revision) is kept
+    /// only as a tolerance.
+    private static let unresolvedHEADMessages = ["bad revision 'HEAD'", "does not have any commits yet"]
 
     public func branchActivity(at root: URL) async throws -> BranchActivity {
         async let switches = reflogSwitchTargets(at: root)
@@ -25,7 +24,7 @@ extension CLIGitBackend {
                 ["reflog", "show", "-n", "2000", "--no-show-signature", "--format=%gs", "HEAD", "--"], cwd: root)
             return ReflogSwitchParser.targets(String(decoding: data, as: UTF8.self))
         } catch GitError.commandFailed(let code, let stderr)
-            where code == 128 && Self.emptyRepositoryMessages.contains(where: stderr.contains) {
+            where code == 128 && Self.unresolvedHEADMessages.contains(where: stderr.contains) {
             return []
         }
     }
@@ -37,7 +36,7 @@ extension CLIGitBackend {
             ["for-each-ref", "--format=%(refname)%00%(committerdate:unix)", "--end-of-options", "refs/heads"], cwd: root)
         var dates: [String: Date] = [:]
         let prefix = "refs/heads/"
-        for record in String(decoding: data, as: UTF8.self).components(separatedBy: "\n") where !record.isEmpty {
+        for record in GitLines.split(data) where !record.isEmpty {
             let fields = record.split(separator: "\u{0}", omittingEmptySubsequences: false).map(String.init)
             guard fields.count == 2, fields[0].hasPrefix(prefix), let seconds = TimeInterval(fields[1]) else { continue }
             dates[String(fields[0].dropFirst(prefix.count))] = Date(timeIntervalSince1970: seconds)

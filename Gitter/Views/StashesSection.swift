@@ -6,7 +6,7 @@ import SwiftUI
 /// in the detail pane (`StashDetailView`); right-clicking offers Apply, Pop and Drop Stash….
 ///
 /// N1: it lists the newest five (`SidebarLayout.stashLimit`), then "Show All 8 Stashes" — "Show
-/// Fewer Stashes" once everything shows (`showsAllStashes`, per window, never saved). The selected
+/// Fewer Stashes" once Show All is on (`showsAllStashes`, per window, never saved). The selected
 /// entry stays on screen when it is older. While the filter narrows the sidebar it lists every
 /// entry whose title or branch matches, past the limit, or "No matches". It folds from its header.
 ///
@@ -26,10 +26,7 @@ struct StashesSection: View {
                     row(stash)
                         .contextMenu { StashMenu(stash: stash) }
                 }
-                if rows.stashesHaveNoMatches {
-                    Text(SidebarFilter.noMatches)
-                        .foregroundStyle(.secondary)
-                }
+                if rows.stashesHaveNoMatches { SidebarNoMatchesRow() }
                 if let toggle = list.toggle {
                     Button(toggle) { store.showsAllStashes.toggle() }
                         .buttonStyle(.plain)

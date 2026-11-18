@@ -30,8 +30,10 @@ public protocol GitBackend: Sendable {
     /// - The `--` is required: a file named `HEAD` in the worktree makes the read exit 128,
     ///   "ambiguous argument".
     /// - Each linked worktree has its own HEAD reflog; the read is of the worktree at `root`.
-    /// - A repository whose HEAD has no commit exits 128 with `fatal: bad revision 'HEAD'`, read
-    ///   as no switches (tip dates are still read). Any other failure throws.
+    /// - When HEAD does not resolve — unborn (an empty repository, or after `switch --orphan`)
+    ///   or its branch ref missing — the reflog read exits 128 with `fatal: bad revision 'HEAD'`:
+    ///   read as no switches, and the tip dates are still read. Any other failure throws; a
+    ///   detached HEAD naming a missing object, for one, exits 128 with `fatal: bad object HEAD`.
     /// - `--no-show-signature` keeps `log.showSignature` from adding gpg output to the text.
     func branchActivity(at root: URL) async throws -> BranchActivity
 }

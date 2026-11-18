@@ -3,8 +3,8 @@ import Foundation
 /// What the sidebar's Recent section needs: which branches HEAD was switched to, and how fresh
 /// each local branch's tip is.
 public struct BranchActivity: Sendable, Hashable {
-    /// Switch targets from the HEAD reflog, newest first, deduplicated, as git wrote them (not yet
-    /// checked against existing branches).
+    /// Switch targets from the HEAD reflog, newest first, deduplicated by the parser
+    /// (`ReflogSwitchParser`), as git wrote them (not yet checked against existing branches).
     public let switchTargets: [String]
     /// Committer date of each local branch's tip, by short name.
     public let tipDates: [String: Date]
