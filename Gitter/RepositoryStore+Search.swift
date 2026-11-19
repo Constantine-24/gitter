@@ -67,6 +67,15 @@ struct SearchedHistoryTips: Equatable {
     }
 }
 
+/// What Find Commits (⌥⌘F) does now (spec, "Where it lives"): with search closed it opens it and
+/// puts the keyboard in the field; with a query typed it only focuses the field; with an empty
+/// field it leaves search again.
+enum FindCommitsStep: Equatable {
+    case openAndFocus
+    case focus
+    case leave
+}
+
 /// Commit search (F1): Find Commits opens a bar over the commit list column, and its results take
 /// over the History list the way a comparison does — one at a time with it.
 ///
@@ -92,6 +101,27 @@ extension RepositoryStore {
         if activeSheet != nil { return SearchWording.blockedBySheet }
         if resolverFocus != nil { return SearchWording.blockedInFocusMode }
         return nil
+    }
+
+    /// What the menu item does in the state search is in.
+    var findCommitsStep: FindCommitsStep {
+        guard let state = commitSearch else { return .openAndFocus }
+        return state.search.isEmpty ? .leave : .focus
+    }
+
+    /// The Find Commits menu item. `focusField` puts the keyboard in the bar's field (the window's
+    /// view state, so it is handed in). Does nothing where `searchBlockedReason` says it is off.
+    func findCommits(focusField: () -> Void) {
+        guard searchBlockedReason == nil else { return }
+        switch findCommitsStep {
+        case .openAndFocus:
+            openSearch()
+            focusField()
+        case .focus:
+            focusField()
+        case .leave:
+            leaveSearch()
+        }
     }
 
     // MARK: - Opening and typing
