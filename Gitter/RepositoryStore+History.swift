@@ -172,6 +172,12 @@ extension RepositoryStore {
             for commit in (comparison?.commitsOnlyB ?? []) + (comparison?.commitsOnlyA ?? []) + [detailCommit].compactMap({ $0 }) {
                 others[commit.sha] = commit
             }
+            // A search result can be older than the loaded rows too (F1). Only the unloaded ones
+            // are taken from up to `CommitSearchLimit.rows` results.
+            let wanted = Set(unloaded)
+            for commit in commitSearch?.result?.commits ?? [] where wanted.contains(commit.sha) {
+                others[commit.sha] = commit
+            }
             if unloaded.contains(where: { others[$0]?.isMerge == true }) { return HistoryWording.mergesInSelection }
         }
         return nil

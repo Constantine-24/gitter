@@ -160,8 +160,18 @@ extension RepositoryStore {
             // The repository may have been switched (via `open`) while this snapshot was in
             // flight; a snapshot from before that must never overwrite the new state.
             guard generation == capturedGeneration else { return }
+            let previous = snapshot
             setSnapshot(newSnapshot)
             setBranchActivity(newActivity)
+            // A ref or HEAD moved — a commit, a fetch that brought something, a switch, a commit on
+            // a detached HEAD, which moves no ref (`RefCollection` holds no HEAD) — so the history a
+            // commit search walked has changed (F1). Only started here, never awaited: nothing
+            // inside a chained load may wait on another.
+            if let previous,
+                previous.refs != newSnapshot.refs || previous.status.headSha != newSnapshot.status.headSha
+            {
+                historyChangedUnderSearch()
+            }
             // The worktrees after the snapshot, in their own read, never awaited here (B3 final
             // review, I2): the state before stays until it lands. Never a failure (Task 3).
             scheduleWorktreeStateRead()
