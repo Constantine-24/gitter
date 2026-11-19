@@ -1119,7 +1119,7 @@ follows only the parent a merge kept a path from, so a deleted side branch whose
 dropped (`-s ours`, a conflict resolved to ours, a change undone before merging, a fix also
 cherry-picked) lost its commits; `--full-history` lists them, and a merge, printed once per parent
 it differs from, is kept only when it differs from every parent (Ruling P19). The matches are
-ordered by a `rev-list --exclude=refs/stash --all --topo-order` read beside the log. A query with an
+ordered by a `rev-list --exclude=refs/stash --all --topo-order` read beside the log (`--full-history`'s own order matched History's in 400 random small histories, but that is not proved). A query with an
 interior empty, `.` or `..` segment, or a NUL, finds nothing and git is not run. **Code** is
 `--no-textconv --no-ext-diff --find-renames -i -S<q>` (literal, ASCII case folded because the runner
 sets `LC_ALL=C`, a merge's own changes not searched, no `-n`). The commit the user picked in the

@@ -31,10 +31,12 @@ extension CLIGitBackend {
         case .code:
             matched = LogParser.parse(try await searchRead(arguments, at: root))
         case .file:
-            // History's order (Ruling P6), read beside the log rather than after it.
+            // History's order (Ruling P6), read beside the log rather than after it, and always
+            // awaited: one cancelled at the scope's end would be logged as a cancelled git.
             async let walk = searchRead(["rev-list", "--exclude=refs/stash", "--all", "--topo-order"], at: root)
             let matches = Self.fileMatches(try await searchRead(arguments, at: root))
-            matched = matches.count > 1 ? Self.inHistoryOrder(matches, walk: try await walk) : matches
+            let order = try await walk
+            matched = matches.count > 1 ? Self.inHistoryOrder(matches, walk: order) : matches
         }
         return CommitSearchResult(search: search, commits: Array(matched.prefix(limit)), isCut: matched.count > limit)
     }
@@ -87,9 +89,10 @@ extension CLIGitBackend {
         return LogParser.parse(headers).filter { $0.parents.count < 2 || seen[Data($0.sha.utf8)] == $0.parents.count }
     }
 
-    /// File mode's commits in History's own order. `--full-history` without parent rewriting
-    /// does not list in the order History's walk does, so the matches are ordered by `walk`, one
-    /// `rev-list` over History's walk (Ruling P6). A match the `rev-list` does not have (a ref
+    /// File mode's commits in History's own order, by `walk`, one `rev-list` over History's walk
+    /// (Ruling P6). Default simplification reordered the walk (a `-s ours` merge); with
+    /// `--full-history` the log's own order was a subsequence of History's in every one of 400
+    /// random small histories (measured, F1 final fix wave), which is not a proof, so the sort stays. A match the `rev-list` does not have (a ref
     /// moved between the two reads) goes last, in the log's order; the refresh after that move
     /// searches again.
     static func inHistoryOrder(_ commits: [Commit], walk: Data) -> [Commit] {

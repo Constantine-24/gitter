@@ -260,7 +260,9 @@ import Testing
         let plain = try await repo.git(["log", "--exclude=refs/stash", "--all", "--topo-order", "--format=%s", "--", "f"])
         let gitsOwn = String(decoding: plain, as: UTF8.self).split(separator: "\n").map(String.init)
 
-        // The fixture must really make git's own order differ, or this test proves nothing.
+        // The fixture must really make default simplification's order differ, or this test proves
+        // nothing about a return to it. (The shipped `--full-history` read listed these in
+        // History's order already; the `rev-list` sort is the guard Ruling P6 keeps.)
         #expect(Set(gitsOwn).count == 4 && !Self.isSubsequence(gitsOwn, of: history), "\(gitsOwn) vs \(history)")
 
         let result = try await search(.file, "f", in: repo)

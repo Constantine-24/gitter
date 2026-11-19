@@ -69,8 +69,9 @@ public protocol GitBackend: Sendable {
     ///   them, but also a merge that equals one parent on the path; `--diff-merges=separate`
     ///   prints a merge once per parent it differs from (and `log.diffMerges` would change `-m`),
     ///   so a merge is kept only when it differs from every parent — the evil merge, not the
-    ///   clean one (Ruling P19). `--full-history` does not list in History's order, so the matches
-    ///   are ordered by one `rev-list --exclude=refs/stash --all --topo-order`, read beside the log.
+    ///   clean one (Ruling P19). The matches are ordered by one `rev-list --exclude=refs/stash
+    ///   --all --topo-order`, read beside the log: default simplification reordered the walk, and
+    ///   `--full-history`'s own order, though History's in 400 random small histories, is not proved.
     ///   A query with an interior empty, `.` or `..` segment between slashes is collapsed by git
     ///   into a looser pattern (`a//b` and `a/./b` match as `a/b`; `docs/../` matches every
     ///   path), and one with a NUL cannot be launched: both return an empty result, git not run.
