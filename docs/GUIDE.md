@@ -658,8 +658,8 @@ straight away.
 
 **Find Commits…** (⌥⌘F, in the Edit menu) opens a bar over the
 commit list; type and the list shows the commits that match, in the order History shows them,
-across every branch, tag and remote branch (stashes are left out, as in History). The mode menu
-beside the field chooses what is searched:
+among every commit History shows (stashes are left out, as in History). The mode menu beside the
+field chooses what is searched:
 
 - **Message, Author or ID** (the default). What you type, as one phrase, must appear in the
   commit's message (subject or body) or in the author's name or email; any run of blanks or line
@@ -667,18 +667,25 @@ beside the field chooses what is searched:
   hex characters also match the start of a commit id (a branch named like an id does not get in the
   way). Case is ignored; accents are not.
 - **File.** Commits that changed a path containing what you typed: a fragment of a name
-  (`Sidebar`), a folder (`docs/`) or part of a path (`Views/Sidebar`). Only ASCII case is folded for
-  File and for Code, so `É` does not match `é` there. A merge is listed only when it changed that
-  path compared with each of its parents.
+  (`Sidebar`), a folder (`docs/`) or part of a path (`Views/Sidebar`). Every commit that changed it
+  is listed, including those of a branch whose change a later merge did not keep (merged with
+  `-s ours`, say, or undone before merging), which plain `git log -- <path>` leaves out. A merge is
+  listed only when it changed that path compared with each of its parents. Only ASCII case is
+  folded for File and for Code, so `É` does not match `é` there.
 - **Code.** Commits that added or removed the text you typed in a file's contents (git's `-S`: the
   number of occurrences changed). It is literal, not a pattern, and a merge's own changes are not
   searched. It reads every change in the history, so a rare string in a large repository takes
   seconds.
 
-The status line under the field says how many commits matched (or "No commits match"), "Searching…" with **Stop** while a
-search runs, and "Search stopped" after it. Typing waits a moment, then searches; a new query or a
-mode change replaces the one running. At most 50,000 commits are listed, and the line says "Showing the newest 50,000 matches" when a
-search found more. Searching only reads the repository.
+The status line under the field says how many commits matched (or "No commits match"), and
+"Searching…" with **Stop** while a search runs; Stop ends that search and clears its rows ("Search
+stopped"). Typing waits a moment, then searches; a new query or a mode change replaces the one
+running. At most 50,000 commits are listed, and the line says "Showing the newest 50,000 matches"
+when a search found more. If a search fails, the bar shows git's whole message.
+
+Searching only reads the repository. In a partial clone (one made with `--filter`) it never
+downloads what the clone left out: a search that needs contents the clone lacks, usually a Code
+search, says so instead of fetching them.
 
 Select a result to see its files and diff as in History. Right-click one for History's menu, and a
 single result also offers **Show in History**, which closes the search and scrolls History to that
@@ -686,8 +693,9 @@ commit, loading older commits if it must. **Esc**, the **Close Search** button, 
 empty field leaves the search: a commit you picked among the results stays selected and is
 revealed in History. With an empty field History stays usable under the bar.
 
-If a fetch, a commit or a checkout moves a branch, tag or HEAD while a Message or File search is
-showing, it runs again by itself and keeps its rows until the new ones arrive. A Code search is not
+If a fetch, a commit or a checkout moves anything History's list starts from (a branch, a tag,
+HEAD, another worktree's HEAD, a note or any other ref) while a Message or File search is showing,
+it runs again by itself and keeps its rows until the new ones arrive. A Code search is not
 run again, because it can take seconds: it is marked out of date, with **Search Again**. Find
 Commits is off while a sheet is open and in Resolve Conflicts' focus mode, and a comparison and
 search end each other.

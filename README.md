@@ -139,7 +139,7 @@ used to drive the real app.
 ## Status
 
 Gitter is a personal project in active development (version 0.4.1). Each milestone is listed under
-"Status / roadmap" in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#status--roadmap). Planned next: commit search.
+"Status / roadmap" in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#status--roadmap).
 
 ## License
 
