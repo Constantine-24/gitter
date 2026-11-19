@@ -140,6 +140,45 @@ import Testing
         #expect(summaries(control) == ["base"])
     }
 
+    /// Eight commits that make a pathspec reorder git's walk (found by search over small DAGs):
+    /// default simplification drops the merges' other parents, and `--topo-order` then sorts by
+    /// what is left. `f` changes in every commit but 3 and the merges.
+    private func simplifiedHistory(_ repo: TestRepo) async throws {
+        let commits: [(mark: Int, date: Int, parents: [Int], changesFile: Bool)] = [
+            (1, 1_700_000_010, [], true), (2, 1_600_000_002, [1], true), (3, 1_700_000_030, [1], false),
+            (4, 1_600_000_004, [1], true), (5, 1_700_000_050, [1], true), (6, 1_700_000_060, [3, 4], false),
+            (7, 1_700_000_070, [1, 5], false), (8, 1_700_000_080, [2, 7], false),
+        ]
+        var stream = ""
+        for c in commits {
+            stream += "commit refs/heads/b\(c.mark)\nmark :\(c.mark)\ncommitter T <t@t> \(c.date) +0000\ndata 3\nc\(c.mark)\n"
+            if let first = c.parents.first { stream += "from :\(first)\n" }
+            for other in c.parents.dropFirst() { stream += "merge :\(other)\n" }
+            if c.changesFile { stream += "M 100644 inline f\ndata 3\nv\(c.mark)\n" }
+            stream += "\n"
+        }
+        try await repo.fastImport(stream)
+    }
+
+    @Test func fileResultsKeepHistoryOrderDespiteSimplification() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try await simplifiedHistory(repo)
+        let history = try await backend.snapshot(at: repo.root, historyDepth: 1000).commits.map(\.summary)
+        let plain = try await repo.git(["log", "--exclude=refs/stash", "--all", "--topo-order", "--format=%s", "--", "f"])
+        let gitsOwn = String(decoding: plain, as: UTF8.self).split(separator: "\n").map(String.init)
+
+        // The fixture must really make git's own order differ, or this test proves nothing.
+        #expect(Set(gitsOwn).count == 4 && !Self.isSubsequence(gitsOwn, of: history), "\(gitsOwn) vs \(history)")
+
+        let result = try await search(.file, "f", in: repo)
+
+        #expect(Set(summaries(result)) == Set(gitsOwn), "the match set is git's")
+        #expect(Self.isSubsequence(summaries(result), of: history), "\(summaries(result)) vs \(history)")
+        let cut = try await search(.file, "f", limit: 2, in: repo)
+        #expect(summaries(cut) == Array(summaries(result).prefix(2)) && cut.isCut, "the cut is made after ordering")
+    }
+
     // MARK: - File
 
     @Test func fileModeMatchesFoldersFragmentsAndLiterals() async throws {
@@ -164,6 +203,91 @@ import Testing
         }
     }
 
+
+    @Test func fileModeSurvivesPathspecEnvironmentVariables() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        for path in ["Server/Views/Sidebar.swift", "docs/a/b.md", "weird/a*b[1].txt", "weird/aXb1.txt"] {
+            try await commit(repo, "add \(path)", file: path)
+        }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gitter-search-env-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for variable in ["GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS"] {
+            let script = directory.appendingPathComponent("git-\(variable)")
+            try "#!/bin/sh\nexport \(variable)=1\nexec /usr/bin/git \"$@\"\n".write(to: script, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+            let inherited = CLIGitBackend(gitPath: script.path, runner: isolatedRunner())
+
+            // Control: the variable is in force, and the old single `:(icase)*q*` form fails under it.
+            let old = try await inherited.run(
+                ["log", "--all", "--format=%s", "--", ":(icase)*views*"], cwd: repo.root)
+            #expect(old.isEmpty, "\(variable) must break the old form, or this test proves nothing")
+
+            for (query, expected) in [("views", ["add Server/Views/Sidebar.swift"]), ("r/V", ["add Server/Views/Sidebar.swift"]),
+                                      ("docs/", ["add docs/a/b.md"]), ("a*b[1]", ["add weird/a*b[1].txt"])] {
+                let found = try await inherited.searchCommits(CommitSearch(mode: .file, query: query), limit: 10, at: repo.root)
+                #expect(found.commits.map(\.summary) == expected, "\(variable) \(query): \(found.commits.map(\.summary))")
+            }
+        }
+    }
+
+    @Test func fileQueriesGitWouldNormaliseFindNothingAndRunNoGit() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        for path in ["docs/a/b.md", "a..b.txt", ".MD", "other.txt"] { try await commit(repo, "add \(path)", file: path) }
+        let log = RecordingLog()
+        let logged = CLIGitBackend(runner: isolatedRunner(), commandLog: log)
+
+        for query in ["docs/../", "/../", "/./", "//", "a//b", "b/../b", "a/./b"] {
+            let result = try await logged.searchCommits(CommitSearch(mode: .file, query: query), limit: 10, at: repo.root)
+            #expect(result.commits.isEmpty && !result.isCut, "\(query)")
+        }
+        #expect(log.all.isEmpty, "no git ran for any of them")
+
+        // Controls: dots in names, and a leading or trailing slash, still search.
+        let expected: [(String, [String])] = [
+            ("..", ["add a..b.txt"]), ("a..b", ["add a..b.txt"]), (".MD", ["add .MD", "add docs/a/b.md"]),
+            ("/a", ["add docs/a/b.md"]), ("a/", ["add docs/a/b.md"]), ("a/b", ["add docs/a/b.md"]),
+        ]
+        for (query, summaries) in expected {
+            let result = try await logged.searchCommits(CommitSearch(mode: .file, query: query), limit: 10, at: repo.root)
+            #expect(result.commits.map(\.summary) == summaries, "\(query)")
+        }
+        #expect(log.all.count >= expected.count, "the controls did run git")
+    }
+
+    @Test func aQueryWithNULFindsNothingInEveryModeAndRunsNoGit() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try await commit(repo, "one", file: "a.txt")
+        let log = RecordingLog()
+        let logged = CLIGitBackend(runner: isolatedRunner(), commandLog: log)
+        for mode in CommitSearchMode.allCases {
+            let result = try await logged.searchCommits(CommitSearch(mode: mode, query: "a\u{0}b"), limit: 10, at: repo.root)
+            #expect(result.commits.isEmpty && !result.isCut, "\(mode)")
+        }
+        #expect(log.all.count == 1, "only Message mode reads (it never puts the query in an argument)")
+    }
+
+    @Test func codeModeIsNotChangedByDiffRenames() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try await repo.git(["config", "diff.renames", "false"])
+        try repo.write("f.txt", "line one\nsecretword here\nline three\nfour\nfive\n")
+        try await repo.commitAll("adds the text")
+        try await repo.git(["mv", "f.txt", "g.txt"])
+        try await repo.git(["commit", "-q", "-m", "renames the file"])
+
+        // Control: without the pin, this configuration lists the rename too.
+        let plain = try await repo.git(["log", "--format=%s", "-i", "-S", "secretword"])
+        #expect(String(decoding: plain, as: UTF8.self).contains("renames the file"))
+
+        #expect(summaries(try await search(.code, "secretword", in: repo)) == ["adds the text"])
+    }
+
     // MARK: - Code
 
     @Test func codeModeIgnoresTextconv() async throws {
@@ -176,6 +300,11 @@ import Testing
         try await commit(repo, "adds the text", file: "n.txt")
         try repo.write("n.txt", "a secret here\n")
         try await repo.commitAll("holds the secret")
+
+        // Control: with textconv in force (no `--no-textconv`), the driver does convert, so
+        // `hidden` is found. Without this, a driver that silently did not apply passes below.
+        let withDriver = try await repo.git(["log", "--format=%s", "-S", "hidden"])
+        #expect(String(decoding: withDriver, as: UTF8.self).contains("holds the secret"), "the textconv driver applies")
 
         let raw = try await search(.code, "secret", in: repo)
         let converted = try await search(.code, "hidden", in: repo)

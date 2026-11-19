@@ -49,12 +49,17 @@ public protocol GitBackend: Sendable {
     ///   app (`CommitSearchMatcher`): `--grep` and `--author` combine by AND, `--author` sees the
     ///   mailmapped name where History shows `%an`, and `rev-parse` resolves a branch named like
     ///   an id before the commit.
-    /// - File is `--no-follow -- ':(icase)*<escaped query>*'`: without `glob` magic a `*` crosses
-    ///   `/`, so it matches a fragment, a folder (`docs/`) or `Views/Sidebar`; `*`, `?`, `[` and
-    ///   `\` in the query are escaped. git folds ASCII case only (`LC_ALL=C`). A merge is listed
-    ///   only when it changed the path against every parent (default history simplification).
-    /// - Code is `--no-textconv --no-ext-diff -i -S<query>`: `-S` is literal, `-i` folds ASCII
-    ///   case, a `diff=` textconv driver would otherwise change the searched text, and a merge's
+    /// - File is `--no-follow -- ':(glob,icase)**/*<q>*' ':(glob,icase)**/*<q>*/**'` (`\`, `*`, `?`,
+    ///   `[` and `]` in the query escaped): a fragment, a folder (`docs/`) or `Views/Sidebar`,
+    ///   unchanged by `GIT_GLOB_PATHSPECS` and `GIT_NOGLOB_PATHSPECS`. git folds ASCII case only
+    ///   (`LC_ALL=C`). A merge is listed only when it changed the path against every parent
+    ///   (default history simplification), and that simplification can reorder the walk (a
+    ///   `-s ours` merge), so the matches are put in History's order by one `rev-list --exclude=
+    ///   refs/stash --all --topo-order`. A query with an interior empty, `.` or `..` segment
+    ///   between slashes (`a//b`, `docs/../`) is normalised by git into a pattern matching every
+    ///   path, and one with a NUL cannot be launched: both return an empty result, git not run.
+    /// - Code is `--no-textconv --no-ext-diff --find-renames -i -S<query>`: `-S` is literal, `-i` folds ASCII
+    ///   case, a `diff=` textconv driver would otherwise change the searched text, `diff.renames=false` would make a pure rename show the moved text as added, and a merge's
     ///   own changes are not searched (no `-m`). No `-n`: a rare match walks everything.
     func searchCommits(_ search: CommitSearch, limit: Int, at root: URL) async throws -> CommitSearchResult
 }
