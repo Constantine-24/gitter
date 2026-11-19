@@ -9,8 +9,11 @@ import Testing
 /// focus-mode summaries' read (`isReadingResolverSummaries`), no queued reload, no load-more
 /// (`isLoadingOlderCommits`) and no reveal (`revealTask`, H1 Task 2:
 /// its row read runs before any reload is queued), and the last scheduled reload (`refreshTask`)
-/// has ended — the very task seen before waiting, not one that replaced it meanwhile
-/// (`scheduleRefresh` replaces it, and a wait on the old task returns at once). Polls every 20 ms, with no bound of its own: a hang is the
+/// and the last commit search (`searchTask`, F1 Task 2: a reload that moved a ref starts one)
+/// have ended — the very tasks seen before waiting, not ones that replaced them meanwhile
+/// (`scheduleRefresh` replaces its task, and a wait on the old task returns at once). A search
+/// held by `TestBackend` keeps this waiting until it is released. Polls every 20 ms, with no
+/// bound of its own: a hang is the
 /// test's `.timeLimit`, ending the wait through `CallUnderTest`, which records `neverCameBack`
 /// (E1 pattern); that includes the wait on `refreshTask`, which nothing else can end.
 ///
@@ -31,7 +34,10 @@ func waitUntilIdle(_ store: RepositoryStore, sourceLocation: SourceLocation = #_
             // The reload the watcher scheduled, sleeping out its debounce or running.
             let seen = store.refreshTask
             if let seen { await seen.value }
-            if quiet(), store.refreshTask == seen { return true }
+            // The search a typed query or that reload started, debouncing or reading.
+            let search = store.searchTask
+            if let search { await search.value }
+            if quiet(), store.refreshTask == seen, store.searchTask == search { return true }
         }
         return false
     }

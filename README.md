@@ -38,6 +38,8 @@ hooks and commit signing all work exactly as they do in the terminal.
 - **Navigation.** Your recent branches at the top of the sidebar, the rest in folders by prefix,
   and every section foldable. Filter the sidebar as you type, and compare two branches: the commits
   only on each side, and the changes one would bring.
+- **Find commits.** ⌥⌘F searches every branch by message, author or id, by the files a commit
+  changed, or by the code it added or removed, and shows the matches in History's order.
 - **Several windows.** Open one repository per window. The windows come back at the next launch.
   A quit never cuts off a push that is still running.
 
@@ -137,7 +139,7 @@ used to drive the real app.
 ## Status
 
 Gitter is a personal project in active development (version 0.4.1). Each milestone is listed under
-"Status / roadmap" in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#status--roadmap). Planned next: commit search.
+"Status / roadmap" in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#status--roadmap).
 
 ## License
 

@@ -508,7 +508,8 @@ extension CLIGitBackend: GitWorktreeBackend {
             branch.checkedOutAt.map(isBareRepository) == true ? branch.with(checkedOutAt: nil) : branch
         }
         return RefCollection(
-            localBranches: branches, remoteBranches: refs.remoteBranches, tags: refs.tags, remotes: refs.remotes)
+            localBranches: branches, remoteBranches: refs.remoteBranches, tags: refs.tags, remotes: refs.remotes,
+            walkedRefs: refs.walkedRefs)
     }
 
     private static func isBareRepository(_ path: String) -> Bool {

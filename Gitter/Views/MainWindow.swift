@@ -24,6 +24,10 @@ struct MainWindow: View {
     /// `focusSidebarFilter`).
     @FocusState private var filterFocused: Bool
 
+    /// Bumped by Find Commits (⌥⌘F) to put the keyboard in the search field
+    /// (`\.findCommitsFocusRequest`, read by `SearchListView`).
+    @State private var findCommitsFocusRequest = 0
+
     var body: some View {
         @Bindable var store = store
         Group {
@@ -49,6 +53,8 @@ struct MainWindow: View {
                     BranchSheetHost(sheet: sheet)
                 }
                 .focusedSceneValue(\.focusSidebarFilter, SidebarFilterFocus { filterFocused = true })
+                .focusedSceneValue(\.findCommits, FindCommitsFocus { findCommitsFocusRequest += 1 })
+                .environment(\.findCommitsFocusRequest, findCommitsFocusRequest)
             }
         }
         .overlay(alignment: .top) {
@@ -221,7 +227,14 @@ struct SidebarFilterFocus {
     let focus: @MainActor () -> Void
 }
 
+/// What Find Commits (⌥⌘F) calls to put the keyboard in the search field, once search is open:
+/// published by the window that has a repository open, read by `SidebarFilterCommands`.
+struct FindCommitsFocus {
+    let focus: @MainActor () -> Void
+}
+
 extension FocusedValues {
+    @Entry var findCommits: FindCommitsFocus?
     @Entry var focusSidebarFilter: SidebarFilterFocus?
     /// The front window's store, for the menus (E2 Task 4): published by `RepositoryWindowView`
     /// for an empty window as well, kept while its sheet is up, nil with no window open (M3.3).

@@ -9,6 +9,8 @@ struct CommitListView: View {
     @FocusState private var isFocused: Bool
     /// The comparison list's, drawn over the history in compare mode (`CompareListView`).
     @FocusState private var isCompareFocused: Bool
+    /// The search results', drawn over the history while commit search is open (`SearchListView`).
+    @FocusState private var isSearchFocused: Bool
 
     /// The last selection the table itself made, so the scroll below can skip it.
     ///
@@ -26,15 +28,35 @@ struct CommitListView: View {
         // (measured: 900 → 601, still 601 after Done and after a relaunch; final review I1).
         // Underneath, the history is inert: no clicks, nothing for VoiceOver, and no keyboard
         // (see `.onChange(of: isFocused)` below).
+        //
+        // Commit search (F1) draws its results the same way, once the query is not empty
+        // (`historyIsCovered`); with an empty one the column shows History, live. The bar is an
+        // inset of the column, outside the overlay and always applied (its content comes and
+        // goes), so the pane is never rebuilt and the field keeps the keyboard when the first
+        // letter turns the column into the results. The two are never up together (`openSearch`
+        // ends a comparison, `compare` ends a search).
         let comparing = store.comparison != nil
+        let covered = store.historyIsCovered
         history
-            .disabled(comparing)
-            .allowsHitTesting(!comparing)
-            .accessibilityHidden(comparing)
+            .disabled(covered)
+            .allowsHitTesting(!covered)
+            .accessibilityHidden(covered)
             .overlay {
                 if comparing {
                     CompareListView(isFocused: $isCompareFocused)
                         .background(.background)
+                } else if store.showsSearchResults {
+                    SearchListView(isFocused: $isSearchFocused)
+                        .background(.background)
+                }
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if store.commitSearch != nil {
+                    VStack(spacing: 0) {
+                        SearchBar()
+                        Divider()
+                    }
+                    .background(.background)
                 }
             }
     }
@@ -187,11 +209,16 @@ struct CommitListView: View {
         // which took the click's focus from it, or rebuilds the table, which throws the divider
         // again — measured): when Tab lands on it while comparing, the focus goes on to the
         // comparison's list. (Handed to nothing, the next Tab came back here.) Its selection
-        // writes are dropped meanwhile (`RepositoryStore.selectRows`).
+        // writes are dropped meanwhile (`selectionBinding`).
         .onChange(of: isFocused) { _, focused in
-            guard focused, store.comparison != nil else { return }
-            isFocused = false
-            isCompareFocused = true
+            guard focused else { return }
+            if store.comparison != nil {
+                isFocused = false
+                isCompareFocused = true
+            } else if store.showsSearchResults {
+                isFocused = false
+                isSearchFocused = true
+            }
         }
         .simultaneousGesture(TapGesture().onEnded { isFocused = true })
         // `forSelectionType:` rather than a `.contextMenu` inside the row views: this is the
@@ -219,6 +246,9 @@ struct CommitListView: View {
         Binding(
             get: { CommitSelection.table(selection: store.selection, commits: store.selectedCommits) },
             set: { newValue in
+                // Not while the comparison or the search results cover it: a key that reaches
+                // this table must not move the selection they own.
+                guard !store.historyIsCovered else { return }
                 let before = store.selection
                 store.selectRows(newValue, shown: shown)
                 if store.selection != before { selectedInTable = store.selection }
@@ -263,70 +293,3 @@ private struct EndRowCell: View {
         #endif
     }
 }
-
-/// A small tinted capsule for one of git's `%D` branch decorations (tags are `TagCapsule`).
-private struct RefCapsule: View {
-    let ref: String
-
-    var body: some View {
-        let isHead = ref.hasPrefix("HEAD")
-        Text(ref)
-            .font(.caption2)
-            .fontWeight(isHead ? .bold : .regular)
-            .lineLimit(1)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(Color.accentColor.opacity(0.2), in: Capsule())
-            .foregroundStyle(Color.accentColor)
-    }
-}
-
-/// "worktree: <folder>" on the commit another worktree's detached HEAD is at (B3, R27): `log
-/// --all` shows that commit, and nothing else on its row would say why. Its own style — teal,
-/// with a window icon — so it is not read as a branch or a tag.
-private struct WorktreeCapsule: View {
-    let worktree: Worktree
-
-    var body: some View {
-        Label(WorktreeWording.pillText(worktree), systemImage: "macwindow")
-            .labelStyle(TagPillLabelStyle())
-            .font(.caption2)
-            .lineLimit(1)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(Color.teal.opacity(0.2), in: Capsule())
-            .foregroundStyle(Color.teal)
-            .help(WorktreeWording.pillHelp(worktree))
-    }
-}
-
-/// A tag's pill on its commit's row, from the tag list — the same icon and tooltip as its
-/// sidebar row. The icon tells it from a branch's pill whatever the accent colour is (with an
-/// orange system accent the two tints are the same).
-private struct TagCapsule: View {
-    let tag: Tag
-
-    var body: some View {
-        Label(tag.name, systemImage: TagWording.rowIcon(tag))
-            .labelStyle(TagPillLabelStyle())
-            .font(.caption2)
-            .lineLimit(1)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(Color.orange.opacity(0.2), in: Capsule())
-            .foregroundStyle(Color.orange)
-            .help(TagWording.rowHelp(tag))
-            .accessibilityLabel(TagWording.rowAccessibility(tag))
-    }
-}
-
-/// Icon and title close together, sized for a pill.
-private struct TagPillLabelStyle: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 2) {
-            configuration.icon.imageScale(.small)
-            configuration.title
-        }
-    }
-}
-

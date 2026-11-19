@@ -233,6 +233,8 @@ extension RepositoryStore {
             guard outcome.write, !Task.isCancelled else { return }
             self.worktreeReadTask = nil
             self.setWorktreeState(state)
+            // Another worktree's detached HEAD is a start of the walk too (F1, Ruling P21).
+            if self.commitSearch != nil { self.historyChangedUnderSearch() }
             if outcome.again { self.scheduleWorktreeStateRead() }
         }
     }

@@ -33,8 +33,9 @@ extension RepositoryStore {
     }
 
     /// The commit a detail header describes: from the log; for a commit only one side of the
-    /// comparison has, which the loaded rows may not show, from the comparison's lists; and for a
-    /// selected commit in neither — a reveal's before its deep load lands, one past the cap — from
+    /// comparison has, which the loaded rows may not show, from the comparison's lists; for a
+    /// search result, which can be older than the loaded rows too, from the results (F1); and for
+    /// a selected commit in none — a reveal's before its deep load lands, one past the cap — from
     /// its own read (`detailCommit`, H1).
     func commitForDetail(_ sha: String) -> Commit? {
         if let commit = snapshot?.commits.first(where: { $0.sha == sha }) { return commit }
@@ -43,6 +44,7 @@ extension RepositoryStore {
         {
             return commit
         }
+        if let commit = commitSearch?.result?.commits.first(where: { $0.sha == sha }) { return commit }
         return detailCommit?.sha == sha ? detailCommit : nil
     }
 
@@ -84,9 +86,10 @@ extension RepositoryStore {
     }
 
     /// Reads `a` against `b` (full refs) off the main actor, then shows it: the commit list
-    /// column switches to compare mode with the changes row selected. A refusal — not a branch,
-    /// gone, the same twice — is a sticky banner, and whatever was on screen stays; the next
-    /// comparison read takes that banner down.
+    /// column switches to compare mode with the changes row selected, ending a commit search
+    /// (F1: one at a time). A refusal — not a branch, gone, the same twice — is a sticky banner,
+    /// and whatever was on screen stays, a search too; the next comparison read takes that banner
+    /// down.
     func compare(_ a: String, _ b: String) {
         guard let root else { return }
         compareTask?.cancel()
@@ -102,6 +105,8 @@ extension RepositoryStore {
             switch result {
             case .success(let comparison):
                 clearCompareFailure()
+                // Its selection is replaced just below.
+                endSearch(revealingSelection: false)
                 setComparison(comparison)
                 select(.comparisonChanges)
             case .failure(let error):
@@ -132,12 +137,13 @@ extension RepositoryStore {
         leaveComparison(revealingSelection: true)
     }
 
-    /// A click on a sidebar row: it ends compare mode, then selects as before — a commit (a
-    /// branch's, a tag's, a deleted tag's receipt's) through `reveal`, so one that isn't loaded is
-    /// loaded down to (H1). The comparison's own selection is not revealed first: the click
-    /// replaces it.
+    /// A click on a sidebar row: it ends compare mode and a commit search (F1), then selects as
+    /// before — a commit (a branch's, a tag's, a deleted tag's receipt's) through `reveal`, so one
+    /// that isn't loaded is loaded down to (H1). The comparison's or the search's own selection is
+    /// not revealed first: the click replaces it.
     func selectFromSidebar(_ newSelection: Selection) {
         leaveComparison(revealingSelection: false)
+        endSearch(revealingSelection: false)
         if case .commit(let sha) = newSelection {
             reveal(sha)
         } else {
@@ -145,7 +151,11 @@ extension RepositoryStore {
         }
     }
 
-    private func leaveComparison(revealingSelection: Bool) {
+    /// Ends compare mode, if on, and cancels a comparison read in flight. `revealingSelection`:
+    /// whether a selected commit History hasn't loaded is revealed.
+    // internal (not private): used by +Search.swift's `openSearch`, which ends a comparison without
+    // revealing — History stays under the search
+    func leaveComparison(revealingSelection: Bool) {
         compareTask?.cancel()
         compareTask = nil
         guard comparison != nil else { return }

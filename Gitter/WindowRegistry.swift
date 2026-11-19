@@ -531,6 +531,10 @@ final class WindowRegistry {
         isTerminating = true
         for store in liveStores {
             if let root = store.root { store.eventLog.write("close \(root.path)") }
+            // Quitting never reaches `close()`, and a search's git, in its own process group, would
+            // run on after the app (F1: "a window close or quit cancels it"). Stopped now, before
+            // the reply that lets the quit go ahead.
+            store.stopSearch()
         }
     }
 

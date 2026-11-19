@@ -126,7 +126,7 @@ xcodegen generate && GIT_ALLOW_PROTOCOL=file GIT_SSH_COMMAND=/usr/bin/false GIT_
   -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -scmProvider system test
 ```
 
-`GitterTests` (1 284 tests in 95 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (1 347 tests in 98 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -173,8 +173,8 @@ are not read, no ssh agent or askpass, only the `file` transport): `makeTestStor
 `TestBackend` and the scratch registries refuse to run without it, and a control reads `git config
 --show-origin --list` through a store's own backend and asserts that nothing comes from outside the
 repository. `ScratchRepo` makes a temporary repository (with an optional local bare remote) and
-removes only its own directory. `waitUntilIdle` waits for a store's lane, mutation, worktree read
-and scheduled refresh to settle, bounded by a ten-minute `.timeLimit` through `CallUnderTest`.
+removes only its own directory. `waitUntilIdle` waits for a store's lane, mutation, worktree read,
+scheduled refresh and last commit search to settle, bounded by a ten-minute `.timeLimit` through `CallUnderTest`.
 Store-level flows run on that real git:
 a stash pop that conflicts, applies partly or is kept after a failed drop, Stash and Continue after
 a refused `track`, `detach` and create-and-switch, and a Continue refusal, its sheet and the retry
@@ -185,7 +185,7 @@ window closed while its push is still running (a push held by a `receivepack` sc
 test lets it go) are tested the same way.
 
 **A test backend over real git.** `TestBackend` (GitterTests) forwards every one of the twelve
-backend protocols' 108 calls to a real `CLIGitBackend` on the test's scratch repository, and lets a
+backend protocols' 109 calls to a real `CLIGitBackend` on the test's scratch repository, and lets a
 test act at any one call: run code before or after it (`hook`), make the next one throw without
 running git (`fail`), park the next one until the test lets it go (`hold`, on a `StuckCall`),
 replace the stash pop with one that changes the repository between its apply and its drop
@@ -197,7 +197,7 @@ moved before a pop's drop (`StashDropRaceTests`), a reload that fails after a co
 (`InjectedFailureTests`), a window closed during a held commit or push (`HiddenWindowTests`) and
 every request made while a change is held (`RequestsDuringChangeTests`).
 
-`GitCoreTests` has 1 757 tests in 150 suites. Most of them run real `git` against a temporary
+`GitCoreTests` has 1 805 tests in 152 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
 for a server, with a second clone as "the colleague" who pushes in between — including one
 that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
@@ -205,7 +205,7 @@ your git configuration (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`) 
 touches the network: the transports other than `file` (and a fake ssh one test needs) are refused,
 and an inherited `GIT_SSH_COMMAND` or `GIT_CONFIG_*` is cleared first.
 
-The run also reports **115 known issues, and they are meant to be there** — please do not
+The run also reports **117 known issues, and they are meant to be there** — please do not
 "fix" them. They are deliberate negative controls: tests that make an assertion helper fail
 on purpose, inside `withKnownIssue`, to prove it *can* fail.
 
@@ -312,6 +312,12 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   a password with a parenthesis back in an argument, and in each of the two lines of git's words the
   final review probed; and three pins of what is still kept: an scp-form password with a parenthesis
   in git's words, and a password with an unencoded `/` in two URLs.
+- Two come from `CommitSearchMatcherTests` (milestone F1): `theHelperCanFail`, the matcher given a
+  query its message does not hold; and `theComparisonCanFail`, the seeded differential loop run
+  against a comparator that is wrong for any query holding a Greek final sigma, which must report
+  disagreements.
+
+The list accounts for 116 of the 117; one is not yet itemized.
 
 `GitterTests` reports **fifty-eight known issues** of its own, as deliberate. The list below accounts for fifty of them; eight are not yet itemized. `WorktreeHeldSwitchTests`
 shows that the operation gate alone lets a branch another worktree holds through, which is why
@@ -476,10 +482,10 @@ against `v0.2.0`; and no planning files tracked.
 
 ## Project layout
 
-Every `.swift` file in the two product targets and the test-support library beside GitCore — 247
+Every `.swift` file in the two product targets and the test-support library beside GitCore — 255
 of them, which is what `find GitCore/Sources Gitter -name '*.swift' | wc -l` prints — with the ones
-inside `Models/`, `Parsers/` and `Views/` named in prose rather than one per line. The 231 test files
-(142 in `GitCore/Tests`, 89 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
+inside `Models/`, `Parsers/` and `Views/` named in prose rather than one per line. The 236 test files
+(144 in `GitCore/Tests`, 92 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
 listed, which is also why the check is that command and not a bare `find . -name '*.swift'`:
 that one reaches them too, and the generated sources under `.build` as well.
 
@@ -502,6 +508,10 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
                                 add, set-url, rename and remove a remote
     GitCompareBackend.swift     Compare two branches: counts, lists, merge bases, the changes
     GitWorktreeBackend.swift    List worktrees, their changes, the removal check, add and remove
+    CommitSearchMatcher.swift   Message, Author or ID matching done in the app: one phrase, blank
+                                runs as one space, Unicode case folding (a byte fast path over
+                                plain scalars, the Unicode way for any other), the id form (4 to
+                                40 hex characters)
     DiscardTypes.swift          DiscardRequest, DiscardReceipt, the refusals and undo outcomes
     Trasher.swift               Moving an untracked item to the Trash and back
     GitError.swift              commandFailed, launchFailed, and the two pre-flight refusals
@@ -550,6 +560,7 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
       +Worktrees.swift            the list, changes, the removal check (the walk, the forced
                                   settings), add and remove, each read back
       +BranchActivity.swift       the HEAD reflog's switch targets and each local tip's date
+      +Search.swift               commit search: one `log` read per mode, File's order read
     ProcessRunner.swift         Process spawning with LC_ALL=C and captured stderr
       +Streaming.swift            the cancellable runner: progress, SIGTERM then SIGKILL, and
                                   whether git exited or was killed
@@ -559,7 +570,7 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
     Models/                     RepoSnapshot, Commit, FileStatus, Diff, Branch (and Tag), Graph,
                                 Remote, Stash, Conflict, OperationProgress, History,
                                 RemoteAdmin, Compare, Worktree (with WorktreePaths),
-                                BranchActivity (with ReflogSwitchParser)
+                                BranchActivity (with ReflogSwitchParser), CommitSearch
     Parsers/                    Status, Log, Ref, Diff (+Paths), BranchRefusal, Remote,
                                 PushPorcelain, RemoteFailure, StashList, StashFailure,
                                 Conflict and WorktreeList parsers, and GitLines (git's output
@@ -618,6 +629,11 @@ Gitter/                   macOS app (SwiftUI)
                                   upstream, and the remote sheets: requests, gates, notices
   RepositoryStore+Compare.swift   Compare mode: the comparison, its staleness, Swap, Refresh,
                                   Done, the menus' reasons
+  RepositoryStore+Search.swift    Commit search (F1): the bar's state, the debounced, cancellable
+                                  read, Stop, Search Again, leaving, Show in History, the refresh
+                                  hook, and what covers History
+  SearchWording.swift        Every sentence commit search shows: the menu item, the bar, its
+                             status line and failures, Show in History, the reasons it is off
   RepositoryStore+Worktrees.swift The worktree state, Open, Add and Remove (and Remove All
                                   Missing), the folder check, the held-branch reasons, the title
   SidebarFilter.swift        Which rows the sidebar filter leaves, and its words
@@ -715,6 +731,7 @@ Gitter/                   macOS app (SwiftUI)
                               WorkingCopyFileList, CommitComposerView, DiffView, DiffHunkView,
                               DiffLineSelection, Banners, BranchToolbar, BranchNameValidator,
                               BranchSheetHost, RemoteToolbar, TrackingBadge, CompareListView,
+                              SearchListView (the bar and the results), CommitCapsules,
                               WorktreesSection,
                               ConflictCard, ResolverFocusView (focus mode: toolbar, sidebar,
                               headers, bars, bottom bar, the whole-file centre),
@@ -773,6 +790,7 @@ own feed (below), so nothing a script or a test does reaches GitHub.
 `DebugLaunchHooks+Discard.swift`, `DebugLaunchHooks+Conflicts.swift`,
 `DebugLaunchHooks+Continue.swift`, `DebugLaunchHooks+History.swift`,
 `DebugLaunchHooks+RemoteAdmin.swift`, `DebugLaunchHooks+Navigation.swift`,
+`DebugLaunchHooks+Search.swift`,
 `DebugLaunchHooks+Controls.swift`, `DebugLaunchHooks+Layout.swift`, `HarnessControls.swift` and
 `DebugLaunchGuard.swift` exist only in Debug builds
 (`#if DEBUG`, compiled out of Release) and drive the UI from environment variables, read once at
@@ -933,6 +951,7 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `compareselect:<id\|changes>` / `comparepath:<path>` / `compareswap` / `comparerefresh` / `comparedone` / `comparemenu` / `comparecopy:<id>` | click a commit or the changes row, a file of the changes; Swap, Refresh, Done; log every branch's compare items with their reasons; Copy Commit ID onto a private pasteboard, read back |
 | `sidebarclick:<branch>` / `reload` | a sidebar branch row's click (which ends compare mode); a snapshot load, as the watcher would start one |
 | `loadolder` / `reveal:<branch\|tag\|id>` | one page more of History (what the end row scrolling in does), waited and timed; a sidebar click on that commit, waited until the table has scrolled to it or a notice ended the reveal, with whether it was selected at once and the times. Both log the history line, `depth=<n> complete=<bool>` with the end row's state, which `comparestate` logs too with no comparison |
+| `search:<message\|file\|code>:<query>` / `searchselect:<n>` / `searchshow` / `searchstop` / `searchagain` / `searchleave` / `searchstate` | commit search (F1): open it, set the mode and the query and wait for the rows (the query may hold colons); select the n-th result (0-based) and log the detail's header id; Show in History on the selection; Stop; Search Again; Close Search; log the state. Most end with `search: mode <m> \| query "<q>" \| status <s> \| rows <n> \| cut <b> \| stale <b> \| first <up to 5 short ids> \| selection <sha\|nil>`; with search closed (after `searchleave` or `searchshow`) that line is `search: closed \| selection <sha\|nil>`. `searchselect` first logs `searchselect: detail <sha\|nil>` (`search: searchselect <n>: no such result` and no state line when there is no such result), `searchshow` with no commit selected logs only `search: searchshow: no commit selected`; `search` also logs `search timing: <n> ms` (the `searchDebounce` wait included); `searchstop` with no search running first logs `search: searchstop: nothing running`; a blocked window logs `search: blocked: <reason>` |
 | `addworktree[:<b>]` / `folderproblem:<path>` / `confirmaddworktree:existing:<b>:<path>` (or `new:<name>:<start>:<path>`, `tracking:<name>:<remote ref>:<path>`) | Add Worktree… and what it offers; the folder field's live check for that text; and **acts**: its Add with that choice — the sheet's own controls are `press:`, `tick:`, `fill:` and `choose:` — then the notice or banner and the worktree list |
 | `removeworktree:<folder>` / `removeworktreestart:<folder>` / `removeallmissing` / `worktreesheet` / `confirmremoveworktree[:none\|:<name>]` | Remove Worktree… (after the check, or at once so the progress state can be shot), Remove All Missing…, the sheet's every line; and **acts**: its button with the keep boxes as they start, none, or the one kept as `<name>` |
 | `noticeopen` | the sticky notice's **Open** after an add (routed like Open Worktree); the launch guard then refuses the rest, and the app quits |
@@ -1079,6 +1098,49 @@ Kept Resolve Conflicts changes keep a way back (milestone K1): while they exist 
 is closed with no operation left, a bar above the detail pane names the files and has **Resolve
 Conflicts…**; the same item is in Repository ▸ Resolve (`RepositoryCommands.resolveConflictsIsOff`)
 and in the operation bar while one lasts. `resolver:state` logs `kept: bar … | available: … | changed: …`.
+
+Finds commits (milestone F1): Find Commits (⌥⌘F) opens a bar over the commit list with three modes,
+and its results take over the History list the way a comparison does (`RepositoryStore+Search`,
+`SearchListView`). Each search is one cancellable `log --exclude=refs/stash --all --topo-order
+--no-show-signature --no-notes --encoding=UTF-8 --root` read (`CLIGitBackend+Search`), listing at
+most 50,000 matches (`CommitSearchLimit.rows`, H1's cap) in History's order, and every read runs
+with `GIT_NO_LAZY_FETCH=1`. Measured with git 2.54 in scratch repositories: `i18n.logOutputEncoding`
+re-encodes what `log` prints and `log.showRoot=false` hides a root commit's changes from `-S`, hence
+the two pins; in a partial clone a Code search fetched every missing blob it diffed from the
+promisor, and with the variable it fails at once (`CommitSearchError.contentsNotDownloaded`, worded
+in the bar). **Message, Author or ID** reads every commit with its full message (`%B`) and matches
+in the app (`CommitSearchMatcher`; `--grep` and `--author` would combine by AND, `--author` sees the
+mailmapped name where History shows `%an`, and `rev-parse` resolves a branch named like an id before
+the commit), an id form being 4 to 40 hex characters. **File** is `--full-history
+--diff-merges=separate --name-only --no-renames --no-follow -- ':(glob,icase)**/*q*'
+':(glob,icase)**/*q*/**'` with `\ * ? [ ]` escaped, which `GIT_GLOB_PATHSPECS` and
+`GIT_NOGLOB_PATHSPECS` leave alone; git folds ASCII case only. Default history simplification
+follows only the parent a merge kept a path from, so a deleted side branch whose change a merge
+dropped (`-s ours`, a conflict resolved to ours, a change undone before merging, a fix also
+cherry-picked) lost its commits; `--full-history` lists them, and a merge, printed once per parent
+it differs from, is kept only when it differs from every parent (Ruling P19). The matches are
+ordered by a `rev-list --exclude=refs/stash --all --topo-order` read beside the log (`--full-history`'s own order matched History's in 400 random small histories, but that is not proved). A query with an
+interior empty, `.` or `..` segment, or a NUL, finds nothing and git is not run. **Code** is
+`--no-textconv --no-ext-diff --find-renames -i -S<q>` (literal, ASCII case folded because the runner
+sets `LC_ALL=C`, a merge's own changes not searched, no `-n`). The commit the user picked in the
+results is revealed when search is left; an empty field leaves History live under the bar; a reload
+that moved anything the walk starts from — every ref but `refs/stash`
+(`RefCollection.walkedRefs`), HEAD, another worktree's detached HEAD (`SearchedHistoryTips`) — since
+the read began runs a Message or File search again and only marks a Code one out of date (Search
+Again); a reload while a search still waits out its debounce changes nothing, and quitting stops a
+running search. On a generated 100,000-commit repository with 10,000 merges (~40-word bodies, 50 MB
+of output, Cyrillic words in a quarter of them) a Message, Author or ID search takes about 0.6 s in a
+Release build of GitCore (git alone 0.55 s), a miss or a hit, a query with 1,742 matches or one cut
+at 50,000. It took 3.0-4.7 s: building a `Commit` and a message `String` for every record, and a
+`components`/`join` normalisation of each. Now `LogParser.scanWithMessages` reads fields as byte
+ranges and builds a `Commit` only for a match (stopping one past the limit), and
+`CommitSearchMatcher.Session` matches each field on its UTF-8 bytes through a fold-key table; a field
+holding a scalar with a non-plain folding (combining mark, `ß`, the Kelvin sign, anything outside the
+BMP) or invalid UTF-8 takes the old Unicode way, and a test compares the two over those scalars. A
+File search on the same repository takes 1.4 s for one file's name (500 matches), 1.9 s for a folder
+(22,000) and 2.8 s for `e` (every commit, cut at 50,000), Release; the log read alone went from 1.2 to
+1.4, 1.7 and 2.1 s with `--full-history` and the per-parent name lists, and the `rev-list` beside it
+takes 0.4 s.
 
 Gets you to your branches quickly (milestone N1): a Recent section at the top of the sidebar lists
 the current branch and the branches switched to last (the HEAD reflog's `checkout: moving from …

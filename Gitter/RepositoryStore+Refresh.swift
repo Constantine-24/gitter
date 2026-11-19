@@ -162,6 +162,12 @@ extension RepositoryStore {
             guard generation == capturedGeneration else { return }
             setSnapshot(newSnapshot)
             setBranchActivity(newActivity)
+            // A ref or HEAD moved — a commit, a fetch that brought something, a switch, a commit on
+            // a detached HEAD, which moves no ref — so the history a commit search walked has
+            // changed (F1). Not a change only the configuration makes (an upstream, a remote's URL,
+            // a worktree), which `RefCollection` carries too (Rulings P11, P21). Only started here,
+            // never awaited: nothing inside a chained load may wait on another.
+            if commitSearch != nil { historyChangedUnderSearch() }
             // The worktrees after the snapshot, in their own read, never awaited here (B3 final
             // review, I2): the state before stays until it lands. Never a failure (Task 3).
             scheduleWorktreeStateRead()

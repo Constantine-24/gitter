@@ -406,6 +406,15 @@ final class RepositoryStore {
     /// can take exactly that banner down — and no other one (`clearCompareFailure`).
     private var compareFailureBanner: String?
 
+    /// The window's commit search (F1, `RepositoryStore+Search`): while set, the commit list column
+    /// shows the search bar and its results instead of the history. Opened by Find Commits; ended
+    /// by Esc, the close button, Find Commits with an empty field, Show in History, a sidebar
+    /// click, a comparison, `open()` and `close()`. Nil: History shows.
+    private(set) var commitSearch: CommitSearchState?
+    /// How long typing waits before it searches (F1): a new key in that time replaces the search.
+    /// Tests set it to zero.
+    var searchDebounce: Duration = .milliseconds(250)
+
     /// Where git keeps this repository's files for the worktree that is open — its own git
     /// directory and the common one (`RepositoryDirectories`) — read by `open()` for the watcher
     /// and the window title, and by the discard fingerprint. Nil with no repository.
@@ -516,6 +525,10 @@ final class RepositoryStore {
     /// reveal and `open()` cancel it.
     // internal (not private), bookkeeping only, views must not touch this: used by +Depth.swift
     var revealTask: Task<Void, Never>?
+    /// The one commit search running, debouncing or reading (F1, `RepositoryStore+Search`); a new
+    /// query or mode, Stop, leaving search, `open()` and `close()` cancel it.
+    // internal (not private), bookkeeping only, views must not touch this: used by +Search.swift
+    var searchTask: Task<Void, Never>?
     /// The worktree state's read (B3 final review, I2), started after a snapshot lands and
     /// cancelled by `open()`; `worktreeReadSchedule` says when one starts and whether it is written.
     // internal (not private), bookkeeping only, views must not touch this: used by +Worktrees.swift
@@ -613,6 +626,8 @@ final class RepositoryStore {
         compareTask?.cancel()
         revealTask?.cancel()
         revealTask = nil
+        searchTask?.cancel()
+        searchTask = nil
         // `lastRefresh` is deliberately left in place: a load still in flight for the old root
         // writes nothing (it re-checks `root` before it lands), and keeping the chain intact
         // keeps this repository's first load from overlapping it.
@@ -696,6 +711,8 @@ final class RepositoryStore {
         comparison = nil
         comparisonFiles = nil
         compareFailureBanner = nil
+        // So is a commit search, of this repository's history (F1).
+        commitSearch = nil
         // The automatic fetch belongs to the repository it fetches: the old one's schedule
         // stops here, and its mark says nothing about this one. This one's starts once its first
         // snapshot is in (below), so the first tick can see whether it has a remote at all.
@@ -741,9 +758,9 @@ final class RepositoryStore {
     /// The window showing this store has closed (`WindowRegistry.windowClosed`, E2 Task 3). A
     /// closed window keeps its view tree and its store (M3.2), so everything that would go on
     /// working for it is stopped here: the file watcher, the automatic fetch's schedule, every read
-    /// in flight — the reloads, the detail, diff, conflict, comparison and worktree reads, a read on
-    /// the network lane — and the sheet and the notices go. From here on `isClosed` stops anything
-    /// new.
+    /// in flight — the reloads, the detail, diff, conflict, comparison, search and worktree reads, a
+    /// read on the network lane — and the sheet, the search and the notices go. From here on
+    /// `isClosed` stops anything new.
     ///
     /// **A write on the lane is let finish** (a push, a publish, a delete on a remote): cancelling
     /// it would leave the server in a state nobody is told about. Nor is `generation` bumped while
@@ -764,6 +781,12 @@ final class RepositoryStore {
         compareTask?.cancel()
         revealTask?.cancel()
         revealTask = nil
+        // A search writes nothing, so it is cancelled with nothing to ask (F1) — here, as well as
+        // refused by `isClosed` when it lands, since the generation below is not bumped while a
+        // write holds the lane.
+        searchTask?.cancel()
+        searchTask = nil
+        commitSearch = nil
         worktreeReadTask?.cancel()
         worktreeReadTask = nil
         worktreeCheckTask?.cancel()
@@ -794,15 +817,18 @@ final class RepositoryStore {
     /// pane moves to the first selected commit — or to the working copy — and the set is kept in
     /// the order `shown`. An empty set changes nothing.
     func selectRows(_ rows: Set<Selection>, shown: [Selection]) {
-        // The history table's write. In compare mode the table is still there, under the
-        // comparison (`CommitListView`, final fix wave I1), and a key that reaches it must not
-        // move the selection off the comparison.
+        // The history table's write, and the search results' (`SearchListView`). In compare mode
+        // the history table is still there, under the comparison (`CommitListView`, final fix
+        // wave I1), and a key that reaches it must not move the selection off the comparison.
+        // Under search results its writes are dropped in its binding, so a write while they show
+        // is theirs.
         guard comparison == nil else { return }
         let previous = CommitSelection.table(selection: selection, commits: selectedCommits)
         guard let resolved = CommitSelection.resolve(rows, previous: previous, shown: shown) else {
             return
         }
         apply(resolved)
+        if showsSearchResults { notePickedResult() }
     }
 
     /// Selects `shas` as a set, ordered as `shown` (the log's order; nil reads it from the
@@ -921,6 +947,12 @@ final class RepositoryStore {
             errorIsSticky = false
         }
         compareFailureBanner = nil
+    }
+
+    /// Opens, changes or (nil) ends the commit search (F1).
+    /// internal (not private(set) write): used by +Search.swift
+    func setCommitSearch(_ state: CommitSearchState?) {
+        commitSearch = state
     }
 
     /// internal (not private(set) write): used by +Detail.swift, with the files read for
