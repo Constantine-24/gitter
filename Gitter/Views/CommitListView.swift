@@ -36,7 +36,6 @@ struct CommitListView: View {
         // letter turns the column into the results. The two are never up together (`openSearch`
         // ends a comparison, `compare` ends a search).
         let comparing = store.comparison != nil
-        let showsResults = store.commitSearch != nil && store.historyIsCovered
         let covered = store.historyIsCovered
         history
             .disabled(covered)
@@ -46,7 +45,7 @@ struct CommitListView: View {
                 if comparing {
                     CompareListView(isFocused: $isCompareFocused)
                         .background(.background)
-                } else if showsResults {
+                } else if store.showsSearchResults {
                     SearchListView(isFocused: $isSearchFocused)
                         .background(.background)
                 }
@@ -216,7 +215,7 @@ struct CommitListView: View {
             if store.comparison != nil {
                 isFocused = false
                 isCompareFocused = true
-            } else if store.commitSearch != nil, store.historyIsCovered {
+            } else if store.showsSearchResults {
                 isFocused = false
                 isSearchFocused = true
             }

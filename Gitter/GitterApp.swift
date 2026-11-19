@@ -289,9 +289,9 @@ struct UpdateCommands: Commands {
     static func checkIsOff(_ checker: UpdateChecker?) -> Bool { checker?.isChecking ?? true }
 }
 
-/// "Filter Sidebar" (⌘F) and "Find Commits…" (⌥⌘F) in the Edit menu, after its text-editing items. Filter puts the keyboard in the
-/// sidebar's filter field of the window in front. Off with no repository open, where there is no
-/// sidebar.
+/// "Filter Sidebar" (⌘F) and "Find Commits…" (⌥⌘F) in the Edit menu, after its text-editing
+/// items. Filter puts the keyboard in the sidebar's filter field of the window in front. Both are
+/// off with no repository open.
 struct SidebarFilterCommands: Commands {
     @FocusedValue(\.focusSidebarFilter) private var focusSidebarFilter
     @FocusedValue(\.findCommits) private var findCommits
@@ -302,7 +302,7 @@ struct SidebarFilterCommands: Commands {
             Button("Filter Sidebar") { focusSidebarFilter?.focus() }
                 .keyboardShortcut("f")
                 .disabled(focusSidebarFilter == nil)
-            // F1: commit search. Off with no window, under a sheet and in focus mode
+            // F1: commit search. Off with no repository window, under a sheet and in focus mode
             // (`searchBlockedReason`).
             Button(SearchWording.menuTitle) {
                 guard let findCommits else { return }

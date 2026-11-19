@@ -80,9 +80,9 @@ import Testing
         defer { cleanup() }
         #expect(!store.historyIsCovered)  // search closed
         store.openSearch()
-        #expect(!store.historyIsCovered)
+        #expect(!store.historyIsCovered && !store.showsSearchResults)
         store.setSearchQuery("   ")
-        #expect(!store.historyIsCovered)
+        #expect(!store.historyIsCovered && !store.showsSearchResults)
     }
 
     @Test func aQueryCoversHistoryAndClearingItUncovers() async throws {
@@ -91,9 +91,9 @@ import Testing
         let (store, cleanup) = await SearchStoreTests.opened(repo, backend: TestBackend())
         defer { cleanup() }
         await SearchStoreTests.search(store, "fix")
-        #expect(store.historyIsCovered)
+        #expect(store.historyIsCovered && store.showsSearchResults)
         store.setSearchQuery("")
-        #expect(!store.historyIsCovered)
+        #expect(!store.historyIsCovered && !store.showsSearchResults)
     }
 
     @Test func aComparisonCoversHistory() async throws {
@@ -106,6 +106,6 @@ import Testing
         store.compare("refs/heads/other", "refs/heads/main")
         await waitUntilIdle(store)
         #expect(store.comparison != nil)
-        #expect(store.historyIsCovered)
+        #expect(store.historyIsCovered && !store.showsSearchResults)
     }
 }

@@ -23,7 +23,7 @@ struct SearchListView: View {
     @ViewBuilder
     private func list(_ state: CommitSearchState) -> some View {
         let commits = state.result?.commits ?? []
-        // Once per body, not per row (`commitForDetail` scans the results).
+        // Once per body, not per row: every row's pills look up these two dictionaries.
         let tags = TagWording.tagsByCommit(store.snapshot?.refs.tags ?? [])
         let worktreeHeads = store.detachedWorktreeHeads
         Table(commits, selection: selectionBinding(commits)) {
@@ -158,6 +158,48 @@ struct SearchBar: View {
 
     @ViewBuilder
     private func statusRow(_ state: CommitSearchState) -> some View {
+        if case .failed(let words) = state.status {
+            failure(words)
+        } else {
+            progressRow(state)
+        }
+    }
+
+    /// A failure in the store's error style (`ErrorBanner`): the warning glyph and the whole
+    /// message — git's often runs to several lines, the cause last — selectable, scrolling past
+    /// the banner's own line cap.
+    private func failure(_ words: String) -> some View {
+        let baseline = Banner.firstBaseline
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            ScrollView {
+                Text(words)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxHeight: Banner.capHeight(for: words))
+            .fixedSize(horizontal: false, vertical: true)
+            // A scroll view has no baseline of its own: give it its first line's, as `Banner` does.
+            .alignmentGuide(.firstTextBaseline) { dimensions in dimensions[.top] + baseline }
+        }
+        .padding(8)
+        .background {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(.background)
+                .overlay(RoundedRectangle(cornerRadius: 6).fill(Color.yellow.opacity(0.25)))
+        }
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.yellow.opacity(0.6)))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(SearchWording.failedAccessibility(words))
+    }
+
+    @ViewBuilder
+    private func progressRow(_ state: CommitSearchState) -> some View {
         let status = SearchWording.statusLine(state)
         let stale = SearchWording.staleLine(state)
         if status != nil || stale != nil {

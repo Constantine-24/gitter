@@ -18,14 +18,16 @@
     ///   search:<mode>:<query>  opens search, sets the mode and the query (a colon in the query is
     ///                          part of it), waits for the search to land, then logs. A second line,
     ///                          `search timing: <n> ms`, says how long the search took from
-    ///                          the step's start to landing, the 250 ms debounce included.
-    ///   searchselect:<n>       selects the n-th result (0-based) and logs the detail's header id
-    ///                          (`searchselect: detail <sha|nil>`), then the line above; with no such result it logs only
-    ///                          `search: searchselect <n>: no such result`.
+    ///                          the step's start to landing, the `searchDebounce` wait included.
+    ///   searchselect:<n>       selects the n-th result (0-based) as the results list does
+    ///                          (`selectRows`) and logs the detail's header id (`searchselect:
+    ///                          detail <sha|nil>`), then the line above; with no such result it
+    ///                          logs only `search: searchselect <n>: no such result`.
     ///   searchshow             Show in History on the selected result, then the line above (the
     ///                          closed form); with no commit selected it logs only
     ///                          `search: searchshow: no commit selected`.
-    ///   searchstop             Stop, then the line above.
+    ///   searchstop             Stop, then the line above; with no search running (Stop acts only
+    ///                          then) it first logs `search: searchstop: nothing running`.
     ///   searchagain            Search Again, waits, then the line above.
     ///   searchleave            Close Search (Esc), then the line above.
     ///   searchstate            only the line above.
@@ -56,7 +58,8 @@
                 guard let n = Int(rest), let commits = store.commitSearch?.result?.commits, commits.indices.contains(n) else {
                     return log("search: searchselect \(rest): no such result")
                 }
-                store.select(.commit(commits[n].sha))
+                // As the results list selects: `selectRows`, which notes the pick for leaving.
+                store.selectRows([.commit(commits[n].sha)], shown: commits.map { .commit($0.sha) })
                 await store.detailTask?.value
                 await store.diffTask?.value
                 try? await Task.sleep(for: .milliseconds(300))
@@ -69,6 +72,8 @@
                 await store.detailTask?.value
                 try? await Task.sleep(for: .milliseconds(300))
             case "searchstop":
+                // Stop acts only on a search that runs; `search:` waits for its search to land.
+                if store.commitSearch?.status != .searching { log("search: searchstop: nothing running") }
                 store.stopSearch()
             case "searchagain":
                 store.searchAgain()

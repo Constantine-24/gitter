@@ -408,8 +408,8 @@ final class RepositoryStore {
 
     /// The window's commit search (F1, `RepositoryStore+Search`): while set, the commit list column
     /// shows the search bar and its results instead of the history. Opened by Find Commits; ended
-    /// by Esc, the close button, Show in History, a sidebar click, a comparison, `open()` and
-    /// `close()`. Nil: History shows.
+    /// by Esc, the close button, Find Commits with an empty field, Show in History, a sidebar
+    /// click, a comparison, `open()` and `close()`. Nil: History shows.
     private(set) var commitSearch: CommitSearchState?
     /// How long typing waits before it searches (F1): a new key in that time replaces the search.
     /// Tests set it to zero.
@@ -781,8 +781,9 @@ final class RepositoryStore {
         compareTask?.cancel()
         revealTask?.cancel()
         revealTask = nil
-        // A search writes nothing, so it is cancelled with nothing to ask (F1) — itself, since the
-        // generation below is not bumped while a write holds the lane.
+        // A search writes nothing, so it is cancelled with nothing to ask (F1) — here, as well as
+        // refused by `isClosed` when it lands, since the generation below is not bumped while a
+        // write holds the lane.
         searchTask?.cancel()
         searchTask = nil
         commitSearch = nil
@@ -816,15 +817,18 @@ final class RepositoryStore {
     /// pane moves to the first selected commit — or to the working copy — and the set is kept in
     /// the order `shown`. An empty set changes nothing.
     func selectRows(_ rows: Set<Selection>, shown: [Selection]) {
-        // The history table's write. In compare mode the table is still there, under the
-        // comparison (`CommitListView`, final fix wave I1), and a key that reaches it must not
-        // move the selection off the comparison.
+        // The history table's write, and the search results' (`SearchListView`). In compare mode
+        // the history table is still there, under the comparison (`CommitListView`, final fix
+        // wave I1), and a key that reaches it must not move the selection off the comparison.
+        // Under search results its writes are dropped in its binding, so a write while they show
+        // is theirs.
         guard comparison == nil else { return }
         let previous = CommitSelection.table(selection: selection, commits: selectedCommits)
         guard let resolved = CommitSelection.resolve(rows, previous: previous, shown: shown) else {
             return
         }
         apply(resolved)
+        if showsSearchResults { notePickedResult() }
     }
 
     /// Selects `shas` as a set, ordered as `shown` (the log's order; nil reads it from the

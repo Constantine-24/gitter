@@ -12,7 +12,8 @@ import Testing
 /// and the last commit search (`searchTask`, F1 Task 2: a reload that moved a ref starts one)
 /// have ended — the very tasks seen before waiting, not ones that replaced them meanwhile
 /// (`scheduleRefresh` replaces its task, and a wait on the old task returns at once). A search
-/// held by `TestBackend` keeps this waiting until it is released. Polls every 20 ms, with no bound of its own: a hang is the
+/// held by `TestBackend` keeps this waiting until it is released. Polls every 20 ms, with no
+/// bound of its own: a hang is the
 /// test's `.timeLimit`, ending the wait through `CallUnderTest`, which records `neverCameBack`
 /// (E1 pattern); that includes the wait on `refreshTask`, which nothing else can end.
 ///

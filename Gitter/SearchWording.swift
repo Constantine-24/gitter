@@ -2,8 +2,9 @@ import Foundation
 import GitCore
 
 /// Every sentence commit search puts on screen (F1): the Find Commits menu item, the bar's mode
-/// names and field prompts, its status line, the out-of-date line with Search Again, the result
-/// row's Show in History and the close button. Pure, so `SearchWordingTests` pins each one.
+/// names and field prompts, its status line and failures, the out-of-date line with Search Again,
+/// the result row's Show in History, the close button and the reasons Find Commits is off. Pure,
+/// so `SearchWordingTests` pins each one.
 enum SearchWording {
 
     // MARK: - Menu and bar
@@ -55,7 +56,8 @@ enum SearchWording {
 
     /// The line under the bar: nil with nothing searched (an empty field); "Searching…" while a
     /// search runs, over the rows it will replace; after one has landed, its count, "No commits
-    /// match", or the cut; "Search stopped"; or git's words after a failure.
+    /// match", or the cut; "Search stopped"; or, after a failure, its words — drawn in the error
+    /// style, whole (`SearchBar`).
     static func statusLine(_ state: CommitSearchState) -> String? {
         switch state.status {
         case .idle: return nil
@@ -66,6 +68,20 @@ enum SearchWording {
             guard let result = state.result else { return nil }
             if result.isCut { return cut }
             return result.commits.isEmpty ? noMatches : count(result.commits.count)
+        }
+    }
+
+    // MARK: - Failures
+
+    /// The failure's VoiceOver label: what happened, then its words.
+    static func failedAccessibility(_ words: String) -> String { "Search failed: \(words)" }
+
+    /// A failure the app words itself (`CommitSearchError`); any other is git's own words.
+    static func failure(_ error: CommitSearchError) -> String {
+        switch error {
+        case .contentsNotDownloaded:
+            "This repository is a partial clone that hasn't downloaded the contents this search needs, "
+                + "and searching never downloads anything."
         }
     }
 

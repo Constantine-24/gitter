@@ -15,14 +15,28 @@ import Testing
             authorDate: Date(timeIntervalSince1970: 0), summary: "c\(n)", refs: [])
     }
 
+    /// A state in `status`, reached the way the store reaches it (its transitions); `.idle` has
+    /// an empty field, every other status the query "fix".
     static func state(
         _ status: SearchStatus, mode: CommitSearchMode = .messageAuthorOrID, commits: Int = 0, isCut: Bool = false,
         isStale: Bool = false
     ) -> CommitSearchState {
-        let search = CommitSearch(mode: mode, query: "fix")
-        let result =
-            status == .done ? CommitSearchResult(search: search, commits: (0..<commits).map(commit), isCut: isCut) : nil
-        return CommitSearchState(query: "fix", mode: mode, result: result, status: status, isStale: isStale)
+        var state = CommitSearchState()
+        state.edit(mode: mode)
+        guard status != .idle else { return state }
+        state.edit(query: "fix")
+        state.begin()
+        switch status {
+        case .done:
+            let search = CommitSearch(mode: mode, query: "fix")
+            state.land(CommitSearchResult(search: search, commits: (0..<commits).map(commit), isCut: isCut))
+        case .stopped: _ = state.stop()
+        case .failed(let words): state.fail(words)
+        case .idle, .searching: break
+        }
+        if isStale { state.markStale() }
+        #expect(state.status == status)
+        return state
     }
 
     @Test func theMenuTheBarAndTheButtons() {
@@ -70,7 +84,7 @@ import Testing
     /// Searching keeps the old rows (`result`), but the line says what is happening now.
     @Test func searchingOverOldRowsSaysSearching() {
         var state = Self.state(.done, commits: 2)
-        state.status = .searching
+        state.begin()
         #expect(state.result != nil)
         #expect(SearchWording.statusLine(state) == "Searching…")
     }
@@ -80,6 +94,43 @@ import Testing
         #expect(SearchWording.stale == "History has changed since this search")
         #expect(SearchWording.staleLine(Self.state(.done, mode: .code, commits: 2, isStale: true)) == SearchWording.stale)
         #expect(SearchWording.staleLine(Self.state(.done, mode: .code, commits: 2)) == nil)
+    }
+
+    /// A failure is drawn in the error style, whole; VoiceOver says what it is first. A partial
+    /// clone's missing contents are worded (Ruling P20), not git's lazy-fetch lines.
+    @Test func failures() {
+        #expect(SearchWording.failedAccessibility("fatal: x") == "Search failed: fatal: x")
+        #expect(
+            SearchWording.failure(.contentsNotDownloaded(gitsWords: "fatal: could not fetch"))
+                == "This repository is a partial clone that hasn't downloaded the contents this search needs, "
+                + "and searching never downloads anything.")
+    }
+
+    /// The state keeps its fields coherent (final review): a failure or Stop clears "out of date",
+    /// out of date is for Code only, a result lands only for the search the bar asks for, and Stop
+    /// acts only on a search that runs.
+    @Test func theStateKeepsItselfCoherent() {
+        var stale = Self.state(.searching, mode: .code, isStale: true)
+        #expect(stale.isStale)
+        stale.fail("fatal: x")
+        #expect(!stale.isStale && stale.result == nil)
+        #expect(SearchWording.staleLine(stale) == nil)
+
+        var stopped = Self.state(.searching, mode: .code, isStale: true)
+        let didStop = stopped.stop()
+        #expect(didStop)
+        #expect(!stopped.isStale && stopped.status == .stopped)
+
+        var landed = Self.state(.done, commits: 2)
+        let stoppedLanded = landed.stop()
+        #expect(!stoppedLanded, "a landed search is not stopped")
+        #expect(landed.status == .done && landed.result?.commits.count == 2)
+        landed.markStale()
+        #expect(!landed.isStale, "out of date is Code's only")
+
+        var other = Self.state(.searching)
+        other.land(CommitSearchResult(search: CommitSearch(mode: .messageAuthorOrID, query: "else"), commits: [], isCut: false))
+        #expect(other.status == .searching && other.result == nil, "another search's result does not land")
     }
 
     @Test func theBlockedReasons() {

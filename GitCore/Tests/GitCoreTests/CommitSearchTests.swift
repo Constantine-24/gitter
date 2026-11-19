@@ -472,7 +472,6 @@ import Testing
         }
     }
 
-
     @Test func fileModeSurvivesPathspecEnvironmentVariables() async throws {
         let repo = try await TestRepo.makeEmpty()
         defer { repo.cleanUp() }
