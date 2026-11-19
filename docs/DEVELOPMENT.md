@@ -23,7 +23,7 @@ How Gitter is built, packaged and tested, how the code is laid out, and the debu
 | Quit | One `QuitFlow` (menu, quit Apple Event, harness), which closes every sheet and waits for AppKit to show none before terminating through `QuitGuard`, which checks every window; the quit Apple Event's reply held until the outcome; its alerts raised from a run-loop timer (`ModalAlert`) | AppKit does not ask the app whether it may quit while a window has a sheet attached; a logout learns only from the reply that the user said Don't Quit; an alert run from a main-queue block would hold up every other window's work |
 | Packaging and the log | A script that builds from a clean tree only, with the commit count as the build number and the commit in `Info.plist`, re-signs with the identity you name, checks the result before the DMG and can notarize it; the log fed by a `CommandLog` sink at `CLIGitBackend`'s three git seams, written by one serial queue, never installed under the test host | Every DMG maps to a commit and says which in About; an ad-hoc identity is the binary's hash, so every build would lose macOS's folder grants; one place sees every git call, and a queue keeps the order lines were given in from any thread |
 | Syntax colours | Tree-sitter through its Swift binding, in a local `Syntax` package with one package per grammar, every version exact; queries run off the main actor, per file, after the diff or the columns are already on screen; only the colour of code characters changes, and a line whose text is not the line the colours were read from stays plain | A parser reads the file, so no regular expressions to get wrong on nested strings and comments; exact pins give the same code from every resolve without a committed `Package.resolved`; a diff that shows later than before, or a colour at the wrong offset, is worse than none |
-| Scope | Browsing, diffs, staging, commit, branch and remote operations, stash and discard, conflict resolution and continuing an operation, cherry-pick, revert, rebase onto a commit, tags, remotes housekeeping, the sidebar filter, comparing branches and worktrees, and syntax colours for 18 languages are done | Each milestone keeps the promise before it adds the next way to lose work |
+| Scope | Browsing, diffs, staging, commit, branch and remote operations, stash and discard, conflict resolution and continuing an operation, cherry-pick, revert, rebase onto a commit, tags, remotes housekeeping, the sidebar filter, comparing branches and worktrees, syntax colours for 18 languages, and the sidebar's recent branches, branch folders and folding are done | Each milestone keeps the promise before it adds the next way to lose work |
 
 ## Build & run
 
@@ -126,12 +126,15 @@ xcodegen generate && GIT_ALLOW_PROTOCOL=file GIT_SSH_COMMAND=/usr/bin/false GIT_
   -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -scmProvider system test
 ```
 
-`GitterTests` (1 239 tests in 92 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (1 284 tests in 95 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
 `CompareWording` and the compare menus' reasons, `WorktreeWording` (the rows, marks, menus' reasons,
-the Add and Remove sheets and every partial outcome), the sidebar filter (`SidebarFilter`), a linked
+the Add and Remove sheets and every partial outcome), the sidebar filter (`SidebarFilter`), the
+sidebar's layout (`SidebarLayout`: Recent, the branch folders, the stash limit, what a section
+shows and counts), its words (`SidebarWording`), the folding kept per repository and the branch
+activity read beside each snapshot (`SidebarStoreTests`), a linked
 worktree's watched paths and discard fingerprint,
 when the worktree state's read starts and is written (`WorktreeReadSchedule`), a held branch's
 switch refused before anything runs, the no-URL gates, Copy URL's redaction, the banners' height, the commit list's set selection, the deleted tags' receipts in the store, the pull-request link extraction and
@@ -149,7 +152,8 @@ bounded flush with a writer stuck on a hung write, and the About panel's version
 line, with a check that `Acknowledgements.txt` is in the app's Resources.
 Under a test host the app reopens no repository, starts no automatic fetch and adds nothing to
 Open Recent, and keeps no list of open repositories (`TestHost`). Every test's store keeps its settings in a scratch defaults suite of
-its own, named by a path inside its own temporary folder and removed with it (`makeTestStore`),
+its own, named by a path inside its own temporary folder and removed with it (`makeTestStore`, or
+`makeTestStore(on:)` for a test that reads that suite's domain by name),
 so a run never touches the repository you last had open or the app's real `dev.penzin.Gitter`
 defaults, and leaves nothing in `~/Library/Preferences`; `DefaultsIsolationTests` reads the real
 domain before and after each of its tests, never writing it, and tests the reopen and Open
@@ -181,7 +185,7 @@ window closed while its push is still running (a push held by a `receivepack` sc
 test lets it go) are tested the same way.
 
 **A test backend over real git.** `TestBackend` (GitterTests) forwards every one of the twelve
-backend protocols' 106 calls to a real `CLIGitBackend` on the test's scratch repository, and lets a
+backend protocols' 108 calls to a real `CLIGitBackend` on the test's scratch repository, and lets a
 test act at any one call: run code before or after it (`hook`), make the next one throw without
 running git (`fail`), park the next one until the test lets it go (`hold`, on a `StuckCall`),
 replace the stash pop with one that changes the repository between its apply and its drop
@@ -193,7 +197,7 @@ moved before a pop's drop (`StashDropRaceTests`), a reload that fails after a co
 (`InjectedFailureTests`), a window closed during a held commit or push (`HiddenWindowTests`) and
 every request made while a change is held (`RequestsDuringChangeTests`).
 
-`GitCoreTests` has 1 741 tests in 148 suites. Most of them run real `git` against a temporary
+`GitCoreTests` has 1 757 tests in 150 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
 for a server, with a second clone as "the colleague" who pushes in between — including one
 that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
@@ -201,7 +205,7 @@ your git configuration (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`) 
 touches the network: the transports other than `file` (and a fake ssh one test needs) are refused,
 and an inherited `GIT_SSH_COMMAND` or `GIT_CONFIG_*` is cleared first.
 
-The run also reports **114 known issues, and they are meant to be there** — please do not
+The run also reports **115 known issues, and they are meant to be there** — please do not
 "fix" them. They are deliberate negative controls: tests that make an assertion helper fail
 on purpose, inside `withKnownIssue`, to prove it *can* fail.
 
@@ -309,7 +313,7 @@ on purpose, inside `withKnownIssue`, to prove it *can* fail.
   final review probed; and three pins of what is still kept: an scp-form password with a parenthesis
   in git's words, and a password with an unencoded `/` in two URLs.
 
-`GitterTests` reports **forty-eight known issues** of its own, as deliberate. `WorktreeHeldSwitchTests`
+`GitterTests` reports **fifty-eight known issues** of its own, as deliberate. The list below accounts for fifty of them; eight are not yet itemized. `WorktreeHeldSwitchTests`
 shows that the operation gate alone lets a branch another worktree holds through, which is why
 the switch asks about the hold first. Three come from `DefaultsIsolationTests`: the check that
 the real defaults are unchanged fails when a store writes the domain it watches (a scratch
@@ -363,6 +367,12 @@ has an autosave name to be the one it names, expects a name to be given under th
 expects a hosted view told it is not under the test host to give none (four); and
 `CommitSelectionTests` expects the history table's write to leave the selection alone with no
 comparison up (one).
+
+Two come from milestone N1, both in `SidebarStoreTests`: the comparison of the defaults before and
+after opening a repository fails when the sidebar's folding is then saved, which proves "opening
+writes nothing" can fail; and the comparison of a repository's saved entry before and after a click
+that changes nothing fails once a real fold is written, which proves "a no-op click writes nothing"
+can fail.
 
 Deleting any of them would take the proof away and the suite would go on looking green.
 
@@ -466,10 +476,10 @@ against `v0.2.0`; and no planning files tracked.
 
 ## Project layout
 
-Every `.swift` file in the two product targets and the test-support library beside GitCore — 211
+Every `.swift` file in the two product targets and the test-support library beside GitCore — 247
 of them, which is what `find GitCore/Sources Gitter -name '*.swift' | wc -l` prints — with the ones
-inside `Models/`, `Parsers/` and `Views/` named in prose rather than one per line. The 203 test files
-(137 in `GitCore/Tests`, 66 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
+inside `Models/`, `Parsers/` and `Views/` named in prose rather than one per line. The 231 test files
+(142 in `GitCore/Tests`, 89 in `GitterTests`) and `GitCore/Package.swift` are summarised rather than
 listed, which is also why the check is that command and not a bare `find . -name '*.swift'`:
 that one reaches them too, and the generated sources under `.build` as well.
 
@@ -539,6 +549,7 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
                                   symmetric range, merge bases, the changes from the merge base
       +Worktrees.swift            the list, changes, the removal check (the walk, the forced
                                   settings), add and remove, each read back
+      +BranchActivity.swift       the HEAD reflog's switch targets and each local tip's date
     ProcessRunner.swift         Process spawning with LC_ALL=C and captured stderr
       +Streaming.swift            the cancellable runner: progress, SIGTERM then SIGKILL, and
                                   whether git exited or was killed
@@ -547,7 +558,8 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
       +Markers.swift / +Paths.swift
     Models/                     RepoSnapshot, Commit, FileStatus, Diff, Branch (and Tag), Graph,
                                 Remote, Stash, Conflict, OperationProgress, History,
-                                RemoteAdmin, Compare, Worktree (with WorktreePaths)
+                                RemoteAdmin, Compare, Worktree (with WorktreePaths),
+                                BranchActivity (with ReflogSwitchParser)
     Parsers/                    Status, Log, Ref, Diff (+Paths), BranchRefusal, Remote,
                                 PushPorcelain, RemoteFailure, StashList, StashFailure,
                                 Conflict and WorktreeList parsers, and GitLines (git's output
@@ -556,7 +568,7 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
                                 app, with no GitCore dependency: CallUnderTest, StuckCall and
                                 neverCameBack (TimeLimitSupport), TestGitEnvironment.isolated,
                                 waitForExit (ProcessExit, kqueue's NOTE_EXIT)
-  Tests/GitCoreTests/           148 suites; ForceFlagScanner(+Lexing) is the force-flag grep
+  Tests/GitCoreTests/           150 suites; ForceFlagScanner(+Lexing) is the force-flag grep
 
 Gitter/                   macOS app (SwiftUI)
   GitterApp.swift            App entry point, `AppModel` (the window registry), the menus
@@ -609,6 +621,16 @@ Gitter/                   macOS app (SwiftUI)
   RepositoryStore+Worktrees.swift The worktree state, Open, Add and Remove (and Remove All
                                   Missing), the folder check, the held-branch reasons, the title
   SidebarFilter.swift        Which rows the sidebar filter leaves, and its words
+  SidebarLayout.swift        What the sidebar lists, decided without views (N1): Recent, the
+                              branch folders, the stashes shown and Show All, what a section
+                              shows and its folded count
+  SidebarWording.swift       The sidebar's sections (`SidebarSection`) and the words N1 added
+  SidebarFolding.swift       Which sections, branch folders and remote groups are folded, one
+                              defaults value per repository root
+  RepositoryStore+Sidebar.swift  Recent, the filtered rows, the stash list, header counts and
+                              what each section, folder and group shows — read by the view and
+                              the harness log alike — and the folding setters (ignored while
+                              filtering, the only writers)
   AutoFetchScheduler.swift   When the quiet automatic fetch runs (the store decides what it does)
   QuitGuard.swift            Quitting while a lane is busy, in any window: stop, or ask first;
                               before that, the question about changed drafts in every window
@@ -680,7 +702,7 @@ Gitter/                   macOS app (SwiftUI)
     +Continue.swift            its operation bar and composer steps
     +History.swift             its history and tag steps
     +RemoteAdmin.swift         its remotes housekeeping steps
-    +Navigation.swift          its filter, compare, worktree and window steps
+    +Navigation.swift          its filter, sidebar, compare, worktree and window steps
     +Controls.swift            its sheet-control steps (`controls`, `press:`, `tick:`, `fill:`,
                                `choose:`)
     +Layout.swift              its window layout steps (`split`, `togglesidebar`, `resize:`,
@@ -721,7 +743,7 @@ GitterTests/              The app's tests (Swift Testing, hosted by Gitter.app):
                           receipts, remotes housekeeping's wording and menu reasons, the
                           no-URL gates, Copy URL's redaction, the banners' height, the
                           launch guard, compare's and the worktrees' wording and menu
-                          reasons, the sidebar filter, a linked worktree's watched paths
+                          reasons, the sidebar filter, layout, words and folding, a linked worktree's watched paths
                           and fingerprint, the worktree read's schedule, a held branch's
                           switch, the test-host check, and the scratch defaults every test
                           store is built on (`TestStoreSupport`, `DefaultsIsolationTests`);
@@ -900,7 +922,8 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `removeremote:<remote>` / `confirmremoveremote[:<keep>]` | Remove…: the impact's read, then the sheet — every ref with its id, the stranded count, the keep defaults, each sentence about upstreams, push redirects and refs left behind; and **act**: its button, `<keep>` as for `confirmprune` |
 | `split` | log the window's width, the sidebar's width and whether it is collapsed, the commit list's and the detail's panes, the divider between them and its autosave name: `split: window w=… \| sidebar shown x=… \| commit list x=a..b … \| detail x=… \| divider x=… \| autosave …`, in `views` coordinates |
 | `togglesidebar` / `resize:<w>x<h>` / `divider:<x>` / `sidebarwidth:<x>` | hide or show the sidebar as its toolbar button does (which a click cannot reach once a narrow window puts it in the toolbar's overflow menu), resize the target's window as `GITTER_DEBUG_WINDOW` resizes the first one, or move the commit list / detail divider, or the sidebar's edge, to x as a drag does (`setPosition`, which the splits' minimums constrain); each then logs the `split` line |
-| `filter:<text>` / `sidebar` | set the sidebar filter's text as typing would (`filter:` empties it), and log every section the sidebar draws after it — each remote group and whether it is expanded, "No matches", and the count VoiceOver hears |
+| `filter:<text>` / `sidebar` | set the sidebar filter's text as typing would (`filter:` empties it), and log every section the sidebar draws after it — each remote group and whether it is expanded, "No matches", and the count VoiceOver hears. From N1 it also logs `sidebar folded sections: tags` (the saved folding, `(none)`, and `(shown open while filtering)` while filtering), `sidebar Recent: main, fix/b, …` or `(hidden)`, `sidebar folders: feature(6, folded), fix(3, expanded)` and `sidebar plain: …` (both only while Branches is open), and `sidebar Stashes: <shown> shown, <hidden> hidden \| rows: stash@{0}, … \| toggle: Show All 8 Stashes` (hidden while filtering: the entries that do not match); a folded section's rows read `(folded, <its header count>)` — the snapshot cannot draw the sidebar, so this is how its structure is checked |
+| `sidebarfold:<section>` / `sidebarunfold:<section>` / `sidebarfolder:<prefix>` / `sidebarstashes:all\|fewer` | a click on a section's disclosure (`recent`, `branches`, `worktrees`, `stashes`, `remotes`, `tags`) through the store's `setSection`, which saves the folding for this repository; a click on a branch folder's disclosure (a toggle, `setFolder`), or `sidebarfolder: no folder <prefix>` when the sidebar has no such folder now; the Stashes section's Show All / Show Fewer row. While filtering a fold or folder step logs `…: ignored, filtering` instead, as the store ignores the click. Each logs one line; follow it with `sidebar` |
 | `worktrees` / `worktreemenu` / `pills` | log every worktree row (folder, branch line, marks and their tooltips, the changes read, this window's path and both titles — and the window number a window-scoped `screencapture -l` needs, since the snapshot cannot draw the sidebar); every worktree menu and every branch's held icon with Switch, Delete and Fast-Forward and their reasons; every "worktree:" pill |
 | `openworktree:<folder>` | Open Worktree on that row, then the root and the titles. It is routed like any open: a window already showing that worktree comes to the front, otherwise this window switches. The launch guard refuses every step after it — another repository is open — and the app quits |
 | `watchloads:<seconds>` | for that long, one line per finished snapshot load (HEAD, files, stashes, every branch's tip) — how a terminal's change in a linked worktree is checked against git |
@@ -1056,3 +1079,13 @@ Kept Resolve Conflicts changes keep a way back (milestone K1): while they exist 
 is closed with no operation left, a bar above the detail pane names the files and has **Resolve
 Conflicts…**; the same item is in Repository ▸ Resolve (`RepositoryCommands.resolveConflictsIsOff`)
 and in the operation bar while one lasts. `resolver:state` logs `kept: bar … | available: … | changed: …`.
+
+Gets you to your branches quickly (milestone N1): a Recent section at the top of the sidebar lists
+the current branch and the branches switched to last (the HEAD reflog's `checkout: moving from …
+to …` lines, read beside each snapshot and never failing it, then the newest tips), five at most;
+Branches groups local branches sharing a first path segment into folders that start folded; every
+section folds from its header, which then shows a count (except Recent), and the folding, the open folders and the
+open remote groups are kept per repository in one defaults value, written only by a click; Stashes
+shows the newest five with Show All; and the filter also matches stashes and shows everything it
+matches open. The `sidebar` harness step logs the layout, since the snapshot cannot draw the
+sidebar.

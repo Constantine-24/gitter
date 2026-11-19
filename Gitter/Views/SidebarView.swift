@@ -1,7 +1,8 @@
 import GitCore
 import SwiftUI
 
-/// Repository outline: the working copy, local branches, worktrees, stashes, remotes and tags.
+/// Repository outline: the working copy, the recent branches, local branches in prefix folders,
+/// worktrees, stashes, remotes and tags.
 ///
 /// Selecting a branch or tag selects the commit it points at in the commit list. Any row's click
 /// ends compare mode first (B3, `selectFromSidebar`). Right-clicking
@@ -9,24 +10,26 @@ import SwiftUI
 /// the kind of ref it is: a local branch is switched to, a remote branch is checked out as a
 /// local tracking branch, and a tag does nothing at all — detaching HEAD should be deliberate.
 ///
+/// N1: Recent (`SidebarLayout.recent`, at most five, the current branch first) sits above
+/// Branches, whose branches sharing a first path segment are grouped in folders
+/// (`SidebarLayout.tree`) that start folded. A branch in Recent and the same branch in its folder
+/// are one row view (`localBranchRow`) — same menu, same double-click — under distinct ids
+/// (`recent:<name>`, `branch:<name>`, `folder:<prefix>`), so the list never merges them. Every
+/// section but Working Copy folds from its header, which then shows a count (except Recent); the
+/// folding, each folder's and each remote group's expansion are the store's (`sidebarFolding`),
+/// kept per repository and written only by a click (`setSection`, `setFolder`, `setRemote`).
+///
 /// The filter field (B3, `.searchable` on this column, ⌘F) narrows local branches, remote
-/// branches and tags (`SidebarFilter.rows`); Working Copy, Worktrees and Stashes are not
-/// filtered. While it narrows anything, every remote's group is expanded — the user's own
-/// expansion is kept here and comes back when the filter is cleared — a section left empty says
-/// "No matches", and VoiceOver announces how many refs match.
+/// branches, tags and stashes (`SidebarFilter.rows`); Working Copy and Worktrees are not
+/// filtered. While it narrows anything, Recent is hidden and every section, folder and remote
+/// group is shown open — the user's own folding is kept by the store and comes back when the
+/// filter is cleared, and a disclosure click meanwhile changes nothing — a section left empty
+/// says "No matches", and VoiceOver announces how many rows match.
 struct SidebarView: View {
     @Environment(RepositoryStore.self) private var store
 
-    /// The remotes whose group the user expanded, by name. Kept while filtering, which only
-    /// overrides what is shown (`SidebarFilter.isExpanded`).
-    @State private var expandedRemotes: Set<String> = []
-    /// The same for the "Other" group, which is no remote's.
-    @State private var otherExpanded = false
-
-    private var refs: RefCollection { store.snapshot?.refs ?? .empty }
-
     var body: some View {
-        let rows = SidebarFilter.rows(refs, deletedTags: store.deletedTags.receipts, query: store.sidebarFilter)
+        let rows = store.sidebarRows
         List {
             Section("Working Copy") {
                 Button {
@@ -46,34 +49,52 @@ struct SidebarView: View {
                 .buttonStyle(.plain)
             }
 
-            if rows.showsBranches {
-                Section("Branches") {
-                    ForEach(rows.localBranches) { branch in
-                        branchRow(branch, showCheck: true)
-                            .contextMenu { LocalBranchMenu(branch: branch.name) }
-                            // Double-click switches, which is what a branch row in every other
-                            // Git client does. `simultaneousGesture` rather than
-                            // `onTapGesture(count: 2)`: the latter swallows the row's own
-                            // single click, and selecting the branch's commit on one click is
-                            // the behaviour this list already had.
-                            .simultaneousGesture(
-                                TapGesture(count: 2).onEnded {
-                                    store.switchTo(branch: branch.name)
-                                })
+            if store.sidebarShowsRecent {
+                Section(isExpanded: SidebarSectionHeader.expansion(.recent, store: store)) {
+                    ForEach(store.recentBranches) { branch in
+                        localBranchRow(branch, title: branch.name)
+                            .id("recent:" + branch.name)
                     }
-                    if rows.branchesHaveNoMatches { noMatches }
+                } header: {
+                    SidebarSectionHeader(section: .recent)
+                }
+            }
+
+            if rows.showsBranches {
+                // From the filtered branches: while filtering, a folder holds (and counts) its
+                // matches only.
+                let tree = SidebarLayout.tree(rows.localBranches)
+                Section(isExpanded: SidebarSectionHeader.expansion(.branches, store: store)) {
+                    ForEach(tree.folders, id: \.prefix) { folder in
+                        DisclosureGroup(isExpanded: folderExpansion(folder.prefix)) {
+                            ForEach(folder.branches) { branch in
+                                localBranchRow(branch, title: SidebarLayout.leafName(branch.name, in: folder.prefix))
+                                    .id("branch:" + branch.name)
+                            }
+                        } label: {
+                            BranchFolderLabel(prefix: folder.prefix, count: folder.branches.count)
+                        }
+                        .id("folder:" + folder.prefix)
+                    }
+                    ForEach(tree.plain) { branch in
+                        localBranchRow(branch, title: branch.name)
+                            .id("branch:" + branch.name)
+                    }
+                    if rows.branchesHaveNoMatches { SidebarNoMatchesRow() }
+                } header: {
+                    SidebarSectionHeader(section: .branches)
                 }
             }
 
             WorktreesSection()
 
-            StashesSection()
+            StashesSection(rows: rows)
 
             // The groups come from the configured remotes, not from splitting a branch name on
             // "/": a remote nothing has been fetched from still gets a (empty) group of its
             // own, and a remote whose name contains a slash keeps its branches.
             if rows.showsRemotes {
-                Section("Remotes") {
+                Section(isExpanded: SidebarSectionHeader.expansion(.remotes, store: store)) {
                     ForEach(rows.remoteGroups, id: \.remote) { group in
                         DisclosureGroup(isExpanded: expansion(of: group.remote.name)) {
                             ForEach(group.branches) { branch in
@@ -96,12 +117,14 @@ struct SidebarView: View {
                             }
                         }
                     }
-                    if rows.remotesHaveNoMatches { noMatches }
+                    if rows.remotesHaveNoMatches { SidebarNoMatchesRow() }
+                } header: {
+                    SidebarSectionHeader(section: .remotes)
                 }
             }
 
             if rows.showsTags {
-                Section("Tags") {
+                Section(isExpanded: SidebarSectionHeader.expansion(.tags, store: store)) {
                     ForEach(rows.tags) { tag in
                         Button {
                             store.selectFromSidebar(.commit(tag.sha))
@@ -137,7 +160,9 @@ struct SidebarView: View {
                             Button(TagWording.restoreMenuTitle) { store.restoreTags([receipt]) }
                         }
                     }
-                    if rows.tagsHaveNoMatches { noMatches }
+                    if rows.tagsHaveNoMatches { SidebarNoMatchesRow() }
+                } header: {
+                    SidebarSectionHeader(section: .tags)
                 }
             }
         }
@@ -149,29 +174,42 @@ struct SidebarView: View {
         }
     }
 
-    private var noMatches: some View {
-        Text(SidebarFilter.noMatches)
-            .foregroundStyle(.secondary)
+    /// A branch folder's expansion: folded until the user opens it, open while filtering. The
+    /// store ignores a click while filtering, so the user's choice is what the cleared filter shows.
+    private func folderExpansion(_ prefix: String) -> Binding<Bool> {
+        Binding(
+            get: { store.sidebarShowsFolder(prefix) },
+            set: { store.setFolder(prefix, expanded: $0) })
     }
 
-    /// A remote group's expansion: forced open while filtering, the user's own otherwise. A
-    /// click while filtering changes nothing, so their choice is what the cleared filter shows.
+    /// A remote group's expansion: forced open while filtering, the user's own otherwise, kept
+    /// per repository by the store (which ignores a click while filtering).
     private func expansion(of remote: String) -> Binding<Bool> {
         Binding(
-            get: { SidebarFilter.isExpanded(stored: expandedRemotes.contains(remote), query: store.sidebarFilter) },
-            set: { expanded in
-                guard !SidebarFilter.isFiltering(store.sidebarFilter) else { return }
-                if expanded { expandedRemotes.insert(remote) } else { expandedRemotes.remove(remote) }
-            })
+            get: { store.sidebarShowsRemote(remote) },
+            set: { store.setRemote(remote, expanded: $0) })
     }
 
     private var otherExpansion: Binding<Bool> {
         Binding(
-            get: { SidebarFilter.isExpanded(stored: otherExpanded, query: store.sidebarFilter) },
-            set: { expanded in
-                guard !SidebarFilter.isFiltering(store.sidebarFilter) else { return }
-                otherExpanded = expanded
-            })
+            get: { store.sidebarShowsOther },
+            set: { store.setOtherExpanded($0) })
+    }
+
+    /// A local branch's row wherever it is listed — Recent, a folder or a plain row — with the
+    /// same menu and the same double-click, so the shortcut never behaves differently. `title` is
+    /// what the row reads: the full name, or the name inside its folder.
+    private func localBranchRow(_ branch: Branch, title: String) -> some View {
+        branchRow(branch, showCheck: true, title: title)
+            .contextMenu { LocalBranchMenu(branch: branch.name) }
+            // Double-click switches, which is what a branch row in every other Git client does.
+            // `simultaneousGesture` rather than `onTapGesture(count: 2)`: the latter swallows
+            // the row's own single click, and selecting the branch's commit on one click is the
+            // behaviour this list already had.
+            .simultaneousGesture(
+                TapGesture(count: 2).onEnded {
+                    store.switchTo(branch: branch.name)
+                })
     }
 
     @ViewBuilder
@@ -185,7 +223,7 @@ struct SidebarView: View {
     }
 
     @ViewBuilder
-    private func branchRow(_ branch: Branch, showCheck: Bool) -> some View {
+    private func branchRow(_ branch: Branch, showCheck: Bool, title: String? = nil) -> some View {
         Button {
             store.selectFromSidebar(.commit(branch.sha))
         } label: {
@@ -193,8 +231,11 @@ struct SidebarView: View {
                 Image(systemName: "arrow.triangle.branch")
                     .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(branch.name)
+                    // In a folder the row reads the rest of the name; VoiceOver and the tooltip
+                    // still give the whole of it.
+                    Text(title ?? branch.name)
                         .fontWeight(branch.isHead ? .bold : .regular)
+                        .accessibilityLabel(branch.name)
                     if let upstream = branch.upstream {
                         Text(upstream)
                             .font(.caption)
@@ -229,6 +270,64 @@ struct SidebarView: View {
             }
         }
         .buttonStyle(.plain)
+        .helpIfPresent((title ?? branch.name) == branch.name ? nil : branch.name)
+    }
+}
+
+/// A sidebar section's header: its title, and once folded, the count of what it holds
+/// (`SidebarWording.foldedCount`; none for Recent).
+struct SidebarSectionHeader: View {
+    let section: SidebarSection
+
+    @Environment(RepositoryStore.self) private var store
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(SidebarWording.title(section))
+            if !store.sidebarShows(section), let count = store.sidebarFoldedCount(section) {
+                Text(count)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// The section's disclosure: shown open while filtering, the user's folding otherwise. A
+    /// click writes through `setSection`, which ignores it while filtering.
+    @MainActor
+    static func expansion(_ section: SidebarSection, store: RepositoryStore) -> Binding<Bool> {
+        Binding(
+            get: { store.sidebarShows(section) },
+            set: { store.setSection(section, folded: !$0) })
+    }
+}
+
+/// "No matches", in a section the filter left empty: Branches, Stashes, Remotes and Tags.
+struct SidebarNoMatchesRow: View {
+    var body: some View {
+        Text(SidebarFilter.noMatches)
+            .foregroundStyle(.secondary)
+    }
+}
+
+/// A branch folder's row: the prefix and how many branches it holds (its matches, while
+/// filtering), read by VoiceOver as one sentence.
+struct BranchFolderLabel: View {
+    let prefix: String
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "folder")
+                .foregroundStyle(.secondary)
+            Text(prefix)
+            Spacer(minLength: 4)
+            Text("\(count)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(SidebarWording.folderAccessibility(prefix, count: count))
     }
 }
 

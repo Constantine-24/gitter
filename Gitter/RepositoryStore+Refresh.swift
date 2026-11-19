@@ -152,10 +152,16 @@ extension RepositoryStore {
             // read shows nothing rather than failing the snapshot.
             let halted =
                 newSnapshot.status.operationInProgress == nil ? (try? await backend.haltedSequence(at: root)) ?? nil : nil
+            // Recent's input, a side read like the halted sequence and never part of the
+            // snapshot: a failed read sets `.none`, Recent falls back to name order and the
+            // refresh carries on (N1). Awaited after the snapshot, not beside it, so the calls
+            // keep the order `TestBackend.calls` pins: the snapshot first.
+            let newActivity = (try? await backend.branchActivity(at: root)) ?? BranchActivity.none
             // The repository may have been switched (via `open`) while this snapshot was in
             // flight; a snapshot from before that must never overwrite the new state.
             guard generation == capturedGeneration else { return }
             setSnapshot(newSnapshot)
+            setBranchActivity(newActivity)
             // The worktrees after the snapshot, in their own read, never awaited here (B3 final
             // review, I2): the state before stays until it lands. Never a failure (Task 3).
             scheduleWorktreeStateRead()

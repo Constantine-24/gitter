@@ -19,6 +19,23 @@ public protocol GitBackend: Sendable {
     func commitFiles(at root: URL, sha: String) async throws -> [FileStatus]
     /// Diff of one commit vs its first parent, optionally limited to a path.
     func commitDiff(at root: URL, sha: String, path: String?) async throws -> [FileDiff]
+    /// The sidebar's Recent input: the branches HEAD was switched to, and each local branch's tip
+    /// date. Two reads: `reflog show -n 2000 --no-show-signature --format=%gs HEAD --` and
+    /// `for-each-ref --format=%(refname)%00%(committerdate:unix) --end-of-options refs/heads`.
+    /// Measured (git 2.54, scratch repositories):
+    /// - `switch`, `checkout`, `switch -c` and a switch back from a detached HEAD each record
+    ///   `checkout: moving from <A> to <B>`; `<B>` is the text after the last ` to `. A detached
+    ///   switch records the revision as written (`HEAD~0`, a sha). `branch -m` does not rewrite
+    ///   earlier entries. Rebase lines are not counted.
+    /// - The `--` is required: a file named `HEAD` in the worktree makes the read exit 128,
+    ///   "ambiguous argument".
+    /// - Each linked worktree has its own HEAD reflog; the read is of the worktree at `root`.
+    /// - When HEAD does not resolve — unborn (an empty repository, or after `switch --orphan`)
+    ///   or its branch ref missing — the reflog read exits 128 with `fatal: bad revision 'HEAD'`:
+    ///   read as no switches, and the tip dates are still read. Any other failure throws; a
+    ///   detached HEAD naming a missing object, for one, exits 128 with `fatal: bad object HEAD`.
+    /// - `--no-show-signature` keeps `log.showSignature` from adding gpg output to the text.
+    func branchActivity(at root: URL) async throws -> BranchActivity
 }
 
 extension GitBackend {

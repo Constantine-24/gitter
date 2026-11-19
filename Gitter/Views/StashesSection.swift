@@ -5,18 +5,35 @@ import SwiftUI
 /// its message, the branch it was made on and when. Clicking a row shows the entry read-only
 /// in the detail pane (`StashDetailView`); right-clicking offers Apply, Pop and Drop Stash….
 ///
+/// N1: it lists the newest five (`SidebarLayout.stashLimit`), then "Show All 8 Stashes" — "Show
+/// Fewer Stashes" once Show All is on (`showsAllStashes`, per window, never saved). The selected
+/// entry stays on screen when it is older. While the filter narrows the sidebar it lists every
+/// entry whose title or branch matches, past the limit, or "No matches". It folds from its header.
+///
 /// Gitter's own records — the copies a discard files first — carry `arrow.uturn.backward`
 /// (they are there to bring something back) instead of the tray a user's stash has.
 struct StashesSection: View {
+    /// The filter's rows, computed once by `SidebarView`.
+    let rows: SidebarFilter.Rows
+
     @Environment(RepositoryStore.self) private var store
 
     var body: some View {
-        if !store.stashes.isEmpty {
-            Section("Stashes") {
-                ForEach(store.stashes) { stash in
+        if rows.showsStashes {
+            let list = store.stashList(rows)
+            Section(isExpanded: SidebarSectionHeader.expansion(.stashes, store: store)) {
+                ForEach(list.rows) { stash in
                     row(stash)
                         .contextMenu { StashMenu(stash: stash) }
                 }
+                if rows.stashesHaveNoMatches { SidebarNoMatchesRow() }
+                if let toggle = list.toggle {
+                    Button(toggle) { store.showsAllStashes.toggle() }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                SidebarSectionHeader(section: .stashes)
             }
         }
     }
