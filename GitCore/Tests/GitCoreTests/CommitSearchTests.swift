@@ -41,7 +41,7 @@ import Testing
         let data = Data((1...5).map { record($0, message: $0 % 2 == 0 ? "even\n" : "odd") }.joined().utf8)
         let all = LogParser.scanWithMessages(data) { _ in true }
         #expect(all == LogParser.parseWithMessages(data).map(\.commit) && all.count == 5)
-        #expect(LogParser.scanWithMessages(data) { String(decoding: $0.bytes(7), as: UTF8.self).hasPrefix("even") }.map(\.sha) == ["2", "4"])
+        #expect(LogParser.scanWithMessages(data) { String(decoding: $0.bytes(.message), as: UTF8.self).hasPrefix("even") }.map(\.sha) == ["2", "4"])
         #expect(LogParser.scanWithMessages(data, limit: 2) { _ in true }.map(\.sha) == ["1", "2"])
         #expect(LogParser.scanWithMessages(data) { _ in false }.isEmpty)
         #expect(LogParser.scanWithMessages(Data()) { _ in true }.isEmpty)
@@ -73,6 +73,83 @@ import Testing
         #expect(summaries(result) == ["second change", "talk to alice about it"])
         #expect(!result.isCut)
         #expect(result.search == CommitSearch(mode: .messageAuthorOrID, query: "alice"))
+    }
+
+    /// The spec promises the body: a phrase hard-wrapped across two of its lines is found.
+    @Test func aPhraseOnlyInTheWrappedBodyIsFound() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try await commit(repo, "subject one\n\nThe stash\ncaption is wrapped here.", file: "a.txt")
+        try await commit(repo, "unrelated", file: "b.txt")
+
+        #expect(summaries(try await search(.messageAuthorOrID, "stash caption", in: repo)) == ["subject one"])
+        #expect(summaries(try await search(.messageAuthorOrID, "subject one", in: repo)) == ["subject one"], "control")
+    }
+
+    /// Words of hex letters, and a revert's id quoted in a message, are found as text.
+    @Test func aHexLookingWordInAMessageIsFoundAsText() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try await commit(repo, "See 1234abcd for the old one", file: "a.txt")
+        try await commit(repo, "added a row", file: "b.txt")
+        try await commit(repo, "unrelated", file: "c.txt")
+        let shas = try await search(.messageAuthorOrID, "unrelated", in: repo).commits.map(\.sha)
+            + (try await search(.messageAuthorOrID, "row", in: repo).commits.map(\.sha))
+        #expect(!shas.contains { $0.hasPrefix("1234abcd") || $0.hasPrefix("added") }, "the fixture's ids must not start with the words")
+
+        #expect(summaries(try await search(.messageAuthorOrID, "1234abcd", in: repo)) == ["See 1234abcd for the old one"])
+        #expect(summaries(try await search(.messageAuthorOrID, "added", in: repo)) == ["added a row"])
+    }
+
+    /// The author's email is a field of its own: found when it is the only one holding the query.
+    @Test func theAuthorEmailAloneIsSearched() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try await commit(repo, "by zed", file: "a.txt", author: "Zed <zed@example.org>")
+        try await commit(repo, "by the tester", file: "b.txt")
+
+        #expect(summaries(try await search(.messageAuthorOrID, "example.org", in: repo)) == ["by zed"])
+        #expect(summaries(try await search(.messageAuthorOrID, "zed", in: repo)) == ["by zed"], "the name too")
+    }
+
+    /// `log.showRoot=false` stops `log` diffing a root commit, so `-S` without `--root` never
+    /// searches it (measured); every search vector passes `--root`.
+    @Test func theRootCommitIsSearchedUnderLogShowRootFalse() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("root.txt", "a rootneedle here\n")
+        try await repo.commitAll("the root")
+        try await commit(repo, "second", file: "b.txt")
+        try await repo.git(["config", "log.showRoot", "false"])
+
+        // Control: under this configuration, the vector without `--root` misses the root.
+        let plain = try await repo.git(["log", "--all", "--format=%s", "-i", "-Srootneedle"])
+        #expect(String(decoding: plain, as: UTF8.self).isEmpty, "log.showRoot=false must hide the root, or this proves nothing")
+
+        #expect(summaries(try await search(.code, "ROOTNEEDLE", in: repo)) == ["the root"])
+        #expect(summaries(try await search(.file, "root.txt", in: repo)) == ["the root"])
+    }
+
+    /// `i18n.logOutputEncoding` re-encodes what `log` prints (measured: Latin-1 bytes); every
+    /// search vector passes `--encoding=UTF-8`, so the matcher and the rows read UTF-8.
+    @Test func searchReadsUTF8UnderAnotherLogOutputEncoding() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try repo.write("café.txt", "x\n")
+        try await repo.git(["add", "-A"])
+        try await repo.git(["commit", "-q", "-m", "café work", "--author", "José <jose@example.org>"])
+        try await commit(repo, "other", file: "b.txt")
+        try await repo.git(["config", "i18n.logOutputEncoding", "ISO-8859-1"])
+
+        // Control: under this configuration, plain `log` prints Latin-1 (0xE9), not UTF-8.
+        let plain = try await repo.git(["log", "--all", "--format=%s"])
+        #expect(plain.contains(0xE9) && !plain.contains(0xC3), "the setting must re-encode, or this proves nothing")
+
+        #expect(summaries(try await search(.messageAuthorOrID, "café", in: repo)) == ["café work"])
+        #expect(summaries(try await search(.messageAuthorOrID, "josé", in: repo)) == ["café work"])
+        let file = try await search(.file, "fé.txt", in: repo)
+        #expect(summaries(file) == ["café work"] && file.commits.first?.authorName == "José")
+        #expect(summaries(try await search(.code, "x", in: repo)) == ["café work"])
     }
 
     /// A merge, and a commit dated before its parent, written by `fast-import`.
@@ -188,10 +265,187 @@ import Testing
 
         let result = try await search(.file, "f", in: repo)
 
-        #expect(Set(summaries(result)) == Set(gitsOwn), "the match set is git's")
+        // Every commit that changed `f`, merges' sides followed (Ruling P19); no merge here
+        // changed it against all its parents.
+        #expect(Set(summaries(result)) == ["c1", "c2", "c4", "c5"], "\(summaries(result))")
         #expect(Self.isSubsequence(summaries(result), of: history), "\(summaries(result)) vs \(history)")
         let cut = try await search(.file, "f", limit: 2, in: repo)
         #expect(summaries(cut) == Array(summaries(result).prefix(2)) && cut.isCut, "the cut is made after ordering")
+    }
+
+    /// Side branches whose change to `f.txt` a merge did not keep, each deleted after its merge —
+    /// where git's default simplification follows only the kept parent and drops their commits —
+    /// beside the spec's clean merge (not listed) and evil merge (listed), and an octopus merge.
+    private func droppedSideHistory(_ repo: TestRepo) async throws {
+        func change(_ path: String, _ text: String, _ message: String) async throws {
+            try repo.write(path, text + "\n")
+            try await repo.commitAll(message)
+        }
+        func branch(_ name: String) async throws { try await repo.git(["switch", "-q", "-c", name]) }
+        func main() async throws { try await repo.git(["switch", "-q", "main"]) }
+        func delete(_ name: String) async throws { try await repo.git(["branch", "-q", "-D", name]) }
+        try await change("f.txt", "base", "base")
+        try await change("other.txt", "o", "other base")
+        // A change undone on its branch, merged with --no-ff.
+        try await branch("s1")
+        try await change("f.txt", "changed", "s1: touch f")
+        try await change("f.txt", "base", "s1: undo f")
+        try await main()
+        try await change("other.txt", "o1", "main: other 1")
+        try await repo.git(["merge", "-q", "--no-ff", "-m", "merge s1", "s1"])
+        try await delete("s1")
+        // `-s ours`.
+        try await branch("s2")
+        try await change("f.txt", "side two", "s2: change f")
+        try await main()
+        try await change("other.txt", "o2", "main: other 2")
+        try await repo.git(["merge", "-q", "-s", "ours", "-m", "merge s2 ours", "s2"])
+        try await delete("s2")
+        // A conflict resolved by taking ours.
+        try await branch("s3")
+        try await change("f.txt", "side three", "s3: change f")
+        try await main()
+        try await change("f.txt", "main three", "main: change f")
+        try await repo.git(["merge", "-q", "s3"], allowedExitCodes: [1])
+        try await repo.git(["checkout", "-q", "--ours", "f.txt"])
+        try await repo.git(["add", "f.txt"])
+        try await repo.git(["commit", "-q", "-m", "merge s3 kept ours"])
+        try await delete("s3")
+        // A clean merge of a side change (the spec's case: the side commit is listed, the merge not).
+        try await branch("s5")
+        try await change("f.txt", "side five", "s5: change f")
+        try await main()
+        try await change("other.txt", "o5", "main: other 5")
+        try await repo.git(["merge", "-q", "-m", "merge s5 clean", "s5"])
+        try await delete("s5")
+        // An evil merge: neither side changes f, the merge does (the spec's case: listed).
+        try await branch("s6")
+        try await change("g.txt", "g", "s6: g")
+        try await main()
+        try await change("other.txt", "o6", "main: other 6")
+        try await repo.git(["merge", "-q", "--no-commit", "s6"])
+        try repo.write("f.txt", "evil\n")
+        try await repo.commitAll("merge s6 evil")
+        try await delete("s6")
+        // An octopus that takes one side's f: TREESAME to that parent, so not listed.
+        try await branch("o1")
+        try await change("a.txt", "a", "o1: a")
+        try await main()
+        try await branch("o2")
+        try await change("f.txt", "octo", "o2: change f")
+        try await main()
+        try await change("other.txt", "o7", "main: other 7")
+        try await repo.git(["merge", "-q", "-m", "octopus", "o1", "o2"])
+        for name in ["o1", "o2"] { try await delete(name) }
+    }
+
+    /// Ruling P19: File lists every non-merge commit that changed a matching path, as History
+    /// shows them, and a merge only when it changed the path against every parent.
+    @Test func fileModeListsSideCommitsAMergeDidNotKeep() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try await droppedSideHistory(repo)
+        let history = try await backend.snapshot(at: repo.root, historyDepth: 1000).commits.map(\.summary)
+
+        // Control: git's default simplification (the vector before) misses the dropped sides.
+        let plain = try await repo.git(["log", "--exclude=refs/stash", "--all", "--topo-order", "--format=%s", "--", "f.txt"])
+        let simplified = String(decoding: plain, as: UTF8.self).split(separator: "\n").map(String.init)
+        #expect(!simplified.contains("s1: touch f") && !simplified.contains("s2: change f") && !simplified.contains("s3: change f"),
+                "the fixture must defeat default simplification, or this proves nothing: \(simplified)")
+
+        let found = summaries(try await search(.file, "f.txt", in: repo))
+
+        #expect(Set(found) == [
+            "base", "s1: touch f", "s1: undo f", "s2: change f", "s3: change f", "main: change f",
+            "s5: change f", "merge s6 evil", "o2: change f",
+        ], "\(found)")
+        #expect(Self.isSubsequence(found, of: history), "\(found) vs \(history)")
+    }
+
+    // MARK: - What the walk starts from
+
+    /// Ruling P21: `--all` starts from every ref under `refs/` but `refs/stash` — notes, a
+    /// remote-tracking ref with no remote part, any other namespace (measured) — and the snapshot
+    /// carries every one of them by name and id (`RefCollection.walkedRefs`), so the app can tell
+    /// when the walk's start points moved.
+    @Test func theSnapshotCarriesEveryRefTheWalkStartsFrom() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        try await commit(repo, "base", file: "a.txt")
+        try await repo.git(["tag", "-a", "v1", "-m", "v1"])
+        let tree = String(decoding: try await repo.git(["write-tree"]), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        var only: [String: String] = [:]
+        for ref in ["refs/pull/1/head", "refs/remotes/noslash", "refs/custom/x"] {
+            let made = try await repo.git(["commit-tree", tree, "-p", "HEAD", "-m", "only \(ref)"])
+            let sha = String(decoding: made, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            try await repo.git(["update-ref", ref, sha])
+            only[ref] = sha
+        }
+        try await repo.git(["notes", "add", "-m", "a note", "HEAD"])
+        try repo.write("a.txt", "stashed\n")
+        try await repo.git(["stash", "push", "-q"])
+
+        // Control: the walk does start from each of them.
+        let walked = String(decoding: try await repo.git(["log", "--exclude=refs/stash", "--all", "--format=%s"]), as: UTF8.self)
+        for ref in only.keys { #expect(walked.contains("only \(ref)"), "\(ref)") }
+
+        let refs = try await backend.snapshot(at: repo.root, historyDepth: 100).refs
+        #expect(Set(refs.walkedRefs.keys) == [
+            "refs/heads/main", "refs/tags/v1", "refs/notes/commits", "refs/pull/1/head", "refs/remotes/noslash", "refs/custom/x",
+        ])
+        for (ref, sha) in only { #expect(refs.walkedRefs[ref] == sha, "\(ref)") }
+        #expect(refs.walkedRefs["refs/heads/main"] == (try await repo.headSha()))
+    }
+
+    // MARK: - A partial clone
+
+    /// How many objects the repository at `root` lacks (`rev-list --missing=print`, which never
+    /// fetches).
+    private func missingObjects(_ repo: TestRepo) async throws -> Int {
+        let out = try await repo.git(["rev-list", "--objects", "--all", "--missing=print"])
+        return String(decoding: out, as: UTF8.self).split(separator: "\n").filter { $0.hasPrefix("?") }.count
+    }
+
+    /// Ruling P20: a search only reads. In a partial clone git would fetch every missing blob a
+    /// Code search diffs (measured: 4 missing before, 0 after); with `GIT_NO_LAZY_FETCH=1` it
+    /// fails at once instead, as `CommitSearchError.contentsNotDownloaded`, and nothing is
+    /// fetched. Message and File need no blobs, and still search. The promisor is a local bare
+    /// repository over `file://`: no network.
+    @Test func aPartialCloneIsNeverFetchedFrom() async throws {
+        let source = try await TestRepo.makeEmpty()
+        defer { source.cleanUp() }
+        for index in 1...3 {
+            try source.write("f\(index).txt", "content \(index) needle\(index)\n")
+            try await source.commitAll("c\(index)")
+        }
+        let bare = source.root.appendingPathExtension("bare")
+        let cloneURL = source.root.appendingPathExtension("partial")
+        defer {
+            try? FileManager.default.removeItem(at: bare)
+            try? FileManager.default.removeItem(at: cloneURL)
+        }
+        try await source.git(["clone", "-q", "--bare", source.root.path, bare.path])
+        try await source.git(["-C", bare.path, "config", "uploadpack.allowFilter", "true"])
+        try await source.git(["clone", "-q", "--filter=blob:none", "--no-checkout", "file://" + bare.path, cloneURL.path])
+        let clone = TestRepo(root: cloneURL)
+        let missing = try await missingObjects(clone)
+        #expect(missing >= 3, "the clone must lack the blobs, or this proves nothing")
+
+        let error = await thrownError { _ = try await search(.code, "needle2", in: clone) }
+        guard case CommitSearchError.contentsNotDownloaded? = error as? CommitSearchError else {
+            Issue.record("expected contentsNotDownloaded, got \(String(describing: error))")
+            return
+        }
+        #expect(try await missingObjects(clone) == missing, "nothing was fetched")
+        #expect(summaries(try await search(.messageAuthorOrID, "c2", in: clone)) == ["c2"])
+        #expect(summaries(try await search(.file, "f2", in: clone)) == ["c2"])
+        #expect(try await missingObjects(clone) == missing, "nor by Message or File")
+
+        // Control: the same read without the variable does fetch, so the fixture is a live
+        // promisor and the variable is what stopped it.
+        let fetched = try await clone.git(["log", "--all", "--format=%s", "-i", "-Sneedle2"])
+        #expect(String(decoding: fetched, as: UTF8.self) == "c2\n")
+        #expect(try await missingObjects(clone) < missing)
     }
 
     // MARK: - File

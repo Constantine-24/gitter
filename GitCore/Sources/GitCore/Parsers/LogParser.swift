@@ -42,32 +42,37 @@ public enum LogParser {
     }
 
     /// One 8-field record of `scanWithMessages`, as byte ranges of the whole output: no `String`
-    /// exists until `commit()` is asked for.
-    public struct Record {
+    /// exists until `commit()` is asked for. Valid only inside the `keep` closure it is handed
+    /// to — its pointers are into the output and the scan's own buffers — so it is internal, and
+    /// never kept.
+    struct Record {
+        enum Field: Int {
+            case sha, parents, authorName, authorEmail, date, summary, refs, message
+        }
+
         let base: UnsafePointer<UInt8>
         let starts: UnsafePointer<Int>
         let ends: UnsafePointer<Int>
 
-        /// Field `index` (0 sha, 1 parents, 2 author name, 3 author email, 4 date, 5 summary,
-        /// 6 refs, 7 message) as bytes.
-        public func bytes(_ index: Int) -> UnsafeBufferPointer<UInt8> {
-            UnsafeBufferPointer(start: base + starts[index], count: ends[index] - starts[index])
+        func bytes(_ field: Field) -> UnsafeBufferPointer<UInt8> {
+            let index = field.rawValue
+            return UnsafeBufferPointer(start: base + starts[index], count: ends[index] - starts[index])
         }
 
-        private func string(_ index: Int) -> String { String(decoding: bytes(index), as: UTF8.self) }
+        private func string(_ field: Field) -> String { String(decoding: bytes(field), as: UTF8.self) }
 
-        public var message: String { string(7) }
-
-        public func commit() -> Commit {
-            makeCommit(sha: string(0), parents: string(1), authorName: string(2), authorEmail: string(3),
-                       date: string(4), summary: string(5), refs: string(6))
+        func commit() -> Commit {
+            makeCommit(sha: string(.sha), parents: string(.parents), authorName: string(.authorName),
+                       authorEmail: string(.authorEmail), date: string(.date), summary: string(.summary),
+                       refs: string(.refs))
         }
     }
 
-    /// `parseWithMessages`' records, offered to `keep` as bytes; a `Commit` is built only for a
-    /// record `keep` accepts, and the scan stops once `limit` are kept. Searching 100,000 commits
-    /// built a `Commit` and a message `String` for every one before (measured, F1 fix round 2).
-    public static func scanWithMessages(_ data: Data, limit: Int = .max, keep: (Record) -> Bool) -> [Commit] {
+    /// The records of a read with `%x00%B` appended to the format — 8 NUL-terminated fields per
+    /// commit, the 8th its whole message — offered to `keep` as bytes. A `Commit` is built only for
+    /// a record `keep` accepts, and the scan stops once `limit` are kept, so a search of 100,000
+    /// commits builds a `Commit` only for its matches.
+    static func scanWithMessages(_ data: Data, limit: Int = .max, keep: (Record) -> Bool) -> [Commit] {
         var kept: [Commit] = []
         guard limit > 0 else { return kept }
         data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
@@ -101,9 +106,9 @@ public enum LogParser {
         return kept
     }
 
-    /// The same read with `%x00%B` appended to the format: 8 fields per commit, the 8th the whole
-    /// message (commit search matches it in the app). The 7 fields before it are `parse`'s.
-    public static func parseWithMessages(_ data: Data) -> [(commit: Commit, message: String)] {
+    /// The same records read the plain way, through `parse` and a `String` per message: the
+    /// reference `scanWithMessages` is tested against. The app reads with `scanWithMessages`.
+    static func parseWithMessages(_ data: Data) -> [(commit: Commit, message: String)] {
         let text = String(decoding: data, as: UTF8.self)
         var fields = text.split(separator: "\u{0}", omittingEmptySubsequences: false)
         if fields.last == "" { fields.removeLast() }

@@ -134,6 +134,12 @@ public struct RefCollection: Sendable, Hashable {
     public let remoteBranches: [Branch]   // excludes symbolic refs such as "origin/HEAD"
     public let tags: [Tag]
     public let remotes: [Remote]
+    /// Every ref `for-each-ref` listed, by full name, with the id it holds — except `refs/stash`:
+    /// what History's and commit search's `log --exclude=refs/stash --all` start from besides the
+    /// worktrees' HEADs (measured, git 2.54: notes, `refs/pull/…`, a `refs/remotes/<name>` with no
+    /// remote part and any other namespace are walked; `FETCH_HEAD` and `ORIG_HEAD` are not). The
+    /// three lists above leave some of these out.
+    public let walkedRefs: [String: String]
 
     /// The configured remotes, in git's order. Derived from `git remote -v` rather than from
     /// the remote branches' names: a name may contain a slash, and a remote nothing has been
@@ -166,19 +172,22 @@ public struct RefCollection: Sendable, Hashable {
         remoteBranches.filter { remote(of: $0) == nil }
     }
 
+    /// `walkedRefs` defaults to empty for hand-built collections; the parser and every copy in
+    /// GitCore pass it on.
     public init(localBranches: [Branch], remoteBranches: [Branch], tags: [Tag],
-                remotes: [Remote] = []) {
+                remotes: [Remote] = [], walkedRefs: [String: String] = [:]) {
         self.localBranches = localBranches
         self.remoteBranches = remoteBranches
         self.tags = tags
         self.remotes = remotes
+        self.walkedRefs = walkedRefs
     }
 
     /// A copy carrying the configured remotes. `for-each-ref` cannot know them, so the
     /// snapshot reads `git remote -v` beside it and joins the two here.
     public func with(remotes: [Remote]) -> RefCollection {
         RefCollection(localBranches: localBranches, remoteBranches: remoteBranches,
-                      tags: tags, remotes: remotes)
+                      tags: tags, remotes: remotes, walkedRefs: walkedRefs)
     }
 
     public static let empty = RefCollection(localBranches: [], remoteBranches: [], tags: [])

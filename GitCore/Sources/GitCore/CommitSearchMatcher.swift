@@ -32,34 +32,41 @@ public enum CommitSearchMatcher {
 
     /// The query is one literal phrase, folded for case (Unicode) and for whitespace. It matches
     /// when the message, the author's name or the author's email holds it, or when it is an id
-    /// query and the full `sha` starts with it. A query of only blanks matches nothing.
+    /// query and the full `sha` starts with it. A query of only blanks matches nothing. The
+    /// `String` form of `Session` — the path a search takes — for one commit.
     public static func matches(
         query: String, sha: String, authorName: String, authorEmail: String, message: String
     ) -> Bool {
-        let needle = normalized(query)
-        guard !needle.isEmpty else { return false }
-        if isIDQuery(needle), sha.lowercased().hasPrefix(needle.lowercased()) { return true }
-        return contains(normalized(authorName), needle)
-            || contains(normalized(authorEmail), needle)
-            || contains(normalized(message), needle)
+        let session = Session(query: query)
+        var sha = sha, authorName = authorName, authorEmail = authorEmail, message = message
+        return sha.withUTF8 { sha in
+            authorName.withUTF8 { name in
+                authorEmail.withUTF8 { email in
+                    message.withUTF8 { message in
+                        session.matches(sha: sha, authorName: name, authorEmail: email, message: message)
+                    }
+                }
+            }
+        }
     }
 
+    /// The full Unicode way: `haystack` normalised, then a case-insensitive literal search.
     private static func contains(_ haystack: String, _ needle: String) -> Bool {
-        haystack.range(of: needle, options: .caseInsensitive) != nil
+        normalized(haystack).range(of: needle, options: .caseInsensitive) != nil
     }
 }
 
 extension CommitSearchMatcher {
     /// One search's matcher, for a read of many commits. The query is normalised once. A field is
     /// matched on its UTF-8 bytes, without a `String`, by turning each scalar into a fold key
-    /// (`keys`): whitespace runs become one space, and a letter becomes its case-folded form.
-    /// Only scalars whose folding is plain take that path. A scalar that is not (a combining mark,
-    /// `ß`, the Kelvin sign, anything outside the BMP,
-    /// invalid UTF-8) sends that one field to the full Unicode way of `matches(query:…)`. That the
-    /// keyed answer equals the Unicode one for every scalar the table trusts is not proved: it was
-    /// checked by an exhaustive probe over all keyed scalars with ASCII neighbours (F1 fix round 3,
-    /// 0 divergences) and by a seeded differential test, which a new Unicode version could outdate. 100,000 commits with 40-word bodies went from
-    /// about 4.7 s to the figure in docs/DEVELOPMENT.md.
+    /// (`keys`): whitespace runs become one space, and a letter becomes its case-folded form. Only
+    /// scalars whose folding is plain take that path. A scalar that is not (a combining mark,
+    /// `ß`, the Kelvin sign, anything outside the BMP, invalid UTF-8) sends that one field to the
+    /// full Unicode way (`contains`). That the keyed answer equals the Unicode one for every
+    /// scalar the table trusts is checked, not proved: by a one-off exhaustive probe over all
+    /// keyed scalars with ASCII neighbours (F1 fix round 3, 0 divergences; not in the tree) and by
+    /// a seeded differential test, either of which a new Unicode version could outdate. The time
+    /// it saves is in docs/DEVELOPMENT.md.
     public final class Session {
         private let needle: String
         private let needleKeys: [UInt16]       // empty when the needle needs the Unicode way
@@ -69,14 +76,8 @@ extension CommitSearchMatcher {
 
         public init(query: String) {
             needle = CommitSearchMatcher.normalized(query)
-            var keys: [UInt16] = []
-            for scalar in needle.unicodeScalars {
-                guard scalar.value < 0x10000, let key = Session.keys[Int(scalar.value)] as UInt16?, key != 0 else {
-                    keys = []; break
-                }
-                keys.append(key)
-            }
-            needleKeys = keys
+            let keys = needle.unicodeScalars.map { $0.value < 0x10000 ? Session.keys[Int($0.value)] : 0 }
+            needleKeys = keys.contains(0) ? [] : keys
             idPrefix = CommitSearchMatcher.isIDQuery(needle) ? needle.utf8.map(Session.lower) : nil
             capacity = 4_096
             buffer = .allocate(capacity: capacity)
@@ -88,10 +89,10 @@ extension CommitSearchMatcher {
             (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains(byte) ? byte | 0x20 : byte
         }
 
-        /// The fold key of every BMP scalar, 0 for one that must not be trusted: whitespace
-        /// (`normalized`'s set) is 0x20; a scalar with a one-scalar BMP case mapping each way is
-        /// `lower(upper(c))`; the rest (combining and format characters, Hangul jamo, multi-scalar mappings, mappings into ASCII from outside it, surrogates)
-        /// are 0. An ASCII letter is its lower case.
+        /// The fold key of every BMP scalar, 0 for one that must not be trusted (each guard below
+        /// says which and why): whitespace (`normalized`'s set) is 0x20; ASCII is itself with its
+        /// letters lowered, NUL 0; any other scalar with a one-scalar BMP case mapping each way is
+        /// `lower(upper(c))`.
         static let keys: [UInt16] = {
             var table = [UInt16](repeating: 0, count: 0x10000)
             for value in 0..<0x10000 {
@@ -109,8 +110,10 @@ extension CommitSearchMatcher {
                 default: break
                 }
                 if properties.canonicalCombiningClass.rawValue != 0 { continue }
-                // Canonical singletons (U+037E is `;`, U+F900 is U+8C48) and their targets:
-                // canonical equivalence makes them equal in the Unicode way, and a key would not.
+                // Canonical singletons (U+037E becomes `;`, U+F900 becomes U+8C48): canonical
+                // equivalence makes each equal to its target in the Unicode way, and a key would
+                // not. Zeroing the singleton alone is enough: a field or needle holding one goes to
+                // the Unicode way whole, and there its target, which keeps its key, matches it.
                 if Array(String(scalar).precomposedStringWithCanonicalMapping.unicodeScalars) != [scalar] { continue }
                 // Grapheme extenders that are not marks (Thai sara am, halfwidth dakuten): joined to
                 // the letter before them, so a search for that letter alone must not find them.
@@ -147,8 +150,7 @@ extension CommitSearchMatcher {
         private func field(_ bytes: UnsafeBufferPointer<UInt8>) -> Bool {
             if bytes.isEmpty { return false }
             if !needleKeys.isEmpty, let found = keyedContains(bytes) { return found }
-            let text = String(decoding: bytes, as: UTF8.self)
-            return CommitSearchMatcher.normalized(text).range(of: needle, options: .caseInsensitive) != nil
+            return CommitSearchMatcher.contains(String(decoding: bytes, as: UTF8.self), needle)
         }
 
         /// The keyed search, or nil when a scalar of `bytes` is not to be trusted.

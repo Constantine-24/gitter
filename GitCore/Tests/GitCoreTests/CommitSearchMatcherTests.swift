@@ -61,6 +61,35 @@ import Testing
         #expect(!matches("   ", message: "anything"))
     }
 
+    /// Ordinary words of hex letters ("added", "feed") and a revert's id in a message are id
+    /// queries too, but a commit whose id does not start with them is still found by its text.
+    @Test func aHexLookingWordIsStillText() {
+        #expect(matches("added", message: "Added a row"))
+        #expect(matches("feed", name: "Feed Bot"))
+        #expect(matches("1234abcd", message: "This reverts commit 1234abcd."))
+        #expect(!matches("added", message: "a row"), "control: text that does not hold it")
+    }
+
+    /// A field longer than the session's first buffer (4,096 keys) grows it, and the same session
+    /// then still reads short and long fields right.
+    @Test func aLongFieldGrowsTheBuffer() {
+        let session = CommitSearchMatcher.Session(query: "the needle")
+        func field(_ text: String) -> Bool {
+            let bytes = Array(text.utf8), none = [UInt8]()
+            return bytes.withUnsafeBufferPointer { message in
+                none.withUnsafeBufferPointer { none in
+                    session.matches(sha: none, authorName: none, authorEmail: none, message: message)
+                }
+            }
+        }
+        let filler = String(repeating: "lorem ipsum dolor sit ", count: 1_200)
+        #expect(filler.utf8.count > 25_000)
+        #expect(field(filler + "the\nneedle"))
+        #expect(field("a short the needle"))
+        #expect(!field(String(filler.prefix(10_000))))
+        #expect(field("the needle " + filler))
+    }
+
     /// Control: the helper can fail (a query the message does not hold).
     @Test func theHelperCanFail() {
         withKnownIssue("`zzz` is not in the message") {

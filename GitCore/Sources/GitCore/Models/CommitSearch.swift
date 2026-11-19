@@ -1,7 +1,7 @@
 import Foundation
 
-/// What a commit search looks for in (F1). The mode says where the query is looked for; the
-/// reads and their measured facts are documented on `GitBackend.searchCommits`.
+/// Where a commit search looks (F1). The reads and their measured facts are documented on
+/// `GitBackend.searchCommits`.
 public enum CommitSearchMode: String, Sendable, Hashable, CaseIterable {
     /// The message (subject or body), the author's name or email, or the start of the id.
     case messageAuthorOrID
@@ -41,5 +41,14 @@ public struct CommitSearchResult: Sendable, Hashable {
 
 public enum CommitSearchLimit {
     /// History's own cap (`HistoryDepth`, H1): a search lists at most this many matches.
-    public static let rows = 50_000
+    public static let rows = HistoryDepth.cap
+}
+
+/// Why a search read failed, where the failure is one the app words itself.
+public enum CommitSearchError: Error, Equatable {
+    /// A partial clone lacks contents the search needs, and searching never downloads them: every
+    /// search read runs with `GIT_NO_LAZY_FETCH=1` (Ruling P20). `gitsWords` is git's stderr
+    /// (measured: `warning: lazy fetching disabled; some objects may not be available`, then
+    /// `fatal: could not fetch <id> from promisor remote`, exit 128).
+    case contentsNotDownloaded(gitsWords: String)
 }

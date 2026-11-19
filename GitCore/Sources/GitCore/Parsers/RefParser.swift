@@ -40,6 +40,7 @@ public enum RefParser {
         var localBranches: [Branch] = []
         var remoteBranches: [Branch] = []
         var tags: [Tag] = []
+        var walkedRefs: [String: String] = [:]
 
         for line in records(text) {
             let fields = line.split(separator: "\u{0}", omittingEmptySubsequences: false)
@@ -47,6 +48,7 @@ public enum RefParser {
 
             let refname = String(fields[0])
             let sha = String(fields[1])
+            if refname != "refs/stash" { walkedRefs[refname] = sha }
             let headMarker = fields[2]
             let upstreamField = String(fields[3])
             let objectType = fields[4]
@@ -119,14 +121,15 @@ public enum RefParser {
                         isSymbolic: !(symrefField ?? "").isEmpty)
                 )
             }
-            // Other refs (refs/stash, refs/notes/...) are intentionally skipped.
+            // Other refs (refs/stash, refs/notes/...) are not listed; `walkedRefs` has them.
         }
 
         localBranches.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         remoteBranches.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         tags.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
-        return RefCollection(localBranches: localBranches, remoteBranches: remoteBranches, tags: tags)
+        return RefCollection(
+            localBranches: localBranches, remoteBranches: remoteBranches, tags: tags, walkedRefs: walkedRefs)
     }
 
     /// The output cut into records: each line, with the lines that follow it and hold no NUL —
