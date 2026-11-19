@@ -93,19 +93,27 @@ import Testing
         "a", "B", "k", "S", "s", "e", "i", "I", "f", "x", " ", "  ", "\t", "\n", "\r\n", "\u{0B}", "\u{1C}",
         "ё", "Ё", "е", "й", "é", "É", "e\u{301}", "\u{301}", "ß", "ẞ", "\u{212A}", "ſ", "ﬁ", "İ", "ı", "Σ", "σ", "ς",
         "\u{A0}", "\u{2028}", "\u{85}", "\u{3000}", "\u{200D}", "漢", "😀", "한", "\u{1112}\u{1161}", "ǅ", "Ǆ", "ǆ",
+        // Canonical singletons and their targets, and grapheme extenders that are not marks.
+        ";", "\u{37E}", "\u{B7}", "\u{387}", "`", "\u{1FEF}", "\u{B4}", "\u{1FFD}", "\u{3008}", "\u{2329}",
+        "\u{8C48}", "\u{F900}", "\u{3AC}", "\u{1F71}", "\u{2126}", "\u{3A9}", "\u{212B}", "Å", "ก", "ท",
+        "\u{E33}", "\u{EB3}", "\u{D4E}", "\u{FF76}", "\u{FF9E}", "\u{FF9F}",
     ]
 
-    @Test func sessionAgreesWithTheUnicodeWay() {
+    /// Seeded cases over `alphabet`: the cases where `agree(query, haystack)` is false, and how
+    /// many were hits for the reference.
+    private static func differential(
+        cases: Int, seed: UInt64, agree: (String, String) -> Bool
+    ) -> (disagreements: [String], hits: Int) {
         // A fixed linear congruential sequence keeps a failure reproducible.
-        var state: UInt64 = 0x9E37_79B9_7F4A_7C15
+        var state = seed
         func next(_ bound: Int) -> Int {
             state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
             return Int((state >> 33) % UInt64(bound))
         }
         var disagreements: [String] = []
-        var matched = 0
-        for _ in 0..<20_000 {
-            let haystack = (0..<(1 + next(9))).map { _ in Self.alphabet[next(Self.alphabet.count)] }.joined()
+        var hits = 0
+        for _ in 0..<cases {
+            let haystack = (0..<(1 + next(9))).map { _ in alphabet[next(alphabet.count)] }.joined()
             // Half the needles are a piece of the haystack (a likely hit), half are made up.
             var query: String
             if next(2) == 0 {
@@ -114,15 +122,45 @@ import Testing
                 let end = start + 1 + next(scalars.count - start)
                 query = String(String.UnicodeScalarView(scalars[start..<end]))
             } else {
-                query = (0..<(1 + next(3))).map { _ in Self.alphabet[next(Self.alphabet.count)] }.joined()
+                query = (0..<(1 + next(3))).map { _ in alphabet[next(alphabet.count)] }.joined()
             }
-            let expected = Self.reference(query, haystack)
-            let got = Self.session(query, in: Array(haystack.utf8))
-            if expected { matched += 1 }
-            if expected != got { disagreements.append("query \(query.debugDescription) in \(haystack.debugDescription): reference \(expected), session \(got)") }
+            if reference(query, haystack) { hits += 1 }
+            if !agree(query, haystack) {
+                disagreements.append("query \(query.debugDescription) in \(haystack.debugDescription)")
+            }
         }
-        #expect(disagreements.isEmpty, "\(disagreements.count) of 20000, first: \(disagreements.prefix(5))")
-        #expect(matched > 2_000, "the comparison must include many hits, or it proves little: \(matched)")
+        return (disagreements, hits)
+    }
+
+    @Test func sessionAgreesWithTheUnicodeWay() {
+        let result = Self.differential(cases: 20_000, seed: 0x9E37_79B9_7F4A_7C15) { query, haystack in
+            Self.reference(query, haystack) == Self.session(query, in: Array(haystack.utf8))
+        }
+        #expect(result.disagreements.isEmpty, "\(result.disagreements.count) of 20000, first: \(result.disagreements.prefix(5))")
+        #expect(result.hits > 2_000, "the comparison must include many hits, or it proves little: \(result.hits)")
+    }
+
+    /// The classes of scalar the table once trusted wrongly, by hand: canonical singletons
+    /// (equal to their target under canonical equivalence), and grapheme extenders that are not
+    /// marks (so the letter before them is not a match of its own).
+    @Test func sessionAgreesOnSingletonsAndExtenders() {
+        let singletons: [(String, String)] = [
+            (";", "\u{37E}"), ("\u{B7}", "\u{387}"), ("`", "\u{1FEF}"), ("\u{B4}", "\u{1FFD}"),
+            ("\u{3008}", "\u{2329}"), ("\u{3009}", "\u{232A}"), ("\u{8C48}", "\u{F900}"),
+            ("\u{3AC}", "\u{1F71}"), ("\u{3A9}", "\u{2126}"), ("K", "\u{212A}"), ("\u{C5}", "\u{212B}"),
+        ]
+        for (a, b) in singletons {
+            for (q, h) in [(a, b), (b, a), ("x" + a + "y", "x" + b + "y"), ("x" + b + "y", "x" + a + "y")] {
+                #expect(Self.session(q, in: Array(h.utf8)) == Self.reference(q, h), "\(q.debugDescription) in \(h.debugDescription)")
+            }
+        }
+        let extenders: [(String, String)] = [
+            ("ก", "ก\u{E33}"), ("ท", "ท\u{E33}"), ("\u{E81}", "\u{E81}\u{EB3}"), ("\u{D12}", "\u{D12}\u{D4E}"),
+            ("\u{FF76}", "\u{FF76}\u{FF9E}"), ("\u{FF8A}", "\u{FF8A}\u{FF9F}"),
+        ]
+        for (q, h) in extenders {
+            #expect(Self.session(q, in: Array(h.utf8)) == Self.reference(q, h), "\(q.debugDescription) in \(h.debugDescription)")
+        }
     }
 
     @Test func sessionReadsInvalidUTF8LikeTheStringWay() {
@@ -167,10 +205,15 @@ import Testing
         }
     }
 
-    /// Control: the comparison can fail (a path that answered wrongly would be reported).
+    /// Control: the differential loop collects disagreements. Against a comparator that is wrong
+    /// for one scalar class (it says a Greek final sigma never matches), the loop reports them.
     @Test func theComparisonCanFail() {
-        withKnownIssue("the session says no to a phrase the reference finds, when the haystack is another one") {
-            #expect(Self.session("zzz", in: Array("stash".utf8)) == Self.reference("stash", "stash"))
+        withKnownIssue("a deliberately wrong comparator disagrees with the reference") {
+            let result = Self.differential(cases: 20_000, seed: 0x9E37_79B9_7F4A_7C15) { query, haystack in
+                let wrong = Self.session(query, in: Array(haystack.utf8)) && !query.contains("ς")
+                return Self.reference(query, haystack) == wrong
+            }
+            #expect(result.disagreements.isEmpty, "\(result.disagreements.count) disagreements")
         }
     }
 }

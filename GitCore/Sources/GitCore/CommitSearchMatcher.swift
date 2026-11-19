@@ -55,9 +55,10 @@ extension CommitSearchMatcher {
     /// (`keys`): whitespace runs become one space, and a letter becomes its case-folded form.
     /// Only scalars whose folding is plain take that path. A scalar that is not (a combining mark,
     /// `ß`, the Kelvin sign, anything outside the BMP,
-    /// invalid UTF-8) sends that one field to the full Unicode way of `matches(query:…)`, so the
-    /// answers are the same by construction wherever the keys are not trusted, and the tests
-    /// compare the two over the tricky scalars. 100,000 commits with 40-word bodies went from
+    /// invalid UTF-8) sends that one field to the full Unicode way of `matches(query:…)`. That the
+    /// keyed answer equals the Unicode one for every scalar the table trusts is not proved: it was
+    /// checked by an exhaustive probe over all keyed scalars with ASCII neighbours (F1 fix round 3,
+    /// 0 divergences) and by a seeded differential test, which a new Unicode version could outdate. 100,000 commits with 40-word bodies went from
     /// about 4.7 s to the figure in docs/DEVELOPMENT.md.
     public final class Session {
         private let needle: String
@@ -108,6 +109,12 @@ extension CommitSearchMatcher {
                 default: break
                 }
                 if properties.canonicalCombiningClass.rawValue != 0 { continue }
+                // Canonical singletons (U+037E is `;`, U+F900 is U+8C48) and their targets:
+                // canonical equivalence makes them equal in the Unicode way, and a key would not.
+                if Array(String(scalar).precomposedStringWithCanonicalMapping.unicodeScalars) != [scalar] { continue }
+                // Grapheme extenders that are not marks (Thai sara am, halfwidth dakuten): joined to
+                // the letter before them, so a search for that letter alone must not find them.
+                if ("a" + String(scalar)).count == 1 || (String(scalar) + "a").count == 1 { continue }
                 let upper = properties.uppercaseMapping.unicodeScalars
                 let title = properties.titlecaseMapping.unicodeScalars
                 let low = properties.lowercaseMapping.unicodeScalars
