@@ -7,7 +7,7 @@ import Testing
 // `Testing.Tag` is in scope here too, so GitCore's is written `GitCore.Tag` (B1.3).
 @testable import GitCore
 
-/// The store's backend for a test: all 108 requirements of the twelve protocols forwarded to a
+/// The store's backend for a test: all 109 requirements of the twelve protocols forwarded to a
 /// real `CLIGitBackend` on the test's scratch repository, with any one call open to the test
 /// (E3 Task 3, spec Design §2). A test can, around a call:
 /// - `hook` it: run code before or after every such call, and throw to make the call throw;
@@ -38,7 +38,7 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
     GitStashBackend, GitConflictBackend, GitOperationBackend, GitHistoryBackend, GitTagBackend,
     GitRemoteAdminBackend, GitCompareBackend, GitWorktreeBackend, Sendable
 {
-    /// One case per protocol requirement (108); the raw value is the method's `#function`
+    /// One case per protocol requirement (109); the raw value is the method's `#function`
     /// spelling. The overloads' cases carry what tells them apart: `stageAllExpecting`,
     /// `discardExpectationTracked` / `discardExpectationUntracked`, `commitByID` (`GitBackend`'s
     /// one-commit read, beside `GitWorkingCopyBackend`'s `commit`), `rebaseOnto`
@@ -53,6 +53,7 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
         case commitFiles = "commitFiles(at:sha:)"
         case commitDiff = "commitDiff(at:sha:path:)"
         case branchActivity = "branchActivity(at:)"
+        case searchCommits = "searchCommits(_:limit:at:)"
 
         // GitWorkingCopyBackend
         case stage = "stage(paths:at:)"
@@ -348,6 +349,9 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
     }
     func branchActivity(at root: URL) async throws -> BranchActivity {
         try await around(.branchActivity) { try await real.branchActivity(at: root) }
+    }
+    func searchCommits(_ search: CommitSearch, limit: Int, at root: URL) async throws -> CommitSearchResult {
+        try await around(.searchCommits) { try await real.searchCommits(search, limit: limit, at: root) }
     }
     func commitDiff(at root: URL, sha: String, path: String?) async throws -> [FileDiff] {
         try await around(.commitDiff) { try await real.commitDiff(at: root, sha: sha, path: path) }

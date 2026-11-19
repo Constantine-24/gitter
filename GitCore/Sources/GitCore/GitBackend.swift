@@ -36,6 +36,27 @@ public protocol GitBackend: Sendable {
     ///   detached HEAD naming a missing object, for one, exits 128 with `fatal: bad object HEAD`.
     /// - `--no-show-signature` keeps `log.showSignature` from adding gpg output to the text.
     func branchActivity(at root: URL) async throws -> BranchActivity
+    /// Commit search (F1): the commits `search` finds among everything History shows (every ref
+    /// except `refs/stash`), in History's order, at most `limit` of them; `isCut` says there were
+    /// more. An empty query returns an empty result without running git. A cancelled task throws
+    /// `CancellationError` (the read goes through `runStreaming`, which kills git).
+    ///
+    /// Every vector starts `log --exclude=refs/stash --all --topo-order --no-show-signature
+    /// --no-notes -z` (`--exclude` before `--all`: after it, stashes leak in). One read per
+    /// search, never two merged: the walk's order is not date order (a commit dated before its
+    /// parent still sits where the walk puts it). Measured (git 2.54, scratch repositories):
+    /// - Message, Author or ID reads every commit with its full message (`%B`) and matches in the
+    ///   app (`CommitSearchMatcher`): `--grep` and `--author` combine by AND, `--author` sees the
+    ///   mailmapped name where History shows `%an`, and `rev-parse` resolves a branch named like
+    ///   an id before the commit.
+    /// - File is `--no-follow -- ':(icase)*<escaped query>*'`: without `glob` magic a `*` crosses
+    ///   `/`, so it matches a fragment, a folder (`docs/`) or `Views/Sidebar`; `*`, `?`, `[` and
+    ///   `\` in the query are escaped. git folds ASCII case only (`LC_ALL=C`). A merge is listed
+    ///   only when it changed the path against every parent (default history simplification).
+    /// - Code is `--no-textconv --no-ext-diff -i -S<query>`: `-S` is literal, `-i` folds ASCII
+    ///   case, a `diff=` textconv driver would otherwise change the searched text, and a merge's
+    ///   own changes are not searched (no `-m`). No `-n`: a rare match walks everything.
+    func searchCommits(_ search: CommitSearch, limit: Int, at root: URL) async throws -> CommitSearchResult
 }
 
 extension GitBackend {

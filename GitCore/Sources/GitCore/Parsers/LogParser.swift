@@ -45,6 +45,24 @@ public enum LogParser {
         return commits
     }
 
+    /// The same read with `%x00%B` appended to the format: 8 fields per commit, the 8th the whole
+    /// message (commit search matches it in the app). The 7 fields before it are `parse`'s.
+    public static func parseWithMessages(_ data: Data) -> [(commit: Commit, message: String)] {
+        let text = String(decoding: data, as: UTF8.self)
+        var fields = text.split(separator: "\u{0}", omittingEmptySubsequences: false)
+        if fields.last == "" { fields.removeLast() }
+        var rows: [(commit: Commit, message: String)] = []
+        var index = 0
+        while index + 8 <= fields.count {
+            let seven = fields[index..<index + 7].joined(separator: "\u{0}") + "\u{0}"
+            if let commit = parse(Data(seven.utf8)).first {
+                rows.append((commit, String(fields[index + 7])))
+            }
+            index += 8
+        }
+        return rows
+    }
+
     /// `%aI`'s strict ISO 8601 (`2026-10-26T10:00:00+02:00`, or `Z`), read by one shared style.
     /// An `ISO8601DateFormatter` made per commit was most of a deep read's cost (H1, measured:
     /// 11.9 s of LogParser for 100,001 commits, the dates 4.3 s even with one shared formatter;
