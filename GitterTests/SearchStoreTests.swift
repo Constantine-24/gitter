@@ -405,15 +405,40 @@ import Testing
         #expect(store.commitForDetail(fixture.oldTip)?.summary == "o1")
     }
 
-    /// Control for the reveal: a result History has loaded is selected as it is, with no reveal.
-    @Test(.timeLimit(.minutes(10))) func leavingWithALoadedResultDoesNotReveal() async throws {
+    /// Ruling P10: a result selected during the search is revealed on leaving — scrolled to, as
+    /// Show in History does — even when History has it loaded.
+    @Test(.timeLimit(.minutes(10))) func leavingWithALoadedResultRevealsIt() async throws {
         let (repo, parser, _) = try Self.fixes()
         defer { repo.remove() }
         let backend = TestBackend()
         let (store, cleanup) = await Self.opened(repo, backend: backend)
         defer { cleanup() }
         await Self.search(store, "fix")
+        #expect(store.historyRows.isLoaded(parser))
         store.selectRows([.commit(parser)], shown: (Self.rows(store) ?? []).map(Selection.commit))
+        store.leaveSearch()
+        #expect(store.commitSearch == nil)
+        #expect(store.selection == .commit(parser))
+        #expect(store.pendingReveal == parser)
+        await waitUntilIdle(store)
+        // A loaded commit: selected and scrolled to, no deep load.
+        #expect(!backend.calls.contains(.historyRow))
+    }
+
+    /// Ruling P10: a selection from before the search, never changed, comes back where it was — not
+    /// revealed, though it is among the results.
+    @Test(.timeLimit(.minutes(10))) func leavingKeepsAPreSearchSelectionWhereItWas() async throws {
+        let (repo, parser, _) = try Self.fixes()
+        defer { repo.remove() }
+        let backend = TestBackend()
+        let (store, cleanup) = await Self.opened(repo, backend: backend)
+        defer { cleanup() }
+        store.select(.commit(parser))
+        await waitUntilIdle(store)
+        await Self.search(store, "fix")
+        #expect(Self.rows(store)?.contains(parser) == true)
+        #expect(store.selection == .commit(parser))
+
         store.leaveSearch()
         #expect(store.commitSearch == nil)
         #expect(store.selection == .commit(parser))
@@ -563,6 +588,151 @@ import Testing
         await waitUntilIdle(store)
         #expect(Self.searchCalls(backend) == calls + 1)
         #expect(Self.rows(store)?.count == 3)
+    }
+
+    /// Ruling P11: a reload that changes only what the configuration says — a remote added, its URL
+    /// changed, an upstream set — changes `RefCollection` but no branch, tag or HEAD: no search
+    /// runs, and Code is not marked out of date.
+    @Test(.timeLimit(.minutes(10))) func aConfigOnlyChangeRunsNothingAndLeavesCodeCurrent() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try repo.commit("a.txt", "a needle\n", "add it")
+        let added = try Self.sha(repo)
+        try repo.git("branch", "other")
+        let bare = try repo.makeBareRemote()
+        let backend = TestBackend()
+        let (store, cleanup) = await Self.opened(repo, backend: backend)
+        defer { cleanup() }
+        await Self.search(store, "needle", mode: .code)
+        #expect(Self.rows(store) == [added])
+        let calls = Self.searchCalls(backend)
+
+        let changes: [(String, () throws -> Void)] = [
+            ("remote add", { _ = try repo.git("remote", "add", "origin", bare.path) }),
+            ("remote set-url", { _ = try repo.git("remote", "set-url", "origin", bare.path + "/") }),
+            ("set upstream", { _ = try repo.git("branch", "--set-upstream-to=main", "other") }),
+        ]
+        for (change, make) in changes {
+            let refs = store.snapshot?.refs
+            let loads = store.snapshotLoadCount
+            try make()
+            await store.refresh()
+            await waitUntilIdle(store)
+            // The reload ran and saw a change: the whole-collection check would have fired.
+            #expect(store.snapshotLoadCount > loads)
+            #expect(store.snapshot?.refs != refs, "\(change)")
+            #expect(Self.searchCalls(backend) == calls, "\(change)")
+            #expect(store.commitSearch?.isStale == false, "\(change)")
+        }
+        #expect(Self.rows(store) == [added])
+    }
+
+    /// Ruling P12: a re-run after a ref change, held: the old rows, "Searching…" and the selection
+    /// stay until it lands.
+    @Test(.timeLimit(.minutes(10))) func aBackgroundRerunKeepsRowsAndSelectionUntilItLands() async throws {
+        let (repo, parser, lexer) = try Self.fixes()
+        defer { repo.remove() }
+        let backend = TestBackend()
+        let (store, cleanup) = await Self.opened(repo, backend: backend)
+        defer { cleanup() }
+        defer { await releaseAndSettle([backend], [store]) }
+        await Self.search(store, "fix")
+        store.selectRows([.commit(parser)], shown: (Self.rows(store) ?? []).map(Selection.commit))
+        await waitUntilIdle(store)
+
+        let gate = backend.hold(.searchCommits)
+        try repo.commit("e.txt", "printer\n", "fix the printer")
+        let printer = try Self.sha(repo)
+        await store.refresh()
+        #expect(await waitUntil("the re-run parked") { gate.waiting })
+        #expect(Self.rows(store) == [lexer, parser])
+        #expect(store.commitSearch?.status == .searching)
+        #expect(store.selection == .commit(parser))
+
+        gate.release()
+        await waitUntilIdle(store)
+        #expect(Self.rows(store) == [printer, lexer, parser])
+        #expect(store.commitSearch?.status == .done)
+        #expect(store.selection == .commit(parser))
+    }
+
+    /// Ruling P12: a ref change while a Message search still runs starts it again on the history as
+    /// it is now; the first one, let go afterwards, lands nothing.
+    @Test(.timeLimit(.minutes(10))) func aRefChangeDuringARunningMessageSearchRestartsIt() async throws {
+        let (repo, parser, lexer) = try Self.fixes()
+        defer { repo.remove() }
+        let backend = TestBackend()
+        let (store, cleanup) = await Self.opened(repo, backend: backend)
+        defer { cleanup() }
+        defer { await releaseAndSettle([backend], [store]) }
+
+        let gate = backend.hold(.searchCommits)
+        store.openSearch()
+        store.setSearchQuery("fix")
+        #expect(await waitUntil("the first search parked") { gate.waiting })
+        let first = store.searchTask
+
+        try repo.commit("e.txt", "printer\n", "fix the printer")
+        let printer = try Self.sha(repo)
+        await store.refresh()
+        await waitUntilIdle(store)
+        #expect(Self.searchCalls(backend) == 2)
+        #expect(Self.rows(store) == [printer, lexer, parser])
+        #expect(store.commitSearch?.isStale == false)
+
+        gate.release()
+        await Self.finish(first)
+        #expect(Self.rows(store) == [printer, lexer, parser])
+        #expect(store.commitSearch?.status == .done)
+    }
+
+    /// Ruling P12: a ref change while a Code search still runs: it is not started again, and it
+    /// lands marked out of date.
+    @Test(.timeLimit(.minutes(10))) func aRefChangeDuringARunningCodeSearchEndsStale() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try repo.commit("a.txt", "one\n", "first")
+        try repo.commit("b.txt", "a needle here\n", "add it")
+        let backend = TestBackend()
+        let (store, cleanup) = await Self.opened(repo, backend: backend)
+        defer { cleanup() }
+        defer { await releaseAndSettle([backend], [store]) }
+
+        let gate = backend.hold(.searchCommits)
+        store.openSearch()
+        store.setSearchMode(.code)
+        store.setSearchQuery("needle")
+        #expect(await waitUntil("the search parked") { gate.waiting })
+        try repo.commit("c.txt", "another needle\n", "add another")
+        await store.refresh()
+        #expect(store.commitSearch?.isStale == true)
+        #expect(store.commitSearch?.status == .searching)
+
+        gate.release()
+        await waitUntilIdle(store)
+        #expect(store.commitSearch?.status == .done)
+        #expect(store.commitSearch?.isStale == true)
+        #expect(Self.searchCalls(backend) == 1)
+    }
+
+    /// Ruling P12: a File search runs again after a ref change too.
+    @Test(.timeLimit(.minutes(10))) func aRefChangeRerunsFileSearch() async throws {
+        let (repo, parser, _) = try Self.fixes()
+        defer { repo.remove() }
+        let backend = TestBackend()
+        let (store, cleanup) = await Self.opened(repo, backend: backend)
+        defer { cleanup() }
+        await Self.search(store, "b.txt", mode: .file)
+        #expect(Self.rows(store) == [parser])
+        let calls = Self.searchCalls(backend)
+
+        try repo.commit("b.txt", "parser two\n", "touch the parser again")
+        let again = try Self.sha(repo)
+        await store.refresh()
+        await waitUntilIdle(store)
+        #expect(Self.searchCalls(backend) == calls + 1)
+        #expect(Self.rows(store) == [again, parser])
+        #expect(store.commitSearch?.isStale == false)
     }
 
     // MARK: - When it is off

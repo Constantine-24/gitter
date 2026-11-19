@@ -163,12 +163,13 @@ extension RepositoryStore {
             let previous = snapshot
             setSnapshot(newSnapshot)
             setBranchActivity(newActivity)
-            // A ref or HEAD moved — a commit, a fetch that brought something, a switch, a commit on
-            // a detached HEAD, which moves no ref (`RefCollection` holds no HEAD) — so the history a
-            // commit search walked has changed (F1). Only started here, never awaited: nothing
-            // inside a chained load may wait on another.
-            if let previous,
-                previous.refs != newSnapshot.refs || previous.status.headSha != newSnapshot.status.headSha
+            // A branch, a tag or HEAD moved — a commit, a fetch that brought something, a switch, a
+            // commit on a detached HEAD, which moves no ref — so the history a commit search walked
+            // has changed (F1). Not a change only the configuration makes (an upstream, a remote's
+            // URL, a worktree), which `RefCollection` carries too (Ruling P11). Only started here,
+            // never awaited: nothing inside a chained load may wait on another.
+            if let previous, commitSearch != nil,
+                SearchedHistoryTips(previous) != SearchedHistoryTips(newSnapshot)
             {
                 historyChangedUnderSearch()
             }

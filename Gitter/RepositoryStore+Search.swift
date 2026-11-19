@@ -23,20 +23,48 @@ struct CommitSearchState: Equatable {
     /// A Code search a ref change has overtaken: its rows stay, with Search Again (Code is not run
     /// again quietly). Cleared when a search starts.
     var isStale: Bool
+    /// The selection when search opened: leaving reveals a result only if the user selected it
+    /// during the search (Ruling P10) — History otherwise comes back as it was.
+    var selectionWhenOpened: Selection
 
     init(
         query: String = "", mode: CommitSearchMode = .messageAuthorOrID, result: CommitSearchResult? = nil,
-        status: SearchStatus = .idle, isStale: Bool = false
+        status: SearchStatus = .idle, isStale: Bool = false, selectionWhenOpened: Selection = .workingCopy
     ) {
         self.query = query
         self.mode = mode
         self.result = result
         self.status = status
         self.isStale = isStale
+        self.selectionWhenOpened = selectionWhenOpened
     }
 
     /// What the field and the mode ask for.
     var search: CommitSearch { CommitSearch(mode: mode, query: query) }
+}
+
+/// What a commit search's walk (`log --exclude=refs/stash --all`) starts from, and the decorations
+/// its rows show: each local and remote-tracking branch's tip, each tag's commit, HEAD's commit
+/// and the branch HEAD is on. A reload that changes none of these leaves every search's answer as
+/// it was (Ruling P11) — unlike `RefCollection`, which also carries what the configuration says
+/// (upstreams and their counts, push remotes, worktrees, remote URLs).
+struct SearchedHistoryTips: Equatable {
+    let branches: [String: String]
+    let remoteBranches: [String: String]
+    let tags: [String: String]
+    let head: String?
+    let headBranch: String?
+
+    init(_ snapshot: RepoSnapshot) {
+        func tips(_ pairs: [(String, String)]) -> [String: String] {
+            Dictionary(pairs, uniquingKeysWith: { first, _ in first })
+        }
+        branches = tips(snapshot.refs.localBranches.map { ($0.name, $0.sha) })
+        remoteBranches = tips(snapshot.refs.remoteBranches.map { ($0.name, $0.sha) })
+        tags = tips(snapshot.refs.tags.map { ($0.name, $0.sha) })
+        head = snapshot.status.headSha
+        headBranch = snapshot.refs.localBranches.first(where: \.isHead)?.name
+    }
 }
 
 /// Commit search (F1): Find Commits opens a bar over the commit list column, and its results take
@@ -75,7 +103,8 @@ extension RepositoryStore {
         guard searchBlockedReason == nil, !isClosed else { return }
         leaveComparison(revealingSelection: false)
         guard commitSearch == nil else { return }
-        setCommitSearch(CommitSearchState())
+        // After the comparison's end, which may have moved the selection off its changes row.
+        setCommitSearch(CommitSearchState(selectionWhenOpened: selection))
     }
 
     /// The field's text changed: searches after the debounce. A text that leaves the search the
@@ -125,10 +154,10 @@ extension RepositoryStore {
         startSearch(debounced: false)
     }
 
-    /// A reload that moved a ref or HEAD (`loadSnapshot`): a landed or running Message, Author or
-    /// ID or File search runs again, keeping its rows and the selection until the new rows land;
-    /// a Code search, which can take seconds, is only marked out of date. A stopped or failed
-    /// search, and an empty field, are left as they are.
+    /// A reload that moved a branch, a tag or HEAD (`loadSnapshot`, `SearchedHistoryTips`): a landed
+    /// or running Message, Author or ID or File search runs again, keeping its rows and the
+    /// selection until the new rows land; a Code search, which can take seconds, is only marked out
+    /// of date. A stopped or failed search, and an empty field, are left as they are.
     func historyChangedUnderSearch() {
         guard var state = commitSearch, !state.search.isEmpty,
             state.status == .done || state.status == .searching
@@ -144,8 +173,11 @@ extension RepositoryStore {
     // MARK: - Leaving
 
     /// Esc, the close button, Find Commits with an empty field: back to History. The search
-    /// running is cancelled. A selected commit stays selected — and when History hasn't loaded it
-    /// (a deep result), it is revealed (H1): loaded down to, and scrolled to.
+    /// running is cancelled. A selected commit stays selected. A result the user selected during
+    /// the search is revealed (H1: loaded down to if History hasn't loaded it, and scrolled to), as
+    /// Show in History does; so is any selected commit History hasn't loaded (one carried over from
+    /// a comparison). A selection from before the search, never changed, is left where it was
+    /// (Ruling P10).
     func leaveSearch() {
         endSearch(revealingSelection: true)
     }
@@ -163,11 +195,14 @@ extension RepositoryStore {
     // internal (not private): used by +Compare.swift's `compare` and `selectFromSidebar`
     func endSearch(revealingSelection: Bool) {
         cancelSearch()
-        guard commitSearch != nil else { return }
+        guard let state = commitSearch else { return }
         // Cleared before the reveal, so its detail load reads the commit on its own
         // (`commitForDetail` no longer finds it among the results).
         setCommitSearch(nil)
-        if revealingSelection, case .commit(let sha) = selection, !historyRows.isLoaded(sha) {
+        guard revealingSelection, case .commit(let sha) = selection else { return }
+        let pickedResult =
+            selection != state.selectionWhenOpened && state.result?.commits.contains { $0.sha == sha } == true
+        if pickedResult || !historyRows.isLoaded(sha) {
             reveal(sha)
         }
     }
