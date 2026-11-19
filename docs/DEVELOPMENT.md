@@ -126,7 +126,7 @@ xcodegen generate && GIT_ALLOW_PROTOCOL=file GIT_SSH_COMMAND=/usr/bin/false GIT_
   -clonedSourcePackagesDirPath .build/SourcePackages -disableAutomaticPackageResolution -scmProvider system test
 ```
 
-`GitterTests` (1 332 tests in 98 suites) is hosted by the app and pins the wording the UI shows
+`GitterTests` (1 347 tests in 98 suites) is hosted by the app and pins the wording the UI shows
 and the decisions made from it: `OperationWording`, `RemoteWording`, `StashWording`,
 `DiscardWording`, `ConflictWording`, `ContinueWording`, `HistoryWording`, `TagWording`,
 `RemoteAdminWording` (the housekeeping sheets, notices, half-done states and the menus' reasons),
@@ -197,7 +197,7 @@ moved before a pop's drop (`StashDropRaceTests`), a reload that fails after a co
 (`InjectedFailureTests`), a window closed during a held commit or push (`HiddenWindowTests`) and
 every request made while a change is held (`RequestsDuringChangeTests`).
 
-`GitCoreTests` has 1 787 tests in 152 suites. Most of them run real `git` against a temporary
+`GitCoreTests` has 1 805 tests in 152 suites. Most of them run real `git` against a temporary
 repository rather than a fake — the remote tests against local bare repositories standing in
 for a server, with a second clone as "the colleague" who pushes in between — including one
 that greps `GitCore`'s own sources for forbidden force flags. The suite isolates itself from
