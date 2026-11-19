@@ -150,7 +150,7 @@
             "filter", "sidebar", "worktrees", "worktreemenu", "openworktree", "pills", "watchloads", "firstresponder",
             "reloadtiming", "newwindow", "inwindow", "closewindow", "loadolder", "reveal",
             "sidebarfold", "sidebarunfold", "sidebarfolder", "sidebarstashes",
-        ]).union(compareCommands).union(worktreeSheetCommands)
+        ]).union(compareCommands).union(worktreeSheetCommands).union(searchCommands)
 
         /// How often the end row's cell appeared and disappeared (`CommitListView`'s `EndRowCell`):
         /// whether `Table` fires its `onAppear` again when a load lands with the row still on
@@ -247,6 +247,8 @@
             case "reveal": await reveal(rest, store: store)
             case let compare where compareCommands.contains(compare):
                 await compareStep(command, rest: rest, store: store)
+            case let search where searchCommands.contains(search):
+                await searchStep(command, rest: rest, store: store)
             case let sheet where worktreeSheetCommands.contains(sheet):
                 await worktreeSheetStep(command, rest: rest, store: store)
             default: log("unknown step: \(step)")
@@ -691,7 +693,7 @@
             return nil
         }
 
-        private static func flatten(_ text: String) -> String {
+        static func flatten(_ text: String) -> String {
             text.replacingOccurrences(of: "\n", with: " \u{23CE} ")
         }
 

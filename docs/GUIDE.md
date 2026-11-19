@@ -113,6 +113,8 @@ Everything Gitter does, and how it keeps your work safe. The short version is in
 - **Compare two branches**: "Compare with "main"" on any branch, or Compare Branches… — the
   commits only on each side with exact counts, and the changes one side brings, exactly as `git
   diff A...B` shows them
+- **Find commits** (⌥⌘F): by message, author or id, by the file a commit changed, or by code it
+  added or removed — results listed in History's order (see "Finding commits" below)
 - **Worktrees**: a sidebar section with each worktree's branch, changes, lock and missing folder;
   branches checked out elsewhere marked; **Open Worktree**, **Add Worktree…** and **Remove
   Worktree…** (behind Gitter's own check of what git would delete), **Remove All Missing…**
@@ -652,6 +654,44 @@ stash is refused while an operation is in progress or a file is conflicted, so a
 back once the operation is over — the notice after a Skip that finished it offers **Pop Stash**
 straight away.
 
+### Finding commits
+
+**Find Commits…** (⌥⌘F, in the Edit menu) opens a bar over the
+commit list; type and the list shows the commits that match, in the order History shows them,
+across every branch, tag and remote branch (stashes are left out, as in History). The mode menu
+beside the field chooses what is searched:
+
+- **Message, Author or ID** (the default). What you type, as one phrase, must appear in the
+  commit's message (subject or body) or in the author's name or email; any run of blanks or line
+  breaks counts as one space, so a phrase wrapped across two lines of a body is found. Four to forty
+  hex characters also match the start of a commit id (a branch named like an id does not get in the
+  way). Case is ignored; accents are not.
+- **File.** Commits that changed a path containing what you typed: a fragment of a name
+  (`Sidebar`), a folder (`docs/`) or part of a path (`Views/Sidebar`). Only ASCII case is folded for
+  File and for Code, so `É` does not match `é` there. A merge is listed only when it changed that
+  path compared with each of its parents.
+- **Code.** Commits that added or removed the text you typed in a file's contents (git's `-S`: the
+  number of occurrences changed). It is literal, not a pattern, and a merge's own changes are not
+  searched. It reads every change in the history, so a rare string in a large repository takes
+  seconds.
+
+The status line under the field says how many commits matched (or "No commits match"), "Searching…" with **Stop** while a
+search runs, and "Search stopped" after it. Typing waits a moment, then searches; a new query or a
+mode change replaces the one running. At most 50,000 commits are listed, and the line says "Showing the newest 50,000 matches" when a
+search found more. Searching only reads the repository.
+
+Select a result to see its files and diff as in History. Right-click one for History's menu, and a
+single result also offers **Show in History**, which closes the search and scrolls History to that
+commit, loading older commits if it must. **Esc**, the **Close Search** button, or ⌥⌘F with an
+empty field leaves the search: a commit you picked among the results stays selected and is
+revealed in History. With an empty field History stays usable under the bar.
+
+If a fetch, a commit or a checkout moves a branch, tag or HEAD while a Message or File search is
+showing, it runs again by itself and keeps its rows until the new ones arrive. A Code search is not
+run again, because it can take seconds: it is marked out of date, with **Search Again**. Find
+Commits is off while a sheet is open and in Resolve Conflicts' focus mode, and a comparison and
+search end each other.
+
 **What stays a terminal job.** `git am --continue` and `--skip` (Gitter only aborts an `am`), a
 submodule conflict, reopening a file resolved by deleting it, unstaging a whole file while an
 operation is in progress (the row's "−" and Unstage All stay off throughout: they can end the
@@ -915,7 +955,7 @@ one sheet, one at a time, and reports each. `worktree prune` is never run.
 ![Removing a detached worktree: its path, "This deletes its folder, above, and everything in it.", the one commit only its HEAD holds with a ticked box keeping a branch at it, and in orange the two ignored entries git deletes without asking; the Worktrees section behind it](screenshots/worktrees.png)
 
 **What stays a terminal job.** Locking, unlocking, moving and repairing a worktree (a locked one is
-shown and left alone); `worktree prune`; per-worktree config; commit search; tags or commits in compare; and cherry-picking from the compare list (the
+shown and left alone); `worktree prune`; per-worktree config; tags or commits in compare; and cherry-picking from the compare list (the
 history keeps those actions).
 
 ### Windows and quitting
