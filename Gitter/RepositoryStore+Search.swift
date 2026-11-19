@@ -103,6 +103,13 @@ extension RepositoryStore {
         return nil
     }
 
+    /// Whether something is drawn over History and History is inert: a comparison, or search
+    /// results — which exist only once the trimmed query is not empty. With an empty field the
+    /// column shows History, live, under the bar (Ruling P14).
+    var historyIsCovered: Bool {
+        comparison != nil || commitSearch.map { !$0.search.isEmpty } ?? false
+    }
+
     /// What the menu item does in the state search is in.
     var findCommitsStep: FindCommitsStep {
         guard let state = commitSearch else { return .openAndFocus }

@@ -29,11 +29,15 @@ struct CommitListView: View {
         // Underneath, the history is inert: no clicks, nothing for VoiceOver, and no keyboard
         // (see `.onChange(of: isFocused)` below).
         //
-        // Commit search (F1) is drawn the same way, for the same reason; the two are never up
-        // together (`openSearch` ends a comparison, `compare` ends a search).
+        // Commit search (F1) draws its results the same way, once the query is not empty
+        // (`historyIsCovered`); with an empty one the column shows History, live. The bar is an
+        // inset of the column, outside the overlay and always applied (its content comes and
+        // goes), so the pane is never rebuilt and the field keeps the keyboard when the first
+        // letter turns the column into the results. The two are never up together (`openSearch`
+        // ends a comparison, `compare` ends a search).
         let comparing = store.comparison != nil
-        let searching = store.commitSearch != nil
-        let covered = comparing || searching
+        let showsResults = store.commitSearch != nil && store.historyIsCovered
+        let covered = store.historyIsCovered
         history
             .disabled(covered)
             .allowsHitTesting(!covered)
@@ -42,9 +46,18 @@ struct CommitListView: View {
                 if comparing {
                     CompareListView(isFocused: $isCompareFocused)
                         .background(.background)
-                } else if searching {
+                } else if showsResults {
                     SearchListView(isFocused: $isSearchFocused)
                         .background(.background)
+                }
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if store.commitSearch != nil {
+                    VStack(spacing: 0) {
+                        SearchBar()
+                        Divider()
+                    }
+                    .background(.background)
                 }
             }
     }
@@ -197,13 +210,13 @@ struct CommitListView: View {
         // which took the click's focus from it, or rebuilds the table, which throws the divider
         // again — measured): when Tab lands on it while comparing, the focus goes on to the
         // comparison's list. (Handed to nothing, the next Tab came back here.) Its selection
-        // writes are dropped meanwhile (`RepositoryStore.selectRows`).
+        // writes are dropped meanwhile (`selectionBinding`).
         .onChange(of: isFocused) { _, focused in
             guard focused else { return }
             if store.comparison != nil {
                 isFocused = false
                 isCompareFocused = true
-            } else if store.commitSearch != nil {
+            } else if store.commitSearch != nil, store.historyIsCovered {
                 isFocused = false
                 isSearchFocused = true
             }
@@ -234,6 +247,9 @@ struct CommitListView: View {
         Binding(
             get: { CommitSelection.table(selection: store.selection, commits: store.selectedCommits) },
             set: { newValue in
+                // Not while the comparison or the search results cover it: a key that reaches
+                // this table must not move the selection they own.
+                guard !store.historyIsCovered else { return }
                 let before = store.selection
                 store.selectRows(newValue, shown: shown)
                 if store.selection != before { selectedInTable = store.selection }

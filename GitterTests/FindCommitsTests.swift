@@ -70,4 +70,42 @@ import Testing
         #expect(store.commitSearch == nil)
         #expect(focused == 0)
     }
+
+    // MARK: - What covers History (Ruling P14)
+
+    @Test func anEmptyOrBlankQueryLeavesHistoryUncovered() async throws {
+        let (repo, _, _) = try SearchStoreTests.fixes()
+        defer { repo.remove() }
+        let (store, cleanup) = await SearchStoreTests.opened(repo, backend: TestBackend())
+        defer { cleanup() }
+        #expect(!store.historyIsCovered)  // search closed
+        store.openSearch()
+        #expect(!store.historyIsCovered)
+        store.setSearchQuery("   ")
+        #expect(!store.historyIsCovered)
+    }
+
+    @Test func aQueryCoversHistoryAndClearingItUncovers() async throws {
+        let (repo, _, _) = try SearchStoreTests.fixes()
+        defer { repo.remove() }
+        let (store, cleanup) = await SearchStoreTests.opened(repo, backend: TestBackend())
+        defer { cleanup() }
+        await SearchStoreTests.search(store, "fix")
+        #expect(store.historyIsCovered)
+        store.setSearchQuery("")
+        #expect(!store.historyIsCovered)
+    }
+
+    @Test func aComparisonCoversHistory() async throws {
+        let (repo, _, _) = try SearchStoreTests.fixes()
+        defer { repo.remove() }
+        let (store, cleanup) = await SearchStoreTests.opened(repo, backend: TestBackend())
+        defer { cleanup() }
+        try repo.git("branch", "other", "HEAD~1")
+        await store.refresh()
+        store.compare("refs/heads/other", "refs/heads/main")
+        await waitUntilIdle(store)
+        #expect(store.comparison != nil)
+        #expect(store.historyIsCovered)
+    }
 }

@@ -11,6 +11,8 @@ enum SearchWording {
     static let menuTitle = "Find Commits…"
     /// The search bar's accessibility label (Ruling P2).
     static let barAccessibility = "Find Commits"
+    /// The mode menu's accessibility label.
+    static let modeAccessibility = "Search Mode"
     /// The close button's title, help and accessibility label.
     static let closeSearch = "Close Search"
 

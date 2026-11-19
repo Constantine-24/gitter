@@ -1,113 +1,21 @@
 import GitCore
 import SwiftUI
 
-/// The commit list column while commit search is open (F1), drawn over the history like
-/// `CompareListView`: the bar (field, mode, close, the status line with Stop and Search Again) over
-/// a table of the results with History's columns, less the graph. A row shows its commit in the
-/// detail as usual and has History's menu, then Show in History.
+/// The results of commit search (F1), drawn over the history like `CompareListView` once the
+/// query is not empty (`historyIsCovered`): a table with History's columns, less the graph. A row
+/// shows its commit in the detail as usual and has History's menu, then Show in History. The bar
+/// above it is `SearchBar`.
 struct SearchListView: View {
     @Environment(RepositoryStore.self) private var store
-    @Environment(\.findCommitsFocusRequest) private var focusRequest
     /// Draws the selection in the system highlight colour once the list is clicked, as
     /// `CommitListView` does. `CommitListView`'s, so that a Tab landing on the history hidden under
     /// this list can hand the focus here.
     var isFocused: FocusState<Bool>.Binding
-    @FocusState private var fieldFocused: Bool
 
     var body: some View {
         if let state = store.commitSearch {
-            VStack(spacing: 0) {
-                bar(state)
-                Divider()
-                list(state)
-            }
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(SearchWording.barAccessibility)
-            // Opened by the menu: the field is there the moment the bar is, and ⌥⌘F again, with
-            // the bar open, asks for it once more.
-            .onAppear { Task { @MainActor in fieldFocused = true } }
-            .onChange(of: focusRequest) { fieldFocused = true }
+            list(state)
         }
-    }
-
-    // MARK: - Bar
-
-    private func bar(_ state: CommitSearchState) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-                TextField(
-                    SearchWording.barAccessibility, text: queryBinding,
-                    prompt: Text(SearchWording.prompt(state.mode))
-                )
-                .textFieldStyle(.plain)
-                .focused($fieldFocused)
-                .onKeyPress(.escape) {
-                    store.leaveSearch()
-                    return .handled
-                }
-                Picker(SearchWording.barAccessibility, selection: modeBinding) {
-                    ForEach(CommitSearchMode.allCases, id: \.self) { mode in
-                        Text(SearchWording.name(mode)).tag(mode)
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .fixedSize()
-                Button {
-                    store.leaveSearch()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help(SearchWording.closeSearch)
-                .accessibilityLabel(SearchWording.closeSearch)
-            }
-            statusRow(state)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-    }
-
-    @ViewBuilder
-    private func statusRow(_ state: CommitSearchState) -> some View {
-        let status = SearchWording.statusLine(state)
-        let stale = SearchWording.staleLine(state)
-        if status != nil || stale != nil {
-            HStack(spacing: 8) {
-                if state.status == .searching {
-                    ProgressView().controlSize(.small)
-                }
-                if let status {
-                    Text(status)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                // Only while a search runs: Stop also clears a landed result.
-                if state.status == .searching {
-                    Button(SearchWording.stop) { store.stopSearch() }
-                }
-                if let stale {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                    Text(stale).font(.callout).lineLimit(1)
-                    Button(SearchWording.searchAgain) { store.searchAgain() }
-                }
-                Spacer(minLength: 0)
-            }
-            .accessibilityElement(children: .contain)
-        }
-    }
-
-    private var queryBinding: Binding<String> {
-        Binding(get: { store.commitSearch?.query ?? "" }, set: { store.setSearchQuery($0) })
-    }
-
-    private var modeBinding: Binding<CommitSearchMode> {
-        Binding(get: { store.commitSearch?.mode ?? .messageAuthorOrID }, set: { store.setSearchMode($0) })
     }
 
     // MARK: - Results
@@ -185,6 +93,107 @@ struct SearchListView: View {
             }
         )
     }
+}
+
+/// The search bar (F1): the field, the mode menu, Close Search and the status line with Stop and
+/// Search Again. An inset at the top of the commit list column while search is open
+/// (`CommitListView`), over History or over the results.
+struct SearchBar: View {
+    @Environment(RepositoryStore.self) private var store
+    @Environment(\.findCommitsFocusRequest) private var focusRequest
+    @FocusState private var fieldFocused: Bool
+
+    var body: some View {
+        if let state = store.commitSearch {
+            bar(state)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(SearchWording.barAccessibility)
+            // Opened by the menu: the field is there the moment the bar is, and ⌥⌘F again, with
+            // the bar open, asks for it once more.
+            .onAppear { Task { @MainActor in fieldFocused = true } }
+            .onChange(of: focusRequest) { fieldFocused = true }
+        }
+    }
+
+    // MARK: - Bar
+
+    private func bar(_ state: CommitSearchState) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                TextField(
+                    SearchWording.barAccessibility, text: queryBinding,
+                    prompt: Text(SearchWording.prompt(state.mode))
+                )
+                .textFieldStyle(.plain)
+                .focused($fieldFocused)
+                Picker(SearchWording.modeAccessibility, selection: modeBinding) {
+                    ForEach(CommitSearchMode.allCases, id: \.self) { mode in
+                        Text(SearchWording.name(mode)).tag(mode)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
+                Button {
+                    store.leaveSearch()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                // Esc, from anywhere in the window — the field, a result, History — as Done does
+                // for a comparison; a cancel-action button also fires from inside a text field.
+                .keyboardShortcut(.cancelAction)
+                .help(SearchWording.closeSearch)
+                .accessibilityLabel(SearchWording.closeSearch)
+            }
+            statusRow(state)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private func statusRow(_ state: CommitSearchState) -> some View {
+        let status = SearchWording.statusLine(state)
+        let stale = SearchWording.staleLine(state)
+        if status != nil || stale != nil {
+            HStack(spacing: 8) {
+                if state.status == .searching {
+                    ProgressView().controlSize(.small)
+                }
+                if let status {
+                    Text(status)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                // Only while a search runs: Stop also clears a landed result.
+                if state.status == .searching {
+                    Button(SearchWording.stop) { store.stopSearch() }
+                }
+                if let stale {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text(stale).font(.callout).lineLimit(1)
+                    Button(SearchWording.searchAgain) { store.searchAgain() }
+                }
+                Spacer(minLength: 0)
+            }
+            .accessibilityElement(children: .contain)
+        }
+    }
+
+    private var queryBinding: Binding<String> {
+        Binding(get: { store.commitSearch?.query ?? "" }, set: { store.setSearchQuery($0) })
+    }
+
+    private var modeBinding: Binding<CommitSearchMode> {
+        Binding(get: { store.commitSearch?.mode ?? .messageAuthorOrID }, set: { store.setSearchMode($0) })
+    }
+
 }
 
 extension EnvironmentValues {

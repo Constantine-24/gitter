@@ -29,6 +29,7 @@ import Testing
         #expect(SearchWording.menuTitle == "Find Commits…")
         #expect(SearchWording.barAccessibility == "Find Commits")
         #expect(SearchWording.closeSearch == "Close Search")
+        #expect(SearchWording.modeAccessibility == "Search Mode")
         #expect(SearchWording.stop == "Stop")
         #expect(SearchWording.searchAgain == "Search Again")
         #expect(SearchWording.showInHistory == "Show in History")
