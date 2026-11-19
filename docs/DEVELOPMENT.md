@@ -205,7 +205,7 @@ your git configuration (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`) 
 touches the network: the transports other than `file` (and a fake ssh one test needs) are refused,
 and an inherited `GIT_SSH_COMMAND` or `GIT_CONFIG_*` is cleared first.
 
-The run also reports **116 known issues, and they are meant to be there** — please do not
+The run also reports **117 known issues, and they are meant to be there** — please do not
 "fix" them. They are deliberate negative controls: tests that make an assertion helper fail
 on purpose, inside `withKnownIssue`, to prove it *can* fail.
 
@@ -1109,9 +1109,15 @@ changes not searched, no `-n`); a NUL finds nothing without git. The commit the 
 results is revealed when search is left; an empty field leaves History live under the bar; a reload
 that moved a branch, a tag or HEAD (`SearchedHistoryTips`) runs a Message or File search again and
 only marks a Code one out of date (Search Again). On a generated 100,000-commit repository (~40-word
-bodies) a Message, Author or ID search takes about 4 s end to end (git alone 0.36 s; the rest is
-parsing and matching 32 MB in the app, the same in a Release build of GitCore, not yet optimised), a
-File search about 1.3 s (the Debug app, measured through the harness). `GitCoreTests` now reports 116 known issues and `GitterTests` 58.
+bodies, 47 MB of output, with Cyrillic words in most messages) a Message, Author or ID search takes
+about 0.6 s in a Release build of GitCore (git alone 0.5 s), a miss or a hit, a query with 4,487
+matches or one cut at 50,000. It took 3.0-4.7 s: building a `Commit` and a message `String` for every
+record, and a `components`/`join` normalisation of each. Now `LogParser.scanWithMessages` reads
+fields as byte ranges and builds a `Commit` only for a match (stopping one past the limit), and
+`CommitSearchMatcher.Session` matches each field on its UTF-8 bytes through a fold-key table; a field
+holding a scalar with a non-plain folding (combining mark, `ß`, the Kelvin sign, anything outside the
+BMP) or invalid UTF-8 takes the old Unicode way, and a test compares the two over those scalars. A
+File search takes about 1.3 s (the Debug app, measured through the harness). `GitCoreTests` now reports 117 known issues and `GitterTests` 58.
 
 Gets you to your branches quickly (milestone N1): a Recent section at the top of the sidebar lists
 the current branch and the branches switched to last (the HEAD reflog's `checkout: moving from …

@@ -34,6 +34,21 @@ import Testing
 
     // MARK: - Message, Author or ID
 
+    @Test func scanWithMessagesBuildsOnlyWhatIsKeptAndStopsAtTheLimit() {
+        func record(_ n: Int, message: String) -> String {
+            "\(n)\u{0}\u{0}A\u{0}a@x\u{0}2026-10-26T10:00:00Z\u{0}S\(n)\u{0}\u{0}\(message)\u{0}"
+        }
+        let data = Data((1...5).map { record($0, message: $0 % 2 == 0 ? "even\n" : "odd") }.joined().utf8)
+        let all = LogParser.scanWithMessages(data) { _ in true }
+        #expect(all == LogParser.parseWithMessages(data).map(\.commit) && all.count == 5)
+        #expect(LogParser.scanWithMessages(data) { String(decoding: $0.bytes(7), as: UTF8.self).hasPrefix("even") }.map(\.sha) == ["2", "4"])
+        #expect(LogParser.scanWithMessages(data, limit: 2) { _ in true }.map(\.sha) == ["1", "2"])
+        #expect(LogParser.scanWithMessages(data) { _ in false }.isEmpty)
+        #expect(LogParser.scanWithMessages(Data()) { _ in true }.isEmpty)
+        // An incomplete last record is dropped, as `parse` drops one.
+        #expect(LogParser.scanWithMessages(data.dropLast(4)) { _ in true }.count == 4)
+    }
+
     @Test func parseWithMessagesKeepsTheWholeMessageOfEachRecord() {
         let head = "1111\u{0}\u{0}A\u{0}a@x\u{0}2026-10-26T10:00:00Z\u{0}Subject\u{0}HEAD -> main\u{0}"
         let one = head + "Subject\n\nbody line\n\u{0}"

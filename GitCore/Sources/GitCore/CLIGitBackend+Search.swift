@@ -23,11 +23,12 @@ extension CLIGitBackend {
             let matched: [Commit]
             switch search.mode {
             case .messageAuthorOrID:
-                matched = LogParser.parseWithMessages(result.stdout).filter { row in
-                    CommitSearchMatcher.matches(
-                        query: search.query, sha: row.commit.sha, authorName: row.commit.authorName,
-                        authorEmail: row.commit.authorEmail, message: row.message)
-                }.map(\.commit)
+                // One more than `limit` tells whether the list is cut, and stops the scan there.
+                let session = CommitSearchMatcher.Session(query: search.query)
+                matched = LogParser.scanWithMessages(result.stdout, limit: limit == .max ? .max : limit + 1) { record in
+                    session.matches(sha: record.bytes(0), authorName: record.bytes(2),
+                                    authorEmail: record.bytes(3), message: record.bytes(7))
+                }
             case .code:
                 matched = LogParser.parse(result.stdout)
             case .file:
