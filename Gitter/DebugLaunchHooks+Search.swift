@@ -4,22 +4,27 @@
     import GitCore
 
     /// F1's steps of `GITTER_DEBUG_BRANCH_ACTION`: commit search, driven through the store the bar
-    /// and the menu call. Each logs one line:
+    /// and the menu call. Each step ends with one line, except where noted below:
     ///
     ///   `search: mode <m> | query "<q>" | status <s> | rows <n> | cut <b> | stale <b> |
     ///   first <short ids, up to 5> | selection <sha|nil>`
     ///
     /// (`mode` is `message`, `file` or `code`; `status` is `idle`, `searching`, `done`, `stopped` or
     /// `failed: …`; `selection` is the selected commit's full id.) A step the window refuses logs
-    /// `search: blocked: <reason>` and changes nothing.
+    /// `search: blocked: <reason>` and changes nothing. With search closed (after `searchleave` or
+    /// `searchshow`, or `searchstate` before any search) the line is `search: closed | selection
+    /// <sha|nil>`.
     ///
     ///   search:<mode>:<query>  opens search, sets the mode and the query (a colon in the query is
     ///                          part of it), waits for the search to land, then logs. A second line,
     ///                          `search timing: <n> ms`, says how long the search took from
     ///                          the step's start to landing, the 250 ms debounce included.
     ///   searchselect:<n>       selects the n-th result (0-based) and logs the detail's header id
-    ///                          (`searchselect: detail <sha|nil>`), then the line above.
-    ///   searchshow             Show in History on the selected result, then the line above.
+    ///                          (`searchselect: detail <sha|nil>`), then the line above; with no such result it logs only
+    ///                          `search: searchselect <n>: no such result`.
+    ///   searchshow             Show in History on the selected result, then the line above (the
+    ///                          closed form); with no commit selected it logs only
+    ///                          `search: searchshow: no commit selected`.
     ///   searchstop             Stop, then the line above.
     ///   searchagain            Search Again, waits, then the line above.
     ///   searchleave            Close Search (Esc), then the line above.

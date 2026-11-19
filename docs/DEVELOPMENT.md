@@ -502,8 +502,10 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
                                 add, set-url, rename and remove a remote
     GitCompareBackend.swift     Compare two branches: counts, lists, merge bases, the changes
     GitWorktreeBackend.swift    List worktrees, their changes, the removal check, add and remove
-    CommitSearchMatcher.swift   Message, Author or ID matching done in the app: the words, ASCII-
-                                folded case, the id form (4 to 40 hex characters)
+    CommitSearchMatcher.swift   Message, Author or ID matching done in the app: one phrase, blank
+                                runs as one space, Unicode case folding (a byte fast path over
+                                plain scalars, the Unicode way for any other), the id form (4 to
+                                40 hex characters)
     DiscardTypes.swift          DiscardRequest, DiscardReceipt, the refusals and undo outcomes
     Trasher.swift               Moving an untracked item to the Trash and back
     GitError.swift              commandFailed, launchFailed, and the two pre-flight refusals
@@ -942,7 +944,7 @@ The branch steps run in order, each waiting for the mutation the one before it s
 | `compareselect:<id\|changes>` / `comparepath:<path>` / `compareswap` / `comparerefresh` / `comparedone` / `comparemenu` / `comparecopy:<id>` | click a commit or the changes row, a file of the changes; Swap, Refresh, Done; log every branch's compare items with their reasons; Copy Commit ID onto a private pasteboard, read back |
 | `sidebarclick:<branch>` / `reload` | a sidebar branch row's click (which ends compare mode); a snapshot load, as the watcher would start one |
 | `loadolder` / `reveal:<branch\|tag\|id>` | one page more of History (what the end row scrolling in does), waited and timed; a sidebar click on that commit, waited until the table has scrolled to it or a notice ended the reveal, with whether it was selected at once and the times. Both log the history line, `depth=<n> complete=<bool>` with the end row's state, which `comparestate` logs too with no comparison |
-| `search:<message\|file\|code>:<query>` / `searchselect:<n>` / `searchshow` / `searchstop` / `searchagain` / `searchleave` / `searchstate` | commit search (F1): open it, set the mode and the query and wait for the rows (the query may hold colons); select the n-th result (0-based) and log the detail's header id; Show in History on the selection; Stop; Search Again; Close Search; log the state. Each ends with `search: mode <m> \| query "<q>" \| status <s> \| rows <n> \| cut <b> \| stale <b> \| first <up to 5 short ids> \| selection <sha\|nil>`; `search` also logs `search timing: <n> ms` (the 250 ms debounce included); a blocked window logs `search: blocked: <reason>` |
+| `search:<message\|file\|code>:<query>` / `searchselect:<n>` / `searchshow` / `searchstop` / `searchagain` / `searchleave` / `searchstate` | commit search (F1): open it, set the mode and the query and wait for the rows (the query may hold colons); select the n-th result (0-based) and log the detail's header id; Show in History on the selection; Stop; Search Again; Close Search; log the state. Most end with `search: mode <m> \| query "<q>" \| status <s> \| rows <n> \| cut <b> \| stale <b> \| first <up to 5 short ids> \| selection <sha\|nil>`; with search closed (after `searchleave` or `searchshow`) that line is `search: closed \| selection <sha\|nil>`. `searchselect` first logs `searchselect: detail <sha\|nil>` (`search: searchselect <n>: no such result` and no state line when there is no such result), `searchshow` with no commit selected logs only `search: searchshow: no commit selected`; `search` also logs `search timing: <n> ms` (the 250 ms debounce included); a blocked window logs `search: blocked: <reason>` |
 | `addworktree[:<b>]` / `folderproblem:<path>` / `confirmaddworktree:existing:<b>:<path>` (or `new:<name>:<start>:<path>`, `tracking:<name>:<remote ref>:<path>`) | Add Worktree… and what it offers; the folder field's live check for that text; and **acts**: its Add with that choice — the sheet's own controls are `press:`, `tick:`, `fill:` and `choose:` — then the notice or banner and the worktree list |
 | `removeworktree:<folder>` / `removeworktreestart:<folder>` / `removeallmissing` / `worktreesheet` / `confirmremoveworktree[:none\|:<name>]` | Remove Worktree… (after the check, or at once so the progress state can be shot), Remove All Missing…, the sheet's every line; and **acts**: its button with the keep boxes as they start, none, or the one kept as `<name>` |
 | `noticeopen` | the sticky notice's **Open** after an add (routed like Open Worktree); the launch guard then refuses the rest, and the app quits |
@@ -1117,7 +1119,7 @@ fields as byte ranges and builds a `Commit` only for a match (stopping one past 
 `CommitSearchMatcher.Session` matches each field on its UTF-8 bytes through a fold-key table; a field
 holding a scalar with a non-plain folding (combining mark, `ß`, the Kelvin sign, anything outside the
 BMP) or invalid UTF-8 takes the old Unicode way, and a test compares the two over those scalars. A
-File search takes about 1.3 s (the Debug app, measured through the harness). `GitCoreTests` now reports 117 known issues and `GitterTests` 58.
+File search takes about 1.3 s (the Debug app, measured through the harness).
 
 Gets you to your branches quickly (milestone N1): a Recent section at the top of the sidebar lists
 the current branch and the branches switched to last (the HEAD reflog's `checkout: moving from …
