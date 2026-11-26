@@ -42,6 +42,8 @@ enum QuitFlow {
         case ignoredAlreadyUnderWay
         /// A sheet was still attached at the bound; the app keeps running.
         case sheetsStillAttached
+        /// A confirmed clipboard patch still needs to deliver its outcome.
+        case applyingClipboardPatch
     }
 
     /// From a request (or `applicationShouldTerminate`) until the quit ends: the app goes, or
@@ -91,8 +93,9 @@ enum QuitFlow {
             QuitGuard.log("quit: asked (\(reason.rawValue)) while a quit is under way; ignored")
             return .ignoredAlreadyUnderWay
         }
-        isUnderWay = true
         let stores = environment.stores()
+        if QuitGuard.refuseWhileApplyingClipboardPatch(stores) { return .applyingClipboardPatch }
+        isUnderWay = true
         let open = stores.filter { $0.activeSheet != nil }.count
         QuitGuard.log("quit: asked (\(reason.rawValue)); closing \(open) sheet(s)")
         for store in stores { store.activeSheet = nil }

@@ -4,8 +4,8 @@ import Foundation
 /// Discard and its undo. See `GitWorkingCopyBackend.discard` and `undoDiscard` for what each
 /// promises, and `DiscardTypes.swift` for the values.
 ///
-/// **Every worktree `git apply` Gitter runs is in this file** (the index one, `--cached`, is
-/// `applyToIndex` in `+WorkingCopy.swift`). Never with `--unidiff-zero`: reverse-applied, a
+/// Line discard and its undo use worktree patches. Clipboard import has its own checks in
+/// `+ClipboardPatch.swift`. Never with `--unidiff-zero`: reverse-applied, a
 /// pure-addition hunk without context deleted an identical line elsewhere (M 9). A patch with a
 /// context-free hunk is refused instead (`needsWholeFile`). `--whitespace=nowarn` on both
 /// directions: `apply.whitespace=fix` would silently change the lines it puts back, and

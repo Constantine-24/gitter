@@ -1252,6 +1252,20 @@ import Testing
         #expect(findings.contains { $0.contains(flag) }, "missed \(flag): \(findings)")
     }
 
+    @Test(arguments: ["", #""--check", "#, #""--numstat", "-z", "#])
+    func checksTheCompleteClipboardApplyVectors(mode: String) {
+        let source = #"""
+            try await runWithEnvironment(
+                ["-c", "apply.ignoreWhitespace=no", "-c", "core.protectHFS=true", "-c", "core.protectNTFS=true",
+                 "apply", "--whitespace=nowarn", \#(mode)"--", patch.path], cwd: root, extra: local)
+            """#
+        #expect(ForceFlagScanner.findings(in: source).isEmpty)
+        for flag in ["--cached", "--index", "--3way", "--unsafe-paths", "--reject"] {
+            let altered = source.replacingOccurrences(of: #""--", patch.path"#, with: #""\#(flag)", "--", patch.path"#)
+            #expect(!ForceFlagScanner.findings(in: altered).isEmpty, "missed \(flag)")
+        }
+    }
+
     // MARK: - Conflict reads (A2 Task 1)
 
     /// A **contract**: the conflict reader's vectors, spelled as `CLIGitBackend+ConflictRead.swift`

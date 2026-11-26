@@ -8,6 +8,7 @@ Everything Gitter does, and how it keeps your work safe. The short version is in
   commits load as you scroll
 - View diffs of a commit, or of the working copy, with wrapping long lines, and in syntax colours
   for 18 languages (see "Syntax colours" below)
+- Copy a file diff or hunk, then preview and apply a Git patch from the clipboard
 - Stage and unstage whole files, individual hunks, or a hand-picked set of lines
 - Commit, amend the last commit, or commit every tracked change in one step
 - Create, switch, rename and delete local branches; check out a remote branch as a local
@@ -148,6 +149,25 @@ Conflicts without its toolbar and sidebar; the rest still show the older layout.
 ![Pruning "origin": three remote-tracking branches the server no longer has, each with its full id; the three commits only they hold; and two ticked boxes keeping a local branch at each ref that holds them, with Keep All and Keep None](screenshots/prune.png)
 
 ![Removing the remote "fork": its four remote-tracking branches with their ids, the one commit only they hold with a ticked box keeping a branch at it, and the branch that will be left with no upstream](screenshots/remove-remote.png)
+
+### Copy and paste diffs
+
+Open a diff and use **Copy Diff** in the file header or **Copy Hunk** in a hunk
+header. Gitter copies plain Git patch text. You can share it or paste it into a
+different Gitter window.
+
+In the destination window, choose **Repository → Paste Diff…** (⌥⌘V). Review the
+repository, branch, affected paths, and patch, then choose **Apply Patch**. The
+changes are written to the working copy as unstaged changes. The patch can add,
+modify, or delete regular text files. If the destination changes while the
+sheet is open, paste again to get a fresh preview.
+
+A modification or deletion needs a clean existing file. An addition needs a
+vacant path. You can keep staged and unstaged changes in other files. Finish
+any Git operation and resolve conflicts before pasting. Use a UTF-8 Git patch
+with the standard `a/` and `b/` prefixes. Gitter refuses binary patches, renames,
+copies, mode changes, symlinks, submodules, checkout conversions, and targets
+whose permissions or filesystem metadata Git would discard.
 
 ### Syntax colours
 

@@ -14,13 +14,16 @@ public enum DiffParser {
     public static func parse(_ data: Data) -> [FileDiff] {
         guard !data.isEmpty else { return [] }
 
-        var raw = [UInt8](data).split(separator: newline, omittingEmptySubsequences: false)
+        let bytes = [UInt8](data)
+        var raw = bytes.split(separator: newline, omittingEmptySubsequences: false)
         if raw.last?.isEmpty == true {
             raw.removeLast()
         }
         let lines = raw.map { String(decoding: $0, as: UTF8.self) }
 
         var files: [FileDiff] = []
+        var addedPaths: Set<String> = []
+        var deletedPaths: Set<String> = []
         var index = 0
 
         while index < lines.count {
@@ -35,7 +38,9 @@ public enum DiffParser {
             var newPath: String? = header.newPath
             var kind: FileDiffKind = .modified
             var isBinary = false
-            var blobs: (old: String, new: String)?
+            var fileMode: String?
+            var changesMode = false
+            var blobs: (old: String, new: String, mode: String?)?
             var hunks: [Hunk] = []
             var lineCounter = 0
 
@@ -45,10 +50,15 @@ public enum DiffParser {
                 if line.hasPrefix("diff --git ") {
                     break
                 } else if line.hasPrefix("new file mode") {
+                    fileMode = String(line.dropFirst("new file mode ".count))
                     kind = .added
                     index += 1
                 } else if line.hasPrefix("deleted file mode") {
+                    fileMode = String(line.dropFirst("deleted file mode ".count))
                     kind = .deleted
+                    index += 1
+                } else if line.hasPrefix("old mode ") || line.hasPrefix("new mode ") {
+                    changesMode = true
                     index += 1
                 } else if line.hasPrefix("rename from ") {
                     oldPath = unquoteIfNeeded(String(line.dropFirst("rename from ".count)))
@@ -165,14 +175,35 @@ public enum DiffParser {
                 }
             }
 
-            // Every byte of this file's part, header included, checked before the lossy
-            // decoding above is trusted: see `FileDiff.isValidUTF8`.
-            let isValidUTF8 = raw[firstLine..<index].allSatisfy { String(validating: $0, as: UTF8.self) != nil }
-            files.append(
-                FileDiff(
-                    oldPath: oldPath, newPath: newPath, kind: kind, isBinary: isBinary, hunks: hunks,
-                    oldBlob: blobs?.old, newBlob: blobs?.new, isValidUTF8: isValidUTF8)
-            )
+            // Use the original byte range, including its line terminators, for clipboard
+            // copy. Strict decoding also supplies the existing staging and discard guard.
+            let end = index < raw.count ? raw[index].startIndex : bytes.endIndex
+            let section = String(validating: bytes[raw[firstLine].startIndex..<end], as: UTF8.self)
+            var file = FileDiff(
+                oldPath: oldPath, newPath: newPath, kind: kind, isBinary: isBinary, hunks: hunks,
+                oldBlob: blobs?.old, newBlob: blobs?.new, isValidUTF8: section != nil)
+            let mode = fileMode ?? blobs?.mode
+            let isRegularMode = mode == "100644" || mode == "100755"
+            if let section, !isBinary, !changesMode, isRegularMode, !section.utf8.contains(0) {
+                switch kind {
+                case .modified where !hunks.isEmpty, .added, .deleted:
+                    file.clipboardPatchText = section
+                default:
+                    break
+                }
+            }
+            if kind == .added { addedPaths.insert(file.displayPath) }
+            if kind == .deleted { deletedPaths.insert(file.displayPath) }
+            files.append(file)
+        }
+
+        // Git represents a file type change as a deletion and an addition of the same path.
+        // Neither section is a standalone clipboard change.
+        let typeChanges = addedPaths.intersection(deletedPaths)
+        if !typeChanges.isEmpty {
+            for index in files.indices where typeChanges.contains(files[index].displayPath) {
+                files[index].clipboardPatchText = nil
+            }
         }
 
         return files
@@ -192,10 +223,10 @@ public enum DiffParser {
 
     /// `index <old>..<new>`, with ` <mode>` after it when the mode did not change. The ids are
     /// whatever length git printed: full under `--full-index`, abbreviated otherwise.
-    private static func parseIndexLine(_ line: String) -> (old: String, new: String)? {
-        guard let match = line.wholeMatch(of: /^index ([0-9a-f]+)\.\.([0-9a-f]+)(?: [0-7]+)?$/)
+    private static func parseIndexLine(_ line: String) -> (old: String, new: String, mode: String?)? {
+        guard let match = line.wholeMatch(of: /^index ([0-9a-f]+)\.\.([0-9a-f]+)(?: ([0-7]+))?$/)
         else { return nil }
-        return (String(match.1), String(match.2))
+        return (String(match.1), String(match.2), match.3.map(String.init))
     }
 
     /// The section heading after the second `@@` is free text from the file (a function

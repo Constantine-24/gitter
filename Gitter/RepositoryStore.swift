@@ -76,6 +76,8 @@ final class RepositoryStore {
     /// disagree. Anything that has to describe the diff actually on screen — the hunk buttons'
     /// labels, the direction their patch is applied in — reads this instead of `stagedView`.
     private(set) var diffIsStaged = false
+    /// The file status captured with the displayed diff also governs clipboard export.
+    private(set) var displayedDiffAllowsClipboardCopy = true
     /// The syntax colours of `diff` (syntax colours Task 3, `RepositoryStore+DiffSyntax`): per
     /// file, per line, ranges relative to the line's `displayText`. Read after `diff` is already
     /// on screen; a file or line that isn't here is drawn plain. `setDiff` keeps a file's entry
@@ -157,6 +159,8 @@ final class RepositoryStore {
     /// `finishMutation(generation:failure:)`, kept in this file so their write to it stays
     /// `private(set)`.
     private(set) var isMutating = false
+    /// Set for a confirmed clipboard apply through its refresh and final banner or notice.
+    private(set) var isApplyingClipboardPatch = false
 
     /// The commit message being written. Stored properties cannot live in an extension, so it
     /// is declared here even though everything that drives it is in `RepositoryStore+Staging`.
@@ -584,6 +588,10 @@ final class RepositoryStore {
     func open(_ url: URL) {
         // A closed window's store opens nothing again (RF3): its window is gone.
         guard !isClosed else { return }
+        guard !isApplyingClipboardPatch else {
+            showStickyError(ClipboardPatchWording.openWhileApplying)
+            return
+        }
         // Once git itself is confirmed missing, no repository can be opened. Keep the banner
         // up instead of letting a reopen quietly clear it — and if the user dismissed it since,
         // put it back so "Open Repository…" doesn't silently do nothing.
@@ -1040,9 +1048,10 @@ final class RepositoryStore {
     /// This pair exists so the setters of `isMutating` and `lastError` can stay private while
     /// the staging API lives in another file, where `private(set)` would not reach.
     // internal (not private): used by +Staging.swift's `mutate()`
-    func beginMutation() -> Int? {
+    func beginMutation(applyingClipboardPatch: Bool = false) -> Int? {
         guard root != nil, !isMutating else { return nil }
         isMutating = true
+        isApplyingClipboardPatch = applyingClipboardPatch
         // "Force Push…" answers the refusal of *that* push. Once anything else has happened the
         // branch may not be where it was, and the banner offering it goes with it.
         rejectedPush = nil
@@ -1084,7 +1093,9 @@ final class RepositoryStore {
                 askAgainOffer = retry
                 askAgainBanner = lastError
             }
-        } else if lastError == RemoteWording.mutationBusy {
+        } else if lastError == RemoteWording.mutationBusy
+            || (isApplyingClipboardPatch && lastError == ClipboardPatchWording.openWhileApplying)
+        {
             // A refusal that said a change was running, put up while this one ran (every gated
             // request shares the sentence): the change has ended, so the sentence is no longer true.
             lastError = nil
@@ -1095,6 +1106,7 @@ final class RepositoryStore {
             resolverReconcilePending = false
             reconcileResolverDrafts(afterGitterWrite: true)
         }
+        isApplyingClipboardPatch = false
     }
 
     // MARK: - Network lane bookkeeping
@@ -1483,7 +1495,7 @@ final class RepositoryStore {
     /// The one place `diff` is written, so `diffIsStaged` can never drift from it.
     /// internal (not private): used by +Detail.swift's `loadDiff()`; kept here since it writes
     /// `diff`/`diffIsStaged` and both stay `private(set)`.
-    func setDiff(_ newDiff: [FileDiff], staged: Bool) {
+    func setDiff(_ newDiff: [FileDiff], staged: Bool, allowsClipboardCopy: Bool = true) {
         // A file diff equal to one on screen (its lines, ids and blob ids, so its sources too)
         // keeps its colours, so a reload of the same diff never blinks plain (Ruling 7). Any
         // other entry goes: a changed file's line ids now name other lines.
@@ -1493,6 +1505,7 @@ final class RepositoryStore {
         }
         diff = newDiff
         diffIsStaged = staged
+        displayedDiffAllowsClipboardCopy = allowsClipboardCopy
         diffSyntaxTask?.cancel()
         if kept.count != diffSyntax.count { diffSyntax = kept }
     }

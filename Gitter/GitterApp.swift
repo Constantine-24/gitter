@@ -173,6 +173,9 @@ struct RepositoryCommands: Commands {
             Button("Stash Changes…") { store?.requestStash() }
                 .keyboardShortcut("s", modifiers: [.command, .option])
                 .disabled(isOff(\.stashBlockedReason))
+            Button(ClipboardPatchWording.pasteDiff) { store?.requestPasteDiff() }
+                .keyboardShortcut("v", modifiers: [.command, .option])
+                .disabled(isOff(\.pasteDiffBlockedReason))
             Divider()
             // B3: two pickers, A preset to the current branch.
             Button(CompareWording.compareBranchesTitle) { store?.requestCompareBranches(a: nil, b: nil) }

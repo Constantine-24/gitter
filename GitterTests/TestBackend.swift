@@ -7,7 +7,7 @@ import Testing
 // `Testing.Tag` is in scope here too, so GitCore's is written `GitCore.Tag` (B1.3).
 @testable import GitCore
 
-/// The store's backend for a test: all 109 requirements of the twelve protocols forwarded to a
+/// The store's backend for a test: all 111 requirements of the twelve protocols forwarded to a
 /// real `CLIGitBackend` on the test's scratch repository, with any one call open to the test
 /// (E3 Task 3, spec Design §2). A test can, around a call:
 /// - `hook` it: run code before or after every such call, and throw to make the call throw;
@@ -38,7 +38,7 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
     GitStashBackend, GitConflictBackend, GitOperationBackend, GitHistoryBackend, GitTagBackend,
     GitRemoteAdminBackend, GitCompareBackend, GitWorktreeBackend, Sendable
 {
-    /// One case per protocol requirement (109); the raw value is the method's `#function`
+    /// One case per protocol requirement (111); the raw value is the method's `#function`
     /// spelling. The overloads' cases carry what tells them apart: `stageAllExpecting`,
     /// `discardExpectationTracked` / `discardExpectationUntracked`, `commitByID` (`GitBackend`'s
     /// one-commit read, beside `GitWorkingCopyBackend`'s `commit`), `rebaseOnto`
@@ -63,6 +63,8 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
         case stageAllExpecting = "stageAll(expecting:at:)"
         case unstageAll = "unstageAll(at:)"
         case applyToIndex = "applyToIndex(patch:reverse:at:)"
+        case planClipboardPatch = "planClipboardPatch(_:at:)"
+        case applyClipboardPatch = "applyClipboardPatch(_:at:)"
         case commit = "commit(message:amend:allTracked:at:)"
         case headMessage = "headMessage(at:)"
         case blobBytes = "blobBytes(_:at:limit:)"
@@ -379,6 +381,12 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
     }
     func applyToIndex(patch: Patch, reverse: Bool, at root: URL) async throws {
         try await around(.applyToIndex) { try await real.applyToIndex(patch: patch, reverse: reverse, at: root) }
+    }
+    func planClipboardPatch(_ text: String, at root: URL) async throws -> ClipboardPatchPlan {
+        try await around(.planClipboardPatch) { try await real.planClipboardPatch(text, at: root) }
+    }
+    func applyClipboardPatch(_ plan: ClipboardPatchPlan, at root: URL) async throws {
+        try await around(.applyClipboardPatch) { try await real.applyClipboardPatch(plan, at: root) }
     }
     func commit(message: String, amend: Bool, allTracked: Bool, at root: URL) async throws -> String {
         try await around(.commit) {

@@ -48,6 +48,7 @@ enum BranchSheet: Identifiable, Hashable {
     /// A discard's confirmation: the requests with what the sheet shows (`expected`), which
     /// `confirmDiscard` hands to GitCore as they are.
     case discard(DiscardSheetModel)
+    case clipboardPatch(ClipboardPatchPreview)
     /// A resolving write GitCore refused because the file holds bytes git did not write
     /// (`ConflictError.wouldReplaceEdits`): the snapshot the resolver showed and what was asked,
     /// which `confirmReplaceHandEdited` runs again with the bytes filed first.
@@ -153,6 +154,8 @@ enum BranchSheet: Identifiable, Hashable {
     /// stays up while its content changes instead of closing and opening again.
     var id: AnyHashable {
         switch self {
+        case .clipboardPatch(let preview):
+            AnyHashable(preview.id)
         case .checkingWorktreeRemoval(let worktrees, _):
             AnyHashable(WorktreeRemovalSheetID(paths: worktrees.map(\.path)))
         case .removeWorktree(let removal): AnyHashable(WorktreeRemovalSheetID(paths: [removal.worktree.path]))
@@ -183,6 +186,13 @@ enum BranchSheet: Identifiable, Hashable {
         default: false
         }
     }
+}
+
+/// Every presentation gets a new identity, even when the clipboard and repository have not changed.
+struct ClipboardPatchPreview: Identifiable, Hashable {
+    let id = UUID()
+    let plan: ClipboardPatchPlan
+    let destination: URL
 }
 
 /// A worktree removal sheet's identity across its progress state and its check

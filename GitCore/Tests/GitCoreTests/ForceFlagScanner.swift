@@ -325,10 +325,14 @@ enum ForceFlagScanner {
             // one is simply what git receives.
             guard let subcommand = arguments.first?.value.map(decoded), !subcommand.hasPrefix("-")
             else {
-                // A *global* option before the subcommand is worse than an unclassified vector:
-                // it is the one shape that reliably turns a complete git command into one, and
-                // it does so silently. No vector in `GitCore/Sources` is written that way, so
-                // the rule is simply "don't" — see `globalOptionsBeforeSubcommand`.
+                // The clipboard's three complete vectors pin git apply configuration.
+                // All other global flags would hide a subcommand from its own checks.
+                if arguments.first?.value.map(decoded) == "-c",
+                    clipboardApplyShapes.contains(where: { $0.matches(array) }),
+                    isInlineArgumentOfRun(code: code, open: array.open)
+                {
+                    continue
+                }
                 if let first = arguments.first?.value.map(decoded),
                     globalOptionsBeforeSubcommand.contains(first)
                 {
@@ -1097,16 +1101,8 @@ enum ForceFlagScanner {
     /// loses the `push` table, the lease rule, the wide `+`/`:` rules and the positional rules
     /// all at once, and reads as clean.
     ///
-    /// `git grep -nE '\[\s*"(-c|-C|--git-dir|--work-tree)"' -- GitCore/Sources Gitter` finds
-    /// none, so the rule can be a flat refusal rather than a "skip the pair and carry on" that
-    /// would have to understand each option's argument. Every backend call already passes a
-    /// working directory; a repository is named that way, not with `-C`.
-    ///
-    /// `"-c"` itself appears **twice**, not once as this comment claimed until fix round 2, and
-    /// both are `switch`'s create flag rather than git's `-c`: `git grep -nE '"-c"' --
-    /// GitCore/Sources Gitter` gives `CLIGitBackend+Branches.swift:31` (`arguments = ["switch",
-    /// "-c", name]`) and `:67` (`["switch", "-c", local, "--track", "--end-of-options",
-    /// remoteBranch]`). Neither is the array's first element, which is all this rule looks at.
+    /// The complete clipboard apply vectors are the only leading global options allowed.
+    /// Other commands use the working directory passed to `run` to name their repository.
     static let globalOptionsBeforeSubcommand: Set<String> = [
         "-c", "-C", "--git-dir", "--work-tree", "--exec-path", "--namespace",
     ]
@@ -1115,6 +1111,19 @@ enum ForceFlagScanner {
         "a global option before the subcommand hides the subcommand from this scanner, so "
         + "every per-subcommand rule is lost. Pass a working directory instead, and put the "
         + "subcommand first"
+
+    /// The exact leading config pins and the three modes of clipboard worktree apply.
+    /// `Shape` skips the first element, which the caller has already verified as `-c`.
+    static let clipboardApplyShapes: [Shape] = {
+        let prefix = Shape(
+            .literal("apply.ignoreWhitespace=no"), .literal("-c"), .literal("core.protectHFS=true"),
+            .literal("-c"), .literal("core.protectNTFS=true"), .literal("apply"), .literal("--whitespace=nowarn"))
+        return [
+            prefix + [.literal("--"), .expression],
+            prefix + [.literal("--check"), .literal("--"), .expression],
+            prefix + [.literal("--numstat"), .literal("-z"), .literal("--"), .expression],
+        ]
+    }()
 
     /// Subcommands whose dangerous forms are **words, not flags**, listed by the whole shapes
     /// that are permitted.
@@ -1248,6 +1257,8 @@ enum ForceFlagScanner {
             Shape(
                 .literal("-z"), .literal("merge"), .literal("conflict-marker-size"), .literal("--"),
                 .data),
+            Shape(.literal("-z"), .literal("--all"), .literal("--")),
+            Shape(.literal("-z"), .literal("--all"), .literal("--cached"), .literal("--")),
         ],
         // B1 Task 1: the vectors that start a history action, each with the pin that keeps the
         // user's config from rewriting it — `--empty=drop` (an already-applied commit would
@@ -1500,7 +1511,8 @@ enum ForceFlagScanner {
         "cat-file":
             "the conflict reader, the discard section and the diff colours parse exactly these "
             + "reads; `-p`, `--textconv` or a read without `--filters` gives them bytes in another form",
-        "check-attr": "the conflict reader asks for exactly these two attributes, of one plain path",
+        "check-attr": "conflict reads ask for two attributes of one plain path; clipboard checks read all "
+            + "attributes of the paths in the patch from the index and working tree",
         "cherry-pick":
             "a pick without `--empty=drop` stops on an already-applied commit as an empty pick (B4), "
             + "and every other option (`-x`, `-n`, `-m`, `--empty=keep`) changes what the sheet showed",

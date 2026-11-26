@@ -13,6 +13,7 @@ How Gitter is built, packaged and tested, how the code is laid out, and the debu
 | Staging | Patches built in-process (`PatchBuilder`) and applied with `git apply --cached`, never a hand-rolled index writer | The same command a user would run themselves; hunk- and line-level staging fall out of the same code path as whole-file staging |
 | Dirty switch | git's default — carry non-conflicting changes, refuse otherwise. No force; the refusal offers Stash and Continue, never an automatic stash | A refusal that changes nothing is a better answer than a stash the user did not ask for |
 | Discard | Record first (a stash entry built from plumbing in a temporary index), then `git restore` or a reverse `git apply`; untracked items to the Trash | Every discard can be undone, and the copy is in a place git and the user already know |
+| Clipboard diffs | Copy from the displayed Git patch. Check the pasted patch and clean target files, preview, recheck the destination, and apply to the worktree | Users can transfer changes between worktrees and stage them after reviewing the result |
 | Delete | `git branch -d` first, then `-D` only from the warning its refusal opened, and only if the tip is still the one that warning named | `-d` is git's own authority on "is this merged", and it changes nothing when it refuses |
 | Remotes | git's own transports and credentials; `fetch`, then merge or rebase, instead of `git pull`; an explicit-sha lease on every force; no prune on fetch; one tag at a time, never replaced, the remote delete leased | Nothing to store or ask for; every step of a pull is one Gitter can explain and stop; the lease the automatic fetch cannot arm |
 | Conflicts | Blocks rebuilt from the index stages with `git merge-file`, the Result composed and edited in memory (focus mode) and written once; git's own `--continue` / `--skip` with the message file written back, behind readiness checks of Gitter's own | The worktree file can hold anything (rerere, hand edits, marker-like code); git keeps the author, the date and the sequence, and Gitter refuses before git runs where git would lose something silently |
@@ -185,7 +186,7 @@ window closed while its push is still running (a push held by a `receivepack` sc
 test lets it go) are tested the same way.
 
 **A test backend over real git.** `TestBackend` (GitterTests) forwards every one of the twelve
-backend protocols' 109 calls to a real `CLIGitBackend` on the test's scratch repository, and lets a
+backend protocols' 111 calls to a real `CLIGitBackend` on the test's scratch repository, and lets a
 test act at any one call: run code before or after it (`hook`), make the next one throw without
 running git (`fail`), park the next one until the test lets it go (`hold`, on a `StuckCall`),
 replace the stash pop with one that changes the repository between its apply and its drop
@@ -528,7 +529,8 @@ GitCore/                  SwiftPM package, no SwiftUI dependency
       +Environment.swift          rerere turned off through the environment, for every apply
       +Stash.swift                the stash list, an entry's contents, push, apply, pop, drop
       +StashRecord.swift          the path-limited record in a temporary index, and stashPaths
-      +Discard.swift              discard and its undo; every worktree `git apply`
+      +ClipboardPatch.swift       checks a clipboard patch and applies it to the worktree
+      +Discard.swift              discard and its undo, including line patches
       +Pathspecs.swift            path lists in a pathspec file, reads in batches
       +ConflictRead.swift         the two rebuilds, the whole-file kinds, what git wrote,
                                   `AUTO_MERGE`'s staleness, canReopen, reopenedFile

@@ -46,7 +46,8 @@ import AppKit
 ///
 /// **Not covered:** a SIGTERM (`kill`, a logout that force-quits) never reaches
 /// `applicationShouldTerminate`, and git is left running as before; and a mutation that is not
-/// on the lane (a merge, a commit) is not waited for. Both are known gaps.
+/// on the lane (a merge, a commit) is not waited for. A confirmed clipboard apply specifically
+/// calls off quitting until the result reaches its repository window.
 @MainActor
 enum QuitGuard {
     /// How long a stopped fetch may take to go before the app quits anyway. The runner ends a
@@ -165,6 +166,7 @@ enum QuitGuard {
     /// drafts are dropped by nothing but the quit itself.
     static func shouldTerminate(_ stores: [RepositoryStore]) -> NSApplication.TerminateReply {
         draftsAccepted = false
+        if refuseWhileApplyingClipboardPatch(stores) { return .terminateCancel }
         let asked = AskedLanes(stores)
         let drafts = changedDraftCount(stores)
         guard drafts == 0 else {
@@ -182,6 +184,7 @@ enum QuitGuard {
     /// Wait's call-off does; a write running then is counted as asked about.
     @discardableResult
     private static func decideLanes(_ stores: [RepositoryStore], askedAtQuit: AskedLanes?) -> NSApplication.TerminateReply {
+        if refuseWhileApplyingClipboardPatch(stores, replyPending: askedAtQuit != nil) { return .terminateCancel }
         if let askedAtQuit,
             let calling = callingOff(
                 stores, before: askedAtQuit.countsForWrites, hasWindow: { hasWindow($0, in: AppModel.windows) })
@@ -226,6 +229,20 @@ enum QuitGuard {
                 messagesBefore: (askedAtQuit ?? now).messages)
             return .terminateLater
         }
+    }
+
+    /// Refuse before dismissing sheets or proceeding past a held quit reply. An apply still
+    /// preparing, writing, or refreshing must have a window for its final outcome.
+    static func refuseWhileApplyingClipboardPatch(_ stores: [RepositoryStore], replyPending: Bool = false) -> Bool {
+        guard stores.contains(where: \.isApplyingClipboardPatch) else { return false }
+        log("quit: called off while applying a clipboard patch")
+        if replyPending {
+            callOff()
+        } else {
+            calledOff(reply: { _ in })
+        }
+        tell(ClipboardPatchWording.quitWhileApplying)
+        return true
     }
 
     /// The drafts question (`ConflictWording.closeQuestion`, Cancel / Discard and Quit): on the

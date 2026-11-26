@@ -131,9 +131,10 @@ extension RepositoryStore {
     // internal (not private): used by RepositoryStore+Commit.swift's `commit()`
     func mutate(
         _ work: @escaping @MainActor (Backend, URL) async throws -> Void,
+        applyingClipboardPatch: Bool = false,
         onSuccess: (@MainActor () -> Void)? = nil
     ) {
-        mutate(result: work) { (_: Void) in onSuccess?() }
+        mutate(result: work, applyingClipboardPatch: applyingClipboardPatch) { (_: Void) in onSuccess?() }
     }
 
     /// `mutate`, for a command that answers something the store then has to act on — a merge's
@@ -146,9 +147,10 @@ extension RepositoryStore {
     // internal (not private): used by RepositoryStore+Branches.swift and +BranchSheets.swift
     func mutate<Result>(
         result work: @escaping @MainActor (Backend, URL) async throws -> Result,
+        applyingClipboardPatch: Bool = false,
         onSuccess: @escaping @MainActor (Result) -> Void
     ) {
-        guard let root, let generation = beginMutation() else { return }
+        guard let root, let generation = beginMutation(applyingClipboardPatch: applyingClipboardPatch) else { return }
 
         Task { @MainActor in
             var failure: Error?
