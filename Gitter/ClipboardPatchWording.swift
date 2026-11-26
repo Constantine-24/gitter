@@ -61,7 +61,7 @@ enum ClipboardPatchWording {
                     "The destination path “\(displayName(path))” is missing, changed, or already occupied. "
                         + "Choose Paste Diff… to check it again.")
             case .unsupportedFileMetadata(let path):
-                return Failure(message: "The patch changes unsupported file metadata in “\(displayName(path))”.")
+                return Failure(message: "Applying the patch would change the permissions or filesystem metadata of “\(displayName(path))”.")
             case .checkoutConversion(let path):
                 return Failure(message: "Git checkout settings affect “\(displayName(path))”.")
             case .operationInProgress: return Failure(message: operationInProgress)

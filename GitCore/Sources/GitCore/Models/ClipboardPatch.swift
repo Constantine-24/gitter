@@ -22,7 +22,7 @@ public struct ClipboardPatchPlan: Sendable, Hashable {
     let gitDirectory: Directory
     let gitCommonDirectory: Directory
     let head: String
-    let symbolicHead: String
+    let symbolicHead: Data
     let preimages: [Preimage?]
 
     struct Directory: Sendable, Hashable {

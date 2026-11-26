@@ -297,6 +297,48 @@ import Testing
         }
     }
 
+    @Test func refusesApplyingAfterTheParentGetsAFileInheritableACL() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        let path = "nested/a"
+        try write(path, "first\nold\nlast\n", in: repo)
+        try await repo.commitAll("root")
+        let patch = modification(path)
+        let plan = try await backend.planClipboardPatch(patch, at: repo.root)
+        let file = repo.root.appendingPathComponent(path)
+        let parent = file.deletingLastPathComponent()
+        _ = try await ProcessRunner().run(
+            "/bin/chmod", ["+a", "everyone allow readattr,file_inherit", parent.path], cwd: repo.root)
+
+        await #expect(throws: ClipboardPatchRefusal.unsupportedFileMetadata(path)) {
+            try await backend.applyClipboardPatch(plan, at: repo.root)
+        }
+        #expect(try String(contentsOf: file, encoding: .utf8) == "first\nold\nlast\n")
+
+        _ = try await ProcessRunner().run("/bin/chmod", ["-N", parent.path], cwd: repo.root)
+        _ = try await ProcessRunner().run(
+            "/bin/chmod", ["+a", "everyone allow readattr", parent.path], cwd: repo.root)
+        try await backend.applyClipboardPatch(plan, at: repo.root)
+        #expect(try String(contentsOf: file, encoding: .utf8) == "first\nnew\nlast\n")
+    }
+
+    @Test func refusesAByteDifferentUnbornBranchEvenWhenItsSpellingComparesEqual() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        let head = repo.root.appendingPathComponent(".git/HEAD")
+        // Store the two spellings directly so the platform cannot normalize CLI arguments.
+        try Data("ref: refs/heads/caf\u{00E9}\n".utf8).write(to: head)
+        let shownRef = try await repo.git(["symbolic-ref", "HEAD"])
+        let plan = try await backend.planClipboardPatch(addition("added"), at: repo.root)
+        try Data("ref: refs/heads/cafe\u{0301}\n".utf8).write(to: head)
+        try #require(try await repo.git(["symbolic-ref", "HEAD"]) != shownRef)
+
+        await #expect(throws: ClipboardPatchRefusal.changedSinceShown) {
+            try await backend.applyClipboardPatch(plan, at: repo.root)
+        }
+        #expect(!FileManager.default.fileExists(atPath: repo.root.appendingPathComponent("added").path))
+    }
+
     @Test(arguments: ["private permissions", "extended attribute", "hard link", "access control list", "file flags"])
     func refusesExistingMetadataThatGitApplyWouldLose(_ metadata: String) async throws {
         let repo = try await TestRepo.makeEmpty()
@@ -308,9 +350,11 @@ import Testing
         let file = repo.root.appendingPathComponent("a")
         let attributeName = "dev.penzin.Gitter.clipboard-test"
         let alias = repo.root.appendingPathComponent("alias")
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        let changedMode = try #require(attributes[.posixPermissions] as? Int) ^ 0o040
         switch metadata {
         case "private permissions":
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+            try FileManager.default.setAttributes([.posixPermissions: changedMode], ofItemAtPath: file.path)
         case "extended attribute":
             try #require(setxattr(file.path, attributeName, "test", 4, 0, 0) == 0)
         case "access control list":
@@ -331,7 +375,7 @@ import Testing
         switch metadata {
         case "private permissions":
             let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
-            #expect(attributes[.posixPermissions] as? Int == 0o600)
+            #expect(attributes[.posixPermissions] as? Int == changedMode)
         case "extended attribute":
             var value = Data(count: 4)
             let count = value.withUnsafeMutableBytes { getxattr(file.path, attributeName, $0.baseAddress, $0.count, 0, 0) }

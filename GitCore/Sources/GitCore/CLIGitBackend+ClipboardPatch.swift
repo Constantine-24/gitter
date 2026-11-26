@@ -138,7 +138,7 @@ extension CLIGitBackend {
         let headLabel = branch.isEmpty ? "detached at \(head.prefix(7))" : branch
         return ClipboardPatchPlan(text: text, files: sections.map(\.file), headLabel: headLabel,
                                   root: worktree, gitDirectory: git, gitCommonDirectory: common,
-                                  head: head, symbolicHead: symbolicHead, preimages: images)
+                                  head: head, symbolicHead: Data(symbolicHead.utf8), preimages: images)
     }
 
     private func clipboardGitLine(
@@ -314,12 +314,14 @@ extension CLIGitBackend {
         else { throw ClipboardPatchRefusal.affectedPathChanged(file.path) }
         let gitMode: mode_t = mode == "100755" ? 0o777 : 0o666
         let permissions = current.st_mode & 0o7777
+        let parentPath = url.deletingLastPathComponent().path
         var parent = stat()
         guard permissions == gitMode & defaults.permissions, current.st_nlink == 1, current.st_flags == 0,
-            current.st_uid == geteuid(), stat(url.deletingLastPathComponent().path, &parent) == 0,
+            current.st_uid == geteuid(), stat(parentPath, &parent) == 0,
             current.st_gid == parent.st_gid,
             Self.clipboardHasDefaultAttributes(fd, provenance: defaults.provenance),
-            Self.clipboardHasNoACL(fd)
+            Self.clipboardHasNoACL(fd),
+            file.kind != .modified || Self.clipboardParentHasNoFileInheritableACL(parentPath)
         else { throw ClipboardPatchRefusal.unsupportedFileMetadata(file.path) }
         return .init(object: object, permissions: permissions)
     }
@@ -371,6 +373,24 @@ extension CLIGitBackend {
             return false
         }
         return errno == ENOENT || errno == ENOTSUP
+    }
+
+    /// A replacement may inherit an ACL even when the original file had none.
+    private static func clipboardParentHasNoFileInheritableACL(_ path: String) -> Bool {
+        guard let acl = acl_get_file(path, ACL_TYPE_EXTENDED) else {
+            return errno == ENOENT || errno == ENOTSUP
+        }
+        defer { acl_free(UnsafeMutableRawPointer(acl)) }
+        var entry: acl_entry_t?
+        var position = ACL_FIRST_ENTRY.rawValue
+        while acl_get_entry(acl, position, &entry) == 0 {
+            var flags: acl_flagset_t?
+            guard let entry, acl_get_flagset_np(UnsafeMutableRawPointer(entry), &flags) == 0, let flags,
+                acl_get_flag_np(flags, ACL_ENTRY_FILE_INHERIT) == 0
+            else { return false }
+            position = ACL_NEXT_ENTRY.rawValue
+        }
+        return errno == EINVAL  // The last ACL entry was already returned.
     }
 
     private static func clipboardDirectory(_ url: URL) throws -> ClipboardPatchPlan.Directory {
