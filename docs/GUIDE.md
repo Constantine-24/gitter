@@ -8,7 +8,7 @@ Everything Gitter does, and how it keeps your work safe. The short version is in
   commits load as you scroll
 - View diffs of a commit, or of the working copy, with wrapping long lines, and in syntax colours
   for 18 languages (see "Syntax colours" below)
-- Copy a file diff or hunk, then preview and apply a Git patch from the clipboard
+- Copy a hunk, a file diff, or all changed files, then preview and apply a Git patch from the clipboard
 - Stage and unstage whole files, individual hunks, or a hand-picked set of lines
 - Commit, amend the last commit, or commit every tracked change in one step
 - Create, switch, rename and delete local branches; check out a remote branch as a local
@@ -155,6 +155,16 @@ Conflicts without its toolbar and sidebar; the rest still show the older layout.
 Open a diff and use **Copy Diff** in the file header or **Copy Hunk** in a hunk
 header. Gitter copies plain Git patch text. You can share it or paste it into a
 different Gitter window.
+
+For one patch across every changed file, choose **Repository → Copy All Changes**.
+In Working Copy this includes the net staged and unstaged changes from `HEAD`
+and any non-ignored untracked files. Before the first commit the baseline is
+empty. In a commit, stash, or branch comparison it copies that view's full diff,
+including any untracked files saved with a stash.
+Working Copy export follows Git's handling of assume-unchanged and sparse-checkout
+paths. It refuses paths using an external Git content filter, such as Git LFS,
+when Git cannot confirm the file is unchanged without running its filter.
+Gitter names unsupported paths and keeps the existing clipboard contents if export fails.
 
 In the destination window, choose **Repository → Paste Diff…** (⌥⌘V). Review the
 repository, branch, affected paths, and patch, then choose **Apply Patch**. The

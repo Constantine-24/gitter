@@ -211,6 +211,14 @@ enum ForceFlagScanner {
         }
 
         let isRecordFile = fileName == recordFile
+        let exportIntentOffsets: Set<Int> = Set(arrays.compactMap { array in
+            guard fileName == clipboardExportFile, array.elements.first?.value.map(decoded) == "add",
+                clipboardExportIntentShape.matches(array),
+                let call = enclosingCall(code: code, open: array.open), call.name == "runWithEnvironment",
+                String(call.arguments).range(of: #"extra:\s*index\b"#, options: .regularExpression) != nil
+            else { return nil }
+            return array.elements[1].valueOffset
+        })
         // Whether this file runs `stash` at all: then the words that turn an allowed stash shape
         // into a forbidden one are findings wherever no vector holds them. See
         // `stashWordsForbiddenOutsideAVector`.
@@ -261,6 +269,11 @@ enum ForceFlagScanner {
                     findings.append(
                         "forbidden literal \(spelling.debugDescription) (offset \(token)) outside "
                             + "\(recordFile): \(recordOnlyReason)")
+                }
+                if ["--intent-to-add", "-N"].contains(spelling), !exportIntentOffsets.contains(token) {
+                    findings.append(
+                        "forbidden literal \(spelling.debugDescription) (offset \(token)): "
+                            + "clipboard export registers intent to add only on its temporary index")
                 }
                 // Wherever it sits: a vector, a fragment, an append, a `let`. No rule has to
                 // read the vector, because no vector may carry it.
@@ -1710,6 +1723,8 @@ enum ForceFlagScanner {
     /// that owns the temporary one.
     static let recordFile = "CLIGitBackend+StashRecord.swift"
     static let recordOnlySubcommands: Set<String> = ["read-tree", "update-index", "write-tree"]
+    static let clipboardExportFile = "CLIGitBackend+WorkingCopyClipboardDiff.swift"
+    static let clipboardExportIntentShape = Shape(.literal("--intent-to-add"), .literal("--sparse")) + pathspecFile
 
     /// Final review M6: each `read-tree`, `update-index` and `write-tree` vector in `source`
     /// (the record's file), and a finding for every one not passed inline to

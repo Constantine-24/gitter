@@ -173,6 +173,8 @@ struct RepositoryCommands: Commands {
             Button("Stash Changes…") { store?.requestStash() }
                 .keyboardShortcut("s", modifiers: [.command, .option])
                 .disabled(isOff(\.stashBlockedReason))
+            Button(ClipboardPatchWording.copyAllChanges) { store?.requestCopyAllChanges() }
+                .disabled(store?.canCopyAllChanges != true)
             Button(ClipboardPatchWording.pasteDiff) { store?.requestPasteDiff() }
                 .keyboardShortcut("v", modifiers: [.command, .option])
                 .disabled(isOff(\.pasteDiffBlockedReason))

@@ -1266,6 +1266,26 @@ import Testing
         }
     }
 
+    @Test func confinesClipboardIntentToAddToTheTemporaryIndex() {
+        let source = #"""
+            try await runWithEnvironment(
+                ["add", "--intent-to-add", "--sparse", "--pathspec-from-file=\(file)", "--pathspec-file-nul"],
+                cwd: root, extra: index)
+            """#
+        let file = ForceFlagScanner.clipboardExportFile
+        #expect(ForceFlagScanner.findings(in: source, fileName: file).isEmpty)
+        #expect(!ForceFlagScanner.findings(in: source).isEmpty)
+        for altered in [
+            source.replacingOccurrences(of: "extra: index", with: "extra: [:]"),
+            source.replacingOccurrences(of: "runWithEnvironment", with: "run"),
+            source.replacingOccurrences(of: #""--sparse", "#, with: ""),
+            source.replacingOccurrences(of: "--intent-to-add", with: "-N"),
+        ] {
+            #expect(altered != source)
+            #expect(!ForceFlagScanner.findings(in: altered, fileName: file).isEmpty, "\(altered)")
+        }
+    }
+
     // MARK: - Conflict reads (A2 Task 1)
 
     /// A **contract**: the conflict reader's vectors, spelled as `CLIGitBackend+ConflictRead.swift`
@@ -2372,11 +2392,11 @@ import Testing
         #expect(!ForceFlagScanner.findings(in: changed, fileName: file).isEmpty)
     }
 
-    /// Not vacuous: the real sources hold exactly the five parsed reads, and the rule read them.
+    /// The rule reads all six parsed diff vectors in the sources.
     @Test func everyParsedDiffReadInTheSourcesIsChecked() throws {
         let sources = try ForceFlagScanner.gitCoreSources(root: Self.sourcesRoot)
         let checked = sources.values.map(ForceFlagScanner.patchDiffVectorCount(in:)).reduce(0, +)
-        #expect(checked == 5, "the rule checked \(checked) patch-reading `diff` vectors")
+        #expect(checked == 6, "the rule checked \(checked) patch-reading `diff` vectors")
     }
 }
 
@@ -2397,8 +2417,8 @@ import Testing
         let result = ForceFlagScanner.indexWritingVectorsOutsideTheTemporaryIndex(in: try Self.recordSource)
 
         #expect(result.findings.isEmpty, "\(result.findings)")
-        // Not vacuous: the record's five vectors were found and read.
-        #expect(result.checked.count >= 5, "\(result.checked)")
+        // Not vacuous: all seven vectors for the record and clipboard overlay were found and read.
+        #expect(result.checked.count >= 7, "\(result.checked)")
         #expect(Set(result.checked) == ["read-tree", "update-index", "write-tree"])
     }
 
@@ -2407,10 +2427,14 @@ import Testing
     @Test(arguments: [
         (#"backend.runWithEnvironment(["read-tree", "HEAD"], cwd: root, extra: index)"#,
          #"backend.run(["read-tree", "HEAD"], cwd: root)"#),
+        (#"backend.runWithEnvironment(["read-tree", stash], cwd: root, extra: index)"#,
+         #"backend.run(["read-tree", stash], cwd: root)"#),
         (#"backend.runWithEnvironment(["write-tree"], cwd: root, extra: index)"#,
          #"backend.runWithEnvironment(["write-tree"], cwd: root, extra: [:])"#),
         (#"backend.runWithEnvironment(["update-index", "--add"] + cacheinfo, cwd: root, extra: index)"#,
          #"backend.run(["update-index", "--add"] + cacheinfo, cwd: root)"#),
+        (#"backend.runWithEnvironment(["update-index", "--add"] + batch, cwd: root, extra: index)"#,
+         #"backend.run(["update-index", "--add"] + batch, cwd: root)"#),
         (#"_ = try await backend.runWithEnvironment(["update-index", "--add", "--remove", "--"] + batch, cwd: root, extra: index)"#,
          #"let vector = ["update-index", "--add", "--remove", "--"] + batch; _ = try await backend.runWithEnvironment(vector, cwd: root, extra: index)"#),
         (#"_ = try await backend.runWithEnvironment(["update-index", "--force-remove", "--"] + batch, cwd: root, extra: index)"#,

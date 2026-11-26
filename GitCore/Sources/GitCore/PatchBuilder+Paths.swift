@@ -18,8 +18,11 @@ extension PatchBuilder {
     /// git's `quote_c_style`: the prefix and the path are quoted together inside one pair of
     /// double quotes as soon as any byte needs escaping.
     private static func quote(prefix: String, path: String) -> String {
-        let bytes = Array((prefix + path).utf8)
-        guard bytes.contains(where: needsEscape) else { return prefix + path }
+        quoteGitPath(Array((prefix + path).utf8))
+    }
+
+    static func quoteGitPath(_ bytes: [UInt8]) -> String {
+        guard bytes.contains(where: needsEscape) else { return String(decoding: bytes, as: UTF8.self) }
         var out = "\""
         for byte in bytes {
             switch byte {

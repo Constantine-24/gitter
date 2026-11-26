@@ -22,6 +22,14 @@ extension CLIGitBackend {
         }
     }
 
+    /// Check the exported patch's syntax with the same reader Paste Diff uses, without
+    /// asking whether it can be applied to the checkout it was copied from.
+    func validateClipboardExport(_ text: String, at root: URL) async throws -> Int {
+        try await withClipboardPatchFile(text, outside: root) { data, file in
+            try await clipboardPatchSections(data, file: file, at: root, reportingExportPaths: true).count
+        }
+    }
+
     private static let clipboardLocalEnvironment = ["GIT_NO_LAZY_FETCH": "1"]
 
     private enum ClipboardApply {
@@ -73,6 +81,20 @@ extension CLIGitBackend {
         return try await body(data, file)
     }
 
+    private func clipboardPatchSections(
+        _ data: Data, file: URL, at root: URL, reportingExportPaths: Bool = false
+    ) async throws -> [ClipboardPatchParser.Section] {
+        let numstat: Data
+        do {
+            numstat = try await clipboardApply(.numstat, file: file, at: root)
+        } catch GitError.commandFailed(128, let stderr)
+            where stderr == "error: No valid patches in input (allow with \"--allow-empty\")"
+        {
+            throw ClipboardPatchRefusal.invalidPatch
+        }
+        return try ClipboardPatchParser.parse(data, numstat: numstat, reportingExportPaths: reportingExportPaths)
+    }
+
     private func checkedClipboardPatch(
         _ text: String, data: Data, file: URL, at root: URL, expecting plan: ClipboardPatchPlan? = nil
     ) async throws -> ClipboardPatchPlan {
@@ -101,15 +123,7 @@ extension CLIGitBackend {
         guard Self.isFullObjectID(head) || (head.isEmpty && symbolicHead.hasPrefix("refs/heads/"))
         else { throw ClipboardPatchRefusal.changedSinceShown }
 
-        let numstat: Data
-        do {
-            numstat = try await clipboardApply(.numstat, file: file, at: root)
-        } catch GitError.commandFailed(128, let stderr)
-            where stderr == "error: No valid patches in input (allow with \"--allow-empty\")"
-        {
-            throw ClipboardPatchRefusal.invalidPatch
-        }
-        let sections = try ClipboardPatchParser.parse(data, numstat: numstat)
+        let sections = try await clipboardPatchSections(data, file: file, at: root)
         let paths = sections.map { $0.file.path }
         let administrativePaths = [gitDirectory.path, gitCommonDirectory.path] + [
             try await clipboardGitLine(["rev-parse", "--path-format=absolute", "--git-path", "index"], at: root)

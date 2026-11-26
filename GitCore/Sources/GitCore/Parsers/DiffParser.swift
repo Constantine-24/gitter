@@ -12,6 +12,10 @@ import Foundation
 /// `Character` — is still recognised and kept whole.
 public enum DiffParser {
     public static func parse(_ data: Data) -> [FileDiff] {
+        parse(data, quotingInvalidPaths: false)
+    }
+
+    static func parse(_ data: Data, quotingInvalidPaths: Bool) -> [FileDiff] {
         guard !data.isEmpty else { return [] }
 
         let bytes = [UInt8](data)
@@ -27,7 +31,7 @@ public enum DiffParser {
         var index = 0
 
         while index < lines.count {
-            guard let header = parseDiffGitHeader(lines[index]) else {
+            guard let header = parseDiffGitHeader(lines[index], quotingInvalidPaths: quotingInvalidPaths) else {
                 index += 1
                 continue
             }
@@ -61,19 +65,23 @@ public enum DiffParser {
                     changesMode = true
                     index += 1
                 } else if line.hasPrefix("rename from ") {
-                    oldPath = unquoteIfNeeded(String(line.dropFirst("rename from ".count)))
+                    oldPath = unquoteIfNeeded(
+                        String(line.dropFirst("rename from ".count)), quotingInvalidPaths: quotingInvalidPaths)
                     kind = .renamed
                     index += 1
                 } else if line.hasPrefix("rename to ") {
-                    newPath = unquoteIfNeeded(String(line.dropFirst("rename to ".count)))
+                    newPath = unquoteIfNeeded(
+                        String(line.dropFirst("rename to ".count)), quotingInvalidPaths: quotingInvalidPaths)
                     kind = .renamed
                     index += 1
                 } else if line.hasPrefix("copy from ") {
-                    oldPath = unquoteIfNeeded(String(line.dropFirst("copy from ".count)))
+                    oldPath = unquoteIfNeeded(
+                        String(line.dropFirst("copy from ".count)), quotingInvalidPaths: quotingInvalidPaths)
                     kind = .copied
                     index += 1
                 } else if line.hasPrefix("copy to ") {
-                    newPath = unquoteIfNeeded(String(line.dropFirst("copy to ".count)))
+                    newPath = unquoteIfNeeded(
+                        String(line.dropFirst("copy to ".count)), quotingInvalidPaths: quotingInvalidPaths)
                     kind = .copied
                     index += 1
                 } else if hunks.isEmpty, let ids = parseIndexLine(line) {
@@ -86,10 +94,12 @@ public enum DiffParser {
                     isBinary = true
                     index += 1
                 } else if line.hasPrefix("--- ") {
-                    oldPath = parseUnifiedPath(line, markerLength: 4, prefix: "a/")
+                    oldPath = parseUnifiedPath(
+                        line, markerLength: 4, prefix: "a/", quotingInvalidPaths: quotingInvalidPaths)
                     index += 1
                 } else if line.hasPrefix("+++ ") {
-                    newPath = parseUnifiedPath(line, markerLength: 4, prefix: "b/")
+                    newPath = parseUnifiedPath(
+                        line, markerLength: 4, prefix: "b/", quotingInvalidPaths: quotingInvalidPaths)
                     index += 1
                 } else if let hunkStart = parseHunkHeader(line) {
                     index += 1

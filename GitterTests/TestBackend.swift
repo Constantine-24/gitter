@@ -7,7 +7,7 @@ import Testing
 // `Testing.Tag` is in scope here too, so GitCore's is written `GitCore.Tag` (B1.3).
 @testable import GitCore
 
-/// The store's backend for a test: all 111 requirements of the twelve protocols forwarded to a
+/// The store's backend for a test: all 112 requirements of the twelve protocols forwarded to a
 /// real `CLIGitBackend` on the test's scratch repository, with any one call open to the test
 /// (E3 Task 3, spec Design §2). A test can, around a call:
 /// - `hook` it: run code before or after every such call, and throw to make the call throw;
@@ -38,7 +38,7 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
     GitStashBackend, GitConflictBackend, GitOperationBackend, GitHistoryBackend, GitTagBackend,
     GitRemoteAdminBackend, GitCompareBackend, GitWorktreeBackend, Sendable
 {
-    /// One case per protocol requirement (111); the raw value is the method's `#function`
+    /// One case per protocol requirement (112); the raw value is the method's `#function`
     /// spelling. The overloads' cases carry what tells them apart: `stageAllExpecting`,
     /// `discardExpectationTracked` / `discardExpectationUntracked`, `commitByID` (`GitBackend`'s
     /// one-commit read, beside `GitWorkingCopyBackend`'s `commit`), `rebaseOnto`
@@ -50,6 +50,7 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
         case historyRow = "historyRow(of:at:)"
         case commitByID = "commit(_:at:)"
         case workingCopyDiff = "workingCopyDiff(at:path:staged:)"
+        case copyAllChanges = "copyAllChanges(_:at:)"
         case commitFiles = "commitFiles(at:sha:)"
         case commitDiff = "commitDiff(at:sha:path:)"
         case branchActivity = "branchActivity(at:)"
@@ -345,6 +346,9 @@ final class TestBackend: GitBackend, GitWorkingCopyBackend, GitBranchBackend, Gi
     }
     func workingCopyDiff(at root: URL, path: String, staged: Bool) async throws -> [FileDiff] {
         try await around(.workingCopyDiff) { try await real.workingCopyDiff(at: root, path: path, staged: staged) }
+    }
+    func copyAllChanges(_ source: ClipboardDiffSource, at root: URL) async throws -> ClipboardDiffExport? {
+        try await around(.copyAllChanges) { try await real.copyAllChanges(source, at: root) }
     }
     func commitFiles(at root: URL, sha: String) async throws -> [FileStatus] {
         try await around(.commitFiles) { try await real.commitFiles(at: root, sha: sha) }

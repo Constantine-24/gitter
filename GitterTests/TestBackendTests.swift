@@ -13,8 +13,8 @@ import Testing
     // MARK: - The keys
 
     @Test func thereIsOneKeyPerRequirementAndNoTwoAreSpelledAlike() {
-        #expect(TestBackend.Call.allCases.count == 111)
-        #expect(Set(TestBackend.Call.allCases.map(\.rawValue)).count == 111)
+        #expect(TestBackend.Call.allCases.count == 112)
+        #expect(Set(TestBackend.Call.allCases.map(\.rawValue)).count == 112)
     }
 
     /// Plan correction 2 makes a misspelt key a compile error; this is the other half: every
@@ -25,8 +25,8 @@ import Testing
         let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appending(path: "TestBackend.swift")
         let forwarders = ForwarderKeys.read(try String(contentsOf: file, encoding: .utf8))
 
-        #expect(forwarders.count == 111)
-        #expect(Set(forwarders.map(\.key)).count == 111)
+        #expect(forwarders.count == 112)
+        #expect(Set(forwarders.map(\.key)).count == 112)
         #expect(ForwarderKeys.mismatches(forwarders).isEmpty, "\(ForwarderKeys.mismatches(forwarders))")
     }
 

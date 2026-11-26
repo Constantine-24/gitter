@@ -5,7 +5,7 @@ import Foundation
 ///
 /// **The only file that may name `read-tree`, `update-index` or `write-tree`**
 /// (`ForceFlagScanner.recordFile`). Each of them runs here with `GIT_INDEX_FILE` pointing at a
-/// temporary index this type creates and removes; without it, `read-tree HEAD` would overwrite
+/// temporary index created for the record or clipboard export; without it, `read-tree HEAD` would overwrite
 /// the real index and drop every staged change, and `write-tree` rewrites the real index and
 /// takes its lock (M 8). A scanner cannot see an environment, so it confines the three
 /// subcommands to this file instead.
@@ -184,6 +184,41 @@ struct StashRecord {
     }
 
     // MARK: - Steps
+
+    /// Overlay the stash's untracked tree on its worktree tree for clipboard export.
+    /// The resulting tree exists only for the read, in the temporary object directory.
+    static func withClipboardStashTree<T>(
+        _ stash: String, untracked: String, backend: CLIGitBackend, at root: URL,
+        _ body: (String, [String: String]) async throws -> T
+    ) async throws -> T {
+        try await backend.withClipboardExportIndex(at: root) { _, index in
+            let data = try await backend.runWithEnvironment(
+                ["ls-tree", "-r", "-z", "--full-tree", "--end-of-options", untracked],
+                cwd: root, extra: index).stdout
+            var entries: [(mode: String, sha: String, stage: String, path: String)] = []
+            var unsupported: [String] = []
+            for record in data.split(separator: 0) {
+                let parts = record.split(separator: UInt8(ascii: "\t"), maxSplits: 1)
+                guard parts.count == 2 else { throw ClipboardDiffExportRefusal.sourceChanged }
+                let header = parts[0].split(separator: UInt8(ascii: " "))
+                guard header.count == 3 else { throw ClipboardDiffExportRefusal.sourceChanged }
+                guard let path = String(validating: parts[1], as: UTF8.self) else {
+                    unsupported.append(PatchBuilder.quoteGitPath(Array(parts[1])))
+                    continue
+                }
+                let mode = String(decoding: header[0], as: UTF8.self)
+                let sha = String(decoding: header[2], as: UTF8.self)
+                guard CLIGitBackend.isFullObjectID(sha) else { throw ClipboardDiffExportRefusal.sourceChanged }
+                entries.append((mode, sha, "0", path))
+            }
+            if !unsupported.isEmpty { throw ClipboardDiffExportRefusal.unsupported(unsupported) }
+            _ = try await backend.runWithEnvironment(["read-tree", stash], cwd: root, extra: index)
+            for batch in cacheinfoArguments(entries) {
+                _ = try await backend.runWithEnvironment(["update-index", "--add"] + batch, cwd: root, extra: index)
+            }
+            return try await body(writeTree(backend, index, root), index)
+        }
+    }
 
     /// At most this many `--cacheinfo` entries go to one `update-index`: 1 000 entries of a
     /// 200-byte path are about 250 KB of arguments, well under macOS's `ARG_MAX` (1 MB).
