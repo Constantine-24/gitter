@@ -31,9 +31,11 @@ import Testing
         let cached = try repo.git("diff", "--cached")
         let head = try repo.git("rev-parse", "HEAD")
         let backend = TestBackend()
-        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        let events = RecordingEventLog()
+        let (store, _, cleanup) = makeTestStore(backend: backend, eventLog: events.eventLog)
         defer { cleanup() }
         defer { await releaseAndSettle([backend], [store]) }
+        await open(store, repo.url)
 
         let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.tests.paste-\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
@@ -72,7 +74,7 @@ import Testing
         #expect(try repo.git("diff", "--cached") == cached)
         #expect(try repo.git("rev-parse", "HEAD") == head)
         #expect(store.unstagedFiles.contains { $0.path == "a.txt" })
-        #expect(store.notice?.text == ClipboardPatchWording.applied)
+        #expect(events.lines.contains { $0.hasPrefix("notice ") && $0.hasSuffix(": \(ClipboardPatchWording.applied)") })
     }
 
     @Test(.timeLimit(.minutes(10))) func cancelAndReopeningTheWindowCannotApplyThePreview() async throws {
