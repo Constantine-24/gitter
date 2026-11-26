@@ -138,7 +138,7 @@ used to drive the real app.
 
 ## Status
 
-Gitter is a personal project in active development (version 0.5.0). Each milestone is listed under
+Gitter is a personal project in active development (version 0.6.0). Each milestone is listed under
 "Status / roadmap" in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#status--roadmap).
 
 ## License
