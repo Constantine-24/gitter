@@ -159,14 +159,15 @@ different Gitter window.
 In the destination window, choose **Repository → Paste Diff…** (⌥⌘V). Review the
 repository, branch, affected paths, and patch, then choose **Apply Patch**. The
 changes are written to the working copy as unstaged changes. The patch can add,
-modify, or delete regular text files. Gitter asks for a fresh preview if the
-destination changes while the sheet is open.
+modify, or delete regular text files. If the destination changes while the
+sheet is open, paste again to get a fresh preview.
 
-Files touched by the patch must be clean. You can keep staged and unstaged
-changes in other files. Git operations and unresolved conflicts must be finished
-first. Use a UTF-8 Git patch with the standard `a/` and `b/` prefixes. Binary
-changes, renames, copies, permission changes, symlinks, submodules, and files
-that require Git checkout conversion are outside this feature.
+A modification or deletion needs a clean existing file. An addition needs a
+vacant path. You can keep staged and unstaged changes in other files. Finish
+any Git operation and resolve conflicts before pasting. Use a UTF-8 Git patch
+with the standard `a/` and `b/` prefixes. Gitter refuses binary patches, renames,
+copies, mode changes, symlinks, submodules, checkout conversions, and targets
+whose permissions or filesystem metadata Git would discard.
 
 ### Syntax colours
 

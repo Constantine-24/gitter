@@ -11,9 +11,9 @@ extension CLIGitBackend {
 
     public func applyClipboardPatch(_ plan: ClipboardPatchPlan, at root: URL) async throws {
         let root = root.resolvingSymlinksInPath().standardizedFileURL
-        guard root == plan.root else { throw ClipboardPatchRefusal.changedSinceShown }
+        guard root == plan.root.url else { throw ClipboardPatchRefusal.changedSinceShown }
         try await withClipboardPatchFile(plan.text, outside: root) { data, file in
-            let current = try await checkedClipboardPatch(plan.text, data: data, file: file, at: root)
+            let current = try await checkedClipboardPatch(plan.text, data: data, file: file, at: root, expecting: plan)
             guard current == plan else { throw ClipboardPatchRefusal.changedSinceShown }
             try Task.checkCancellation()
             // The same file and options as --check. Git checks every hunk again before
@@ -74,8 +74,10 @@ extension CLIGitBackend {
     }
 
     private func checkedClipboardPatch(
-        _ text: String, data: Data, file: URL, at root: URL
+        _ text: String, data: Data, file: URL, at root: URL, expecting plan: ClipboardPatchPlan? = nil
     ) async throws -> ClipboardPatchPlan {
+        let worktree = try Self.clipboardDirectory(root)
+        if let plan, worktree != plan.root { throw ClipboardPatchRefusal.changedSinceShown }
         let top = try await clipboardGitLine(["rev-parse", "--show-toplevel"], at: root)
         guard !top.isEmpty, URL(fileURLWithPath: top).resolvingSymlinksInPath().path == root.path
         else { throw ClipboardPatchRefusal.changedSinceShown }
@@ -83,6 +85,11 @@ extension CLIGitBackend {
             ["rev-parse", "--absolute-git-dir"], at: root)).resolvingSymlinksInPath()
         let gitCommonDirectory = URL(fileURLWithPath: try await clipboardGitLine(
             ["rev-parse", "--path-format=absolute", "--git-common-dir"], at: root)).resolvingSymlinksInPath()
+        let git = try Self.clipboardDirectory(gitDirectory)
+        let common = try Self.clipboardDirectory(gitCommonDirectory)
+        if let plan, git != plan.gitDirectory || common != plan.gitCommonDirectory {
+            throw ClipboardPatchRefusal.changedSinceShown
+        }
 
         async let headRead = clipboardGitLine(["rev-parse", "-q", "--verify", "HEAD^{commit}"], at: root, allowed: [1])
         async let referenceRead = clipboardGitLine(["symbolic-ref", "-q", "HEAD"], at: root, allowed: [1])
@@ -97,7 +104,9 @@ extension CLIGitBackend {
         let numstat: Data
         do {
             numstat = try await clipboardApply(.numstat, file: file, at: root)
-        } catch GitError.commandFailed {
+        } catch GitError.commandFailed(128, let stderr)
+            where stderr == "error: No valid patches in input (allow with \"--allow-empty\")"
+        {
             throw ClipboardPatchRefusal.invalidPatch
         }
         let sections = try ClipboardPatchParser.parse(data, numstat: numstat)
@@ -117,17 +126,19 @@ extension CLIGitBackend {
             ["ls-tree", "-r", "-z", "--full-tree", head], relevantTo: paths, at: root)
         let (index, tree) = try await (indexRead, treeRead)
 
+        let defaults = try Self.clipboardCreationDefaults(in: file.deletingLastPathComponent())
         var images: [ClipboardPatchPlan.Preimage?] = []
         for (section, location) in zip(sections, locations) {
-            images.append(try await clipboardPreimage(section, info: location, index: index, tree: tree, at: root))
+            images.append(try await clipboardPreimage(section, info: location, index: index, tree: tree,
+                                                      defaults: defaults, at: root))
         }
         _ = try await clipboardApply(.check, file: file, at: root)
 
         let branch = symbolicHead.hasPrefix("refs/heads/") ? String(symbolicHead.dropFirst("refs/heads/".count)) : symbolicHead
         let headLabel = branch.isEmpty ? "detached at \(head.prefix(7))" : branch
         return ClipboardPatchPlan(text: text, files: sections.map(\.file), headLabel: headLabel,
-                                  root: root, gitDirectory: gitDirectory, head: head, symbolicHead: symbolicHead,
-                                  preimages: images)
+                                  root: worktree, gitDirectory: git, gitCommonDirectory: common,
+                                  head: head, symbolicHead: symbolicHead, preimages: images)
     }
 
     private func clipboardGitLine(
@@ -257,7 +268,7 @@ extension CLIGitBackend {
 
     private func clipboardPreimage(
         _ section: ClipboardPatchParser.Section, info: stat?, index: ClipboardEntries,
-        tree: ClipboardEntries, at root: URL
+        tree: ClipboardEntries, defaults: ClipboardCreationDefaults, at root: URL
     ) async throws -> ClipboardPatchPlan.Preimage? {
         let file = section.file
         let key = ClipboardPatchPath.key(file.path)
@@ -301,7 +312,71 @@ extension CLIGitBackend {
             String(data: blob, encoding: .utf8) != nil,
             file.kind != .deleted || file.deletions > 0 || blob.isEmpty
         else { throw ClipboardPatchRefusal.affectedPathChanged(file.path) }
-        return .init(object: object, permissions: info.st_mode)
+        let gitMode: mode_t = mode == "100755" ? 0o777 : 0o666
+        let permissions = current.st_mode & 0o7777
+        var parent = stat()
+        guard permissions == gitMode & defaults.permissions, current.st_nlink == 1, current.st_flags == 0,
+            current.st_uid == geteuid(), stat(url.deletingLastPathComponent().path, &parent) == 0,
+            current.st_gid == parent.st_gid,
+            Self.clipboardHasDefaultAttributes(fd, provenance: defaults.provenance),
+            Self.clipboardHasNoACL(fd)
+        else { throw ClipboardPatchRefusal.unsupportedFileMetadata(file.path) }
+        return .init(object: object, permissions: permissions)
+    }
+
+    private struct ClipboardCreationDefaults {
+        let permissions: mode_t
+        let provenance: Data?
+    }
+
+    private static let clipboardProvenance = "com.apple.provenance"
+
+    /// Git creates a replacement with 0666 or 0777 reduced by its inherited umask. A
+    /// private probe measures the mask without changing process-wide state.
+    private static func clipboardCreationDefaults(in directory: URL) throws -> ClipboardCreationDefaults {
+        let probe = directory.appendingPathComponent("creation-defaults")
+        let fd = open(probe.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode_t(0o777))
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { _ = close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        return .init(permissions: info.st_mode & 0o777, provenance: clipboardProvenanceValue(fd))
+    }
+
+    private static func clipboardProvenanceValue(_ fd: Int32) -> Data? {
+        let count = fgetxattr(fd, clipboardProvenance, nil, 0, 0, 0)
+        guard count >= 0 else { return nil }
+        var bytes = Data(count: count)
+        let read = bytes.withUnsafeMutableBytes {
+            fgetxattr(fd, clipboardProvenance, $0.baseAddress, $0.count, 0, 0)
+        }
+        return read == count ? bytes : nil
+    }
+
+    private static func clipboardHasDefaultAttributes(_ fd: Int32, provenance: Data?) -> Bool {
+        let count = flistxattr(fd, nil, 0, 0)
+        if count == 0 || (count < 0 && errno == ENOTSUP) { return true }
+        // macOS can automatically attach provenance to newly written files. Git
+        // recreates that system attribute when it matches the process's creation context.
+        let systemAttribute = Data((clipboardProvenance + "\0").utf8)
+        guard let provenance, count == systemAttribute.count else { return false }
+        var names = Data(count: count)
+        let read = names.withUnsafeMutableBytes { flistxattr(fd, $0.baseAddress, $0.count, 0) }
+        return read == count && names == systemAttribute && clipboardProvenanceValue(fd) == provenance
+    }
+
+    private static func clipboardHasNoACL(_ fd: Int32) -> Bool {
+        if let acl = acl_get_fd_np(fd, ACL_TYPE_EXTENDED) {
+            acl_free(UnsafeMutableRawPointer(acl))
+            return false
+        }
+        return errno == ENOENT || errno == ENOTSUP
+    }
+
+    private static func clipboardDirectory(_ url: URL) throws -> ClipboardPatchPlan.Directory {
+        guard let info = try clipboardFileInfo(url.path), info.st_mode & S_IFMT == S_IFDIR
+        else { throw ClipboardPatchRefusal.changedSinceShown }
+        return .init(url: url, device: info.st_dev, inode: info.st_ino)
     }
 
     private static func clipboardWorktreeInfo(_ path: String, at root: URL) throws -> stat? {

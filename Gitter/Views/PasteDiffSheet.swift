@@ -3,12 +3,14 @@ import GitCore
 import SwiftUI
 
 struct PasteDiffSheet: View {
-    let plan: ClipboardPatchPlan
-    let destination: URL
+    let preview: ClipboardPatchPreview
 
     @Environment(RepositoryStore.self) private var store
 
+    private var plan: ClipboardPatchPlan { preview.plan }
+
     var body: some View {
+        let blocked = store.clipboardPatchApplyBlockedReason
         VStack(alignment: .leading, spacing: 12) {
             Text(ClipboardPatchWording.sheetTitle)
                 .font(.headline)
@@ -16,11 +18,11 @@ struct PasteDiffSheet: View {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
                 GridRow {
                     Text(ClipboardPatchWording.repository).foregroundStyle(.secondary)
-                    Text(verbatim: ClipboardPatchWording.displayPath(destination.path))
+                    Text(verbatim: ClipboardPatchWording.displayName(preview.destination.path))
                 }
                 GridRow {
                     Text(ClipboardPatchWording.branch).foregroundStyle(.secondary)
-                    Text(verbatim: RemoteWording.stripped(plan.headLabel))
+                    Text(verbatim: ClipboardPatchWording.displayName(plan.headLabel))
                 }
             }
             .font(.callout)
@@ -33,7 +35,7 @@ struct PasteDiffSheet: View {
             files
             patch
 
-            if let blocked = store.clipboardPatchApplyBlockedReason {
+            if let blocked {
                 Text(blocked)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -41,11 +43,11 @@ struct PasteDiffSheet: View {
 
             HStack {
                 Spacer()
-                let apply: @MainActor () -> Void = { store.confirmClipboardPatch(plan) }
+                let apply: @MainActor () -> Void = { store.confirmClipboardPatch(preview.id) }
                 Button(ClipboardPatchWording.applyPatch, action: apply)
                     .harnessButton(ClipboardPatchWording.applyPatch, action: apply)
-                    .disabled(store.clipboardPatchApplyBlockedReason != nil)
-                let cancel: @MainActor () -> Void = { store.activeSheet = nil }
+                    .disabled(blocked != nil)
+                let cancel: @MainActor () -> Void = { store.cancelClipboardPatch(preview.id) }
                 Button(ClipboardPatchWording.cancel, action: cancel)
                     .harnessButton(ClipboardPatchWording.cancel, action: cancel)
                     .keyboardShortcut(.defaultAction)
@@ -53,7 +55,7 @@ struct PasteDiffSheet: View {
         }
         .padding(20)
         .frame(width: 600)
-        .onExitCommand { store.activeSheet = nil }
+        .onExitCommand { store.cancelClipboardPatch(preview.id) }
     }
 
     private var files: some View {
@@ -68,7 +70,7 @@ struct PasteDiffSheet: View {
                             Text(ClipboardPatchWording.fileAction(file))
                                 .foregroundStyle(.secondary)
                                 .frame(width: 48, alignment: .leading)
-                            Text(verbatim: ClipboardPatchWording.displayPath(file.path))
+                            Text(verbatim: ClipboardPatchWording.displayName(file.path))
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             Text("+\(file.additions)")

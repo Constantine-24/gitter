@@ -64,10 +64,11 @@ extension RepositoryStore {
 
     /// Opens `url` in this window in place of its repository (Open Worktree, an open routed to
     /// this window, a value set on it): its drafts with changes are asked about first — unless
-    /// `open` would refuse (a closed window, git missing, a write on the lane, not a repository),
+    /// `open` would refuse (a closed window, git missing, a write in progress, not a repository),
     /// which then says why in the banner with nothing asked and nothing dropped.
     func openInPlace(_ url: URL) {
-        let refuses = isClosed || gitMissing || remoteActivity?.isWrite == true || Self.notARepository(url) != nil
+        let refuses = isClosed || gitMissing || isApplyingClipboardPatch || remoteActivity?.isWrite == true
+            || Self.notARepository(url) != nil
         guard !refuses else {
             open(url)
             return

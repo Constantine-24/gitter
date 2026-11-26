@@ -26,9 +26,20 @@ enum ClipboardPatchWording {
     static let resolverOpen = "Close Resolve Conflicts before pasting a diff."
     static let noRepository = "Open a repository before pasting a diff."
     static let sheetUp = "Close the open sheet before pasting a diff."
+    static let previewInterrupted = "Close the open sheet and choose Paste Diff… again."
+    static let openWhileApplying = "Wait for the clipboard patch to finish applying before replacing this repository."
+    static let quitWhileApplying = "Wait for the clipboard patch to finish applying before quitting Gitter."
+    static let quitPending = "Wait for the quit request to finish before pasting a diff."
 
-    static func displayPath(_ path: String) -> String {
-        RemoteWording.stripped(LogLine.escape(path))
+    static func displayName(_ name: String) -> String {
+        LogLine.escape(name).unicodeScalars.map { scalar in
+            let properties = scalar.properties
+            let needsEscape = switch properties.generalCategory {
+            case .format, .nonspacingMark, .enclosingMark: true
+            default: properties.isDefaultIgnorableCodePoint
+            }
+            return needsEscape ? "\\u{\(String(scalar.value, radix: 16, uppercase: true))}" : String(scalar)
+        }.joined()
     }
 
     static func fileAction(_ file: ClipboardPatchFile) -> String {
@@ -44,11 +55,15 @@ enum ClipboardPatchWording {
             switch refusal {
             case .invalidPatch: return Failure(message: invalid)
             case .unsafePath(let path):
-                return Failure(message: "The patch names an unsupported path “\(displayPath(path))”.")
+                return Failure(message: "The patch names an unsupported path “\(displayName(path))”.")
             case .affectedPathChanged(let path):
-                return Failure(message: "The destination has changes in “\(displayPath(path))”.")
+                return Failure(message:
+                    "The destination path “\(displayName(path))” is missing, changed, or already occupied. "
+                        + "Choose Paste Diff… to check it again.")
+            case .unsupportedFileMetadata(let path):
+                return Failure(message: "The patch changes unsupported file metadata in “\(displayName(path))”.")
             case .checkoutConversion(let path):
-                return Failure(message: "Git checkout settings affect “\(displayPath(path))”.")
+                return Failure(message: "Git checkout settings affect “\(displayName(path))”.")
             case .operationInProgress: return Failure(message: operationInProgress)
             case .changedSinceShown: return Failure(message: destinationChanged)
             }

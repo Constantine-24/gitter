@@ -31,7 +31,7 @@ extension RepositoryStore {
 
     /// Exports the diff passed by the header's button, including the side and content on screen.
     func copyDiff(_ file: FileDiff, hunkID: Hunk.ID? = nil, to pasteboard: NSPasteboard = .general) {
-        guard canCopyDiff(file), let text = file.clipboardPatch(hunkID: hunkID) else { return }
+        guard displayedDiffAllowsClipboardCopy, let text = file.clipboardPatch(hunkID: hunkID) else { return }
         guard Clipboard.copy(text, to: pasteboard) else {
             showStickyError(ClipboardPatchWording.copyFailed)
             return
@@ -47,6 +47,7 @@ extension RepositoryStore {
     var clipboardPatchApplyBlockedReason: String? {
         guard root != nil, snapshot != nil, !isClosed else { return ClipboardPatchWording.noRepository }
         if let reason = changeRunningBlockedReason { return reason }
+        if QuitFlow.isUnderWay, registry === AppModel.windows { return ClipboardPatchWording.quitPending }
         if resolverFocus != nil { return ClipboardPatchWording.resolverOpen }
         if operationInProgress != nil || haltedSequence != nil { return ClipboardPatchWording.operationInProgress }
         if hasUnmergedFiles { return ClipboardPatchWording.unmerged }
@@ -68,22 +69,31 @@ extension RepositoryStore {
             }
         }, onSuccess: { [self] result in
             let (plan, destination) = result
-            if activeSheet == nil { activeSheet = .clipboardPatch(plan, destination: destination) }
+            guard activeSheet == nil else {
+                showStickyError(ClipboardPatchWording.previewInterrupted)
+                return
+            }
+            activeSheet = .clipboardPatch(ClipboardPatchPreview(plan: plan, destination: destination))
         })
     }
 
-    func confirmClipboardPatch(_ plan: ClipboardPatchPlan) {
-        guard case .clipboardPatch(let shown, let destination) = activeSheet,
-            shown == plan, destination == root, clipboardPatchApplyBlockedReason == nil
+    func cancelClipboardPatch(_ id: ClipboardPatchPreview.ID) {
+        guard case .clipboardPatch(let shown) = activeSheet, shown.id == id else { return }
+        activeSheet = nil
+    }
+
+    func confirmClipboardPatch(_ id: ClipboardPatchPreview.ID) {
+        guard case .clipboardPatch(let shown) = activeSheet,
+            shown.id == id, shown.destination == root, clipboardPatchApplyBlockedReason == nil
         else { return }
         activeSheet = nil
         mutate({ backend, root in
             do {
-                try await backend.applyClipboardPatch(plan, at: root)
+                try await backend.applyClipboardPatch(shown.plan, at: root)
             } catch {
                 throw ClipboardPatchWording.failure(error, applying: true)
             }
-        }, onSuccess: { [self] in
+        }, applyingClipboardPatch: true, onSuccess: { [self] in
             showNotice(ClipboardPatchWording.applied)
         })
     }

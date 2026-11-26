@@ -263,10 +263,9 @@ public struct CLIGitBackend: GitBackend {
         }
     }
 
-    /// `run` with variables of the caller's own added to the child's environment, for the
-    /// one call that needs them: the record's `GIT_INDEX_FILE`, and the `GIT_CONFIG_COUNT`
-    /// parameters that turn rerere off for a stash apply (`rerereOff`). A leading `-c` would do
-    /// the latter too, and the scanner forbids it, because it hides the subcommand.
+    /// `run` with caller-supplied environment variables, such as a record's
+    /// `GIT_INDEX_FILE` or `GIT_NO_LAZY_FETCH` for local reads. The command scanner
+    /// checks complete command shapes, including the pinned clipboard apply vectors.
     ///
     /// It goes through the streaming runner's internal overload, whose `inheritedEnvironment`
     /// replaces `ProcessInfo.processInfo.environment` as the base; this passes that environment

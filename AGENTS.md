@@ -58,7 +58,7 @@ There are three code units, wired together in `project.yml`:
 - Twelve backend protocols define each area's contract: `GitBackend` (reads), plus working copy, branch, remote, stash, conflict, operation, history, tag, remote admin, compare and worktree.
 - One implementation, `CLIGitBackend`, is split into `CLIGitBackend+<Area>.swift` files. It spawns git through `ProcessRunner`, which is frozen; `ProcessRunner+Streaming.swift` handles long network calls with progress and cancel.
 - `Parsers/` reads git's own output into `Models/`.
-- `PatchBuilder` builds the patches that staging and discards apply with `git apply --cached`. Gitter never writes the index itself.
+- `PatchBuilder` builds index patches for staging and unstaging and worktree patches for line discard and undo. Gitter never writes the index itself.
 - `GraphLayout` computes the lane graph in one pass in commit order.
 - `CommandLog` is the sink that every git call reports to, and it feeds the diagnostics log.
 - `GitCoreTestSupport` holds the test helpers both test targets share. It must never depend on GitCore, or Xcode links a second static copy of GitCore into the app's test bundle.
@@ -152,7 +152,7 @@ Before and during a launch:
 - **Never share a `-derivedDataPath`** between concurrent xcodebuilds.
 - **Take screenshots with the `snapshot:` step only,** which captures just the window. Never take a full-screen capture.
 
-The harness cannot activate the app or open real context menus. Focus, key-window, tooltip and right-click behaviour can only be checked by a person with a real pointer.
+The harness can request activation and report focus state. Use a real app window and pointer to verify key-window behaviour, tooltips, and context menus.
 
 The full variable and step reference is in DEVELOPMENT.md › Debug launch hooks.
 

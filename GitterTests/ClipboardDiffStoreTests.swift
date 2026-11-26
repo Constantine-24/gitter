@@ -6,9 +6,9 @@ import Testing
 @testable import Gitter
 
 @MainActor @Suite(.leavesTheRealDefaultsAlone) struct ClipboardDiffStoreTests {
-    private static let original = "first\nbefore\nlast\n"
+    fileprivate static let original = "first\nbefore\nlast\n"
     private static let changed = "first\nafter\nlast\n"
-    private static let patch =
+    fileprivate static let patch =
         """
         diff --git a/a.txt b/a.txt
         --- a/a.txt
@@ -24,7 +24,7 @@ import Testing
     @Test(.timeLimit(.minutes(10))) func previewUsesTheTextOnTheClipboardWhenInvoked() async throws {
         let repo = try ScratchRepo("destination")
         defer { repo.remove() }
-        try repo.commit("a.txt", Self.original, "first")
+        try Self.commitOriginal(to: repo)
         try repo.commit("other.txt", "base\n", "keep independent staged edits")
         try repo.write("other.txt", "staged\n")
         try repo.git("add", "--", "other.txt")
@@ -48,12 +48,13 @@ import Testing
         planning.release()
         await waitUntilIdle(store)
 
-        guard case .clipboardPatch(let plan, let destination) = store.activeSheet else {
+        guard case .clipboardPatch(let preview) = store.activeSheet else {
             Issue.record("The patch preview never opened")
             return
         }
-        #expect(destination == store.root)
-        #expect(destination.lastPathComponent == "destination")
+        #expect(preview.destination == store.root)
+        #expect(preview.destination.lastPathComponent == "destination")
+        let plan = preview.plan
         #expect(plan.headLabel == "main")
         #expect(plan.text == Self.patch)
         #expect(plan.files.map(\.path) == ["a.txt"])
@@ -63,7 +64,7 @@ import Testing
         #expect(!backend.calls.contains(.applyClipboardPatch))
         #expect(try Self.file(repo) == Self.original)
 
-        store.confirmClipboardPatch(plan)
+        store.confirmClipboardPatch(preview.id)
         await waitUntilIdle(store)
         #expect(store.activeSheet == nil)
         #expect(backend.calls.filter { $0 == .applyClipboardPatch }.count == 1)
@@ -79,8 +80,8 @@ import Testing
         defer { repo.remove() }
         let next = try ScratchRepo("second")
         defer { next.remove() }
-        try repo.commit("a.txt", Self.original, "first")
-        try next.commit("a.txt", Self.original, "first")
+        try Self.commitOriginal(to: repo)
+        try Self.commitOriginal(to: next)
         let backend = TestBackend()
         let (store, cleanup) = await openedTestStore(repo, backend: backend)
         defer { cleanup() }
@@ -91,34 +92,111 @@ import Testing
         try #require(pasteboard.setString(Self.patch, forType: .string))
         store.requestPasteDiff(from: pasteboard)
         await waitUntilIdle(store)
-        guard case .clipboardPatch(let cancelled, _) = store.activeSheet else {
+        guard case .clipboardPatch(let cancelled) = store.activeSheet else {
             Issue.record("The patch preview never opened")
             return
         }
         #expect(RepositoryCommands.isOff(store, \.pasteDiffBlockedReason))
-        store.activeSheet = nil
-        store.confirmClipboardPatch(cancelled)
+        store.cancelClipboardPatch(cancelled.id)
+        store.confirmClipboardPatch(cancelled.id)
         #expect(!backend.calls.contains(.applyClipboardPatch))
         #expect(try Self.file(repo) == Self.original)
 
         store.requestPasteDiff(from: pasteboard)
         await waitUntilIdle(store)
-        guard case .clipboardPatch(let previous, _) = store.activeSheet else {
+        guard case .clipboardPatch(let previous) = store.activeSheet else {
             Issue.record("The new patch preview never opened")
             return
         }
         await open(store, next.url)
         #expect(store.activeSheet == nil)
-        store.confirmClipboardPatch(previous)
+        store.confirmClipboardPatch(previous.id)
         #expect(!backend.calls.contains(.applyClipboardPatch))
         #expect(try Self.file(repo) == Self.original)
         #expect(try Self.file(next) == Self.original)
     }
 
+    @Test(.timeLimit(.minutes(10))) func aCancelledCallbackCannotAuthorizeAnotherPreview() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try Self.commitOriginal(to: repo)
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+
+        let composed = Self.patch.replacingOccurrences(of: "+after", with: "+caf\u{e9}")
+        let decomposed = Self.patch.replacingOccurrences(of: "+after", with: "+cafe\u{301}")
+        #expect(composed == decomposed)
+        #expect(Data(composed.utf8) != Data(decomposed.utf8))
+        let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.tests.presentation-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        try #require(Clipboard.copy(composed, to: pasteboard))
+        store.requestPasteDiff(from: pasteboard)
+        await waitUntilIdle(store)
+        guard case .clipboardPatch(let old) = store.activeSheet else {
+            Issue.record("The first patch preview never opened")
+            return
+        }
+        store.cancelClipboardPatch(old.id)
+
+        try #require(Clipboard.copy(decomposed, to: pasteboard))
+        store.requestPasteDiff(from: pasteboard)
+        await waitUntilIdle(store)
+        guard case .clipboardPatch(let current) = store.activeSheet else {
+            Issue.record("The second patch preview never opened")
+            return
+        }
+        #expect(Data(current.plan.text.utf8) == Data(decomposed.utf8))
+        #expect(current.id != old.id)
+        store.confirmClipboardPatch(old.id)
+        await waitUntilIdle(store)
+        #expect(store.activeSheet == .clipboardPatch(current))
+        #expect(!backend.calls.contains(.applyClipboardPatch))
+        #expect(try Self.file(repo) == Self.original)
+
+        store.confirmClipboardPatch(current.id)
+        await waitUntilIdle(store)
+        #expect(backend.calls.filter { $0 == .applyClipboardPatch }.count == 1)
+        let file = try Data(contentsOf: repo.url.appending(path: "a.txt"))
+        #expect(file == Data("first\ncafe\u{301}\nlast\n".utf8))
+    }
+
+    @Test(.timeLimit(.minutes(10))) func aCompetingSheetCanKeepItsPlaceWhileAPatchIsRead() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try Self.commitOriginal(to: repo)
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        defer { await releaseAndSettle([backend], [store]) }
+
+        let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.tests.competing-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        try #require(Clipboard.copy(Self.patch, to: pasteboard))
+        let planning = backend.hold(.planClipboardPatch)
+        store.requestPasteDiff(from: pasteboard)
+        #expect(await waitUntil("patch planning") { planning.waiting })
+        store.activeSheet = .rename("main")
+        planning.release()
+        await waitUntilIdle(store)
+
+        #expect(store.activeSheet == .rename("main"))
+        #expect(store.lastError == "Close the open sheet and choose Paste Diff… again.")
+        #expect(!backend.calls.contains(.applyClipboardPatch))
+        #expect(try Self.file(repo) == Self.original)
+    }
+
+    @Test func destinationNamesShowEscapedControlsAndHiddenScalars() {
+        #expect(
+            ClipboardPatchWording.displayName("prefix\n.\u{301}name\u{202e}\\\u{200b}")
+                == "prefix\\n.\\u{301}name\\u{202E}\\\\\\u{200B}")
+        #expect(ClipboardPatchWording.displayName("cafe\u{301}") == "cafe\\u{301}")
+    }
+
     @Test(.timeLimit(.minutes(10))) func destinationMovingAfterPreviewLeavesTheFilesAlone() async throws {
         let repo = try ScratchRepo()
         defer { repo.remove() }
-        try repo.commit("a.txt", Self.original, "first")
+        try Self.commitOriginal(to: repo)
         let backend = TestBackend()
         let (store, cleanup) = await openedTestStore(repo, backend: backend)
         defer { cleanup() }
@@ -129,12 +207,12 @@ import Testing
         try #require(pasteboard.setString(Self.patch, forType: .string))
         store.requestPasteDiff(from: pasteboard)
         await waitUntilIdle(store)
-        guard case .clipboardPatch(let plan, _) = store.activeSheet else {
+        guard case .clipboardPatch(let preview) = store.activeSheet else {
             Issue.record("The patch preview never opened")
             return
         }
         try repo.git("switch", "-c", "different")
-        store.confirmClipboardPatch(plan)
+        store.confirmClipboardPatch(preview.id)
         await waitUntilIdle(store)
         #expect(backend.calls.contains(.applyClipboardPatch))
         #expect(try Self.file(repo) == Self.original)
@@ -146,7 +224,7 @@ import Testing
     @Test(.timeLimit(.minutes(10))) func missingAndInvalidClipboardTextUseTheErrorBanner() async throws {
         let repo = try ScratchRepo()
         defer { repo.remove() }
-        try repo.commit("a.txt", Self.original, "first")
+        try Self.commitOriginal(to: repo)
         let backend = TestBackend()
         let (store, cleanup) = await openedTestStore(repo, backend: backend)
         defer { cleanup() }
@@ -203,7 +281,7 @@ import Testing
     @Test(.timeLimit(.minutes(10))) func aStagedRenameCannotBeCopiedAsAnAddition() async throws {
         let repo = try ScratchRepo()
         defer { repo.remove() }
-        try repo.commit("a.txt", Self.original, "first")
+        try Self.commitOriginal(to: repo)
         try repo.git("mv", "a.txt", "renamed.txt")
         let (store, cleanup) = await openedTestStore(repo)
         defer { cleanup() }
@@ -232,16 +310,30 @@ import Testing
         let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.tests.conflicted-\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
         pasteboard.clearContents()
-        try #require(pasteboard.setString(Self.patch, forType: .string))
+        let independentPatch =
+            """
+            diff --git a/independent.txt b/independent.txt
+            new file mode 100644
+            --- /dev/null
+            +++ b/independent.txt
+            @@ -0,0 +1 @@
+            +independent change
+
+            """
+        try #require(pasteboard.setString(independentPatch, forType: .string))
 
         #expect(RepositoryCommands.isOff(nil, \.pasteDiffBlockedReason))
         #expect(store.hasUnmergedFiles)
         #expect(RepositoryCommands.isOff(store, \.pasteDiffBlockedReason))
         store.requestPasteDiff(from: pasteboard)
+        await waitUntilIdle(store)
         #expect(!backend.calls.contains(.planClipboardPatch))
 
         _ = try #require(await ResolverStoreTests.openDraft(store))
         #expect(store.pasteDiffBlockedReason == ClipboardPatchWording.resolverOpen)
+        store.requestPasteDiff(from: pasteboard)
+        await waitUntilIdle(store)
+        #expect(!backend.calls.contains(.planClipboardPatch))
         store.closeResolver()
 
         for path in store.unmergedPaths {
@@ -254,10 +346,125 @@ import Testing
         #expect(store.operationInProgress != nil)
         #expect(RepositoryCommands.isOff(store, \.pasteDiffBlockedReason))
         store.requestPasteDiff(from: pasteboard)
+        await waitUntilIdle(store)
         #expect(!backend.calls.contains(.planClipboardPatch))
+
+        try repo.git("merge", "--abort")
+        await store.refresh()
+        await waitUntilIdle(store)
+        #expect(!RepositoryCommands.isOff(store, \.pasteDiffBlockedReason))
+        store.requestPasteDiff(from: pasteboard)
+        await waitUntilIdle(store)
+        guard case .clipboardPatch(let preview) = store.activeSheet else {
+            Issue.record("The independent patch should preview as soon as the merge ends")
+            return
+        }
+        #expect(preview.plan.files.map(\.path) == ["independent.txt"])
+        #expect(backend.calls.filter { $0 == .planClipboardPatch }.count == 1)
     }
 
-    private static func file(_ repo: ScratchRepo) throws -> String {
+    fileprivate static func commitOriginal(to repo: ScratchRepo) throws {
+        try Data(original.utf8).write(to: repo.url.appending(path: "a.txt"))
+        try repo.git("add", "--", "a.txt")
+        try repo.git("commit", "-qm", "first")
+    }
+
+    fileprivate static func file(_ repo: ScratchRepo) throws -> String {
         try String(contentsOf: repo.url.appending(path: "a.txt"), encoding: .utf8)
+    }
+}
+
+/// Uses QuitFlowTests' serialization for the injected process-wide quit state.
+extension QuitFlowTests {
+    @Test(.timeLimit(.minutes(10))) func applyingPatchKeepsItsWindowAndRefusesQuitUntilTheOutcomeArrives() async throws {
+        let repo = try ScratchRepo("patch-destination")
+        defer { repo.remove() }
+        let next = try ScratchRepo("another-repository")
+        defer { next.remove() }
+        try ClipboardDiffStoreTests.commitOriginal(to: repo)
+        try ClipboardDiffStoreTests.commitOriginal(to: next)
+        let registry = TestRegistry()
+        defer { registry.remove() }
+        let backend = TestBackend()
+        let store = registry.registry.makeStore(backend: backend)
+        await open(store, repo.url)
+        defer { await releaseAndSettle([backend], [store]) }
+
+        let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.tests.pending-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        try #require(Clipboard.copy(ClipboardDiffStoreTests.patch, to: pasteboard))
+        store.requestPasteDiff(from: pasteboard)
+        await waitUntilIdle(store)
+        guard case .clipboardPatch(let preview) = store.activeSheet else {
+            Issue.record("The patch preview never opened")
+            return
+        }
+
+        let applying = backend.hold(.applyClipboardPatch)
+        store.confirmClipboardPatch(preview.id)
+        #expect(await waitUntil("the clipboard apply to park") { applying.waiting })
+        #expect(store.isApplyingClipboardPatch)
+        let destination = store.root
+
+        #expect(registry.registry.open(next.url, kind: .worktreeHere, front: store) == .useFront(store))
+        #expect(store.root == destination)
+        #expect(store.lastError == "Wait for the clipboard patch to finish applying before replacing this repository.")
+
+        var openedWindow: RepositoryWindow?
+        registry.registry.openWindow = { openedWindow = $0 }
+        _ = registry.registry.takePendingOpen()
+        let wanted = RepositoryWindow(url: next.url)
+        #expect(registry.registry.open(next.url, kind: .worktreeNewWindow, front: store) == .newWindow(wanted))
+        #expect(openedWindow == wanted)
+        #expect(store.root == destination)
+
+        do {
+            let previous = QuitGuard.environment
+            var messages: [String] = []
+            var replies: [Bool] = []
+            QuitGuard.environment = .init(
+                present: { alert, _, _ in messages.append(alert.informativeText) },
+                reply: { replies.append($0) })
+            defer {
+                QuitGuard.environment = previous
+                QuitGuard.calledOff(reply: { _ in })
+            }
+            #expect(QuitGuard.shouldTerminate([store]) == .terminateCancel)
+            #expect(messages == ["Wait for the clipboard patch to finish applying before quitting Gitter."])
+            #expect(replies.isEmpty)
+
+            // A quit from the menu is refused before closing any other question.
+            let (other, _, cleanOther) = makeTestStore()
+            defer { cleanOther() }
+            other.activeSheet = .rename("main")
+            let flow = QuitFlowTests.Recorder()
+            flow.stores = [store, other]
+            let outcome = await QuitFlow.run(.menu, environment: flow.environment(poll: .milliseconds(5), bound: .seconds(1)))
+            #expect(outcome == .applyingClipboardPatch)
+            #expect(other.activeSheet == .rename("main"))
+            #expect(flow.terminates == 0)
+            #expect(messages.count == 2)
+        }
+
+        let refreshing = backend.hold(.snapshot)
+        try Data("external edit\n".utf8).write(to: repo.url.appending(path: "a.txt"), options: .atomic)
+        applying.release()
+        #expect(await waitUntil("the apply refresh to park") { refreshing.waiting })
+        #expect(store.isApplyingClipboardPatch)
+        store.open(next.url)
+        #expect(store.root == destination)
+        refreshing.release()
+        await waitUntilIdle(store)
+        #expect(store.root == destination)
+        #expect(!store.isApplyingClipboardPatch)
+        #expect(store.lastError ==
+            "The destination path “a.txt” is missing, changed, or already occupied. "
+                + "Choose Paste Diff… to check it again.")
+        #expect(store.notice == nil)
+        #expect(try ClipboardDiffStoreTests.file(repo) == "external edit\n")
+        #expect(try ClipboardDiffStoreTests.file(next) == ClipboardDiffStoreTests.original)
+
+        await open(store, next.url)
+        #expect(store.root == next.url.standardizedFileURL)
     }
 }

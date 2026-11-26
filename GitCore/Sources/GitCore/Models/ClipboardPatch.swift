@@ -18,11 +18,18 @@ public struct ClipboardPatchPlan: Sendable, Hashable {
     public let files: [ClipboardPatchFile]
     public let headLabel: String
 
-    let root: URL
-    let gitDirectory: URL
+    let root: Directory
+    let gitDirectory: Directory
+    let gitCommonDirectory: Directory
     let head: String
     let symbolicHead: String
     let preimages: [Preimage?]
+
+    struct Directory: Sendable, Hashable {
+        let url: URL
+        let device: Int32
+        let inode: UInt64
+    }
 
     struct Preimage: Sendable, Hashable {
         let object: String
@@ -35,6 +42,7 @@ public enum ClipboardPatchRefusal: Error, Sendable, Hashable {
     case unsafePath(String)
     case affectedPathChanged(String)
     case checkoutConversion(String)
+    case unsupportedFileMetadata(String)
     case operationInProgress
     case changedSinceShown
 }

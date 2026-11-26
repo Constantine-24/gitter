@@ -105,17 +105,19 @@ import Testing
         #expect(try Data(contentsOf: repo.root.appendingPathComponent(path)) == Data("first\r\nnew".utf8))
     }
 
-    @Test(arguments: [false, true])
-    func copiedPatchRoundTripsThroughClipboardImport(hunkOnly: Bool) async throws {
+    @Test(arguments: [false, true], ["space and tab\t/é.txt", "\u{0301}notes.txt"])
+    func copiedPatchRoundTripsThroughClipboardImport(hunkOnly: Bool, path: String) async throws {
         let source = try await TestRepo.makeEmpty()
         defer { source.cleanUp() }
         let destination = try await TestRepo.makeEmpty()
         defer { destination.cleanUp() }
-        let path = "space and tab\t/é.txt"
         let before = "anchor\r\nold\r\n\nwithout newline"
         let after = "anchor\r\nnew  \r\n\nupdated"
         for repo in [source, destination] {
-            try repo.write(path, before)
+            let file = repo.root.appendingPathComponent(path)
+            try FileManager.default.createDirectory(
+                at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(before.utf8).write(to: file)
             try await repo.commitAll("base")
         }
         try source.write(path, after)
