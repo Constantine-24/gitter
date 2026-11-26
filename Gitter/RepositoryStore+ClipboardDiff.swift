@@ -3,6 +3,10 @@ import Foundation
 import GitCore
 
 extension RepositoryStore {
+    /// Stores share the system pasteboard, so a newer command supersedes an older one even
+    /// when it came from a different window and does not have its result yet.
+    private static var latestCopyByPasteboard: [NSPasteboard.Name: UUID] = [:]
+
     /// A path-specific Git diff can report a rename as an addition. The status for the
     /// source of the loaded diff still shows the rename, copy, or type change.
     func diffStatusAllowsClipboardCopy(path: String, staged: Bool) -> Bool {
@@ -37,6 +41,76 @@ extension RepositoryStore {
             return
         }
         showNotice(hunkID == nil ? ClipboardPatchWording.copiedDiff : ClipboardPatchWording.copiedHunk)
+    }
+
+    var canCopyAllChanges: Bool { copyAllChangesSource != nil }
+
+    private var copyAllChangesSource: ClipboardDiffSource? {
+        guard root != nil, snapshot != nil, activeSheet == nil, resolverFocus == nil,
+            !isClosed, !isHidden, !isTerminating
+        else { return nil }
+        if registry === AppModel.windows, QuitFlow.isUnderWay { return nil }
+
+        switch selection {
+        case .workingCopy: return isMutating ? nil : .workingCopy
+        case .commit(let sha): return .commit(sha)
+        case .stash(let sha): return stashes.first(where: { $0.sha == sha }).map(ClipboardDiffSource.stash)
+        case .comparisonChanges:
+            guard let comparison, !comparison.mergeBases.isEmpty else { return nil }
+            return .comparison(comparison)
+        case .historyEnd: return nil
+        }
+    }
+
+    func requestCopyAllChanges(to pasteboard: NSPasteboard = .general) {
+        guard let root, let source = copyAllChangesSource else { return }
+        cancelCopyAllChanges()
+        let capturedGeneration = generation
+        let clipboardChange = pasteboard.changeCount
+        let pasteboardName = pasteboard.name
+        let request = UUID()
+        Self.latestCopyByPasteboard[pasteboardName] = request
+        copyAllChangesTask = Task { [weak self, backend] in
+            defer {
+                if Self.latestCopyByPasteboard[pasteboardName] == request {
+                    Self.latestCopyByPasteboard[pasteboardName] = nil
+                }
+                if !Task.isCancelled { self?.copyAllChangesTask = nil }
+            }
+            let result: Result<ClipboardDiffExport?, Error>
+            do {
+                try Task.checkCancellation()
+                result = .success(try await backend.copyAllChanges(source, at: root))
+            } catch {
+                result = .failure(error)
+            }
+            // Selection changes cancel this task, including a move away and back. The
+            // pasteboard count also covers ordinary copy commands and other applications.
+            guard let self, !Task.isCancelled, generation == capturedGeneration,
+                canCopyAllChanges, Self.latestCopyByPasteboard[pasteboardName] == request,
+                pasteboard.changeCount == clipboardChange
+            else { return }
+
+            switch result {
+            case .success(.some(let patch)):
+                if Clipboard.copy(patch.text, to: pasteboard) {
+                    clearCopyAllChangesError()
+                    showNotice(ClipboardPatchWording.copiedChanges(in: patch.fileCount))
+                } else {
+                    showCopyAllChangesError(ClipboardPatchWording.copyFailed)
+                }
+            case .success(nil):
+                clearCopyAllChangesError()
+                showNotice(ClipboardPatchWording.noChangesToCopy)
+            case .failure(let error):
+                showCopyAllChangesError(ClipboardPatchWording.copyAllChangesFailure(error))
+            }
+        }
+    }
+
+    func cancelCopyAllChanges() {
+        copyAllChangesTask?.cancel()
+        copyAllChangesTask = nil
     }
 
     var pasteDiffBlockedReason: String? {

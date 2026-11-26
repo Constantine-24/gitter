@@ -25,14 +25,19 @@ final class RepositoryStore {
     private(set) var isLoading = false
     private(set) var lastError: String? {
         // Every banner, as it is set — ~13 places assign it — told once (P1 Task 2).
-        didSet { tell("banner", lastError, was: oldValue) }
+        didSet {
+            copyAllChangesOwnsError = false
+            tell("banner", lastError, was: oldValue)
+        }
     }
+    @ObservationIgnored private var copyAllChangesOwnsError = false
     private(set) var gitMissing = false
     var selection: Selection = .workingCopy {
         // Whoever writes it — a click, a sidebar row, a fallback, `open()` — the commit set
         // follows: it is the selection's own commit and nothing else unless `selectRows` /
         // `selectCommits` made it a set whose first is this commit.
         didSet {
+            if selection != oldValue { cancelCopyAllChanges() }
             // A reveal waits for its own commit's row; a selection made elsewhere ends it, so a
             // stale reveal never scrolls the table (H1).
             if let pendingReveal, selection != .commit(pendingReveal) { self.pendingReveal = nil }
@@ -201,6 +206,7 @@ final class RepositoryStore {
     // internal (not private(set) write): used by WindowRegistry only
     func setHidden(_ hidden: Bool) {
         isHidden = hidden
+        if hidden { cancelCopyAllChanges() }
     }
 
     /// `laneMessagesToRead` as it was when a hidden window's ending told it in its own alert
@@ -518,6 +524,8 @@ final class RepositoryStore {
     var detailTask: Task<Void, Never>?
     // internal (not private), bookkeeping only, views must not touch this: used by +Detail.swift
     var diffTask: Task<Void, Never>?
+    /// The pending Copy All Changes export for this selection.
+    @ObservationIgnored var copyAllChangesTask: Task<Void, Never>?
     /// The read and colouring of the diff on screen (`loadDiffSyntax`); `setDiff` cancels it.
     // internal (not private), bookkeeping only, views must not touch this: used by +DiffSyntax.swift
     var diffSyntaxTask: Task<Void, Never>?
@@ -629,6 +637,7 @@ final class RepositoryStore {
         refreshTask?.cancel()
         detailTask?.cancel()
         diffTask?.cancel()
+        cancelCopyAllChanges()
         diffSyntaxTask?.cancel()
         conflictTask?.cancel()
         compareTask?.cancel()
@@ -784,6 +793,7 @@ final class RepositoryStore {
         refreshTask = nil
         detailTask?.cancel()
         diffTask?.cancel()
+        cancelCopyAllChanges()
         diffSyntaxTask?.cancel()
         conflictTask?.cancel()
         compareTask?.cancel()
@@ -936,6 +946,7 @@ final class RepositoryStore {
     /// Starts, replaces or (nil) ends the comparison; its files go with it.
     /// internal (not private(set) write): used by +Compare.swift
     func setComparison(_ newComparison: Comparison?) {
+        if selection == .comparisonChanges, newComparison != comparison { cancelCopyAllChanges() }
         comparison = newComparison
         comparisonFiles = nil
     }
@@ -1030,6 +1041,17 @@ final class RepositoryStore {
         errorIsSticky = false
     }
 
+    func showCopyAllChangesError(_ message: String) {
+        showStickyError(message)
+        copyAllChangesOwnsError = true
+    }
+
+    func clearCopyAllChangesError() {
+        guard copyAllChangesOwnsError else { return }
+        setError(nil)
+        clearSticky()
+    }
+
     /// The `if !errorIsSticky { lastError = nil }` a successful snapshot load does; the read has
     /// to move here too since `errorIsSticky` is only readable from this file.
     /// internal (not private(set) write): used by +Refresh.swift's `loadSnapshot()`
@@ -1052,6 +1074,7 @@ final class RepositoryStore {
         guard root != nil, !isMutating else { return nil }
         isMutating = true
         isApplyingClipboardPatch = applyingClipboardPatch
+        if selection == .workingCopy { cancelCopyAllChanges() }
         // "Force Push…" answers the refusal of *that* push. Once anything else has happened the
         // branch may not be where it was, and the banner offering it goes with it.
         rejectedPush = nil
@@ -1144,6 +1167,7 @@ final class RepositoryStore {
     /// never gets here.)
     func beginTerminating() {
         isTerminating = true
+        cancelCopyAllChanges()
         autoFetchScheduler.stop()
     }
 

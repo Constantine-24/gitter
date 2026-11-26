@@ -4,6 +4,7 @@ import GitCore
 enum ClipboardPatchWording {
     static let copyDiff = "Copy Diff"
     static let copyHunk = "Copy Hunk"
+    static let copyAllChanges = "Copy All Changes"
     static let pasteDiff = "Paste Diff…"
     static let sheetTitle = "Paste Diff"
     static let applyPatch = "Apply Patch"
@@ -18,6 +19,7 @@ enum ClipboardPatchWording {
     static let copiedHunk = "Copied hunk to the clipboard."
     static let applied = "Applied patch to the working tree."
     static let copyFailed = "Could not write the diff to the clipboard."
+    static let noChangesToCopy = "There are no changes to copy."
     static let noText = "The clipboard does not contain plain text."
     static let invalid = "The clipboard does not contain a supported Git diff."
     static let destinationChanged = "The destination changed since the preview opened. Choose Paste Diff… to check it again."
@@ -30,6 +32,27 @@ enum ClipboardPatchWording {
     static let openWhileApplying = "Wait for the clipboard patch to finish applying before replacing this repository."
     static let quitWhileApplying = "Wait for the clipboard patch to finish applying before quitting Gitter."
     static let quitPending = "Wait for the quit request to finish before pasting a diff."
+
+    static func copiedChanges(in fileCount: Int) -> String {
+        let files = fileCount == 1 ? "file" : "files"
+        return "Copied changes in \(fileCount) \(files) to the clipboard."
+    }
+
+    @MainActor static func copyAllChangesFailure(_ error: Error) -> String {
+        let title = "Could not copy all changes."
+        if let refusal = error as? ClipboardDiffExportRefusal {
+            switch refusal {
+            case .unsupportedPaths(let paths):
+                let names = paths.map { "“\(displayName($0))”" }.joined(separator: ", ")
+                return paths.isEmpty ? title : "Could not include \(names) in the diff."
+            case .sourceChanged:
+                return "The repository changed while preparing the diff. Choose Copy All Changes again."
+            }
+        }
+        let detail = RepositoryStore.describe(error).split(whereSeparator: \.isNewline)
+            .map { RemoteWording.plain(String($0)) }.first { !$0.isEmpty }
+        return detail.map { "\(title) \($0)" } ?? title
+    }
 
     static func displayName(_ name: String) -> String {
         LogLine.escape(name).unicodeScalars.map { scalar in

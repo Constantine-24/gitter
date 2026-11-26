@@ -303,6 +303,268 @@ import Testing
         #expect(pasteboard.string(forType: .string) == "previous clipboard content")
     }
 
+    @Test(.timeLimit(.minutes(10))) func copiesTheWholeWorkingCopyAndPreviewsItAtTheDestination() async throws {
+        let source = try ScratchRepo("source")
+        let destination = try ScratchRepo("destination")
+        defer {
+            source.remove()
+            destination.remove()
+        }
+        try Self.commitOriginal(to: source)
+        try Self.commitOriginal(to: destination)
+        try source.write("a.txt", "staged\n")
+        try source.git("add", "--", "a.txt")
+        try source.write("a.txt", Self.changed)
+        try source.write("untracked.txt", "new file\n")
+
+        let (store, cleanup) = await openedTestStore(source)
+        defer { cleanup() }
+        let (target, cleanupTarget) = await openedTestStore(destination)
+        defer { cleanupTarget() }
+        let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.tests.copy-all-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+
+        #expect(ClipboardPatchWording.copyAllChanges == "Copy All Changes")
+        store.selectedPath = nil
+        #expect(store.canCopyAllChanges)
+        store.requestCopyAllChanges(to: pasteboard)
+        let copy = try #require(store.copyAllChangesTask)
+        await copy.value
+        let text = try #require(pasteboard.string(forType: .string))
+        #expect(text.contains("+after\n") && text.contains("+new file\n"))
+        #expect(!text.contains("+staged\n"))
+        #expect(pasteboard.availableType(from: [.rtf, .html]) == nil)
+        #expect(store.notice?.text == "Copied changes in 2 files to the clipboard.")
+
+        target.requestPasteDiff(from: pasteboard)
+        await waitUntilIdle(target)
+        guard case .clipboardPatch(let preview) = target.activeSheet else {
+            Issue.record("The copied patch did not open in Paste Diff")
+            return
+        }
+        #expect(preview.plan.files.map(\.path) == ["a.txt", "untracked.txt"])
+        target.confirmClipboardPatch(preview.id)
+        await waitUntilIdle(target)
+        #expect(try Self.file(destination) == Self.changed)
+        #expect(try String(contentsOf: destination.url.appending(path: "untracked.txt"), encoding: .utf8) == "new file\n")
+    }
+
+    @Test(.timeLimit(.minutes(10))) func emptyAndUnsupportedExportsPreserveTheClipboard() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try Self.commitOriginal(to: repo)
+        let (store, cleanup) = await openedTestStore(repo)
+        defer { cleanup() }
+        let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.tests.copy-all-empty-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        try #require(Clipboard.copy("previous clipboard content", to: pasteboard))
+        let originalChange = pasteboard.changeCount
+
+        store.activeSheet = .compareBranches(a: nil, b: nil)
+        #expect(!store.canCopyAllChanges)
+        store.requestCopyAllChanges(to: pasteboard)
+        #expect(store.copyAllChangesTask == nil)
+        store.activeSheet = nil
+
+        store.requestCopyAllChanges(to: pasteboard)
+        let empty = try #require(store.copyAllChangesTask)
+        await empty.value
+        #expect(store.notice?.text == ClipboardPatchWording.noChangesToCopy)
+        #expect(pasteboard.changeCount == originalChange)
+
+        try repo.write("a.txt", Self.changed)
+        try Data([0, 1, 2]).write(to: repo.url.appending(path: "binary.dat"))
+        store.requestCopyAllChanges(to: pasteboard)
+        let unsupported = try #require(store.copyAllChangesTask)
+        await unsupported.value
+        #expect(store.lastError?.contains("“binary.dat”") == true)
+        #expect(pasteboard.changeCount == originalChange)
+        #expect(pasteboard.string(forType: .string) == "previous clipboard content")
+
+        try repo.write("a.txt", Self.original)
+        try FileManager.default.removeItem(at: repo.url.appending(path: "binary.dat"))
+        store.requestCopyAllChanges(to: pasteboard)
+        let emptyRetry = try #require(store.copyAllChangesTask)
+        await emptyRetry.value
+        #expect(store.lastError == nil)
+        #expect(store.notice?.text == ClipboardPatchWording.noChangesToCopy)
+        #expect(pasteboard.changeCount == originalChange)
+    }
+
+    @Test(.timeLimit(.minutes(10)), arguments: [false, true])
+    func aSuccessfulRetryClearsOnlyItsOwnRefusal(replaceError: Bool) async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try Self.commitOriginal(to: repo)
+        try repo.write("a.txt", Self.changed)
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.tests.copy-retry-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        defer {
+            backend.releaseAll()
+            await store.copyAllChangesTask?.value
+        }
+
+        backend.fail(.copyAllChanges, with: ClipboardDiffExportRefusal.unsupportedPaths(["a.txt"]))
+        store.requestCopyAllChanges(to: pasteboard)
+        let refused = try #require(store.copyAllChangesTask)
+        await refused.value
+        #expect(store.lastError == "Could not include “a.txt” in the diff.")
+
+        let retryRead = backend.hold(.copyAllChanges)
+        store.requestCopyAllChanges(to: pasteboard)
+        let retry = try #require(store.copyAllChangesTask)
+        try #require(await waitUntil("the retry read") { retryRead.waiting })
+        let otherError = "A later Git operation failed."
+        if replaceError { store.showStickyError(otherError) }
+        retryRead.release()
+        await retry.value
+        #expect(pasteboard.string(forType: .string)?.contains("+after\n") == true)
+        #expect(store.lastError == (replaceError ? otherError : nil))
+    }
+
+    @Test(.timeLimit(.minutes(10))) func selectionAndNewerClipboardWritesInvalidatePendingCopies() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try Self.commitOriginal(to: repo)
+        let head = try repo.git("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines)
+        try repo.write("a.txt", Self.changed)
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.tests.copy-all-stale-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        try #require(Clipboard.copy("previous clipboard content", to: pasteboard))
+        let originalChange = pasteboard.changeCount
+        defer { backend.releaseAll() }
+
+        let selectionRead = backend.hold(.copyAllChanges)
+        store.requestCopyAllChanges(to: pasteboard)
+        let selectionCopy = try #require(store.copyAllChangesTask)
+        try #require(await waitUntil("the export read") { selectionRead.waiting })
+        store.select(.commit(head))
+        store.select(.workingCopy)
+        selectionRead.release()
+        await selectionCopy.value
+        #expect(pasteboard.changeCount == originalChange)
+
+        let clipboardRead = backend.hold(.copyAllChanges)
+        store.requestCopyAllChanges(to: pasteboard)
+        let clipboardCopy = try #require(store.copyAllChangesTask)
+        try #require(await waitUntil("the next export read") { clipboardRead.waiting })
+        try #require(Clipboard.copy("newer clipboard content", to: pasteboard))
+        let newerChange = pasteboard.changeCount
+        clipboardRead.release()
+        await clipboardCopy.value
+        #expect(pasteboard.changeCount == newerChange)
+        #expect(pasteboard.string(forType: .string) == "newer clipboard content")
+
+        store.requestCopyAllChanges(to: pasteboard)
+        let currentCopy = try #require(store.copyAllChangesTask)
+        await currentCopy.value
+        #expect(pasteboard.string(forType: .string)?.contains("+after\n") == true)
+        #expect(backend.calls.filter { $0 == .copyAllChanges }.count == 3)
+    }
+
+    @Test(.timeLimit(.minutes(10))) func theLatestCopyRequestWinsAcrossRepositoryWindows() async throws {
+        let firstRepo = try ScratchRepo("first")
+        let secondRepo = try ScratchRepo("second")
+        defer {
+            firstRepo.remove()
+            secondRepo.remove()
+        }
+        try Self.commitOriginal(to: firstRepo)
+        try Self.commitOriginal(to: secondRepo)
+        try firstRepo.write("a.txt", "from the first window\n")
+        try secondRepo.write("a.txt", "from the second window\n")
+        let firstBackend = TestBackend()
+        let secondBackend = TestBackend()
+        let (first, cleanupFirst) = await openedTestStore(firstRepo, backend: firstBackend)
+        let (second, cleanupSecond) = await openedTestStore(secondRepo, backend: secondBackend)
+        defer {
+            cleanupFirst()
+            cleanupSecond()
+        }
+        let name = NSPasteboard.Name("dev.penzin.Gitter.tests.copy-two-windows-\(UUID().uuidString)")
+        let firstBoard = NSPasteboard(name: name)
+        let secondBoard = NSPasteboard(name: name)
+        defer { firstBoard.releaseGlobally() }
+        defer {
+            firstBackend.releaseAll()
+            secondBackend.releaseAll()
+            await first.copyAllChangesTask?.value
+            await second.copyAllChangesTask?.value
+        }
+        try #require(Clipboard.copy("keep until the latest copy finishes", to: firstBoard))
+        let original = firstBoard.changeCount
+
+        let firstRead = firstBackend.hold(.copyAllChanges)
+        first.requestCopyAllChanges(to: firstBoard)
+        let firstCopy = try #require(first.copyAllChangesTask)
+        try #require(await waitUntil("the first export") { firstRead.waiting })
+        let secondRead = secondBackend.hold(.copyAllChanges)
+        second.requestCopyAllChanges(to: secondBoard)
+        let secondCopy = try #require(second.copyAllChangesTask)
+        try #require(await waitUntil("the second export") { secondRead.waiting })
+
+        firstRead.release()
+        await firstCopy.value
+        #expect(firstBoard.changeCount == original)
+        #expect(firstBoard.string(forType: .string) == "keep until the latest copy finishes")
+        secondRead.release()
+        await secondCopy.value
+        #expect(firstBoard.string(forType: .string)?.contains("+from the second window\n") == true)
+    }
+
+    @Test(.timeLimit(.minutes(10))) func workingCopyExportsStopForMutationsAndHistoricalExportsStayAvailable() async throws {
+        let repo = try ScratchRepo()
+        defer { repo.remove() }
+        try Self.commitOriginal(to: repo)
+        let head = try repo.git("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines)
+        try repo.write("a.txt", Self.changed)
+        let backend = TestBackend()
+        let (store, cleanup) = await openedTestStore(repo, backend: backend)
+        defer { cleanup() }
+        let pasteboard = NSPasteboard(name: .init("dev.penzin.Gitter.tests.copy-during-write-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        defer {
+            await releaseAndSettle([backend], [store])
+            await store.copyAllChangesTask?.value
+        }
+        try #require(Clipboard.copy("clipboard before the write", to: pasteboard))
+        let original = pasteboard.changeCount
+        let file = try #require(store.unstagedFiles.first { $0.path == "a.txt" })
+
+        let copyRead = backend.hold(.copyAllChanges)
+        store.requestCopyAllChanges(to: pasteboard)
+        let pendingCopy = try #require(store.copyAllChangesTask)
+        try #require(await waitUntil("the working copy export") { copyRead.waiting })
+        let write = backend.hold(.stage)
+        store.stage(file)
+        try #require(await waitUntil("the staging write") { write.waiting })
+        #expect(!store.canCopyAllChanges)
+        write.release()
+        await waitUntilIdle(store)
+        copyRead.release()
+        await pendingCopy.value
+        #expect(pasteboard.changeCount == original)
+
+        let staged = try #require(store.stagedFiles.first { $0.path == "a.txt" })
+        store.select(.commit(head))
+        let nextWrite = backend.hold(.unstage)
+        store.unstage(staged)
+        try #require(await waitUntil("the unstaging write") { nextWrite.waiting })
+        #expect(store.canCopyAllChanges)
+        store.requestCopyAllChanges(to: pasteboard)
+        let historicalCopy = try #require(store.copyAllChangesTask)
+        await historicalCopy.value
+        #expect(pasteboard.string(forType: .string)?.contains("+before\n") == true)
+        nextWrite.release()
+        await waitUntilIdle(store)
+    }
+
     @Test(.timeLimit(.minutes(10))) func commandIsOffDuringAnOperationEvenAfterStagingTheResolution() async throws {
         let repo = try ResolverStoreTests.stoppedMerge()
         defer { repo.remove() }

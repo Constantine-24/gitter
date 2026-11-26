@@ -23,10 +23,12 @@ extension DiffParser {
     /// is where the two halves are the same name. Different halves are a rename or a copy, whose
     /// `rename from`/`rename to` (`copy …`) lines name both sides again unambiguously, as do a
     /// diff's `---`/`+++` lines; the header's own reading of those is only a placeholder.
-    static func parseDiffGitHeader(_ line: String) -> DiffGitHeader? {
+    static func parseDiffGitHeader(_ line: String, quotingInvalidPaths: Bool = false) -> DiffGitHeader? {
         guard line.utf8.starts(with: gitHeaderLead) else { return nil }
         let rest = Array(line.utf8.dropFirst(gitHeaderLead.count))
-        if rest.first != quote, let header = unquotedThenQuoted(rest) ?? sameNameOnBothSides(rest) {
+        if rest.first != quote,
+            let header = unquotedThenQuoted(rest, quotingInvalidPaths: quotingInvalidPaths) ?? sameNameOnBothSides(rest)
+        {
             return header
         }
         if let match = line.wholeMatch(of: /^diff --git a\/(.*) b\/(.*)$/) {
@@ -36,12 +38,11 @@ extension DiffParser {
             )
         }
         if let match = line.wholeMatch(of: /^diff --git "(.*)" "(.*)"$/) {
-            let old = unquoteIfNeeded("\"\(match.1)\"")
-            let new = unquoteIfNeeded("\"\(match.2)\"")
-            return DiffGitHeader(oldPath: removingPrefix("a/", from: old) ?? old,
-                                 newPath: removingPrefix("b/", from: new) ?? new)
+            return DiffGitHeader(
+                oldPath: unquoteIfNeeded("\"\(match.1)\"", removing: "a/", quotingInvalidPaths: quotingInvalidPaths),
+                newPath: unquoteIfNeeded("\"\(match.2)\"", removing: "b/", quotingInvalidPaths: quotingInvalidPaths))
         }
-        return quotedThenUnquoted(rest)
+        return quotedThenUnquoted(rest, quotingInvalidPaths: quotingInvalidPaths)
     }
 
     private static let gitHeaderLead = Array("diff --git ".utf8)
@@ -63,27 +64,29 @@ extension DiffParser {
 
     /// `a/<old> "b/<new>"`. An unquoted name cannot contain a `"` (`quote_c_style` would have
     /// quoted it), so the first one is where the quoted second name begins.
-    private static func unquotedThenQuoted(_ rest: [UInt8]) -> DiffGitHeader? {
+    private static func unquotedThenQuoted(_ rest: [UInt8], quotingInvalidPaths: Bool) -> DiffGitHeader? {
         guard let start = rest.firstIndex(of: quote), start >= 3, rest[start - 1] == UInt8(ascii: " "),
             quotedEnd(rest, from: start) == rest.count,
-            let quoted = unquoteCStyle(String(decoding: rest[start...], as: UTF8.self)),
-            let new = removingPrefix("b/", from: quoted)
+            let quoted = unquoteCStyleBytes(String(decoding: rest[start...], as: UTF8.self)),
+            quoted.starts(with: "b/".utf8)
         else { return nil }
         return DiffGitHeader(
-            oldPath: String(decoding: rest[2..<(start - 1)], as: UTF8.self), newPath: new)
+            oldPath: String(decoding: rest[2..<(start - 1)], as: UTF8.self),
+            newPath: decodedPath(quoted.dropFirst(2), quotingInvalidPaths: quotingInvalidPaths))
     }
 
     /// `"a/<old>" b/<new>`: the second name is everything after the first one's closing quote
     /// and a space.
-    private static func quotedThenUnquoted(_ rest: [UInt8]) -> DiffGitHeader? {
+    private static func quotedThenUnquoted(_ rest: [UInt8], quotingInvalidPaths: Bool) -> DiffGitHeader? {
         guard rest.first == quote, let end = quotedEnd(rest, from: 0),
-            let quoted = unquoteCStyle(String(decoding: rest[..<end], as: UTF8.self)),
-            let old = removingPrefix("a/", from: quoted)
+            let quoted = unquoteCStyleBytes(String(decoding: rest[..<end], as: UTF8.self)),
+            quoted.starts(with: "a/".utf8)
         else { return nil }
         let second = rest[end...]
         guard second.starts(with: Array(" b/".utf8)), !second.contains(quote) else { return nil }
         return DiffGitHeader(
-            oldPath: old, newPath: String(decoding: second.dropFirst(3), as: UTF8.self))
+            oldPath: decodedPath(quoted.dropFirst(2), quotingInvalidPaths: quotingInvalidPaths),
+            newPath: String(decoding: second.dropFirst(3), as: UTF8.self))
     }
 
     /// The index just past the closing quote of the quoted string that starts at `start`, or
@@ -107,14 +110,15 @@ extension DiffParser {
     /// traditional diff puts a timestamp after that TAB), so the name is not simply the rest
     /// of the line. A quoted name ends at its closing quote; an unquoted one cannot contain a
     /// TAB, because `quote_c_style` would have quoted it, so it ends at the first TAB.
-    static func parseUnifiedPath(_ line: String, markerLength: Int, prefix: String) -> String? {
+    static func parseUnifiedPath(
+        _ line: String, markerLength: Int, prefix: String, quotingInvalidPaths: Bool
+    ) -> String? {
         var rest = String(line.dropFirst(markerLength))
         if !rest.hasPrefix("\""), let tab = rest.firstIndex(of: "\t") {
             rest = String(rest[..<tab])
         }
         if rest == "/dev/null" { return nil }
-        let path = unquoteIfNeeded(rest)
-        return removingPrefix(prefix, from: path) ?? path
+        return unquoteIfNeeded(rest, removing: prefix, quotingInvalidPaths: quotingInvalidPaths)
     }
 
     /// The slash can form one grapheme with a combining mark at the start of the filename.
@@ -126,9 +130,25 @@ extension DiffParser {
 
     /// Undoes git's `quote_c_style` when a name is quoted, and leaves it alone otherwise.
     /// Anything after the closing quote (git's separating TAB) is discarded.
-    static func unquoteIfNeeded(_ string: String) -> String {
-        guard string.hasPrefix("\"") else { return string }
-        return unquoteCStyle(string) ?? string
+    static func unquoteIfNeeded(
+        _ string: String, removing prefix: String = "", quotingInvalidPaths: Bool = false
+    ) -> String {
+        guard string.hasPrefix("\""), let bytes = unquoteCStyleBytes(string) else {
+            return prefix.isEmpty ? string : removingPrefix(prefix, from: string) ?? string
+        }
+        let path = bytes.starts(with: prefix.utf8) ? bytes.dropFirst(prefix.utf8.count) : bytes[...]
+        return decodedPath(path, quotingInvalidPaths: quotingInvalidPaths)
+    }
+
+    private static func decodedPath(_ bytes: ArraySlice<UInt8>, quotingInvalidPaths: Bool) -> String {
+        if quotingInvalidPaths {
+            return String(validating: bytes, as: UTF8.self) ?? PatchBuilder.quoteGitPath(Array(bytes))
+        }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    static func unquoteCStyle(_ quoted: String) -> String? {
+        unquoteCStyleBytes(quoted).map { String(decoding: $0, as: UTF8.self) }
     }
 
     /// git's `unquote_c_style`, byte for byte.
@@ -137,7 +157,7 @@ extension DiffParser {
     /// git escapes every non-ASCII byte as three octal digits, so `é` arrives as `\303\251`
     /// and only reassembling those two bytes yields the real name. Returns nil for anything
     /// that is not a well-formed quoted string, so the caller can fall back to the raw text.
-    static func unquoteCStyle(_ quoted: String) -> String? {
+    private static func unquoteCStyleBytes(_ quoted: String) -> [UInt8]? {
         let bytes = Array(quoted.utf8)
         guard bytes.first == UInt8(ascii: "\"") else { return nil }
         var out: [UInt8] = []
@@ -146,7 +166,7 @@ extension DiffParser {
         while index < bytes.count {
             let byte = bytes[index]
             index += 1
-            if byte == UInt8(ascii: "\"") { return String(decoding: out, as: UTF8.self) }
+            if byte == UInt8(ascii: "\"") { return out }
             guard byte == UInt8(ascii: "\\") else {
                 out.append(byte)
                 continue

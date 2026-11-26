@@ -85,6 +85,20 @@ import Testing
         #expect(CLIGitBackend.rerereOff([:]) == CLIGitBackend.withConfig("rerere.enabled", "false", over: [:]))
     }
 
+    @Test func withConfigQuotesAnUnusualSubsectionForGitParameters() async throws {
+        let repo = try await TestRepo.makeEmpty()
+        defer { repo.cleanUp() }
+        let key = "filter.odd' name.clean"
+        let inherited = ["GIT_CONFIG_PARAMETERS": "'filter.odd'\\'' name.clean'='old'"]
+        let backend = CLIGitBackend()
+        let environment = CLIGitBackend.withConfig(key, "new' value!", over: inherited)
+
+        let read = try await backend.runWithEnvironment(
+            ["config", "--get", "--end-of-options", key], cwd: repo.root, extra: environment)
+
+        #expect(String(decoding: read.stdout, as: UTF8.self) == "new' value!\n")
+    }
+
     /// `GIT_CONFIG_PARAMETERS` — what `git -c` passes down to a child, so present whenever
     /// Gitter was started from inside a git alias or hook — is read *after* the
     /// `GIT_CONFIG_COUNT` parameters (measured: its `rerere.enabled=true` beat a count entry's

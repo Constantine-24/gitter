@@ -14,10 +14,16 @@ enum ClipboardPatchParser {
         let deletions: Int
     }
 
-    static func parse(_ data: Data, numstat: Data) throws -> [Section] {
+    static func parse(_ data: Data, numstat: Data, reportingExportPaths: Bool = false) throws -> [Section] {
         let lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false)
-        let records = try numstat.split(separator: 0).map { record in
-            let fields = record.split(separator: UInt8(ascii: "\t"), maxSplits: 2)
+        let fieldsByRecord = numstat.split(separator: 0).map {
+            $0.split(separator: UInt8(ascii: "\t"), maxSplits: 2)
+        }
+        if reportingExportPaths {
+            let unsafe = unsafeExportPaths(fieldsByRecord)
+            if !unsafe.isEmpty { throw ClipboardDiffExportRefusal.unsupported(unsafe) }
+        }
+        let records = try fieldsByRecord.map { fields in
             guard fields.count == 3,
                 let additions = Int(String(decoding: fields[0], as: UTF8.self)), additions >= 0,
                 let deletions = Int(String(decoding: fields[1], as: UTF8.self)), deletions >= 0,
@@ -46,6 +52,30 @@ enum ClipboardPatchParser {
         return try zip(zip(starts, ends), records).map { range, record in
             try section(lines[range.0..<range.1].map { String(decoding: $0, as: UTF8.self) }, record: record)
         }
+    }
+
+    /// Identify both paths in each alias or ancestor conflict, using the exact names Git
+    /// reported. A non-UTF-8 filename is shown in Git's quoted byte spelling.
+    private static func unsafeExportPaths(_ fieldsByRecord: [[Data]]) -> [String] {
+        var paths: [String] = []
+        var unsafe: [String] = []
+        for fields in fieldsByRecord where fields.count == 3 {
+            if let path = String(validating: fields[2], as: UTF8.self) {
+                paths.append(path)
+            } else {
+                unsafe.append(PatchBuilder.quoteGitPath(Array(fields[2])))
+            }
+        }
+        let byKey = Dictionary(grouping: paths, by: ClipboardPatchPath.key)
+        var conflicts = Set<String>()
+        for (key, matches) in byKey {
+            if matches.count > 1 || (try? pathKey(matches[0])) == nil { conflicts.insert(key) }
+            for parent in ClipboardPatchPath.ancestors(of: key) where byKey[parent] != nil {
+                conflicts.insert(key)
+                conflicts.insert(parent)
+            }
+        }
+        return unsafe + paths.filter { conflicts.contains(ClipboardPatchPath.key($0)) }
     }
 
     private static func pathKey(_ path: String) throws -> String {

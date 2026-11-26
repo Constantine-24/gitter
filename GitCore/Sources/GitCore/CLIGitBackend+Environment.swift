@@ -39,8 +39,8 @@ extension CLIGitBackend {
     /// `rerereOff` documents (it is that function, generalised in A2 Task 3 for the rebase
     /// continue's `commit.cleanup=scissors`, M 29): at index `GIT_CONFIG_COUNT`, after the
     /// user's own parameters, and appended to a non-empty `GIT_CONFIG_PARAMETERS` as well, so it
-    /// is the last word on `key` for this one command. `key` and `value` are Gitter's own
-    /// constants, never user input: neither is quoted for `GIT_CONFIG_PARAMETERS`.
+    /// is the last word on `key` for this one command. Git reads the latter as
+    /// single-quoted words, with an apostrophe escaped outside its quotes.
     static func withConfig(_ key: String, _ value: String, over inherited: [String: String]) -> [String: String] {
         let count = configCount(inherited["GIT_CONFIG_COUNT"]) ?? 0
         var environment = inherited
@@ -50,7 +50,9 @@ extension CLIGitBackend {
         if let parameters = inherited["GIT_CONFIG_PARAMETERS"],
             !parameters.trimmingCharacters(in: .whitespaces).isEmpty
         {
-            environment["GIT_CONFIG_PARAMETERS"] = parameters + " '\(key)'='\(value)'"
+            let quotedKey = key.replacingOccurrences(of: "'", with: "'\\''")
+            let quotedValue = value.replacingOccurrences(of: "'", with: "'\\''")
+            environment["GIT_CONFIG_PARAMETERS"] = parameters + " '\(quotedKey)'='\(quotedValue)'"
         }
         return environment
     }
