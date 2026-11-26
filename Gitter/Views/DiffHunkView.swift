@@ -15,6 +15,7 @@ struct DiffHunkView: View {
     /// untracked, binary and renamed files: then the hunk renders as the read-only diff it was
     /// before — no buttons, no gutter clicks, no hover.
     let canStage: Bool
+    let canCopy: Bool
     /// The file's syntax colours by line (`RepositoryStore.diffSyntax`), nil until they are read.
     let tokens: [DiffLine.ID: [SyntaxToken]]?
     @Binding var selection: DiffLineSelection
@@ -65,8 +66,19 @@ struct DiffHunkView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
 
+            if canCopy || canStage { Spacer(minLength: 12) }
+            if canCopy {
+                Button {
+                    store.copyDiff(file, hunkID: hunk.id)
+                } label: {
+                    Label(ClipboardPatchWording.copyHunk, systemImage: "doc.on.doc")
+                        .labelStyle(.iconOnly)
+                }
+                .accessibilityLabel(ClipboardPatchWording.copyHunk)
+                .help(ClipboardPatchWording.copyHunk)
+                .controlSize(.small)
+            }
             if canStage {
-                Spacer(minLength: 12)
                 buttons(selectedCount: selectedCount)
                     .controlSize(.small)
             }

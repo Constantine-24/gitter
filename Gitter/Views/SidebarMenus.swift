@@ -32,9 +32,10 @@ struct MenuReasons: View {
 enum Clipboard {
     /// `pasteboard` is always `.general` from a menu; the debug harness passes a private one of
     /// its own, so reading back what a menu item copies never overwrites the user's clipboard.
-    static func copy(_ text: String, to pasteboard: NSPasteboard = .general) {
+    @discardableResult
+    static func copy(_ text: String, to pasteboard: NSPasteboard = .general) -> Bool {
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        return pasteboard.setString(text, forType: .string)
     }
 }
 
@@ -280,7 +281,9 @@ struct RemoteMenu: View {
         Divider()
 
         ForEach(Self.copyItems(for: remote), id: \.self) { item in
-            Button(item.title) { item.text.map { Clipboard.copy($0) } }
+            Button(item.title) {
+                if let text = item.text { Clipboard.copy(text) }
+            }
                 .disabled(item.text == nil)
         }
     }

@@ -58,6 +58,8 @@ struct BranchSheetHost: View {
             DropStashSheet(stash: stash)
         case .discard(let model):
             DiscardSheet(model: model)
+        case .clipboardPatch(let plan, let destination):
+            PasteDiffSheet(plan: plan, destination: destination)
         case .replaceHandEdited(let snapshot, let pending):
             ReplaceHandEditedSheet(snapshot: snapshot, pending: pending)
         case .markResolved(let snapshot, _):

@@ -48,6 +48,7 @@ enum BranchSheet: Identifiable, Hashable {
     /// A discard's confirmation: the requests with what the sheet shows (`expected`), which
     /// `confirmDiscard` hands to GitCore as they are.
     case discard(DiscardSheetModel)
+    case clipboardPatch(ClipboardPatchPlan, destination: URL)
     /// A resolving write GitCore refused because the file holds bytes git did not write
     /// (`ConflictError.wouldReplaceEdits`): the snapshot the resolver showed and what was asked,
     /// which `confirmReplaceHandEdited` runs again with the bytes filed first.

@@ -5,6 +5,12 @@ import Foundation
 /// Reads stay on `GitBackend`, which is provably side-effect free; mutations live here instead,
 /// so either half can be faked independently in tests.
 public protocol GitWorkingCopyBackend: Sendable {
+    /// Validate a plain Git-format patch and capture the clean worktree paths it will affect.
+    func planClipboardPatch(_ text: String, at root: URL) async throws -> ClipboardPatchPlan
+
+    /// Revalidate the confirmed patch, then apply it to the worktree without staging it.
+    func applyClipboardPatch(_ plan: ClipboardPatchPlan, at root: URL) async throws
+
     /// `git add -- <paths>`. Stages the given paths, whether modified, deleted, or untracked.
     /// A no-op (does not invoke git) when `paths` is empty. One call however many paths, all
     /// or nothing: the paths go in a pathspec file (Ruling 26).

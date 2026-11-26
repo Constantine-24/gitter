@@ -175,6 +175,7 @@ extension RepositoryStore {
         let capturedSelection = selection
         let capturedPath = selectedPath
         let capturedStagedView = stagedView
+        let allowsClipboardCopy = diffStatusAllowsClipboardCopy(path: capturedPath, staged: capturedStagedView)
         let capturedGeneration = generation
         let capturedComparison = comparison
 
@@ -222,7 +223,7 @@ extension RepositoryStore {
                 self.clearSticky()
                 self.setDiff([], staged: capturedStagedView)
             } else {
-                self.setDiff(result, staged: capturedStagedView)
+                self.setDiff(result, staged: capturedStagedView, allowsClipboardCopy: allowsClipboardCopy)
                 // Then the colours, on their own: the diff is already on screen, plain.
                 self.loadDiffSyntax(
                     for: result, root: root, selection: capturedSelection, path: capturedPath,

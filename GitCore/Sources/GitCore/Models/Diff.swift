@@ -64,8 +64,51 @@ public struct FileDiff: Sendable, Hashable, Identifiable {
     /// can still be staged, unstaged or discarded whole, which git does from the bytes.
     public let isValidUTF8: Bool
 
+    // The original Git section, retained by DiffParser for eligible UTF-8 text changes.
+    var clipboardPatchText: String? = nil
+
+    /// Whether the loaded file diff can be copied as a unified patch.
+    public var canCopyClipboardPatch: Bool { clipboardPatchText != nil }
+
+    /// The loaded file patch, or a forward patch for one hunk against the original file.
+    public func clipboardPatch(hunkID: Hunk.ID? = nil) -> String? {
+        guard let clipboardPatchText else { return nil }
+        guard let hunkID else { return clipboardPatchText }
+
+        switch kind {
+        case .modified:
+            return PatchBuilder.patch(
+                file: self, hunkIDs: [hunkID], lineIDs: nil, direction: .stage)?.text
+        case .added, .deleted:
+            // Keep Git's mode and /dev/null headers so the hunk creates or removes the file.
+            return hunks.count == 1 && hunks[0].id == hunkID ? clipboardPatchText : nil
+        case .renamed, .copied:
+            return nil
+        }
+    }
+
     public var displayPath: String { newPath ?? oldPath ?? "" }
     public var id: String { (oldPath ?? "") + "→" + (newPath ?? "") }
+
+    // Comparing snapshots for discard and syntax uses the parsed change. Git can vary the
+    // original section's spelling, such as omitting the space marker on a blank context line.
+    public static func == (lhs: FileDiff, rhs: FileDiff) -> Bool {
+        lhs.oldPath == rhs.oldPath && lhs.newPath == rhs.newPath
+            && lhs.kind == rhs.kind && lhs.isBinary == rhs.isBinary && lhs.hunks == rhs.hunks
+            && lhs.oldBlob == rhs.oldBlob && lhs.newBlob == rhs.newBlob
+            && lhs.isValidUTF8 == rhs.isValidUTF8
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(oldPath)
+        hasher.combine(newPath)
+        hasher.combine(kind)
+        hasher.combine(isBinary)
+        hasher.combine(hunks)
+        hasher.combine(oldBlob)
+        hasher.combine(newBlob)
+        hasher.combine(isValidUTF8)
+    }
 
     public init(
         oldPath: String?, newPath: String?, kind: FileDiffKind, isBinary: Bool, hunks: [Hunk],

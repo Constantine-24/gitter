@@ -84,12 +84,21 @@ struct DiffView: View {
 
     @ViewBuilder
     private func fileSection(_ diff: FileDiff) -> some View {
-        Text(diff.displayPath)
-            .font(.system(.caption, design: .monospaced).weight(.semibold))
-            .lineLimit(1)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .headerRow(background: .quaternary)
+        let canCopy = store.canCopyDiff(diff)
+        HStack(spacing: 8) {
+            Text(diff.displayPath)
+                .font(.system(.caption, design: .monospaced).weight(.semibold))
+                .lineLimit(1)
+
+            if canCopy {
+                Spacer(minLength: 8)
+                Button(ClipboardPatchWording.copyDiff) { store.copyDiff(diff) }
+                    .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .headerRow(background: .quaternary)
 
         if diff.isBinary {
             Text("Binary file")
@@ -108,7 +117,9 @@ struct DiffView: View {
             let canStage = store.canPartiallyStage(diff)
             ForEach(diff.hunks) { hunk in
                 DiffHunkView(
-                    file: diff, hunk: hunk, canStage: canStage, tokens: store.diffSyntax[diff.id],
+                    file: diff, hunk: hunk, canStage: canStage,
+                    canCopy: canCopy && (diff.kind == .modified || diff.hunks.count == 1),
+                    tokens: store.diffSyntax[diff.id],
                     selection: $selection)
             }
         }

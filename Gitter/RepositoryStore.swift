@@ -76,6 +76,8 @@ final class RepositoryStore {
     /// disagree. Anything that has to describe the diff actually on screen — the hunk buttons'
     /// labels, the direction their patch is applied in — reads this instead of `stagedView`.
     private(set) var diffIsStaged = false
+    /// The file status captured with the displayed diff also governs clipboard export.
+    private(set) var displayedDiffAllowsClipboardCopy = true
     /// The syntax colours of `diff` (syntax colours Task 3, `RepositoryStore+DiffSyntax`): per
     /// file, per line, ranges relative to the line's `displayText`. Read after `diff` is already
     /// on screen; a file or line that isn't here is drawn plain. `setDiff` keeps a file's entry
@@ -1483,7 +1485,7 @@ final class RepositoryStore {
     /// The one place `diff` is written, so `diffIsStaged` can never drift from it.
     /// internal (not private): used by +Detail.swift's `loadDiff()`; kept here since it writes
     /// `diff`/`diffIsStaged` and both stay `private(set)`.
-    func setDiff(_ newDiff: [FileDiff], staged: Bool) {
+    func setDiff(_ newDiff: [FileDiff], staged: Bool, allowsClipboardCopy: Bool = true) {
         // A file diff equal to one on screen (its lines, ids and blob ids, so its sources too)
         // keeps its colours, so a reload of the same diff never blinks plain (Ruling 7). Any
         // other entry goes: a changed file's line ids now name other lines.
@@ -1493,6 +1495,7 @@ final class RepositoryStore {
         }
         diff = newDiff
         diffIsStaged = staged
+        displayedDiffAllowsClipboardCopy = allowsClipboardCopy
         diffSyntaxTask?.cancel()
         if kept.count != diffSyntax.count { diffSyntax = kept }
     }
